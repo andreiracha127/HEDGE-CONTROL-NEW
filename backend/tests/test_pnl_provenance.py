@@ -1444,6 +1444,137 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             assert str(legacy_id) in ids
             assert new["id"] in ids
 
+    def test_outage_fallback_returns_newest_matching_snapshot(
+        self, client, session, monkeypatch
+    ):
+        """Codex P2 (PR #22 follow-up) — when the total-unavailability
+        fallback finds multiple post-PR-8 snapshots whose stored
+        ``price_references`` each still hash-match the current link
+        set (e.g. price correction created ``snap_new`` after
+        ``snap_old``, then the price feed was wiped), the fallback
+        MUST return the NEWEST matching snapshot (``snap_new``), not
+        an arbitrary unordered DB row that could regress P&L to the
+        pre-correction value.
+
+        Scenario:
+          1. Insert ALU price P1=2700 → first snapshot ``snap_old`` (P1).
+          2. Correct the price to P2=2750 → second snapshot ``snap_new``
+             with a different ``inputs_hash`` (different
+             ``price_references["value"]``).
+          3. Delete the ``CashSettlementPrice`` row entirely (price-feed
+             wipe) and force the lookup helper to raise
+             ``PriceReferenceUnprovable`` so the outage fallback fires.
+          4. Re-request the snapshot. Both ``snap_old`` and ``snap_new``
+             still hash-match the current link set against their own
+             stored ``price_references``, so without an explicit
+             ORDER BY clause the DB could return either row first.
+             The fix orders by ``created_at DESC, id DESC`` so the
+             newest reusable snapshot wins.
+
+        Asserts:
+          * Returned snapshot id == ``snap_new.id`` (NOT ``snap_old.id``).
+          * ``created_at(snap_new) > created_at(snap_old)`` so the
+            ordering semantics are observable in the persisted data.
+          * No new row is created (count remains 2).
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
+        deal_id, snap_old = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+        snapshot_date_obj = date(2026, 2, 1)
+
+        # Step 2: price correction — LME republishes at 2750. The
+        # second POST sees a different ``price_references["value"]``,
+        # so a fresh post-PR-8 row is inserted alongside ``snap_old``.
+        with SessionLocal() as s:
+            row = (
+                s.query(CashSettlementPrice)
+                .filter(
+                    CashSettlementPrice.symbol
+                    == "LME_ALU_CASH_SETTLEMENT_DAILY"
+                )
+                .first()
+            )
+            row.price_usd = 2750.0
+            s.commit()
+
+        r_new = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r_new.status_code == 201
+        snap_new = r_new.json()
+        assert snap_new["id"] != snap_old["id"]
+        assert snap_new["inputs_hash"] != snap_old["inputs_hash"]
+
+        # Sanity: two distinct snapshots persisted, ``snap_new`` has a
+        # strictly greater ``created_at`` than ``snap_old`` so the
+        # ordering semantics are observable.
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .order_by(DealPNLSnapshot.created_at.asc())
+                .all()
+            )
+            assert len(rows) == 2
+            assert str(rows[0].id) == snap_old["id"]
+            assert str(rows[1].id) == snap_new["id"]
+            assert rows[1].created_at >= rows[0].created_at
+
+        # Step 3: wipe the price-feed row and force any lookup to
+        # raise so the total-unavailability outage fallback fires.
+        with SessionLocal() as s:
+            s.query(CashSettlementPrice).filter(
+                CashSettlementPrice.symbol
+                == "LME_ALU_CASH_SETTLEMENT_DAILY"
+            ).delete()
+            s.commit()
+
+        def _raise_unprovable(*args, **kwargs):
+            raise PriceReferenceUnprovable(
+                "simulated outage: source row deleted",
+                commodity="ALUMINUM",
+            )
+
+        monkeypatch.setattr(
+            deal_engine_mod,
+            "_get_market_quote",
+            _raise_unprovable,
+        )
+
+        # Step 4: outage fallback fires. Both snapshots still
+        # hash-match against their own stored ``price_references``;
+        # the ORDER BY ``created_at DESC`` clause guarantees we
+        # return the newest one (``snap_new``).
+        with SessionLocal() as s:
+            reused = DealEngineService.compute_deal_pnl(
+                s, uuid.UUID(deal_id), snapshot_date_obj
+            )
+            s.commit()
+            reused_id = str(reused.id)
+            reused_hash = reused.inputs_hash
+
+        assert reused_id == snap_new["id"], (
+            "outage fallback returned the wrong snapshot — expected "
+            "the newest reusable row (snap_new) but got snap_old; the "
+            "ORDER BY ``created_at DESC, id DESC`` clause is missing "
+            "or ineffective."
+        )
+        assert reused_id != snap_old["id"]
+        assert reused_hash == snap_new["inputs_hash"]
+
+        # No new row was persisted by the fallback.
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 2
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Codex P2 (PR #22 follow-up) — partial market-quote success must

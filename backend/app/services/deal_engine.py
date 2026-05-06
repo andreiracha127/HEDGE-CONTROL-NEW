@@ -639,11 +639,30 @@ class DealEngineService:
             # inputs_hash — intentionally not reusable per §3.4.3
             # (legacy rows are sealed). If no candidate matches, the
             # original PriceReferenceUnprovable propagates (→ 422).
+            #
+            # Codex P2 follow-up (2026-05-06): order by ``created_at``
+            # DESC (with ``id`` DESC as a millisecond-tie tiebreaker) so
+            # that when a deal/date carries multiple post-PR-8
+            # snapshots whose stored ``price_references`` each still
+            # hash-match the current link set (e.g. a price correction
+            # produced a newer row before the feed went down), we
+            # always reuse the NEWEST forensic record. Without an
+            # explicit ORDER BY the database is free to return rows in
+            # any order and the loop could silently regress to a
+            # pre-correction P&L by returning ``snap_old`` instead of
+            # ``snap_new``. The DB performs the sort (predictable, no
+            # in-memory reshuffle) and the loop still returns on the
+            # first hash match — which is now guaranteed to be the
+            # newest reusable snapshot.
             candidate_snapshots = (
                 session.query(DealPNLSnapshot)
                 .filter(
                     DealPNLSnapshot.deal_id == deal_id,
                     DealPNLSnapshot.snapshot_date == snapshot_date,
+                )
+                .order_by(
+                    DealPNLSnapshot.created_at.desc(),
+                    DealPNLSnapshot.id.desc(),
                 )
                 .all()
             )
