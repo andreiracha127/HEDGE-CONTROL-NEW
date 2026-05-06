@@ -302,9 +302,9 @@ class ExposureService:
         for row in residual_hedge_rows:
             item = ensure_row(row.commodity)
             if row.classification == HedgeClassification.long:
-                item["hedge_long_mt"] = quantize_mt(row.quantity)
+                item["hedge_long_mt"] += quantize_mt(row.quantity)
             else:
-                item["hedge_short_mt"] = quantize_mt(row.quantity)
+                item["hedge_short_mt"] += quantize_mt(row.quantity)
 
         total_hedge_rows = (
             session.query(

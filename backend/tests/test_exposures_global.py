@@ -216,6 +216,64 @@ def test_global_exposure_groups_supported_commodity_aliases(client) -> None:
     assert not any(row["commodity"] == "LME_AL" for row in data)
 
 
+def test_global_exposure_accumulates_aliased_long_hedge_rows(client) -> None:
+    _create_hedge_contract(
+        client,
+        quantity_mt=40.0,
+        commodity="ALUMINUM",
+        legs=[
+            {"side": "buy", "price_type": "fixed"},
+            {"side": "sell", "price_type": "variable"},
+        ],
+    )
+    _create_hedge_contract(
+        client,
+        quantity_mt=60.0,
+        commodity="LME_AL",
+        legs=[
+            {"side": "buy", "price_type": "fixed"},
+            {"side": "sell", "price_type": "variable"},
+        ],
+    )
+
+    data = _get_global_exposure(client)
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+
+    assert len(data) == 1
+    assert _mt(aluminum, "pre_reduction_global_passive_mt") == 100.0
+    assert _mt(aluminum, "hedge_long_mt") == 100.0
+    assert _mt(aluminum, "reduction_applied_passive_mt") == 0.0
+
+
+def test_global_exposure_accumulates_aliased_short_hedge_rows(client) -> None:
+    _create_hedge_contract(
+        client,
+        quantity_mt=30.0,
+        commodity="ALUMINUM",
+        legs=[
+            {"side": "sell", "price_type": "fixed"},
+            {"side": "buy", "price_type": "variable"},
+        ],
+    )
+    _create_hedge_contract(
+        client,
+        quantity_mt=70.0,
+        commodity="LME_AL",
+        legs=[
+            {"side": "sell", "price_type": "fixed"},
+            {"side": "buy", "price_type": "variable"},
+        ],
+    )
+
+    data = _get_global_exposure(client)
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+
+    assert len(data) == 1
+    assert _mt(aluminum, "pre_reduction_global_active_mt") == 100.0
+    assert _mt(aluminum, "hedge_short_mt") == 100.0
+    assert _mt(aluminum, "reduction_applied_active_mt") == 0.0
+
+
 def test_order_insertion_sequence_does_not_affect_result(client) -> None:
     from app.core.database import engine
     from app.models.base import Base
