@@ -603,6 +603,71 @@ class TestPriceReferencesValidator:
             )
 
     @pytest.mark.parametrize(
+        "non_canonical_value",
+        [
+            "5500.0e-2",   # scientific notation — Decimal accepts, CHECK rejects
+            "+5500",       # leading + — Decimal accepts, CHECK rejects
+            "  5500  ",    # whitespace-padded — Decimal accepts, CHECK rejects
+            "5500.",       # trailing dot — Decimal accepts, CHECK rejects
+            ".5",          # leading dot — Decimal accepts, CHECK rejects
+        ],
+    )
+    def test_inner_value_non_canonical_decimal_rejected(
+        self, non_canonical_value
+    ):
+        """Codex P2 (2026-05-06): SQLite-portable defender must mirror
+        the Postgres CHECK regex byte-for-byte. ``Decimal(...)`` is too
+        permissive and would accept these forms, but the CHECK
+        ``^-?\\d+(\\.\\d+)?$`` rejects them as non-fixed-point. Without
+        the regex check in @validates, these would pass SQLite tests
+        and only fail at Postgres commit time.
+        Mirrors ``test_direct_sql_value_must_match_decimal_regex`` in
+        the PG-only suite below for cross-dialect parity.
+        """
+        with pytest.raises(ValueError, match="canonical fixed-point"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": non_canonical_value,
+                        "source": "lme",
+                        "settlement_date": "2026-05-05",
+                    }
+                },
+            )
+
+    @pytest.mark.parametrize(
+        "canonical_value",
+        [
+            "5500",            # plain integer
+            "-5500.123456",    # negative with fraction
+            "0",               # zero
+        ],
+    )
+    def test_inner_value_canonical_decimal_accepted(self, canonical_value):
+        """Codex P2 (2026-05-06): canonical fixed-point strings the
+        producer (compute_deal_pnl -> quantize_price -> str(Decimal))
+        actually emits must continue to be accepted. Mirrors the
+        well-formed cases in ``test_direct_sql_value_must_match_decimal_regex``.
+        """
+        snap = DealPNLSnapshot(
+            deal_id=uuid.uuid4(),
+            snapshot_date=date(2026, 2, 1),
+            inputs_hash="x" * 64,
+            price_references={
+                "ALUMINUM": {
+                    "value": canonical_value,
+                    "source": "lme",
+                    "settlement_date": "2026-05-05",
+                }
+            },
+        )
+        assert snap.price_references is not None
+        assert snap.price_references["ALUMINUM"]["value"] == canonical_value
+
+    @pytest.mark.parametrize(
         "bad_date",
         [
             "not-a-date",       # Codex's exact example — arbitrary text

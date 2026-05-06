@@ -4,9 +4,24 @@ from __future__ import annotations
 
 import decimal
 import enum
+import re
 import uuid as _uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
+
+
+# Codex P2 (2026-05-06): the portable @validates defender for
+# ``price_references`` MUST mirror the Postgres CHECK regex byte-for-byte.
+# The CHECK function in alembic/versions/030_pnl_provenance.py uses
+# ``^-?\d+(\.\d+)?$`` to reject scientific notation, NaN, Infinity,
+# leading ``+``, leading/trailing dots, whitespace, and arbitrary text.
+# ``Decimal(...)`` alone is too permissive — it accepts ``"5500.0e-2"``,
+# ``"+5500"``, and whitespace-padded values that the CHECK rejects, so
+# a SQLite ORM write could pass the validator and only fail on
+# Postgres commit. Pre-compile once at module load (do NOT compile
+# inside the per-entry loop). Use ``fullmatch`` so both ``^`` and
+# ``$`` anchors are enforced.
+_CANONICAL_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
 from sqlalchemy import (
     JSON,
@@ -238,6 +253,27 @@ class DealPNLSnapshot(Base):
                 raise ValueError(
                     f"price_references[{commodity!r}].value must be a string"
                 )
+            # Codex P2 follow-up (2026-05-06): mirror the Postgres CHECK
+            # regex byte-for-byte. ``Decimal(...)`` is too permissive — it
+            # accepts ``"5500.0e-2"``, ``"+5500"``, ``"  5500  "``, etc.,
+            # which the CHECK rejects. Without this regex, SQLite tests
+            # (which run @validates but no CHECK) would let malformed
+            # audit evidence pass and only fail later in production at
+            # commit time. ``fullmatch`` enforces both anchors.
+            if not _CANONICAL_DECIMAL_RE.fullmatch(raw_value):
+                raise ValueError(
+                    f"price_references[{commodity!r}].value must be a "
+                    f"canonical fixed-point decimal string (got "
+                    f"{raw_value!r}); scientific notation, leading +, "
+                    f"leading/trailing dots, NaN/Infinity, and "
+                    f"whitespace are forbidden — must match the "
+                    f"Postgres CHECK regex ^-?\\d+(\\.\\d+)?$."
+                )
+            # Defense in depth: keep the Decimal parse as a fallback
+            # safety net. The regex above is a strict subset of what
+            # Decimal accepts, so this should never trigger today, but
+            # it guards against future regex edits that loosen the
+            # pattern in ways the producer contract would not allow.
             try:
                 parsed = Decimal(raw_value)
             except decimal.InvalidOperation as exc:
