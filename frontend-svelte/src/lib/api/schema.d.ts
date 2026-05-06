@@ -1980,6 +1980,10 @@ export interface components {
             physical_cost: string;
             /** Physical Revenue */
             physical_revenue: string;
+            /** Price References */
+            price_references?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Snapshot Date
              * Format: date
