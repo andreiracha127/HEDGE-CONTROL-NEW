@@ -855,3 +855,218 @@ class TestSettledHedgeSkipsMarketLookup:
         # Settled hedge: no market price was consulted; pnl is zero.
         assert fi["market_price"] is None
         assert fi["pnl"] == Decimal("0")
+
+    # ------------------------------------------------------------------
+    # Codex P1 PR #22 — partially_settled has remaining open position;
+    # MUST require a current quote and contribute non-zero unrealized
+    # MTM. Mirrors mtm_contract_service.py:27-29 and
+    # exposure_engine.py:271-272 which both treat
+    # ``active`` AND ``partially_settled`` as the open set. Sibling
+    # tests above guard the negative direction (settled / cancelled
+    # still skip).
+    # ------------------------------------------------------------------
+
+    def test_compute_deal_pnl_partially_settled_hedge_requires_market_quote(
+        self, session
+    ):
+        """A partially_settled hedge has remaining open qty → 422 if no quote.
+
+        Mirrors the active-hedge contract: an open hedge whose
+        commodity has no D-1 price MUST raise PriceReferenceUnprovable;
+        we never silently zero the unrealized MTM of an open position.
+        """
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="FixedPlusPartiallySettledHedge",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.partially_settled,
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        with pytest.raises(PriceReferenceUnprovable):
+            DealEngineService.compute_deal_pnl(
+                session, deal.id, date(2026, 2, 1)
+            )
+
+    def test_compute_deal_pnl_partially_settled_hedge_contributes_mtm(
+        self, session
+    ):
+        """A partially_settled hedge with a market quote → non-zero MTM.
+
+        Snapshot persists, ``price_references`` includes the hedge's
+        commodity, and ``hedge_pnl_mtm`` is non-zero (computed from
+        the current quote, NOT zeroed). Confirms the partially_settled
+        branch valuates through the same path as active hedges.
+        """
+        # D-1 price for ALUMINUM at snapshot_date 2026-02-01 → 2026-01-31.
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="FixedPlusPartiallySettledPriced",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        # SHORT partially_settled hedge: qty=100, fixed=2450, market=2700.
+        # is_sell=True ⇒ mtm = 100 * (2450 - 2700) = -25 000.
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.partially_settled,
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        snap = DealEngineService.compute_deal_pnl(
+            session, deal.id, date(2026, 2, 1)
+        )
+
+        assert snap is not None
+        assert snap.price_references is not None
+        # The hedge's commodity must appear in price_references —
+        # proving an open hedge DID trigger the per-commodity quote.
+        assert "ALUMINUM" in snap.price_references
+        # Realized P&L stays zero (snapshot path doesn't recompute
+        # locked-in realized portion); unrealized MTM is non-zero
+        # and matches the active-hedge formula.
+        assert snap.hedge_pnl_realized == Decimal("0")
+        assert snap.hedge_pnl_mtm == Decimal("-25000.000000")
+
+    def test_compute_pnl_breakdown_partially_settled_hedge_priced(
+        self, session
+    ):
+        """compute_pnl_breakdown values partially_settled hedges from quote.
+
+        Same scenario as the compute_deal_pnl variant. The breakdown
+        endpoint MUST agree: financial_items entry has the hedge's
+        market_price populated, pnl is non-zero, and hedge_pnl_mtm
+        reflects the open MTM contribution.
+        """
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="BreakdownFixedPlusPartiallySettled",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.partially_settled,
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        result = DealEngineService.compute_pnl_breakdown(
+            session, [deal.id], date(2026, 2, 1)
+        )
+
+        assert len(result["deals"]) == 1
+        d = result["deals"][0]
+        # qty=100, fixed=2450, market=2700, short ⇒ pnl = -25 000.
+        assert d["hedge_pnl_realized"] == Decimal("0")
+        assert d["hedge_pnl_mtm"] == Decimal("-25000.000000")
+        assert len(d["financial_items"]) == 1
+        fi = d["financial_items"][0]
+        assert fi["status"] == "partially_settled"
+        # Open hedge: market price WAS consulted; pnl is non-zero.
+        assert Decimal(fi["market_price"]) == Decimal("2700.000000")
+        assert fi["pnl"] == Decimal("-25000.000000")

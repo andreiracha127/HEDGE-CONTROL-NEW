@@ -105,6 +105,29 @@ def _get_market_quote(session: Session, commodity: str, as_of_date: date):
     return quote
 
 
+def _hedge_is_open_for_mtm(contract: HedgeContract) -> bool:
+    """Return True when a hedge has a remaining open position requiring MTM.
+
+    Mirrors the canonical "open hedge" predicate used elsewhere in the
+    codebase — both ``mtm_contract_service.compute_mtm_for_contract``
+    (``mtm_contract_service.py:27-29``) and the global hedge aggregation
+    in ``exposure_engine`` (``exposure_engine.py:271-272``) treat
+    ``active`` AND ``partially_settled`` as open positions that must be
+    valued from a current quote.
+
+    A ``partially_settled`` hedge has a remaining open quantity that
+    contributes unrealized P&L; only ``settled`` (fully closed) and
+    ``cancelled`` skip the market-quote requirement and contribute zero
+    MTM here. (Codex P1 on PR #22 — restoring cross-codebase
+    consistency after the prior settled-hedge skip incorrectly excluded
+    ``partially_settled`` from the open set.)
+    """
+    return contract.status in (
+        HedgeContractStatus.active,
+        HedgeContractStatus.partially_settled,
+    )
+
+
 class DealEngineService:
     """Stateless service for Deal operations."""
 
@@ -574,13 +597,17 @@ class DealEngineService:
                 if contract.status == HedgeContractStatus.cancelled:
                     continue
                 resolved_contracts[link.id] = contract
-                # Only ACTIVE hedges require a current market quote.
-                # Settled / partially_settled hedges have zero
+                # Only OPEN hedges (active OR partially_settled)
+                # require a current market quote — both have remaining
+                # open quantity contributing unrealized MTM. Fully
+                # ``settled`` and ``cancelled`` hedges have zero
                 # unrealized MTM (their realized P&L is locked at
                 # settlement and captured separately by the cashflow
                 # ledger / compute_pl path); a missing current quote
-                # for them must not block snapshot creation.
-                if contract.status == HedgeContractStatus.active:
+                # for them must not block snapshot creation. Mirrors
+                # the canonical predicate in ``mtm_contract_service``
+                # and ``exposure_engine`` (Codex P1 PR #22).
+                if _hedge_is_open_for_mtm(contract):
                     commodities_needing_price.add(contract.commodity)
 
         # ── Step 3-4: one lookup per unique commodity. The live
@@ -755,14 +782,17 @@ class DealEngineService:
                 price = quantize_price(contract.fixed_price_value)
                 is_sell = contract.classification == HedgeClassification.short
 
-                if contract.status != HedgeContractStatus.active:
-                    # Settled / partially_settled hedges: zero
-                    # unrealized MTM. Realized P&L from settlement
-                    # is locked in at settlement time and captured
-                    # by the cashflow ledger (see compute_pl) — not
+                if not _hedge_is_open_for_mtm(contract):
+                    # Fully settled / cancelled hedges: zero
+                    # unrealized MTM. Realized P&L from settlement is
+                    # locked in at settlement time and captured by
+                    # the cashflow ledger (see compute_pl) — not
                     # recomputed here from a current market price.
-                    # Mirrors the existing compute_pl semantics:
-                    # ``contract.status != active → unrealized=0``.
+                    # Open hedges (active OR partially_settled) have
+                    # a remaining open position and ARE valued from
+                    # the current quote — Codex P1 PR #22 restored
+                    # parity with ``mtm_contract_service`` and
+                    # ``exposure_engine``.
                     mtm = Decimal("0")
                 else:
                     quote = quotes_by_commodity.get(contract.commodity)
@@ -904,13 +934,16 @@ class DealEngineService:
                         # below short-circuits to pnl=0.
                         continue
                     resolved_contracts[link.id] = contract
-                    # Only ACTIVE hedges require a current market quote.
-                    # Settled / partially_settled hedges have zero
-                    # unrealized MTM (Codex P2 PR #22 — settled hedges
-                    # must not be blocked by a missing current quote;
-                    # mirrors compute_pl's "non-active → unrealized=0"
-                    # rule).
-                    if contract.status == HedgeContractStatus.active:
+                    # Only OPEN hedges (active OR partially_settled)
+                    # require a current market quote — both have
+                    # remaining open quantity contributing unrealized
+                    # MTM. Fully ``settled`` / ``cancelled`` hedges
+                    # have zero unrealized MTM and must not be blocked
+                    # by a missing current quote. Mirrors the canonical
+                    # predicate in ``mtm_contract_service`` and
+                    # ``exposure_engine`` (Codex P1 PR #22; succeeds
+                    # the original Codex P2 settled-hedge skip).
+                    if _hedge_is_open_for_mtm(contract):
                         commodities_needing_price.add(contract.commodity)
 
             # One lookup per unique commodity; PriceReferenceUnprovable
@@ -998,18 +1031,20 @@ class DealEngineService:
                     price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
-                    # Non-active hedges contribute zero unrealized
-                    # MTM and require no current quote (Codex P2
-                    # PR #22):
+                    # Closed hedges contribute zero unrealized MTM
+                    # and require no current quote (Codex P1 PR #22 —
+                    # narrowed from the prior overbroad "non-active"
+                    # check that wrongly excluded partially_settled):
                     #   * cancelled → no P&L at all
-                    #   * settled / partially_settled → realized
-                    #     P&L locked in at settlement (captured by
-                    #     compute_pl / cashflow ledger), zero
-                    #     unrealized MTM here
-                    # Only ACTIVE hedges MUST have a per-commodity
-                    # market price; a missing one would have raised
-                    # PriceReferenceUnprovable above.
-                    if contract.status != HedgeContractStatus.active:
+                    #   * settled (fully) → realized P&L locked in at
+                    #     settlement (captured by compute_pl /
+                    #     cashflow ledger), zero unrealized MTM here
+                    # OPEN hedges (active OR partially_settled) MUST
+                    # have a per-commodity market price; a missing
+                    # one would have raised PriceReferenceUnprovable
+                    # above. Mirrors ``mtm_contract_service`` and
+                    # ``exposure_engine``.
+                    if not _hedge_is_open_for_mtm(contract):
                         pnl = Decimal("0")
                         hedge_market_price: Decimal | None = None
                     else:
