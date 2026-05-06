@@ -134,7 +134,27 @@ def upgrade() -> None:
 
     # Step 5 (both dialects) — flip to NOT NULL and add the index used by
     # the outage-fallback ORDER BY.
-    op.alter_column("deal_pnl_snapshots", "sequence", nullable=False)
+    #
+    # Codex P2 (2026-05-06): SQLite does NOT support
+    # ``ALTER TABLE ... ALTER COLUMN ... SET NOT NULL`` — the standard
+    # SQLite-on-Alembic remedy is ``batch_alter_table``, which copies the
+    # table into a new shape under the hood. PG supports the direct
+    # ``alter_column`` form natively, so we only pay the table-copy cost
+    # on SQLite (synthetic test envs, never production).
+    if bind.dialect.name == "postgresql":
+        op.alter_column(
+            "deal_pnl_snapshots",
+            "sequence",
+            nullable=False,
+            existing_type=sa.BigInteger(),
+        )
+    else:
+        with op.batch_alter_table("deal_pnl_snapshots") as batch_op:
+            batch_op.alter_column(
+                "sequence",
+                nullable=False,
+                existing_type=sa.BigInteger(),
+            )
     op.create_index(
         _INDEX_NAME,
         "deal_pnl_snapshots",
@@ -153,8 +173,14 @@ def downgrade() -> None:
             "deal_pnl_snapshots",
             "sequence",
             server_default=None,
+            existing_type=sa.BigInteger(),
         )
-    op.drop_index(_INDEX_NAME, table_name="deal_pnl_snapshots")
-    op.drop_column("deal_pnl_snapshots", "sequence")
-    if bind.dialect.name == "postgresql":
+        op.drop_index(_INDEX_NAME, table_name="deal_pnl_snapshots")
+        op.drop_column("deal_pnl_snapshots", "sequence")
         op.execute(f"DROP SEQUENCE IF EXISTS {_SEQUENCE_NAME}")
+    else:
+        # SQLite needs batch_alter_table for column drops too (cleaner
+        # behavior across alembic / SQLAlchemy versions).
+        op.drop_index(_INDEX_NAME, table_name="deal_pnl_snapshots")
+        with op.batch_alter_table("deal_pnl_snapshots") as batch_op:
+            batch_op.drop_column("sequence")
