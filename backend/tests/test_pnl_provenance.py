@@ -15,7 +15,7 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -1509,6 +1509,22 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         assert snap_new["id"] != snap_old["id"]
         assert snap_new["inputs_hash"] != snap_old["inputs_hash"]
 
+        # SQLite stores ``func.now()`` (the ``created_at`` server_default)
+        # at second precision, so two POSTs in the same test run can land
+        # with identical ``created_at`` values. The production query then
+        # falls back to its ``id DESC`` tiebreaker, which is non-
+        # deterministic w.r.t. creation order because ``id`` is a random
+        # UUID. Force ``snap_new.created_at`` strictly after
+        # ``snap_old.created_at`` so the ``ORDER BY created_at DESC``
+        # primary sort is observable in the persisted data.
+        with SessionLocal() as s:
+            snap_old_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_old["id"]))
+            snap_new_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_new["id"]))
+            snap_new_obj.created_at = snap_old_obj.created_at + timedelta(
+                seconds=1
+            )
+            s.commit()
+
         # Sanity: two distinct snapshots persisted, ``snap_new`` has a
         # strictly greater ``created_at`` than ``snap_old`` so the
         # ordering semantics are observable.
@@ -1522,7 +1538,7 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             assert len(rows) == 2
             assert str(rows[0].id) == snap_old["id"]
             assert str(rows[1].id) == snap_new["id"]
-            assert rows[1].created_at >= rows[0].created_at
+            assert rows[1].created_at > rows[0].created_at
 
         # Step 3: wipe the price-feed row and force any lookup to
         # raise so the total-unavailability outage fallback fires.
