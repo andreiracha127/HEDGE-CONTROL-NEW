@@ -1667,6 +1667,11 @@ export interface components {
              */
             commercial_passive_mt: string;
             /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
+            /**
              * Order Count Considered
              * @description Count of variable-price orders considered
              */
@@ -2153,6 +2158,11 @@ export interface components {
              * @description Reduced commercial passive exposure (MT)
              */
             commercial_passive_mt: string;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Entities Count Considered
              * @description Count of variable-price orders and hedge contracts considered
@@ -2738,6 +2748,11 @@ export interface components {
              */
             avg_entry_price?: string | null;
             /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
+            /**
              * Counterparty Id
              * @description FK to counterparties
              */
@@ -3095,6 +3110,11 @@ export interface components {
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
             avg_entry_price?: number | string | null;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Counterparty Id
              * @description FK to counterparties
@@ -3618,6 +3638,11 @@ export interface components {
              */
             avg_entry_price?: number | string | null;
             /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
+            /**
              * Counterparty Id
              * @description FK to counterparties
              */
@@ -3750,8 +3775,10 @@ export interface components {
         /** ScenarioWhatIfRunResponse */
         ScenarioWhatIfRunResponse: {
             cashflow_snapshot: components["schemas"]["ScenarioCashflowSnapshot"];
-            commercial_exposure_snapshot: components["schemas"]["CommercialExposureRead"];
-            global_exposure_snapshot: components["schemas"]["GlobalExposureRead"];
+            /** Commercial Exposure Snapshot */
+            commercial_exposure_snapshot: components["schemas"]["CommercialExposureRead"][];
+            /** Global Exposure Snapshot */
+            global_exposure_snapshot: components["schemas"]["GlobalExposureRead"][];
             /** Mtm Snapshot */
             mtm_snapshot: components["schemas"]["MTMResultResponse"][];
             /** Pl Snapshot */
@@ -4928,7 +4955,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CommercialExposureRead"];
+                    "application/json": components["schemas"]["CommercialExposureRead"][];
                 };
             };
         };
@@ -4948,7 +4975,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GlobalExposureRead"];
+                    "application/json": components["schemas"]["GlobalExposureRead"][];
                 };
             };
         };

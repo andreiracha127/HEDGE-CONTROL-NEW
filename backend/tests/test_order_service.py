@@ -23,13 +23,13 @@ from app.services.order_service import OrderService
 
 
 def _so_payload(**kw) -> SalesOrderCreate:
-    defaults = {"price_type": "fixed", "quantity_mt": 100.0}
+    defaults = {"commodity": "ALUMINUM", "price_type": "fixed", "quantity_mt": 100.0}
     defaults.update(kw)
     return SalesOrderCreate(**defaults)
 
 
 def _po_payload(**kw) -> PurchaseOrderCreate:
-    defaults = {"price_type": "fixed", "quantity_mt": 50.0}
+    defaults = {"commodity": "ALUMINUM", "price_type": "fixed", "quantity_mt": 50.0}
     defaults.update(kw)
     return PurchaseOrderCreate(**defaults)
 

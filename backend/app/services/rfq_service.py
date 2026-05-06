@@ -43,6 +43,7 @@ from app.schemas.rfq import (
 )
 from app.services.exposure_service import ExposureService
 from app.services.linkage_service import LinkageService
+from app.services.price_lookup_service import canonical_commodity
 from app.services.whatsapp_service import WhatsAppService
 from app.core.logging import get_logger
 from app.core.utils import now_utc
@@ -333,12 +334,26 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        snapshot = ExposureService.compute_commercial_snapshot(session)
-        post_active = float(snapshot["commercial_active_mt"])
-        post_passive = float(snapshot["commercial_passive_mt"])
-        pre_active = float(snapshot["pre_reduction_commercial_active_mt"])
+        snapshot_rows = ExposureService.compute_commercial_snapshot(session)
+        snapshot_by_commodity = {
+            canonical_commodity(row["commodity"]): row for row in snapshot_rows
+        }
+
+        def snapshot_for(commodity: str | None) -> dict:
+            canonical = canonical_commodity(commodity)
+            if canonical is not None and canonical in snapshot_by_commodity:
+                return snapshot_by_commodity[canonical]
+            return {
+                "commodity": canonical or commodity or payload.commodity,
+                "pre_reduction_commercial_active_mt": 0,
+                "pre_reduction_commercial_passive_mt": 0,
+                "commercial_active_mt": 0,
+                "commercial_passive_mt": 0,
+                "calculation_timestamp": now_utc(),
+            }
 
         order: Order | None = None
+        snapshot = snapshot_for(payload.commodity)
         if payload.intent.value == RFQIntent.commercial_hedge.value:
             order = session.get(Order, payload.order_id)
             if not order:
@@ -359,6 +374,19 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ direction mismatch for order type",
                 )
+            if canonical_commodity(payload.commodity) != canonical_commodity(
+                order.commodity
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "RFQ commodity must match order commodity for "
+                        "COMMERCIAL_HEDGE"
+                    ),
+                )
+            snapshot = snapshot_for(order.commodity)
+            post_active = float(snapshot["commercial_active_mt"])
+            post_passive = float(snapshot["commercial_passive_mt"])
             residual_side = (
                 post_active if order.order_type == OrderType.sales else post_passive
             )
@@ -367,6 +395,10 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ quantity exceeds residual exposure",
                 )
+        else:
+            post_active = float(snapshot["commercial_active_mt"])
+            post_passive = float(snapshot["commercial_passive_mt"])
+        pre_active = float(snapshot["pre_reduction_commercial_active_mt"])
 
         if payload.intent.value == RFQIntent.spread.value:
             buy_trade_rfq = session.get(RFQ, payload.buy_trade_id)

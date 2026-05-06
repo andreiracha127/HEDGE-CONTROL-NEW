@@ -12,7 +12,13 @@ def _mt(value):
 # ---------------------------------------------------------------------------
 
 
-def _create_order(client, order_type="SO", quantity=100.0, price_type="variable"):
+def _create_order(
+    client,
+    order_type="SO",
+    quantity=100.0,
+    price_type="variable",
+    commodity="ALUMINUM",
+):
     if order_type == "SO":
         url = "/orders/sales"
     else:
@@ -20,6 +26,7 @@ def _create_order(client, order_type="SO", quantity=100.0, price_type="variable"
     return client.post(
         url,
         json={
+            "commodity": commodity,
             "order_type": order_type,
             "price_type": price_type,
             "quantity_mt": quantity,
@@ -43,6 +50,16 @@ class TestReconcileExposures:
         data = resp.json()
         assert data["created"] == 2
         assert data["updated"] == 0
+
+    def test_reconcile_copies_order_commodity_to_exposure(self, client):
+        _create_order(client, "SO", 125.0, commodity="COPPER")
+
+        resp = client.post("/exposures/reconcile")
+        assert resp.status_code == 200
+
+        items = client.get("/exposures/list").json()["items"]
+        assert len(items) == 1
+        assert items[0]["commodity"] == "COPPER"
 
     def test_reconcile_idempotent(self, client):
         """Running reconcile twice should not duplicate exposures."""

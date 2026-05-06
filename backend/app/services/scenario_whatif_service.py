@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.precision import quantize_money, quantize_mt, quantize_price
 from app.models.cashflow import CashFlowLedgerEntry
 from app.models.contracts import (
     HedgeClassification,
@@ -32,6 +33,7 @@ from app.schemas.scenario import (
 )
 from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 from app.services.price_lookup_service import (
+    canonical_commodity,
     get_cash_settlement_price_d1,
     resolve_symbol,
 )
@@ -43,6 +45,7 @@ DEFAULT_COMMODITY = "LME_AL"
 @dataclass(frozen=True)
 class VirtualHedgeContract:
     id: UUID
+    commodity: str
     quantity_mt: Decimal
     fixed_leg_side: HedgeLegSide
     variable_leg_side: HedgeLegSide
@@ -83,7 +86,10 @@ def _mtm_for_contract(
     as_of_date: date,
     price_d1: Decimal,
 ) -> MTMResultResponse:
-    mtm_value = quantity_mt * (price_d1 - entry_price)
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(entry_price)
+    price_d1 = quantize_price(price_d1)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.hedge_contract,
         object_id=str(contract_id),
@@ -121,8 +127,10 @@ def _mtm_for_order(
             detail="Order avg_entry_price is missing",
         )
 
-    entry_price = Decimal(str(order.avg_entry_price))
-    mtm_value = quantity_mt * (price_d1 - entry_price)
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(order.avg_entry_price)
+    price_d1 = quantize_price(price_d1)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.order,
         object_id=str(order.id),
@@ -167,6 +175,7 @@ def _apply_deltas(
             virtual_contracts.append(
                 VirtualHedgeContract(
                     id=delta.contract_id,
+                    commodity=DEFAULT_COMMODITY,
                     quantity_mt=Decimal(delta.quantity_mt),
                     fixed_leg_side=HedgeLegSide(delta.fixed_leg_side),
                     variable_leg_side=HedgeLegSide(delta.variable_leg_side),
@@ -214,29 +223,38 @@ def _compute_commercial_exposure(
     orders: list[tuple[Order, Decimal]],
     linkages: list[HedgeOrderLinkage],
     calculation_timestamp: datetime,
-) -> CommercialExposureRead:
+) -> list[CommercialExposureRead]:
     linked_by_order: dict[UUID, Decimal] = {}
     for linkage in linkages:
         linked_by_order[linkage.order_id] = linked_by_order.get(
             linkage.order_id, Decimal("0")
         ) + Decimal(str(linkage.quantity_mt))
 
-    pre_active = Decimal("0")
-    pre_passive = Decimal("0")
-    residual_active = Decimal("0")
-    residual_passive = Decimal("0")
-    reduction_active = Decimal("0")
-    reduction_passive = Decimal("0")
-    order_count = 0
+    rows: dict[str, dict[str, Decimal | int]] = {}
+
+    def ensure_row(commodity: str) -> dict[str, Decimal | int]:
+        key = canonical_commodity(commodity) or commodity
+        if key not in rows:
+            rows[key] = {
+                "pre_active": Decimal("0"),
+                "pre_passive": Decimal("0"),
+                "residual_active": Decimal("0"),
+                "residual_passive": Decimal("0"),
+                "reduction_active": Decimal("0"),
+                "reduction_passive": Decimal("0"),
+                "order_count": 0,
+            }
+        return rows[key]
 
     for order, quantity in orders:
         if order.price_type != PriceType.variable:
             continue
-        order_count += 1
+        item = ensure_row(order.commodity)
+        item["order_count"] = int(item["order_count"]) + 1
         if order.order_type == OrderType.sales:
-            pre_active += quantity
+            item["pre_active"] = Decimal(item["pre_active"]) + quantity
         else:
-            pre_passive += quantity
+            item["pre_passive"] = Decimal(item["pre_passive"]) + quantity
 
         linked_qty = linked_by_order.get(order.id, Decimal("0"))
         residual = quantity - linked_qty
@@ -246,23 +264,32 @@ def _compute_commercial_exposure(
                 detail="Residual exposure cannot be negative",
             )
         if order.order_type == OrderType.sales:
-            residual_active += residual
-            reduction_active += linked_qty
+            item["residual_active"] = Decimal(item["residual_active"]) + residual
+            item["reduction_active"] = Decimal(item["reduction_active"]) + linked_qty
         else:
-            residual_passive += residual
-            reduction_passive += linked_qty
+            item["residual_passive"] = Decimal(item["residual_passive"]) + residual
+            item["reduction_passive"] = Decimal(item["reduction_passive"]) + linked_qty
 
-    return CommercialExposureRead(
-        pre_reduction_commercial_active_mt=float(pre_active),
-        pre_reduction_commercial_passive_mt=float(pre_passive),
-        reduction_applied_active_mt=float(reduction_active),
-        reduction_applied_passive_mt=float(reduction_passive),
-        commercial_active_mt=float(residual_active),
-        commercial_passive_mt=float(residual_passive),
-        commercial_net_mt=float(residual_active - residual_passive),
-        calculation_timestamp=calculation_timestamp,
-        order_count_considered=int(order_count),
-    )
+    result: list[CommercialExposureRead] = []
+    for commodity in sorted(rows):
+        item = rows[commodity]
+        residual_active = Decimal(item["residual_active"])
+        residual_passive = Decimal(item["residual_passive"])
+        result.append(
+            CommercialExposureRead(
+                commodity=commodity,
+                pre_reduction_commercial_active_mt=float(item["pre_active"]),
+                pre_reduction_commercial_passive_mt=float(item["pre_passive"]),
+                reduction_applied_active_mt=float(item["reduction_active"]),
+                reduction_applied_passive_mt=float(item["reduction_passive"]),
+                commercial_active_mt=float(residual_active),
+                commercial_passive_mt=float(residual_passive),
+                commercial_net_mt=float(residual_active - residual_passive),
+                calculation_timestamp=calculation_timestamp,
+                order_count_considered=int(item["order_count"]),
+            )
+        )
+    return result
 
 
 def _compute_global_exposure(
@@ -271,7 +298,7 @@ def _compute_global_exposure(
     virtual_contracts: list[VirtualHedgeContract],
     linkages: list[HedgeOrderLinkage],
     calculation_timestamp: datetime,
-) -> GlobalExposureRead:
+) -> list[GlobalExposureRead]:
     linked_by_order: dict[UUID, Decimal] = {}
     for linkage in linkages:
         linked_by_order[linkage.order_id] = linked_by_order.get(
@@ -284,20 +311,33 @@ def _compute_global_exposure(
             linkage.contract_id, Decimal("0")
         ) + Decimal(str(linkage.quantity_mt))
 
-    pre_active = Decimal("0")
-    pre_passive = Decimal("0")
-    reduced_active = Decimal("0")
-    reduced_passive = Decimal("0")
-    order_count = 0
+    rows: dict[str, dict[str, Decimal | int]] = {}
+
+    def ensure_row(commodity: str) -> dict[str, Decimal | int]:
+        key = canonical_commodity(commodity) or commodity
+        if key not in rows:
+            rows[key] = {
+                "pre_active": Decimal("0"),
+                "pre_passive": Decimal("0"),
+                "reduced_active": Decimal("0"),
+                "reduced_passive": Decimal("0"),
+                "total_hedge_long": Decimal("0"),
+                "total_hedge_short": Decimal("0"),
+                "unlinked_hedge_long": Decimal("0"),
+                "unlinked_hedge_short": Decimal("0"),
+                "entities_count": 0,
+            }
+        return rows[key]
 
     for order, quantity in orders:
         if order.price_type != PriceType.variable:
             continue
-        order_count += 1
+        item = ensure_row(order.commodity)
+        item["entities_count"] = int(item["entities_count"]) + 1
         if order.order_type == OrderType.sales:
-            pre_active += quantity
+            item["pre_active"] = Decimal(item["pre_active"]) + quantity
         else:
-            pre_passive += quantity
+            item["pre_passive"] = Decimal(item["pre_passive"]) + quantity
 
         linked_qty = linked_by_order.get(order.id, Decimal("0"))
         residual = quantity - linked_qty
@@ -307,21 +347,18 @@ def _compute_global_exposure(
                 detail="Residual exposure cannot be negative",
             )
         if order.order_type == OrderType.sales:
-            reduced_active += residual
+            item["reduced_active"] = Decimal(item["reduced_active"]) + residual
         else:
-            reduced_passive += residual
-
-    total_hedge_long = Decimal("0")
-    total_hedge_short = Decimal("0")
-    unlinked_hedge_long = Decimal("0")
-    unlinked_hedge_short = Decimal("0")
+            item["reduced_passive"] = Decimal(item["reduced_passive"]) + residual
 
     for contract in contracts:
+        item = ensure_row(contract.commodity)
+        item["entities_count"] = int(item["entities_count"]) + 1
         total_qty = Decimal(str(contract.quantity_mt))
         if contract.classification == HedgeClassification.long:
-            total_hedge_long += total_qty
+            item["total_hedge_long"] = Decimal(item["total_hedge_long"]) + total_qty
         else:
-            total_hedge_short += total_qty
+            item["total_hedge_short"] = Decimal(item["total_hedge_short"]) + total_qty
         linked_qty = linked_by_contract.get(contract.id, Decimal("0"))
         residual = total_qty - linked_qty
         if residual < 0:
@@ -330,40 +367,70 @@ def _compute_global_exposure(
                 detail="Residual hedge quantity cannot be negative",
             )
         if contract.classification == HedgeClassification.long:
-            unlinked_hedge_long += residual
+            item["unlinked_hedge_long"] = (
+                Decimal(item["unlinked_hedge_long"]) + residual
+            )
         else:
-            unlinked_hedge_short += residual
+            item["unlinked_hedge_short"] = (
+                Decimal(item["unlinked_hedge_short"]) + residual
+            )
 
     for contract in virtual_contracts:
+        item = ensure_row(contract.commodity)
+        item["entities_count"] = int(item["entities_count"]) + 1
         if contract.classification == HedgeClassification.long:
-            total_hedge_long += contract.quantity_mt
-            unlinked_hedge_long += contract.quantity_mt
+            item["total_hedge_long"] = (
+                Decimal(item["total_hedge_long"]) + contract.quantity_mt
+            )
+            item["unlinked_hedge_long"] = (
+                Decimal(item["unlinked_hedge_long"]) + contract.quantity_mt
+            )
         else:
-            total_hedge_short += contract.quantity_mt
-            unlinked_hedge_short += contract.quantity_mt
+            item["total_hedge_short"] = (
+                Decimal(item["total_hedge_short"]) + contract.quantity_mt
+            )
+            item["unlinked_hedge_short"] = (
+                Decimal(item["unlinked_hedge_short"]) + contract.quantity_mt
+            )
 
-    pre_global_active = pre_active + total_hedge_short
-    pre_global_passive = pre_passive + total_hedge_long
-    post_global_active = reduced_active + unlinked_hedge_short
-    post_global_passive = reduced_passive + unlinked_hedge_long
-
-    entities_count = order_count + len(contracts) + len(virtual_contracts)
-
-    return GlobalExposureRead(
-        pre_reduction_global_active_mt=float(pre_global_active),
-        pre_reduction_global_passive_mt=float(pre_global_passive),
-        reduction_applied_active_mt=float(pre_global_active - post_global_active),
-        reduction_applied_passive_mt=float(pre_global_passive - post_global_passive),
-        global_active_mt=float(post_global_active),
-        global_passive_mt=float(post_global_passive),
-        global_net_mt=float(post_global_active - post_global_passive),
-        commercial_active_mt=float(reduced_active),
-        commercial_passive_mt=float(reduced_passive),
-        hedge_long_mt=float(unlinked_hedge_long),
-        hedge_short_mt=float(unlinked_hedge_short),
-        calculation_timestamp=calculation_timestamp,
-        entities_count_considered=int(entities_count),
-    )
+    result: list[GlobalExposureRead] = []
+    for commodity in sorted(rows):
+        item = rows[commodity]
+        pre_global_active = Decimal(item["pre_active"]) + Decimal(
+            item["total_hedge_short"]
+        )
+        pre_global_passive = Decimal(item["pre_passive"]) + Decimal(
+            item["total_hedge_long"]
+        )
+        post_global_active = Decimal(item["reduced_active"]) + Decimal(
+            item["unlinked_hedge_short"]
+        )
+        post_global_passive = Decimal(item["reduced_passive"]) + Decimal(
+            item["unlinked_hedge_long"]
+        )
+        result.append(
+            GlobalExposureRead(
+                commodity=commodity,
+                pre_reduction_global_active_mt=float(pre_global_active),
+                pre_reduction_global_passive_mt=float(pre_global_passive),
+                reduction_applied_active_mt=float(
+                    pre_global_active - post_global_active
+                ),
+                reduction_applied_passive_mt=float(
+                    pre_global_passive - post_global_passive
+                ),
+                global_active_mt=float(post_global_active),
+                global_passive_mt=float(post_global_passive),
+                global_net_mt=float(post_global_active - post_global_passive),
+                commercial_active_mt=float(item["reduced_active"]),
+                commercial_passive_mt=float(item["reduced_passive"]),
+                hedge_long_mt=float(item["unlinked_hedge_long"]),
+                hedge_short_mt=float(item["unlinked_hedge_short"]),
+                calculation_timestamp=calculation_timestamp,
+                entities_count_considered=int(item["entities_count"]),
+            )
+        )
+    return result
 
 
 def run_what_if(
@@ -383,8 +450,6 @@ def run_what_if(
     contracts = base_contracts
 
     lookup = _build_price_lookup(price_overrides)
-    price_d1_as_of = _resolve_price_d1(db, req.as_of_date, lookup)
-    price_d1_period_end = _resolve_price_d1(db, req.period_end, lookup)
 
     mtm_results: list[MTMResultResponse] = []
     for contract in contracts:
@@ -401,7 +466,9 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.as_of_date,
-                price_d1=price_d1_as_of,
+                price_d1=_resolve_price_d1(
+                    db, req.as_of_date, lookup, contract.commodity
+                ),
             )
         )
 
@@ -412,7 +479,9 @@ def run_what_if(
                 quantity_mt=contract.quantity_mt,
                 entry_price=contract.fixed_price_value,
                 as_of_date=req.as_of_date,
-                price_d1=price_d1_as_of,
+                price_d1=_resolve_price_d1(
+                    db, req.as_of_date, lookup, contract.commodity
+                ),
             )
         )
 
@@ -420,7 +489,12 @@ def run_what_if(
         if order.price_type != PriceType.variable:
             continue
         mtm_results.append(
-            _mtm_for_order(order, quantity, req.as_of_date, price_d1_as_of)
+            _mtm_for_order(
+                order,
+                quantity,
+                req.as_of_date,
+                _resolve_price_d1(db, req.as_of_date, lookup, order.commodity),
+            )
         )
 
     cashflow_items: list[CashFlowItem] = [
@@ -428,12 +502,14 @@ def run_what_if(
             object_type=result.object_type.value,
             object_id=result.object_id,
             settlement_date=req.as_of_date,
-            amount_usd=Decimal(result.mtm_value),
-            mtm_value=Decimal(result.mtm_value),
+            amount_usd=quantize_money(result.mtm_value),
+            mtm_value=quantize_money(result.mtm_value),
         )
         for result in mtm_results
     ]
-    total_cashflow = sum((item.amount_usd for item in cashflow_items), Decimal("0"))
+    total_cashflow = quantize_money(
+        sum((item.amount_usd for item in cashflow_items), Decimal("0"))
+    )
     cashflow_analytic = CashFlowAnalyticResponse(
         as_of_date=req.as_of_date,
         cashflow_items=cashflow_items,
@@ -468,7 +544,9 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.period_end,
-                price_d1=price_d1_period_end,
+                price_d1=_resolve_price_d1(
+                    db, req.period_end, lookup, contract.commodity
+                ),
             ).mtm_value
 
         realized = Decimal("0")
@@ -483,7 +561,7 @@ def run_what_if(
             .all()
         )
         for entry in ledger_entries:
-            amount = Decimal(str(entry.amount))
+            amount = quantize_money(entry.amount)
             if entry.direction == "IN":
                 realized += amount
             elif entry.direction == "OUT":
@@ -500,8 +578,8 @@ def run_what_if(
                 entity_id=contract.id,
                 period_start=req.period_start,
                 period_end=req.period_end,
-                realized_pl=realized,
-                unrealized_mtm=Decimal(unrealized),
+                realized_pl=quantize_money(realized),
+                unrealized_mtm=quantize_money(unrealized),
             )
         )
 
@@ -511,7 +589,7 @@ def run_what_if(
             quantity_mt=contract.quantity_mt,
             entry_price=contract.fixed_price_value,
             as_of_date=req.period_end,
-            price_d1=price_d1_period_end,
+            price_d1=_resolve_price_d1(db, req.period_end, lookup, contract.commodity),
         ).mtm_value
         pl_snapshots.append(
             ScenarioPLSnapshotItem(
@@ -519,8 +597,8 @@ def run_what_if(
                 entity_id=contract.id,
                 period_start=req.period_start,
                 period_end=req.period_end,
-                realized_pl=Decimal("0"),
-                unrealized_mtm=Decimal(unrealized),
+                realized_pl=Decimal("0.000000"),
+                unrealized_mtm=quantize_money(unrealized),
             )
         )
 

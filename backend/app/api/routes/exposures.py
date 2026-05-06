@@ -28,19 +28,19 @@ router = APIRouter()
 # ------------------------------------------------------------------
 
 
-@router.get("/commercial", response_model=CommercialExposureRead)
+@router.get("/commercial", response_model=list[CommercialExposureRead])
 def get_commercial_exposure(
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
-) -> CommercialExposureRead:
+) -> list[CommercialExposureRead]:
     return ExposureService.compute_commercial_snapshot(session)
 
 
-@router.get("/global", response_model=GlobalExposureRead)
+@router.get("/global", response_model=list[GlobalExposureRead])
 def get_global_exposure(
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
-) -> GlobalExposureRead:
+) -> list[GlobalExposureRead]:
     return ExposureService.compute_global_snapshot(session)
 
 

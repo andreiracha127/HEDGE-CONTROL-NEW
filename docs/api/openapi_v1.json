@@ -834,6 +834,11 @@
             "title": "Commercial Passive Mt",
             "type": "string"
           },
+          "commodity": {
+            "description": "Commodity identifier",
+            "title": "Commodity",
+            "type": "string"
+          },
           "order_count_considered": {
             "description": "Count of variable-price orders considered",
             "title": "Order Count Considered",
@@ -865,6 +870,7 @@
           }
         },
         "required": [
+          "commodity",
           "pre_reduction_commercial_active_mt",
           "pre_reduction_commercial_passive_mt",
           "reduction_applied_active_mt",
@@ -2262,6 +2268,11 @@
             "title": "Commercial Passive Mt",
             "type": "string"
           },
+          "commodity": {
+            "description": "Commodity identifier",
+            "title": "Commodity",
+            "type": "string"
+          },
           "entities_count_considered": {
             "description": "Count of variable-price orders and hedge contracts considered",
             "title": "Entities Count Considered",
@@ -2323,6 +2334,7 @@
           }
         },
         "required": [
+          "commodity",
           "pre_reduction_global_active_mt",
           "pre_reduction_global_passive_mt",
           "reduction_applied_active_mt",
@@ -3890,6 +3902,12 @@
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
           },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
+          },
           "counterparty_id": {
             "anyOf": [
               {
@@ -4097,6 +4115,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt",
           "id",
@@ -4720,6 +4739,12 @@
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
           },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
+          },
           "counterparty_id": {
             "anyOf": [
               {
@@ -4909,6 +4934,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt"
         ],
@@ -6040,6 +6066,12 @@
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
           },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
+          },
           "counterparty_id": {
             "anyOf": [
               {
@@ -6229,6 +6261,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt"
         ],
@@ -6361,10 +6394,18 @@
             "$ref": "#/components/schemas/ScenarioCashflowSnapshot"
           },
           "commercial_exposure_snapshot": {
-            "$ref": "#/components/schemas/CommercialExposureRead"
+            "items": {
+              "$ref": "#/components/schemas/CommercialExposureRead"
+            },
+            "title": "Commercial Exposure Snapshot",
+            "type": "array"
           },
           "global_exposure_snapshot": {
-            "$ref": "#/components/schemas/GlobalExposureRead"
+            "items": {
+              "$ref": "#/components/schemas/GlobalExposureRead"
+            },
+            "title": "Global Exposure Snapshot",
+            "type": "array"
           },
           "mtm_snapshot": {
             "items": {
@@ -8456,7 +8497,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommercialExposureRead"
+                  "items": {
+                    "$ref": "#/components/schemas/CommercialExposureRead"
+                  },
+                  "title": "Response Get Commercial Exposure Exposures Commercial Get",
+                  "type": "array"
                 }
               }
             },
@@ -8477,7 +8522,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GlobalExposureRead"
+                  "items": {
+                    "$ref": "#/components/schemas/GlobalExposureRead"
+                  },
+                  "title": "Response Get Global Exposure Exposures Global Get",
+                  "type": "array"
                 }
               }
             },

@@ -51,7 +51,8 @@ def _get_rfq(client, rfq_id: str) -> dict:
 def _get_commercial_exposure(client) -> dict:
     response = client.get("/exposures/commercial")
     assert response.status_code == 200
-    return response.json()
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
 
 
 def test_refresh_keeps_state_and_persists_refresh_invitations(client) -> None:
@@ -144,7 +145,7 @@ def test_award_creates_contract_and_reduces_exposure_via_linkage(client) -> None
         client,
         {
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": 5.0,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",

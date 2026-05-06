@@ -5,6 +5,7 @@ Full flow: Order → RFQ → Quote → Award → Contract/Linkage → Settlement
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
@@ -51,7 +52,7 @@ def _create_rfq(
         "/rfqs",
         json={
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": quantity_mt,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",
@@ -103,6 +104,15 @@ def _settle_contract(client, contract_id: str) -> dict:
     return resp.json()
 
 
+def _commercial_row(response):
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
+
+
+def _dec(value) -> Decimal:
+    return Decimal(str(value))
+
+
 # -- lifecycle test ---------------------------------------------------------
 
 
@@ -118,7 +128,8 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     # Step 2 – Verify commercial exposure increases
     exposure_before = client.get("/exposures/commercial")
     assert exposure_before.status_code == 200
-    assert float(exposure_before.json()["commercial_active_mt"]) > 0
+    before_row = _commercial_row(exposure_before)
+    assert _dec(before_row["commercial_active_mt"]) > Decimal("0")
 
     # Step 3 – Create an RFQ for a commercial hedge
     rfq = _create_rfq(client, order_id, 5.0, counterparty_id=cp_id)
@@ -145,8 +156,9 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     # Step 6 – Exposure reduced after linkage
     exposure_after = client.get("/exposures/commercial")
     assert exposure_after.status_code == 200
-    assert float(exposure_after.json()["commercial_active_mt"]) < float(
-        exposure_before.json()["commercial_active_mt"]
+    after_row = _commercial_row(exposure_after)
+    assert _dec(after_row["commercial_active_mt"]) < _dec(
+        before_row["commercial_active_mt"]
     )
 
     # Step 7 – Settle the contract

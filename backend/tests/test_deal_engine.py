@@ -34,6 +34,7 @@ def _create_order(
     order = Order(
         order_type=order_type,
         price_type=PriceType.fixed,
+        commodity="ALUMINUM",
         quantity_mt=qty,
         avg_entry_price=price,
     )
@@ -247,6 +248,7 @@ class TestDealLinks:
         so = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
+            commodity="ALUMINUM",
             quantity_mt=200.0,
         )
         session.add(so)
@@ -363,6 +365,7 @@ class TestDealStatus:
         so = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
+            commodity="ALUMINUM",
             quantity_mt=100.0,
         )
         session.add(so)

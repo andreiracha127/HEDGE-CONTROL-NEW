@@ -18,10 +18,15 @@ def _create_counterparty(
     return resp.json()["id"]
 
 
-def _create_sales_order(client, quantity_mt: float) -> str:
+def _create_sales_order(
+    client, quantity_mt: float, commodity: str | None = None
+) -> str:
+    payload = {"price_type": "variable", "quantity_mt": quantity_mt}
+    if commodity is not None:
+        payload["commodity"] = commodity
     response = client.post(
         "/orders/sales",
-        json={"price_type": "variable", "quantity_mt": quantity_mt},
+        json=payload,
     )
     assert response.status_code == 201
     return response.json()["id"]
@@ -64,7 +69,8 @@ def _create_rfq(client, payload: dict):
 def _get_commercial_exposure(client) -> dict:
     response = client.get("/exposures/commercial")
     assert response.status_code == 200
-    return response.json()
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
 
 
 def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:
@@ -76,7 +82,7 @@ def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:
         client,
         {
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": 7.0,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",
@@ -86,6 +92,90 @@ def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:
         },
     )
     assert response.status_code == 400
+
+
+def test_commercial_hedge_rejects_order_commodity_mismatch(client) -> None:
+    order_id = _create_sales_order(client, 10.0)
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "COPPER",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "commodity" in response.json()["detail"].lower()
+
+
+def test_commercial_hedge_accepts_supported_order_commodity_alias(client) -> None:
+    order_id = _create_sales_order(client, 10.0)
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["commodity"] == "LME_AL"
+
+
+def test_commercial_hedge_uses_canonical_snapshot_for_order_alias(client) -> None:
+    order_id = _create_sales_order(client, 10.0, commodity="LME_AL")
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["commercial_active_mt"] == 10.0
+
+
+def test_global_rfq_uses_canonical_snapshot_for_payload_alias(client) -> None:
+    _create_sales_order(client, 10.0, commodity="ALUMINUM")
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 2.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["commercial_active_mt"] == 10.0
 
 
 def test_rfq_number_is_deterministic_and_server_generated(client) -> None:

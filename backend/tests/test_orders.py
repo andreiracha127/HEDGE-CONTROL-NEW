@@ -11,12 +11,22 @@ import uuid
 
 
 def _so_variable(client, **kw):
-    payload = {"price_type": "variable", "quantity_mt": 10.0, **kw}
+    payload = {
+        "commodity": "ALUMINUM",
+        "price_type": "variable",
+        "quantity_mt": 10.0,
+        **kw,
+    }
     return client.post("/orders/sales", json=payload)
 
 
 def _po_fixed(client, **kw):
-    payload = {"price_type": "fixed", "quantity_mt": 5.0, **kw}
+    payload = {
+        "commodity": "ALUMINUM",
+        "price_type": "fixed",
+        "quantity_mt": 5.0,
+        **kw,
+    }
     return client.post("/orders/purchase", json=payload)
 
 
@@ -29,6 +39,7 @@ def test_create_sales_order_variable_without_convention(client) -> None:
     assert resp.status_code == 201
     data = resp.json()
     assert data["order_type"] == "SO"
+    assert data["commodity"] == "ALUMINUM"
     assert data["price_type"] == "variable"
     assert float(data["quantity_mt"]) == 10.0
     assert data["pricing_convention"] is None
@@ -126,6 +137,7 @@ def test_purchase_order_variable_with_convention(client) -> None:
     resp = client.post(
         "/orders/purchase",
         json={
+            "commodity": "ALUMINUM",
             "price_type": "variable",
             "quantity_mt": 8.0,
             "pricing_convention": "C2R",
@@ -135,14 +147,16 @@ def test_purchase_order_variable_with_convention(client) -> None:
     assert resp.status_code == 201
     data = resp.json()
     assert data["order_type"] == "PO"
+    assert data["commodity"] == "ALUMINUM"
     assert data["pricing_convention"] == "C2R"
     assert float(data["avg_entry_price"]) == 2400.0
 
 
-def test_order_accepts_decimal_strings(client) -> None:
+def test_order_accepts_numeric_strings(client) -> None:
     resp = client.post(
         "/orders/sales",
         json={
+            "commodity": "ALUMINUM",
             "price_type": "fixed",
             "quantity_mt": "10.125",
             "avg_entry_price": "2500.123456",
@@ -151,5 +165,22 @@ def test_order_accepts_decimal_strings(client) -> None:
 
     assert resp.status_code == 201
     data = resp.json()
-    assert data["quantity_mt"] == "10.125"
-    assert data["avg_entry_price"] == "2500.123456"
+    assert float(data["quantity_mt"]) == 10.125
+    assert float(data["avg_entry_price"]) == 2500.123456
+
+
+def test_create_sales_order_without_commodity_fails(client) -> None:
+    resp = client.post(
+        "/orders/sales",
+        json={
+            "__skip_default_commodity": True,
+            "price_type": "variable",
+            "quantity_mt": 10.0,
+        },
+    )
+    assert resp.status_code == 422
+
+
+def test_create_sales_order_with_invalid_commodity_fails(client) -> None:
+    resp = _so_variable(client, commodity="X" * 51)
+    assert resp.status_code == 422

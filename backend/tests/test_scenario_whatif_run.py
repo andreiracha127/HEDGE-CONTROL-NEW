@@ -29,10 +29,12 @@ def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
         session.commit()
 
 
-def _insert_contract(quantity_mt: float, entry_price: float) -> uuid4:
+def _insert_contract(
+    quantity_mt: float, entry_price: float, commodity: str = "LME_AL"
+) -> uuid4:
     with SessionLocal() as session:
         contract = HedgeContract(
-            commodity="LME_AL",
+            commodity=commodity,
             quantity_mt=quantity_mt,
             fixed_leg_side=HedgeLegSide.buy,
             variable_leg_side=HedgeLegSide.sell,
@@ -48,19 +50,30 @@ def _insert_contract(quantity_mt: float, entry_price: float) -> uuid4:
         return contract.id
 
 
-def _insert_order(quantity_mt: float) -> uuid4:
+def _insert_order(
+    quantity_mt: float, commodity: str = "ALUMINUM", avg_entry_price: float = 100.0
+) -> uuid4:
     with SessionLocal() as session:
         order = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
+            commodity=commodity,
             quantity_mt=quantity_mt,
             pricing_convention=OrderPricingConvention.avg,
-            avg_entry_price=100.0,
+            avg_entry_price=avg_entry_price,
         )
         session.add(order)
         session.commit()
         session.refresh(order)
         return order.id
+
+
+def _row_by_commodity(rows: list[dict], commodity: str) -> dict:
+    return next(row for row in rows if row["commodity"] == commodity)
+
+
+def _dec(value) -> Decimal:
+    return Decimal(str(value))
 
 
 def test_scenario_run_returns_outputs(client) -> None:
@@ -113,7 +126,7 @@ def test_price_override_changes_mtm(client) -> None:
     )
     assert response.status_code == 200
     mtm_item = next(item for item in response.json()["mtm_snapshot"] if item["object_id"] == str(contract_id))
-    assert mtm_item["price_d1"] == "120.0"
+    assert _dec(mtm_item["price_d1"]) == Decimal("120.0")
 
 
 def test_add_unlinked_contract_affects_global_exposure(client) -> None:
@@ -142,8 +155,8 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
         },
     )
     assert response.status_code == 200
-    data = response.json()["global_exposure_snapshot"]
-    assert float(data["hedge_long_mt"]) == 10.0
+    data = _row_by_commodity(response.json()["global_exposure_snapshot"], "ALUMINUM")
+    assert _dec(data["hedge_long_mt"]) == Decimal("10.0")
 
 
 def test_adjust_order_quantity_changes_exposure(client) -> None:
@@ -164,8 +177,114 @@ def test_adjust_order_quantity_changes_exposure(client) -> None:
         },
     )
     assert response.status_code == 200
-    data = response.json()["commercial_exposure_snapshot"]
-    assert float(data["commercial_active_mt"]) == 10.0
+    data = _row_by_commodity(
+        response.json()["commercial_exposure_snapshot"], "ALUMINUM"
+    )
+    assert _dec(data["commercial_active_mt"]) == Decimal("10.0")
+
+
+def test_scenario_exposure_snapshots_are_commodity_scoped(client) -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(
+        "LME_CU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 30),
+        price_usd=290.0,
+    )
+    _insert_price(
+        "LME_CU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 31),
+        price_usd=300.0,
+    )
+    _insert_order(quantity_mt=5.0, commodity="ALUMINUM")
+    _insert_order(quantity_mt=7.0, commodity="COPPER")
+    _insert_contract(quantity_mt=3.0, entry_price=100.0, commodity="LME_CU")
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [],
+        },
+    )
+
+    assert response.status_code == 200
+    commercial = response.json()["commercial_exposure_snapshot"]
+    global_rows = response.json()["global_exposure_snapshot"]
+
+    assert {row["commodity"] for row in commercial} == {"ALUMINUM", "COPPER"}
+    assert _dec(
+        _row_by_commodity(commercial, "ALUMINUM")["commercial_active_mt"]
+    ) == Decimal("5.0")
+    assert _dec(
+        _row_by_commodity(commercial, "COPPER")["commercial_active_mt"]
+    ) == Decimal("7.0")
+    copper_global = _row_by_commodity(global_rows, "COPPER")
+    assert _dec(copper_global["commercial_active_mt"]) == Decimal("7.0")
+    assert _dec(copper_global["hedge_long_mt"]) == Decimal("3.0")
+
+
+def test_scenario_prices_mtm_and_pl_by_each_commodity(client) -> None:
+    _insert_price(
+        "LME_ALU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 30),
+        price_usd=105.0,
+    )
+    _insert_price(
+        "LME_ALU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 31),
+        price_usd=110.0,
+    )
+    _insert_price(
+        "LME_CU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 30),
+        price_usd=290.0,
+    )
+    _insert_price(
+        "LME_CU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 31),
+        price_usd=300.0,
+    )
+    order_id = _insert_order(
+        quantity_mt=2.0, commodity="COPPER", avg_entry_price=100.0
+    )
+    contract_id = _insert_contract(
+        quantity_mt=3.0, entry_price=100.0, commodity="LME_CU"
+    )
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [],
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    order_mtm = next(
+        item for item in data["mtm_snapshot"] if item["object_id"] == str(order_id)
+    )
+    contract_mtm = next(
+        item for item in data["mtm_snapshot"] if item["object_id"] == str(contract_id)
+    )
+    contract_pl = next(
+        item for item in data["pl_snapshot"] if item["entity_id"] == str(contract_id)
+    )
+
+    assert _dec(order_mtm["price_d1"]) == Decimal("300.0")
+    assert _dec(order_mtm["mtm_value"]) == Decimal("400.00")
+    assert _dec(contract_mtm["price_d1"]) == Decimal("300.0")
+    assert _dec(contract_mtm["mtm_value"]) == Decimal("600.00")
+    assert _dec(contract_pl["unrealized_mtm"]) == Decimal("570.00")
+    assert _dec(data["cashflow_snapshot"]["analytic"]["total_net_cashflow"]) == Decimal(
+        "1000.00"
+    )
 
 
 def test_scenario_does_not_persist(client) -> None:
@@ -193,6 +312,8 @@ def test_scenario_does_not_persist(client) -> None:
 
 
 def test_missing_price_hard_fails(client) -> None:
+    _insert_order(quantity_mt=5.0)
+
     response = client.post(
         "/scenario/what-if/run",
         json={

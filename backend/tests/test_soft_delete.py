@@ -48,7 +48,7 @@ def _create_rfq(client: TestClient, order_id: str, cp_id: str) -> dict:
         "/rfqs",
         json={
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": 5.0,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",

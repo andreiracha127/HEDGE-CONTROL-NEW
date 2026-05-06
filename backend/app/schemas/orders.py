@@ -32,6 +32,7 @@ class PricingType(str, Enum):
 
 
 class OrderBase(BaseModel):
+    commodity: str = Field(..., description="Commodity identifier", max_length=50)
     price_type: PriceType = Field(..., description="Fixed or variable pricing")
     quantity_mt: MTQuantity = Field(..., description="Quantity in metric tons (MT)")
     pricing_convention: OrderPricingConvention | None = Field(
