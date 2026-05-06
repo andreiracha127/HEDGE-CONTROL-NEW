@@ -56,6 +56,7 @@ def audit_event(
                 event_type=event_type,
                 payload_raw=payload_text,
                 payload_obj=payload_obj,
+                commit=not getattr(request.state, "audit_defer_commit", False),
             )
             audit_events_total.labels(entity_type=entity_type, event_type=event_type).inc()
 

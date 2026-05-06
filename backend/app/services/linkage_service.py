@@ -74,7 +74,7 @@ class LinkageService:
             quantity_mt=requested_qty,
         )
         session.add(linkage)
-        session.commit()
+        session.flush()
         session.refresh(linkage)
         return linkage
 

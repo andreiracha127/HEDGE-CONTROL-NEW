@@ -91,7 +91,7 @@ class ContractService:
             created_by=created_by,
         )
         session.add(contract)
-        session.commit()
+        session.flush()
         session.refresh(contract)
         return contract
 
@@ -166,7 +166,7 @@ class ContractService:
                 detail="Hedge contract already archived",
             )
         contract.deleted_at = datetime.now(timezone.utc)
-        session.commit()
+        session.flush()
         session.refresh(contract)
         return contract
 
@@ -193,7 +193,7 @@ class ContractService:
             )
         for field, value in update_data.items():
             setattr(contract, field, value)
-        session.commit()
+        session.flush()
         session.refresh(contract)
         return contract
 
@@ -233,7 +233,7 @@ class ContractService:
             )
 
         contract.status = target
-        session.commit()
+        session.flush()
         session.refresh(contract)
         return contract
 
@@ -255,6 +255,6 @@ class ContractService:
             )
         contract.status = HedgeContractStatus.cancelled
         contract.deleted_at = datetime.now(timezone.utc)
-        session.commit()
+        session.flush()
         session.refresh(contract)
         return contract
