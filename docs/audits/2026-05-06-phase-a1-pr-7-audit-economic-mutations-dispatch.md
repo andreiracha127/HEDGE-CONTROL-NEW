@@ -196,7 +196,46 @@ Note that `unit_of_work(session)` becomes `unit_of_work(session, request=request
 
 **Acceptance:** failing to wire this route is the difference between J-A1-02 closed and J-A1-02 left open. The checklist in §6 below makes this row explicit.
 
-### 3.4 Verify other mutation surfaces
+### 3.4 Audit signing must be fail-closed (REQUIRED)
+
+**Codex catch on PR #17:** `AuditTrailService.record(...)` currently allows `signature=None` when `_get_signing_key()` returns None (e.g., `AUDIT_SIGNING_KEY` env var unset/empty/misconfigured). Audit row commits unsigned. The §1 mission "no economic mutation lands without HMAC-signed audit evidence" silently fails in any environment where the key isn't configured — exactly the §2.6 violation this PR exists to prevent. The original §6 acceptance "non-NULL when signing key is configured" left this loophole open by qualifier.
+
+**Two layers of defense (both REQUIRED):**
+
+**Layer 1 — Runtime guard in `AuditTrailService.record`:**
+
+Currently:
+
+```python
+signing_key = _get_signing_key()
+signature = compute_signature(checksum, signing_key) if signing_key else None
+audit_event = AuditEvent(..., signature=signature)  # may be None
+```
+
+Fix directive (this is a small, scope-local change to `audit_trail_service.py` — explicitly allowed despite the broader scope-out in §4):
+
+```python
+signing_key = _get_signing_key()
+if not signing_key:
+    raise MissingAuditSigningKey(
+        "Audit emission attempted without AUDIT_SIGNING_KEY configured. "
+        "Audit rows MUST be HMAC-signed; refusing to persist unsigned evidence."
+    )
+signature = compute_signature(checksum, signing_key)
+audit_event = AuditEvent(..., signature=signature)  # always non-NULL
+```
+
+`MissingAuditSigningKey` is a new exception class — small, in `audit_trail_service.py`. Routes do not need to catch it; under `unit_of_work` it propagates and rolls back the entire mutation, achieving fail-closed.
+
+**Layer 2 — Startup validation:**
+
+The application settings (typically a `pydantic-settings` BaseSettings subclass at `backend/app/core/config.py` — verify by grep) MUST require `AUDIT_SIGNING_KEY` as non-empty in every environment that exposes a mutation route. Concretely: the field is `str` (not `str | None`) with `Field(min_length=N)` validator, OR a model_validator that enforces presence based on environment.
+
+The aim: production / staging cannot boot without a key. Test environments may set a deterministic test key in `conftest.py` (already convention — verify).
+
+**Both layers required:** Layer 1 alone allows production to boot then fail-closed at first mutation (operator surfaces issue, but only at first emission). Layer 2 alone catches misconfig at boot but doesn't defend against post-boot key removal / dynamic reload edge cases. Together, they make unsigned audit emissions structurally impossible.
+
+### 3.5 Verify other mutation surfaces
 
 The jury cited `routes/deals.py:70-170`, `routes/exposures.py:51-57`, `services/exposure_engine.py:95-122`. Beyond §3.1–3.3, the executor should enumerate every mutating route across the codebase and verify audit emission. Use this two-step procedure (the original one-liner I drafted was broken — `grep -n` emits `file:line:match` records that `head` cannot consume as a file path):
 
@@ -233,7 +272,7 @@ Document the audit coverage matrix in the PR description as a table.
 - **Audit emission for read-only routes** — irrelevant; reads don't mutate
 - **Per-row audit on reconcile** — defer to Phase A5
 - **HMAC signing key rotation** — Phase A5 territory
-- **`audit_trail_service.py` signing logic refactor** — leave as-is (PR-1 didn't touch it; this PR doesn't either)
+- **`audit_trail_service.py` signing logic refactor** — out of scope EXCEPT for the scope-local fail-closed change in §3.5 (a single guard in `record()` to raise when `_get_signing_key()` returns None). Broader changes to HMAC algorithm, signing key derivation, or rotation strategy stay out of scope (Phase A5).
 - **RFQ/Quote audit** — Phase A2 territory
 - **MTM/Cashflow/P&L audit beyond `compute_pnl_snapshot` route** — Phase A3
 - **Authentication/authorization** — Phase A5
@@ -255,7 +294,8 @@ Document the audit coverage matrix in the PR description as a table.
 - [ ] **Coverage:** `POST /exposures/tasks/{task_id}/execute` emits a signed `AuditEvent` with entity_type=`hedge_task`, event_type=`executed`, entity_id=`task.id` — fails the test if missing (per §3.3)
 - [ ] **Atomicity:** failure-injection test — service raises after `mark_audit_success` is called → `unit_of_work` rollback → no AuditEvent persisted, no Deal/DealLink/Exposure mutation persisted
 - [ ] **Atomicity:** failure-injection test — `request.state.audit_commit()` raises (e.g., signing key missing) → `unit_of_work` rollback → no mutation persisted
-- [ ] **HMAC verified:** test asserts the AuditEvent.signature is non-NULL when signing key is configured (via `_get_signing_key()`)
+- [ ] **HMAC fail-closed:** with `AUDIT_SIGNING_KEY` set, `AuditTrailService.record(...)` produces a non-NULL `signature`. With `AUDIT_SIGNING_KEY` absent or empty, `record(...)` MUST raise `MissingAuditSigningKey` (or chosen exception) — NOT persist an unsigned `AuditEvent`. Both paths covered by tests. Per §3.5: any code path persisting `signature=NULL` is forbidden.
+- [ ] **Startup validation:** the application's settings validator (e.g., pydantic-settings model) rejects boot when `AUDIT_SIGNING_KEY` is missing in any environment that emits audit events. Verified by a config-loading test.
 - [ ] **Verify by inspection:** every mutating route in scope has `audit_event(...)` Depends and is wrapped in `unit_of_work(...)` — prove via a test that scans the FastAPI app's routes and asserts the dependency chain (or a static assertion if scanning is too brittle)
 - [ ] **No regression of PR-3:** `test_uow_boundary.py` tests still pass (post-flush audit failure → rollback; post-audit DB commit failure → rollback)
 - [ ] **PR description includes audit coverage matrix:** table showing every mutation route and its audit posture (pre/post this PR)

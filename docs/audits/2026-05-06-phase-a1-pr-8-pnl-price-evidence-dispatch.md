@@ -395,7 +395,7 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 | `backend/tests/test_pnl_price_evidence.py` | NEW | §6.1 hard-fail behaviors |
 | `backend/tests/test_pnl_provenance.py` | NEW | §6.2 provenance + idempotency |
 | `backend/tests/test_deal_engine.py` | EXTEND | regression / happy path with provenance |
-| `backend/tests/test_pnl_migration.py` | NEW (only if migration touches existing rows) | §3.4.1 preflight |
+| `backend/tests/test_pnl_migration.py` | NEW | §6.2 migration boundary — `inputs_hash` byte-equal pre/post upgrade; legacy snapshot preserved when re-running `compute_deal_pnl` post-migration |
 
 For tests that mock `price_lookup_service`: use the project's existing test fixture pattern (read `backend/tests/conftest.py` to find the mock pattern).
 
@@ -437,17 +437,27 @@ silent fallback) and §2.7 (verifiable, audit-friendly).
   Document in operations runbook (out of scope here; flag as follow-up).
 
 ## Files changed
-- Services: deal_engine.py (3 hard-fail sites; `_compute_inputs_hash` extended)
-- Services: price_lookup_service.py (only if exception type added)
-- Models: deal.py (`DealPNLSnapshot` 3 new columns)
-- Alembic: migration `0XX_pnl_provenance.py` (with preflight per §3.4.1)
-- Tests: test_pnl_price_evidence.py (new), test_pnl_provenance.py (new),
+- Services: deal_engine.py (3 hard-fail sites; `_compute_inputs_hash` extended
+  to include `price_references` dict)
+- Services: price_lookup_service.py (`PriceQuote` dataclass +
+  `get_cash_settlement_price_d1_with_provenance` per §3.1; original function
+  may stay as a thin wrapper or be removed)
+- Models: deal.py (`DealPNLSnapshot.price_references` — single nullable JSONB
+  column + `chk_deal_pnl_snapshot_price_references_shape` CHECK constraint)
+- Alembic: migration `0XX_pnl_provenance.py` — adds the JSONB column +
+  CHECK; legacy `inputs_hash` values left unchanged per §3.4.3
+- Tests: test_pnl_price_evidence.py (new), test_pnl_provenance.py (new
+  — covers single-commodity, multi-commodity, weekend lookback,
+  deduplication, idempotency contract scoped to post-PR-8),
   test_deal_engine.py (extended)
 
-## Migration preflight
-- Pre-existing `DealPNLSnapshot` rows: N
-- Strategy: {empty-table simple ADD COLUMN / fail-closed preflight / chosen
-  backfill rationale}
+## Migration shape (no preflight, no backfill)
+- Adds column `price_references JSONB NULL` and CHECK
+  `chk_deal_pnl_snapshot_price_references_shape`
+- Pre-existing rows naturally land with `price_references = NULL` (provenance
+  unknown, predates the rule); legacy `inputs_hash` is byte-equal pre/post
+  upgrade per §3.4.3 — backfilling would silently bind legacy snapshots to
+  current `deal_links` and serve stale P&L
 
 ## Acceptance evidence
 - Hard-fail tests pass (§6.1)
@@ -489,8 +499,8 @@ J-A1-01. Subsumes F-A1-OPUS-11 (S-A1-J-01).
 4. Read `_get_market_price`, `_order_value`, `compute_deal_pnl`, `_compute_inputs_hash` in current main
 5. Read `price_lookup_service.py` to identify legitimate exceptions
 6. Choose exception type (existing or new); document in PR description draft
-7. Decide migration preflight strategy (§3.4.1); document
-8. Implement: exception type → `_get_market_price` → `_order_value` → `compute_deal_pnl` → model + migration → `_compute_inputs_hash` → tests
+7. Confirm the migration shape per §3.4.3 (single nullable JSONB column + CHECK; no preflight, no backfill — legacy `inputs_hash` stays sealed)
+8. Implement: exception type → `PriceQuote` + `get_cash_settlement_price_d1_with_provenance` (§3.1) → `_get_market_price` → `_order_value` → `compute_deal_pnl` (per the multi-commodity algorithm in §3.4.1) → model + migration → `_compute_inputs_hash` (`price_references` dict) → tests
 9. Run `pytest backend/tests/test_deal_engine.py backend/tests/test_pnl_price_evidence.py -v`
 10. `git push -u origin audit-a1/pnl-price-evidence`
 11. `gh pr create --base main`
@@ -503,7 +513,7 @@ J-A1-01. Subsumes F-A1-OPUS-11 (S-A1-J-01).
 
 - Branch + PR URL + final SHA
 - Exception type chosen + rationale
-- Migration preflight outcome (rows affected, strategy)
+- Migration outcome: confirm `price_references` JSONB column + CHECK added; legacy `inputs_hash` byte-equal pre/post upgrade evidence (per §3.4.3)
 - Behavior change documented
 - Test results
 - Codex verdict
