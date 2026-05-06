@@ -11,31 +11,39 @@ jobs:
     steps:
       - name: Checkout PR
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
 
-      - name: Install swagger-diff
+      - name: Install backend deps
+        run: pip install -r backend/requirements.txt
+
+      - name: Install oasdiff
         run: |
-          python -m pip install --upgrade pip setuptools wheel
-          pip install --only-binary=:all: pyyaml
-          pip install swagger-diff
+          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh
+          sudo mv ./oasdiff /usr/local/bin/oasdiff
+          oasdiff --version
 
       - name: Export OpenAPI (PR)
-        run: |
-          export DATABASE_URL="sqlite+pysqlite:///:memory:"
-          python -m backend.scripts.export_openapi > /tmp/openapi_pr.json
-
-      - name: Fetch main branch
-        run: git fetch origin main:main
+        env:
+          DATABASE_URL: "sqlite+pysqlite:///:memory:"
+          SCHEDULER_DISABLED: "1"
+        run: python backend/scripts/export_openapi.py > /tmp/openapi_pr.json
 
       - name: Export OpenAPI (main)
+        env:
+          DATABASE_URL: "sqlite+pysqlite:///:memory:"
+          SCHEDULER_DISABLED: "1"
         run: |
-          git checkout main
-          export DATABASE_URL="sqlite+pysqlite:///:memory:"
-          python -m backend.scripts.export_openapi > /tmp/openapi_main.json
+          git checkout origin/main -- backend/
+          python backend/scripts/export_openapi.py > /tmp/openapi_main.json
+          git checkout HEAD -- backend/
 
-      - name: Compare OpenAPI
-        run: swagger-diff /tmp/openapi_main.json /tmp/openapi_pr.json
+      - name: Compare OpenAPI (breaking changes)
+        run: oasdiff breaking /tmp/openapi_main.json /tmp/openapi_pr.json
