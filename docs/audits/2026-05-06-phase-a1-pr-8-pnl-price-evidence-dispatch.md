@@ -210,44 +210,23 @@ Caller (`compute_deal_pnl`) computes hash AFTER fetching `market_price` (or dete
 
 The all-NULL provenance for fixed-price-only must be encoded into the hash deterministically (per the JSON dump above) so different fixed-price-only snapshots for the same `(deal, date, links)` collapse into one row, while a variable-price snapshot for the same identifiers produces a distinct hash.
 
-#### 3.4.3 Migration: backfill legacy `inputs_hash` (REQUIRED)
+#### 3.4.3 Migration: do NOT backfill legacy `inputs_hash`
 
-The signature change in §3.4.2 means every existing `DealPNLSnapshot` row in the database has an `inputs_hash` computed by the OLD function (without provenance fields). After deployment, calling `compute_deal_pnl` on a deal that already has a legacy snapshot will compute the NEW hash (with `(None, None, None)` provenance for the fixed-price-only case, or with real provenance for variable-price re-runs) — neither matches the legacy hash. Result: a duplicate row is created instead of returning the existing snapshot, **violating the §6.2 idempotency acceptance criterion of this same dispatch**.
+The signature change in §3.4.2 means every existing `DealPNLSnapshot` row in the database has an `inputs_hash` computed by the OLD function (without provenance fields). An earlier draft of this dispatch prescribed a backfill that recomputed `inputs_hash` from the deal's *current* `deal_links`. **That approach is institutionally unsafe and is rejected.**
 
-**Fix directive (REQUIRED, in the same migration as the column add):**
+**Why backfill from current links is wrong (Codex catch on PR #17):**
 
-The migration must recompute `inputs_hash` for every existing row using the new function format with `(None, None, None)` provenance — matching exactly what a fixed-price-only re-run would produce post-deployment.
+`DealPNLSnapshot` does NOT persist the historical `link_ids` that produced the snapshot's stored P&L values. Backfill that reads `deal_links` for the deal **today** computes a hash that represents *the current link set, not the link set that existed when the legacy snapshot was created*. If the deal's links have changed since the snapshot was created (a link added, removed, or reassigned), the backfilled hash silently associates a stale snapshot with the current state. Subsequent `compute_deal_pnl` calls would then return the legacy snapshot's STALE P&L as if it represented current inputs — exactly the kind of silent-stale-data violation §2.6 forbids.
+
+This is unrecoverable without storing historical link_ids, which is out of scope here (and would require its own dispatch).
+
+**Correct directive: leave legacy `inputs_hash` values UNCHANGED.**
 
 ```python
 # backend/alembic/versions/0XX_pnl_provenance.py
-import json
-import hashlib
-
-def _legacy_inputs_hash_with_null_provenance(deal_id: str, snapshot_date: str, link_ids: list[str]) -> str:
-    """Recomputed hash matching the post-PR-8 _compute_inputs_hash format
-    with (None, None, None) provenance.
-
-    INLINED here so the migration is self-contained and does not break if
-    the app-level _compute_inputs_hash is later refactored. Must match
-    that function byte-for-byte at the time this migration was authored
-    (PR-8 dispatch §3.4.2).
-    """
-    data = json.dumps(
-        {
-            "deal_id": str(deal_id),
-            "snapshot_date": str(snapshot_date),
-            "links": sorted(str(lid) for lid in link_ids),
-            "market_price_source": None,
-            "market_price_value": None,
-            "market_price_date": None,
-        },
-        sort_keys=True,
-    )
-    return hashlib.sha256(data.encode()).hexdigest()
-
-
 def upgrade():
-    # Step 1: add nullable columns + CHECK constraint (per §3.4.1)
+    # Add nullable columns + CHECK constraint (per §3.4.1) ONLY.
+    # Do NOT touch existing inputs_hash values.
     op.add_column("deal_pnl_snapshots", sa.Column("market_price_value", sa.Numeric(...), nullable=True))
     op.add_column("deal_pnl_snapshots", sa.Column("market_price_source", sa.String(64), nullable=True))
     op.add_column("deal_pnl_snapshots", sa.Column("market_price_date", sa.Date(), nullable=True))
@@ -258,52 +237,34 @@ def upgrade():
         " OR (market_price_value IS NOT NULL AND market_price_source IS NOT NULL AND market_price_date IS NOT NULL)",
     )
 
-    # Step 2: backfill inputs_hash for every existing row.
-    conn = op.get_bind()
-    # Verify the deal_links table name by grep before assuming.
-    rows = conn.execute(sa.text("""
-        SELECT dps.id, dps.deal_id, dps.snapshot_date,
-               COALESCE(
-                   ARRAY(
-                       SELECT dl.id::text
-                       FROM deal_links dl
-                       WHERE dl.deal_id = dps.deal_id
-                       ORDER BY dl.id
-                   ),
-                   ARRAY[]::text[]
-               ) AS link_ids
-        FROM deal_pnl_snapshots dps
-    """)).fetchall()
-
-    for row in rows:
-        new_hash = _legacy_inputs_hash_with_null_provenance(
-            deal_id=str(row.deal_id),
-            snapshot_date=str(row.snapshot_date),
-            link_ids=row.link_ids,
-        )
-        conn.execute(
-            sa.text("UPDATE deal_pnl_snapshots SET inputs_hash = :h WHERE id = :id"),
-            {"h": new_hash, "id": row.id},
-        )
-
 
 def downgrade():
-    # Drop CHECK + 3 columns. inputs_hash backfill is NOT reversed —
-    # legacy hashes have moved to a new format and cannot be reverted
-    # without operator intervention. Document in migration docstring.
     op.drop_constraint("chk_deal_pnl_snapshot_provenance_consistency", "deal_pnl_snapshots")
     op.drop_column("deal_pnl_snapshots", "market_price_date")
     op.drop_column("deal_pnl_snapshots", "market_price_source")
     op.drop_column("deal_pnl_snapshots", "market_price_value")
 ```
 
-**Important caveats:**
+**Consequence — and why this is correct, not a bug:**
 
-- **Self-contained backfill function in the migration.** Do NOT `from app.services.deal_engine import _compute_inputs_hash` — migrations must replay deterministically across future code refactors. Inline the logic; document that it must match the function at PR-8 authoring time.
-- **`deal_links` table name.** The migration assumes a table named `deal_links`. Verify by `grep -n "__tablename__" backend/app/models/deal.py` before running. If the actual table name differs, fix the SQL.
-- **What about variable-price legacy rows?** Their post-migration hash assumes NULL provenance — which is technically incorrect (the legacy snapshot WAS computed with some real market price, but we don't know which one because it was never persisted). Re-running `compute_deal_pnl` on a variable-price deal post-migration will fetch real provenance, compute a different hash, and create a NEW snapshot row. The legacy row remains as historical record with NULL provenance — that is the correct forensic representation: "this row exists, was computed pre-this-PR, provenance unknown". This is acceptable per §2.7 because the row is preserved, not silently overwritten or deleted.
-- **Downgrade caveat.** Reversing the hash backfill requires the OLD hash, which is no longer recorded. Downgrade only drops the new columns; legacy `inputs_hash` values remain in the new format. Document explicitly in the migration docstring; warn that downgrade does not produce byte-equal pre-migration state for `inputs_hash` column.
-- **Test coverage:** add a migration test that creates a `DealPNLSnapshot` row with the OLD hash format, runs the migration, and asserts the row's `inputs_hash` post-migration matches what `compute_deal_pnl` (post-PR-8) would compute for the same fixed-price-only inputs. This proves the §6.2 idempotency contract holds across the migration boundary.
+After deployment, calling `compute_deal_pnl` for a deal that has a legacy snapshot will compute a NEW `inputs_hash` (post-PR-8 format, includes provenance fields). That hash will NOT match the legacy `inputs_hash` (pre-PR-8 format). Result: a NEW row is inserted with proper provenance. The legacy row remains as a sealed historical artifact.
+
+This is the **forensically correct** behavior:
+
+| Row | inputs_hash format | Provenance | Semantic |
+|---|---|---|---|
+| Legacy (pre-PR-8) | Old format, sealed | NULL across all 3 columns | Computed pre-rule; provenance unknown; preserved as audit trail |
+| Post-PR-8 | New format including provenance | Either populated (variable-price/hedge) or all-NULL (fixed-price-only) | Computed post-rule; full provenance; canonical current snapshot |
+
+There is no risk of hash collision between the two formats: the new format hashes a JSON that includes three additional fields (`market_price_*`), so even a fixed-price-only post-PR-8 hash (which uses `null` for all three) is computed from a different JSON document than any pre-PR-8 hash, producing a different sha256 with overwhelming probability.
+
+**Idempotency contract clarification (binding for §6.2 acceptance):**
+
+The §6.2 idempotency rule applies to **post-PR-8 snapshots only**. A pre-PR-8 legacy snapshot is sealed historical data and is intentionally NOT reachable by post-PR-8 hash lookups. Re-running `compute_deal_pnl` for a deal that has only legacy snapshot(s) will produce a new (post-PR-8) row alongside the legacy row(s). Both rows persist in `deal_pnl_snapshots`; the new row is canonical for current state, the legacy row is the forensic record of the pre-rule snapshot.
+
+This is the correct trade-off: we lose the ability to "deduplicate against legacy" (which we never honestly had — provenance was unknown), and we gain a clean forensic boundary between pre-rule and post-rule snapshots without risk of stale data being silently served as current.
+
+**Migration test (REQUIRED):** assert that a pre-existing `DealPNLSnapshot` row's `inputs_hash` is **byte-equal** before and after the migration (i.e., upgrade does not modify the column). Additionally assert that post-upgrade, calling `compute_deal_pnl` for the same deal+date creates a NEW row (different `inputs_hash`) without affecting the legacy row.
 
 ---
 
@@ -343,10 +304,11 @@ def downgrade():
 ### 6.2 Provenance
 
 - [ ] **Migration:** schema has `market_price_value`, `market_price_source`, `market_price_date` columns (all nullable) and the `chk_deal_pnl_snapshot_provenance_consistency` CHECK constraint
-- [ ] **Migration:** legacy `inputs_hash` values backfilled per §3.4.3 — `_legacy_inputs_hash_with_null_provenance` matches what `compute_deal_pnl` produces post-deployment for the same `(deal_id, snapshot_date, link_ids)` with NULL provenance
-- [ ] **Test (migration boundary):** create a `DealPNLSnapshot` row at the pre-migration state (old hash format), run the migration, then call `compute_deal_pnl(...)` for the same deal (fixed-price-only); assert the call returns the SAME row (idempotency preserved across migration), not a new duplicate
+- [ ] **Migration:** legacy `inputs_hash` values are **byte-equal** before and after the migration — the migration does not rewrite them (per §3.4.3 — backfilling from current `deal_links` would silently bind legacy snapshots to current link sets and serve stale P&L)
+- [ ] **Test (migration boundary):** create a `DealPNLSnapshot` row at the pre-migration state, run the migration, assert `inputs_hash` byte-equal pre- and post-migration; then call `compute_deal_pnl(...)` for the same deal (fixed-price-only) post-migration and assert it creates a NEW row (different `inputs_hash`), legacy row preserved
 - [ ] **Test:** Variable-price/hedge `DealPNLSnapshot` row contains the three provenance fields populated from the actual price lookup
 - [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has all three provenance fields NULL — and the CHECK constraint accepts this state
+- [ ] **Idempotency contract scoped to post-PR-8 snapshots:** test asserts two consecutive post-PR-8 calls for the same `(deal, date, links, provenance)` return the SAME row; legacy snapshots are NOT in scope of this rule
 - [ ] **Test:** Two snapshots for the same `(deal, date, links)` but with different `market_price_value` (e.g., simulated by mocking price service) produce DIFFERENT `inputs_hash` → both persist; the latest does NOT silently overwrite the earlier
 - [ ] **Test:** Re-running `compute_deal_pnl` with no input change returns the existing snapshot (idempotency preserved)
 - [ ] **Test:** `inputs_hash` SHA256 includes all provenance fields (verify by inspection of the hash composition)
