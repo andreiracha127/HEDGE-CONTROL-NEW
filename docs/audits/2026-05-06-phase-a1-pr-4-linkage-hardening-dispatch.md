@@ -132,13 +132,24 @@ This serializes concurrent linkage creates against the same order/contract pair.
 
 **Layer 2 (REQUIRED) — DB-level invariant.**
 
-Add a deferred check or trigger that enforces `SUM(quantity_mt) WHERE order_id = X <= orders.quantity_mt[X]` and the analogous for contracts. Concrete options:
+Add a deferred check or trigger that enforces `SUM(linkages.quantity_mt) WHERE order_id = X <= orders.quantity_mt[X]` and the analogous for contracts. The invariant must fire on **every code path** that can change either side of the inequality — not only on linkage writes.
 
-- (a) Trigger on `INSERT/UPDATE` of `hedge_order_linkages` that re-aggregates and rejects on violation
-- (b) Materialized allocation ledger (separate table) with a CHECK constraint that mirrors the rule
-- (c) `EXCLUDE` constraint with a custom operator
+**Code paths the invariant MUST cover (REQUIRED, all of them):**
 
-Option (a) is the most pragmatic for SQL-Alchemy + Postgres. Option (b) is more robust but larger scope. Choose and document in PR description.
+1. `INSERT` / `UPDATE` of `hedge_order_linkages.quantity_mt` — adding or expanding a linkage
+2. `UPDATE` of `hedge_contracts.quantity_mt` — verified existence: `PATCH /contracts/hedge/{contract_id}` accepts `HedgeContractUpdate.quantity_mt` and `ContractService.update` blindly sets it; an operator lowering the quantity below `SUM(linkages)` would over-allocate without any linkage write occurring → invariant must fire on contract update
+3. `UPDATE` of `orders.quantity_mt` — same reasoning. Verify by grep whether any order-update path (route or admin tool) accepts `quantity_mt`; if yes today or in any future PR, this invariant must already cover it
+4. `DELETE` of `orders` or `hedge_contracts` while linkages exist — should be blocked by FK `ondelete=RESTRICT` already present (verify in `models/linkages.py`); if any code path bypasses, the invariant must reject
+
+Concrete options:
+
+- (a) Triggers on `hedge_order_linkages` (INSERT/UPDATE) **AND** `hedge_contracts` (UPDATE OF quantity_mt) **AND** `orders` (UPDATE OF quantity_mt). Each trigger re-aggregates and rejects on violation. Three triggers, one shared SQL function (e.g., `_assert_no_over_allocation_for(order_id, contract_id)` parameterized).
+- (b) Materialized allocation ledger (separate table) with a CHECK constraint that mirrors the rule. Heavier; requires synchronization on every event.
+- (c) `EXCLUDE` constraint with a custom operator — does not naturally cover the constraining-row update path.
+
+**Option (a) is the only option that covers all four code paths cleanly.** Select option (a) unless you have a strong justification documented in the PR description for (b). Do NOT pick (c) — it leaves the constraining-row update path unguarded and the §1 mission "over-allocation cannot be committed" remains unsatisfied.
+
+**Service-side defense (recommended, not sufficient alone):** `ContractService.update` should additionally aggregate current linkages for the contract and reject the update at the application layer if `new_quantity_mt < SUM(linkages.quantity_mt)`. This produces a clean HTTP 422 with a meaningful error message before the DB-level invariant fires (better UX). The DB-level invariant remains the institutional guarantee; the service-level check is for clarity. Ditto for any future `OrderService.update` quantity path.
 
 **Layer 3 (OPTIONAL but recommended) — Postgres advisory lock per `(order_id, contract_id)` pair.**
 

@@ -198,12 +198,26 @@ Note that `unit_of_work(session)` becomes `unit_of_work(session, request=request
 
 ### 3.4 Verify other mutation surfaces
 
-The jury cited `routes/deals.py:70-170`, `routes/exposures.py:51-57`, `services/exposure_engine.py:95-122`. Beyond §3.1–3.3, the executor should grep for any other mutating route or service that lacks audit emission:
+The jury cited `routes/deals.py:70-170`, `routes/exposures.py:51-57`, `services/exposure_engine.py:95-122`. Beyond §3.1–3.3, the executor should enumerate every mutating route across the codebase and verify audit emission. Use this two-step procedure (the original one-liner I drafted was broken — `grep -n` emits `file:line:match` records that `head` cannot consume as a file path):
 
 ```bash
-grep -rn "@router\\.\\(post\\|put\\|patch\\|delete\\)" backend/app/api/routes/ \
-  | xargs -I{} sh -c 'echo "=== {} ==="; head -20 {}'
+# Step 1 — list files that contain mutating decorators
+grep -rl -E "^@router\.(post|put|patch|delete)" backend/app/api/routes/
+
+# Step 2 — for each file from step 1, list its mutating routes with line numbers
+grep -nE "^@router\.(post|put|patch|delete)" backend/app/api/routes/<file>.py
 ```
+
+Or in one shell-safe pipeline (no xargs substitution into `head`):
+
+```bash
+for f in $(grep -rl -E "^@router\.(post|put|patch|delete)" backend/app/api/routes/); do
+  echo "=== $f ==="
+  grep -nE "^@router\.(post|put|patch|delete)" "$f"
+done
+```
+
+(Quote the filename in the inner `grep` so paths with spaces or special characters work.)
 
 For each mutating route NOT in `routes/linkages.py` or already-audited surfaces, verify:
 - Has `audit_event` dependency? → keep
