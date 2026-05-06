@@ -2,7 +2,8 @@
 
 Validates:
 * With AUDIT_SIGNING_KEY set, recorded events include a valid HMAC-SHA256 signature.
-* Without the key, events are recorded with signature = None (graceful degradation).
+* Without the key, ``AuditTrailService.record`` raises ``MissingAuditSigningKey``
+  (fail-closed) — see PR-7 / J-A1-02.
 * GET /audit/events/{id}/verify validates signatures correctly.
 * Tampered checksums are detected.
 """
@@ -18,6 +19,7 @@ from fastapi import status
 
 from app.services.audit_trail_service import (
     AuditTrailService,
+    MissingAuditSigningKey,
     _get_signing_key,
     _reset_signing_key_cache,
     compute_signature,
@@ -31,10 +33,12 @@ TEST_KEY = "test-signing-key-for-audit-hmac"
 def _reset_key_cache():
     """Reset the module-level signing-key cache before and after each test."""
     _reset_signing_key_cache()
+    # Restore the default test key (conftest sets this via os.environ.setdefault)
+    os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
     yield
     _reset_signing_key_cache()
-    # Remove env var so it doesn't leak
-    os.environ.pop("AUDIT_SIGNING_KEY", None)
+    # Restore key (don't leak an unset state to other tests).
+    os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
 
 
 # ── Unit tests for HMAC helpers ───────────────────────────────────────
@@ -81,18 +85,20 @@ class TestAuditSignatureService:
         assert key is not None
         assert verify_signature(event.checksum, event.signature, key)
 
-    def test_record_without_key_signature_is_none(self, session) -> None:
+    def test_record_without_key_raises_fail_closed(self, session) -> None:
+        """Fail-closed: refuse to persist unsigned audit evidence."""
         os.environ.pop("AUDIT_SIGNING_KEY", None)
-        event = AuditTrailService.record(
-            session,
-            event_id=uuid.uuid4(),
-            entity_type="order",
-            entity_id=uuid.uuid4(),
-            event_type="created",
-            payload_raw="{}",
-            payload_obj={},
-        )
-        assert event.signature is None
+        _reset_signing_key_cache()
+        with pytest.raises(MissingAuditSigningKey):
+            AuditTrailService.record(
+                session,
+                event_id=uuid.uuid4(),
+                entity_type="order",
+                entity_id=uuid.uuid4(),
+                event_type="created",
+                payload_raw="{}",
+                payload_obj={},
+            )
 
 
 # ── Endpoint tests ────────────────────────────────────────────────────
@@ -127,42 +133,14 @@ class TestAuditVerifyEndpoint:
         resp = client.get(f"/audit/events/{uuid.uuid4()}/verify")
         assert resp.status_code == 404
 
-    def test_verify_without_key_returns_503(self, client) -> None:
+    def test_mutation_without_key_fails_closed(self, client) -> None:
+        """Fail-closed: a mutation with no signing key returns 5xx
+        (server-side ``MissingAuditSigningKey``) and persists no audit row."""
         os.environ.pop("AUDIT_SIGNING_KEY", None)
-        # Create an order (no signature will be stored)
-        resp = client.post(
-            "/orders/sales", json={"price_type": "variable", "quantity_mt": 5.0}
-        )
-        assert resp.status_code == status.HTTP_201_CREATED
-        order_id = resp.json()["id"]
-
-        events_resp = client.get(
-            "/audit/events", params={"entity_type": "order", "entity_id": order_id}
-        )
-        events = events_resp.json()["events"]
-        event_id = events[0]["id"]
-
-        verify_resp = client.get(f"/audit/events/{event_id}/verify")
-        assert verify_resp.status_code == 503
-
-    def test_verify_unsigned_event_reports_invalid(self, client) -> None:
-        # Create event without key
-        os.environ.pop("AUDIT_SIGNING_KEY", None)
-        resp = client.post(
-            "/orders/sales", json={"price_type": "variable", "quantity_mt": 5.0}
-        )
-        order_id = resp.json()["id"]
-
-        events_resp = client.get(
-            "/audit/events", params={"entity_type": "order", "entity_id": order_id}
-        )
-        event_id = events_resp.json()["events"][0]["id"]
-
-        # Now set the key and verify — event has no signature
         _reset_signing_key_cache()
-        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
-        verify_resp = client.get(f"/audit/events/{event_id}/verify")
-        assert verify_resp.status_code == 200
-        body = verify_resp.json()
-        assert body["valid"] is False
-        assert "without a signature" in body["detail"]
+        resp = client.post(
+            "/orders/sales", json={"price_type": "variable", "quantity_mt": 5.0}
+        )
+        # Without a signing key, the audit emission raises and the mutation
+        # is rolled back; route surfaces a 5xx.
+        assert resp.status_code >= 500

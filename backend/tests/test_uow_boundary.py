@@ -106,3 +106,81 @@ def test_uow_boundary_commits_linkage_and_audit_together(client, session) -> Non
         .count()
         == 1
     )
+
+
+# ────────────────────────────────────────────────────────────────────────
+# PR-7 — failure-injection on the newly wired routes (deal create,
+# reconcile, hedge task execute). Mirrors the PR-3 cases above to confirm
+# the unit_of_work boundary still holds for the freshly audited routes.
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_post_audit_db_commit_failure_rolls_back_deal(
+    client, session, monkeypatch
+) -> None:
+    """Same posture as the linkage case but for the deal create route."""
+    from app.models.deal import Deal
+
+    audit_calls = 0
+    original_record = AuditTrailService.record
+
+    def fail_commit(self):
+        raise RuntimeError("db commit failed")
+
+    def record_then_fail_commit(*args, **kwargs):
+        nonlocal audit_calls
+        audit_calls += 1
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(AuditTrailService, "record", record_then_fail_commit)
+    monkeypatch.setattr(session.__class__, "commit", fail_commit)
+
+    response = client.post(
+        "/deals", json={"name": "Should Roll Back", "commodity": "ALUMINUM"}
+    )
+
+    assert response.status_code == 500
+    assert audit_calls == 1
+    assert (
+        session.query(Deal).filter(Deal.name == "Should Roll Back").count() == 0
+    )
+    assert (
+        session.query(AuditEvent)
+        .filter(AuditEvent.entity_type == "deal")
+        .count()
+        == 0
+    )
+
+
+def test_post_audit_db_commit_failure_rolls_back_reconcile_run(
+    client, session, monkeypatch
+) -> None:
+    """Reconcile creates a ReconciliationRun anchor — when the final
+    commit fails, the anchor must NOT remain in the database."""
+    from app.models.reconciliation_run import ReconciliationRun
+
+    audit_calls = 0
+    original_record = AuditTrailService.record
+
+    def fail_commit(self):
+        raise RuntimeError("db commit failed")
+
+    def record_then_fail_commit(*args, **kwargs):
+        nonlocal audit_calls
+        audit_calls += 1
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(AuditTrailService, "record", record_then_fail_commit)
+    monkeypatch.setattr(session.__class__, "commit", fail_commit)
+
+    response = client.post("/exposures/reconcile")
+
+    assert response.status_code == 500
+    assert audit_calls == 1
+    assert session.query(ReconciliationRun).count() == 0
+    assert (
+        session.query(AuditEvent)
+        .filter(AuditEvent.entity_type == "exposure_reconciliation")
+        .count()
+        == 0
+    )

@@ -20,7 +20,12 @@ from app.models.exposure import (
 )
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
+from app.models.reconciliation_run import (
+    ReconciliationRun,
+    ReconciliationRunStatus,
+)
 from app.core.precision import quantize_mt
+from app.core.utils import now_utc
 from app.services.price_lookup_service import canonical_commodity, commodity_aliases
 
 
@@ -47,12 +52,26 @@ class ExposureEngineService:
         return {str(r.order_id): quantize_mt(r.linked_qty) for r in rows}
 
     @staticmethod
-    def reconcile_from_orders(session: Session) -> dict:
+    def reconcile_from_orders(
+        session: Session,
+    ) -> tuple[ReconciliationRun, dict]:
         """Scan all active Orders and create / update Exposures.
 
         Computes open_tons = order.quantity_mt - linked hedge quantity.
-        Returns a dict with ``created`` and ``updated`` counts.
+        Persists a ``ReconciliationRun`` row at the start (anchor for the
+        signed audit event emitted by the route) and updates it with the
+        run summary on success. Returns ``(run, summary)``.
+
+        On failure the surrounding ``unit_of_work`` rolls the run row back
+        together with any partial Exposure mutations — no orphan anchor.
         """
+        run = ReconciliationRun(status=ReconciliationRunStatus.running)
+        session.add(run)
+        # ``flush`` so ``run.id`` is generated and visible to the caller
+        # (the route uses it as the audit ``entity_id`` anchor).
+        session.flush()
+        session.refresh(run)
+
         created = 0
         updated = 0
 
@@ -127,11 +146,20 @@ class ExposureEngineService:
                 created += 1
 
         session.flush()
-        return {
+
+        summary = {
             "created": created,
             "updated": updated,
             "message": "Reconciliation completed",
         }
+        run.status = ReconciliationRunStatus.succeeded
+        run.completed_at = now_utc()
+        run.rows_created = created
+        run.rows_updated = updated
+        run.summary = summary
+        session.flush()
+        session.refresh(run)
+        return run, summary
 
     # ------------------------------------------------------------------
     # compute_net_exposure
