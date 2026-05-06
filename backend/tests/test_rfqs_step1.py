@@ -77,7 +77,7 @@ def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:
         client,
         {
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": 7.0,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",
@@ -87,6 +87,27 @@ def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:
         },
     )
     assert response.status_code == 400
+
+
+def test_commercial_hedge_rejects_order_commodity_mismatch(client) -> None:
+    order_id = _create_sales_order(client, 10.0)
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "COPPER",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "commodity" in response.json()["detail"].lower()
 
 
 def test_rfq_number_is_deterministic_and_server_generated(client) -> None:

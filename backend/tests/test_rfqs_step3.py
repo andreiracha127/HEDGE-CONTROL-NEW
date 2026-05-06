@@ -145,7 +145,7 @@ def test_award_creates_contract_and_reduces_exposure_via_linkage(client) -> None
         client,
         {
             "intent": "COMMERCIAL_HEDGE",
-            "commodity": "LME_AL",
+            "commodity": "ALUMINUM",
             "quantity_mt": 5.0,
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",

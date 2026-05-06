@@ -371,6 +371,14 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ direction mismatch for order type",
                 )
+            if payload.commodity != order.commodity:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "RFQ commodity must match order commodity for "
+                        "COMMERCIAL_HEDGE"
+                    ),
+                )
             snapshot = snapshot_for(order.commodity)
             post_active = float(snapshot["commercial_active_mt"])
             post_passive = float(snapshot["commercial_passive_mt"])
