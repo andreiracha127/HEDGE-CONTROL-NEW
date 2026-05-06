@@ -104,7 +104,9 @@ If the existing UI was Aluminum-only, the rendering can fall through to the firs
 - [ ] `reconcile_from_orders` writes `Exposure.commodity = order.commodity` (no hardcoded literal)
 - [ ] Commercial snapshot groups by commodity; multi-commodity test confirms rows are NOT netted across commodities
 - [ ] Global snapshot groups by commodity; multi-commodity test confirms rows are NOT netted across commodities
-- [ ] Test: insert SO Aluminum 100 + SO Copper 50 + Hedge Long Aluminum 100 → commercial Aluminum=0, commercial Copper=50 (NOT commercial=50 in some shared bucket)
+- [ ] **Commercial isolation test (no hedges):** insert variable-price SO Aluminum 100 + variable-price SO Copper 50 → response contains per-commodity rows `Aluminum.active=100, Copper.active=50`; NEVER a single shared bucket `active=150`. Do NOT introduce hedges in this fixture — commercial exposure formula is order-quantity minus `HedgeOrderLinkage` quantities only; per §2.4 an unlinked `HedgeContract` does NOT reduce commercial exposure, so adding one would muddle what the test verifies.
+- [ ] **Commercial isolation test with linkage:** insert variable-price SO Aluminum 100 + variable-price SO Copper 50 + Hedge Long Aluminum 100 + a `HedgeOrderLinkage` row tying that hedge to the Aluminum SO at quantity 100 → response shows `Aluminum.active=0, Copper.active=50`. (Asserts that linkage reduction is per-commodity, not pooled.)
+- [ ] **Global isolation test:** insert variable-price SO Aluminum 100 + variable-price SO Copper 50 + Hedge Short Aluminum 80 (unlinked) + Hedge Short Copper 30 (unlinked) → response shows `Aluminum.active=180, Copper.active=30`; NEVER a single shared bucket `active=210`. (Asserts §2.5 `Global Active = Commercial Active + Hedge Short (unlinked)` is per-commodity.)
 - [ ] API response shape change documented in PR
 - [ ] `frontend-svelte` schema regenerated and committed
 - [ ] Existing single-commodity tests still pass (Aluminum baseline)
