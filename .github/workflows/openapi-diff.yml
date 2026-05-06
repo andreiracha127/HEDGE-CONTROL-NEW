@@ -26,8 +26,7 @@ jobs:
 
       - name: Install oasdiff
         run: |
-          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sh
-          sudo mv ./oasdiff /usr/local/bin/oasdiff
+          curl -fsSL https://raw.githubusercontent.com/oasdiff/oasdiff/main/install.sh | sudo sh
           oasdiff --version
 
       - name: Export OpenAPI (PR)
