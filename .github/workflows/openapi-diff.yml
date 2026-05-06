@@ -40,8 +40,14 @@ jobs:
           DATABASE_URL: "sqlite+pysqlite:///:memory:"
           SCHEDULER_DISABLED: "1"
         run: |
+          # Overlay main's backend/ (incl. its requirements.txt) on the worktree.
           git checkout origin/main -- backend/
+          # Reinstall against main's pins so the exported spec reflects what
+          # origin/main actually produces — not the PR's library versions.
+          pip install --force-reinstall -r backend/requirements.txt
           python backend/scripts/export_openapi.py > /tmp/openapi_main.json
+          # Restore PR worktree (deps left at main's versions; harmless since
+          # no further Python steps run after this).
           git checkout HEAD -- backend/
 
       - name: Compare OpenAPI (breaking changes)
