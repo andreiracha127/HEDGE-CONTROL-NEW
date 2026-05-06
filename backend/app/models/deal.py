@@ -52,7 +52,6 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -74,37 +73,55 @@ PriceReferencesType = JSON().with_variant(
 )
 
 
-# Codex P1/P2 (PR #22 follow-up #2, 2026-05-06): dialect-aware sequence
-# population for ``DealPNLSnapshot.sequence``.
+# Codex P1/P2 (PR #22 follow-ups, 2026-05-06): dialect-aware Python
+# ``default=`` for ``DealPNLSnapshot.sequence``.
 #
-# Constraints:
+# Why this shape:
 #   * PostgreSQL (production) MUST get its sequence value from the database
-#     (``nextval('deal_pnl_snapshots_sequence_seq')``) — multi-worker safe,
-#     strictly monotonic across all processes connected to the same DB.
-#     Using a process-local Python counter (``itertools.count``) silently
-#     breaks multi-worker correctness because each worker starts at 1.
-#   * SQLAlchemy's ``default=`` (Python client-side) is ALWAYS applied —
-#     when the callable returns ``None``, SQLAlchemy emits ``sequence =
-#     NULL`` in the INSERT, NOT a fall-through to the column's
-#     server-side default. So we cannot use a callable that "returns
-#     None on PG" to opt out of client-side handling — Codex P1 verified
-#     this experimentally and SQLAlchemy 2.0 docs corroborate.
-#   * The column ``Sequence(...)`` declaration on its own causes
-#     SQLAlchemy on PG to pre-execute ``SELECT nextval('seq')`` and bind
-#     the value into the INSERT — the value still comes from the database
-#     sequence, so multi-worker monotonicity is preserved.
-#   * SQLite has no SEQUENCE objects, so we use a ``before_insert`` event
-#     listener gated on ``connection.dialect.name == 'sqlite'`` that
-#     issues ``COALESCE(MAX(sequence), 0) + 1`` inline. SQLite serializes
-#     writes (test engine uses StaticPool), so this is race-free in
-#     single-process pytest. Multi-process xdist would race; tests on
-#     this DB do not use xdist.
+#     ``deal_pnl_snapshots_sequence_seq`` — multi-worker safe, strictly
+#     monotonic across all processes. The previous process-local
+#     ``itertools.count`` (Codex P2 #1) broke this: each gunicorn worker
+#     started its own counter at 1.
+#   * Returning ``None`` on PG (Codex P1) doesn't fall through to the
+#     server-side default — SQLAlchemy binds NULL and the NOT NULL
+#     constraint blows up at flush time.
+#   * The robust contract is to return a SQL EXPRESSION on PG. When a
+#     Python ``default=`` callable returns a SQLAlchemy ``ClauseElement``
+#     (e.g. ``func.nextval(...)``), SQLAlchemy inlines that expression
+#     in the INSERT VALUES clause — the database evaluates it. This is
+#     the same mechanism that ``default=func.now()`` uses on every
+#     timestamp column in this codebase.
+#   * SQLite has no SEQUENCE objects, so the SQLite branch issues
+#     ``SELECT COALESCE(MAX(sequence), 0) + 1`` against the in-flight
+#     connection and returns the integer. SQLite serializes writes
+#     (the test engine uses StaticPool), so the MAX read is race-free
+#     in single-process pytest.
 #
-# Net effect: NO Python ``default=`` on the column. PG inserts get
-# ``nextval`` via SQLAlchemy's ``Sequence(...)`` handling and via the
-# server-side ``DEFAULT nextval(...)`` bound by migration 031 (which
-# also covers raw-SQL insert paths). SQLite inserts get MAX+1 via the
-# event listener.
+# Net effect: ORM inserts on PG get ``nextval('deal_pnl_..._seq')``
+# inline in the VALUES clause; raw-SQL inserts that omit ``sequence``
+# get the same value via the column-level ``server_default = nextval(...)``
+# bound by migration 031 — both paths converge on the same database
+# sequence. Multi-worker safe by construction.
+def _portable_sequence_default(context):
+    """Return a value or SQL expression for ``DealPNLSnapshot.sequence``.
+
+    PostgreSQL: returns ``func.nextval('deal_pnl_snapshots_sequence_seq')``,
+    a SQLAlchemy SQL expression that SQLAlchemy inlines into the INSERT
+    statement so the database — not Python — assigns the value.
+    Multi-worker safe.
+
+    SQLite: queries ``COALESCE(MAX(sequence), 0) + 1`` inline using
+    the same in-flight connection. Race-free under SQLite's serialized
+    writes; single-process pytest only.
+    """
+    if context.dialect.name == "postgresql":
+        return func.nextval("deal_pnl_snapshots_sequence_seq")
+    result = context.connection.execute(
+        sa.text(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM deal_pnl_snapshots"
+        )
+    ).scalar()
+    return int(result)
 
 from app.models.base import Base
 from app.core.precision import (
@@ -262,24 +279,18 @@ class DealPNLSnapshot(Base):
     # random UUID and ``created_at`` is second-precision on SQLite —
     # neither is monotonic across rows that land in the same second.
     #
-    # Postgres path (production): the explicit ``Sequence(...)``
-    # declaration causes SQLAlchemy to consult
-    # ``deal_pnl_snapshots_sequence_seq`` for every ORM insert (single
-    # SOT in the database — multi-worker safe). Migration 031 also
-    # binds the same sequence as the column's server-side ``DEFAULT
-    # nextval(...)``, so raw-SQL inserts (admin tools, COPY, repair
-    # scripts) get the same monotonic value. NO Python ``default=`` is
-    # set on the column — adding one would shadow the server-side
-    # sequence with a client-side NULL/value (Codex P1).
-    #
-    # SQLite path (tests only): no SEQUENCE objects exist; the
-    # ``_assign_sqlite_sequence_before_insert`` event listener defined
-    # below issues ``COALESCE(MAX(sequence), 0) + 1`` in-transaction.
-    # Race-free under SQLite's serialized writes (single-process
-    # pytest, in-memory StaticPool engine).
+    # The dialect branching lives in ``_portable_sequence_default``
+    # above — it returns ``func.nextval('deal_pnl_..._seq')`` on PG so
+    # the database owns the counter (multi-worker safe), and
+    # ``COALESCE(MAX(sequence), 0)+1`` on SQLite (single-process tests).
+    # Migration 031 ALSO binds ``server_default = nextval(...)`` on the
+    # column itself so raw-SQL inserts (COPY, repair scripts) get the
+    # same value; both ORM and raw paths converge on the same DB
+    # sequence on PG.
     sequence: Mapped[int] = mapped_column(
         BigInteger,
         Sequence("deal_pnl_snapshots_sequence_seq"),
+        default=_portable_sequence_default,
         nullable=False,
         index=True,
     )
@@ -422,27 +433,3 @@ class DealPNLSnapshot(Base):
                     f"{raw_settlement!r}"
                 ) from exc
         return value
-
-
-# Codex P1/P2 (PR #22 follow-up #2, 2026-05-06): SQLite-only sequence
-# assignment via ``before_insert`` event listener. See the long-form
-# comment above the column definition for full rationale.
-#
-# This listener is a no-op on PostgreSQL — ``Sequence(...)`` on the
-# column already drives the value via ``nextval('seq')``. We dispatch on
-# the bind's dialect (not the model) so the same code is portable in
-# both environments without per-environment registration.
-@event.listens_for(DealPNLSnapshot, "before_insert")
-def _assign_sqlite_sequence_before_insert(_mapper, connection, target):
-    if connection.dialect.name != "sqlite":
-        return
-    if target.sequence is not None:
-        # Caller already supplied a value (e.g. legacy backfill, test
-        # fixture) — preserve it.
-        return
-    next_seq = connection.execute(
-        sa.text(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM deal_pnl_snapshots"
-        )
-    ).scalar()
-    target.sequence = int(next_seq)
