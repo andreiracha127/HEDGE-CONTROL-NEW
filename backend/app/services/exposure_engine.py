@@ -59,13 +59,32 @@ class ExposureEngineService:
 
     @staticmethod
     def _get_linked_qty_map(session: Session) -> dict:
-        """Return {order_id_str: total_linked_qty} from HedgeOrderLinkage."""
+        """Return ``{str(order_id): total_linked_qty}`` from HedgeOrderLinkage.
+
+        §3.9 dual-filter: only linkages whose hedge contract AND source order
+        are both live count toward an order's hedged quantity. Mirrors
+        ExposureService's §3.5 ``linked_by_contract`` for cross-consumer
+        parity required by J-A1-OPUS-02.
+
+        Keys are stringified — ``reconcile_from_orders`` calls
+        ``linked_map.get(str(order.id), Decimal("0"))``; UUID keys would
+        silently miss every lookup and inflate Exposure.open_tons.
+        """
         rows = (
             session.query(
                 HedgeOrderLinkage.order_id,
                 func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0).label(
                     "linked_qty"
                 ),
+            )
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .join(Order, Order.id == HedgeOrderLinkage.order_id)
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+                Order.deleted_at.is_(None),
             )
             .group_by(HedgeOrderLinkage.order_id)
             .all()
@@ -97,7 +116,10 @@ class ExposureEngineService:
         updated = 0
 
         linked_map = ExposureEngineService._get_linked_qty_map(session)
-        orders = session.query(Order).all()
+        # §3.7: only live (not soft-deleted) orders feed new/updated Exposure
+        # rows. Pre-existing rows whose source order has since been
+        # soft-deleted are retired by the §3.8 sweep below.
+        orders = session.query(Order).filter(Order.deleted_at.is_(None)).all()
 
         for order in orders:
             # ── Fixed-price orders have no market-price exposure ──
@@ -181,11 +203,43 @@ class ExposureEngineService:
                 session.add(exposure)
                 created += 1
 
+        # §3.8 Retirement sweep (Option A — soft-delete symmetric to upstream).
+        # Pre-existing Exposure rows whose source Order has since been
+        # soft-deleted are retired here so compute_net_exposure (and any other
+        # consumer that filters Exposure.is_deleted) stops counting them. All
+        # consumers in this module already filter Exposure.is_deleted == False,
+        # so retirement takes effect without further consumer changes.
+        # Reversibility: when Order.deleted_at is later cleared, the next
+        # reconcile creates a fresh Exposure row (the existing-row lookup
+        # above filters is_deleted == False, so the retired row is left as
+        # audit history — not un-retired).
+        retired = 0
+        stale_exposures = (
+            session.query(Exposure)
+            .join(Order, Order.id == Exposure.source_id)
+            .filter(
+                Exposure.source_type.in_(
+                    [
+                        ExposureSourceType.sales_order,
+                        ExposureSourceType.purchase_order,
+                    ]
+                ),
+                Exposure.is_deleted.is_(False),
+                Order.deleted_at.isnot(None),
+            )
+            .all()
+        )
+        for exposure in stale_exposures:
+            exposure.is_deleted = True
+            exposure.deleted_at = func.now()
+            retired += 1
+
         session.flush()
 
         summary = {
             "created": created,
             "updated": updated,
+            "retired": retired,
             "message": "Reconciliation completed",
         }
         run.status = ReconciliationRunStatus.succeeded
@@ -258,18 +312,49 @@ class ExposureEngineService:
                 agg[c]["short_original"] += original_val
                 agg[c]["short_hedged"] += hedged_val
 
-        # ── 2. Global hedge contracts (not linked to any order) ──
-        linked_contract_ids = (
-            session.query(HedgeOrderLinkage.contract_id).distinct().scalar_subquery()
+        # ── 2. Global hedge contracts — residual-subtraction aggregation ──
+        # §3.10: replace whole-contract NOT IN exclusion with per-contract
+        # residual subtraction so partly-linked hedges contribute their
+        # unlinked portion (e.g. a 100 MT hedge with a 40 MT live linkage
+        # contributes 60 MT, not 0). Mirrors compute_global_snapshot's
+        # per-contract residual formula (§3.5) for cross-endpoint parity.
+        # Inner subquery filters Order.deleted_at IS NULL: linkages from
+        # soft-deleted orders do NOT reduce the hedge's residual, so a live
+        # hedge linked only to dead orders reappears with full residual
+        # (matching §3.5 / §6.3.5 / §6.3.7).
+        live_linked_qty_per_contract = (
+            session.query(
+                HedgeOrderLinkage.contract_id.label("contract_id"),
+                func.coalesce(
+                    func.sum(HedgeOrderLinkage.quantity_mt), 0.0
+                ).label("linked_qty"),
+            )
+            .join(Order, Order.id == HedgeOrderLinkage.order_id)
+            .filter(Order.deleted_at.is_(None))
+            .group_by(HedgeOrderLinkage.contract_id)
+            .subquery()
         )
-        gq = session.query(
-            HedgeContract.commodity,
-            HedgeContract.classification,
-            func.coalesce(func.sum(HedgeContract.quantity_mt), 0).label("total_qty"),
-        ).filter(
-            HedgeContract.deleted_at.is_(None),
-            HedgeContract.status.in_(["active", "partially_settled"]),
-            ~HedgeContract.id.in_(linked_contract_ids),
+
+        residual_contract_qty = HedgeContract.quantity_mt - func.coalesce(
+            live_linked_qty_per_contract.c.linked_qty, 0.0
+        )
+
+        gq = (
+            session.query(
+                HedgeContract.commodity,
+                HedgeContract.classification,
+                func.coalesce(func.sum(residual_contract_qty), 0).label("total_qty"),
+            )
+            .outerjoin(
+                live_linked_qty_per_contract,
+                HedgeContract.id == live_linked_qty_per_contract.c.contract_id,
+            )
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+            )
         )
         if commodity:
             gq = gq.filter(HedgeContract.commodity.in_(commodity_aliases(commodity)))
@@ -277,6 +362,15 @@ class ExposureEngineService:
         global_rows = gq.all()
 
         for grow in global_rows:
+            # §3.10 zero-residual skip (Python-side per dispatch decision).
+            # When all of a commodity's live hedges are fully linked to live
+            # orders, SUM(residual) is 0 but GROUP BY still emits a row.
+            # Without this guard, agg.setdefault would inflate the response
+            # shape with a zero-valued commodity entry that should NOT exist
+            # (per §4 / §10 invariant — "no exposure" → no row, not a zero
+            # row).
+            if quantize_mt(grow.total_qty) == Decimal("0"):
+                continue
             c = (
                 canonical_commodity(grow.commodity)
                 if grow.commodity

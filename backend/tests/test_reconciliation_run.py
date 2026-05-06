@@ -41,8 +41,12 @@ class TestReconcileServicePersistsRun:
         persisted = session.get(ReconciliationRun, run.id)
         assert persisted is not None
         assert persisted.status == ReconciliationRunStatus.succeeded
+        # PR-5 §3.8: reconcile_from_orders now also retires Exposure rows
+        # whose source Order has been soft-deleted, surfaced as "retired"
+        # in the summary. With no orders / no stale exposures the count is 0.
         assert persisted.summary == {
             "created": 0,
             "updated": 0,
+            "retired": 0,
             "message": "Reconciliation completed",
         }
