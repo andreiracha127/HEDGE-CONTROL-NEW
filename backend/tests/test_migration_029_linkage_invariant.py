@@ -1,6 +1,6 @@
 """Migration tests for the HedgeOrderLinkage over-allocation invariant.
 
-Codex P2 (PR-4): the trigger from migration 028 only protects future writes
+Codex P2 (PR-4): the trigger from migration 029 only protects future writes
 — it never scans existing aggregates. If production already contains an
 over-allocated linkage from the very race this migration is fixing,
 installing the trigger silently leaves the DB in a state that violates the
@@ -39,7 +39,7 @@ def _load_migration_module():
         Path(__file__).resolve().parents[1]
         / "alembic"
         / "versions"
-        / "028_linkage_overallocation_invariant.py"
+        / "029_linkage_overallocation_invariant.py"
     )
     spec = importlib.util.spec_from_file_location(
         "linkage_overallocation_invariant_migration", path
@@ -53,7 +53,7 @@ def _load_migration_module():
 @pytest.mark.skipif(
     not _IS_POSTGRES,
     reason=(
-        "Migration 028 preflight + trigger install runs only on PostgreSQL; "
+        "Migration 029 preflight + trigger install runs only on PostgreSQL; "
         "SQLite path is a no-op (no triggers, no preflight)."
     ),
 )
