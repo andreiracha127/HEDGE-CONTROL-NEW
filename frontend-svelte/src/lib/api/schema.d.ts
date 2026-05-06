@@ -4,7 +4,24 @@
  */
 
 export interface paths {
-    "/metrics": {
+    "/audit/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Audit Events */
+        get: operations["list_audit_events_audit_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/events/{event_id}/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -12,10 +29,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Metrics
-         * @description Endpoint that serves Prometheus metrics.
+         * Verify Audit Event
+         * @description Verify the HMAC signature of an audit event.
          */
-        get: operations["metrics_metrics_get"];
+        get: operations["verify_audit_event_audit_events__event_id__verify_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -24,15 +41,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/health": {
+    "/cashflow/analytic": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Health */
-        get: operations["health_health_get"];
+        /** Get Cashflow Analytic */
+        get: operations["get_cashflow_analytic_cashflow_analytic_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -41,21 +58,181 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/ready": {
+    "/cashflow/baseline/snapshots": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Readiness */
-        get: operations["readiness_ready_get"];
+        /** Get Baseline Snapshot */
+        get: operations["get_baseline_snapshot_cashflow_baseline_snapshots_get"];
+        put?: never;
+        /** Create Baseline Snapshot */
+        post: operations["create_baseline_snapshot_cashflow_baseline_snapshots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cashflow/contracts/{contract_id}/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle Hedge Contract */
+        post: operations["settle_hedge_contract_cashflow_contracts__contract_id__settle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cashflow/ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Ledger Entries By Event */
+        get: operations["list_ledger_entries_by_event_cashflow_ledger_get"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/cashflow/ledger/hedge-contracts/{contract_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Ledger Entries For Contract */
+        get: operations["list_ledger_entries_for_contract_cashflow_ledger_hedge_contracts__contract_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cashflow/projection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Cashflow Projection */
+        get: operations["get_cashflow_projection_cashflow_projection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/hedge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Hedge Contracts */
+        get: operations["list_hedge_contracts_contracts_hedge_get"];
+        put?: never;
+        /** Create Hedge Contract */
+        post: operations["create_hedge_contract_contracts_hedge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/hedge/{contract_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Hedge Contract */
+        get: operations["get_hedge_contract_contracts_hedge__contract_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Hedge Contract */
+        delete: operations["delete_hedge_contract_contracts_hedge__contract_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Hedge Contract */
+        patch: operations["update_hedge_contract_contracts_hedge__contract_id__patch"];
+        trace?: never;
+    };
+    "/contracts/hedge/{contract_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Archive Hedge Contract */
+        patch: operations["archive_hedge_contract_contracts_hedge__contract_id__archive_patch"];
+        trace?: never;
+    };
+    "/contracts/hedge/{contract_id}/linkages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Contract Linkages
+         * @description Return deals and their linked orders for a given hedge contract.
+         */
+        get: operations["get_contract_linkages_contracts_hedge__contract_id__linkages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/contracts/hedge/{contract_id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Hedge Contract Status */
+        patch: operations["update_hedge_contract_status_contracts_hedge__contract_id__status_patch"];
         trace?: never;
     };
     "/counterparties": {
@@ -95,239 +272,18 @@ export interface paths {
         patch: operations["update_counterparty_counterparties__counterparty_id__patch"];
         trace?: never;
     };
-    "/orders/sales": {
+    "/deals": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Deals */
+        get: operations["list_deals_deals_get"];
         put?: never;
-        /** Create Sales Order */
-        post: operations["create_sales_order_orders_sales_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/orders/purchase": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create Purchase Order */
-        post: operations["create_purchase_order_orders_purchase_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/orders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Orders */
-        get: operations["list_orders_orders_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/orders/links": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Sopo Links */
-        get: operations["list_sopo_links_orders_links_get"];
-        put?: never;
-        /** Create Sopo Link */
-        post: operations["create_sopo_link_orders_links_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/orders/{order_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Order */
-        get: operations["get_order_orders__order_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/orders/{order_id}/archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Archive Order */
-        patch: operations["archive_order_orders__order_id__archive_patch"];
-        trace?: never;
-    };
-    "/exposures/commercial": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Commercial Exposure */
-        get: operations["get_commercial_exposure_exposures_commercial_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/global": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Global Exposure */
-        get: operations["get_global_exposure_exposures_global_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/reconcile": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reconcile Exposures */
-        post: operations["reconcile_exposures_exposures_reconcile_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/net": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Net Exposure */
-        get: operations["get_net_exposure_exposures_net_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/tasks": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Hedge Tasks */
-        get: operations["list_hedge_tasks_exposures_tasks_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/tasks/{task_id}/execute": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Execute Hedge Task */
-        post: operations["execute_hedge_task_exposures_tasks__task_id__execute_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/list": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Exposures */
-        get: operations["list_exposures_exposures_list_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/exposures/{exposure_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Exposure */
-        get: operations["get_exposure_exposures__exposure_id__get"];
-        put?: never;
-        post?: never;
+        /** Create Deal */
+        post: operations["create_deal_deals_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -348,24 +304,6 @@ export interface paths {
         get: operations["find_deal_by_linked_entity_deals_by_linked_entity_get"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/deals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Deals */
-        get: operations["list_deals_deals_get"];
-        put?: never;
-        /** Create Deal */
-        post: operations["create_deal_deals_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -443,23 +381,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/deals/{deal_id}/pnl-snapshot": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Trigger Pnl Snapshot */
-        post: operations["trigger_pnl_snapshot_deals__deal_id__pnl_snapshot_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/deals/{deal_id}/pnl-history": {
         parameters: {
             query?: never;
@@ -477,44 +398,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/contracts/hedge": {
+    "/deals/{deal_id}/pnl-snapshot": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Hedge Contracts */
-        get: operations["list_hedge_contracts_contracts_hedge_get"];
+        get?: never;
         put?: never;
-        /** Create Hedge Contract */
-        post: operations["create_hedge_contract_contracts_hedge_post"];
+        /** Trigger Pnl Snapshot */
+        post: operations["trigger_pnl_snapshot_deals__deal_id__pnl_snapshot_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/contracts/hedge/{contract_id}": {
+    "/exposures/commercial": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Hedge Contract */
-        get: operations["get_hedge_contract_contracts_hedge__contract_id__get"];
+        /** Get Commercial Exposure */
+        get: operations["get_commercial_exposure_exposures_commercial_get"];
         put?: never;
         post?: never;
-        /** Delete Hedge Contract */
-        delete: operations["delete_hedge_contract_contracts_hedge__contract_id__delete"];
+        delete?: never;
         options?: never;
         head?: never;
-        /** Update Hedge Contract */
-        patch: operations["update_hedge_contract_contracts_hedge__contract_id__patch"];
+        patch?: never;
         trace?: never;
     };
-    "/contracts/hedge/{contract_id}/archive": {
+    "/exposures/global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Global Exposure */
+        get: operations["get_global_exposure_exposures_global_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exposures/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Exposures */
+        get: operations["list_exposures_exposures_list_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exposures/net": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Net Exposure */
+        get: operations["get_net_exposure_exposures_net_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exposures/reconcile": {
         parameters: {
             query?: never;
             header?: never;
@@ -523,15 +492,32 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** Reconcile Exposures */
+        post: operations["reconcile_exposures_exposures_reconcile_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exposures/tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Hedge Tasks */
+        get: operations["list_hedge_tasks_exposures_tasks_get"];
+        put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Archive Hedge Contract */
-        patch: operations["archive_hedge_contract_contracts_hedge__contract_id__archive_patch"];
+        patch?: never;
         trace?: never;
     };
-    "/contracts/hedge/{contract_id}/status": {
+    "/exposures/tasks/{task_id}/execute": {
         parameters: {
             query?: never;
             header?: never;
@@ -540,26 +526,91 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post?: never;
+        /** Execute Hedge Task */
+        post: operations["execute_hedge_task_exposures_tasks__task_id__execute_post"];
         delete?: never;
         options?: never;
         head?: never;
-        /** Update Hedge Contract Status */
-        patch: operations["update_hedge_contract_status_contracts_hedge__contract_id__status_patch"];
+        patch?: never;
         trace?: never;
     };
-    "/contracts/hedge/{contract_id}/linkages": {
+    "/exposures/{exposure_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Contract Linkages
-         * @description Return deals and their linked orders for a given hedge contract.
-         */
-        get: operations["get_contract_linkages_contracts_hedge__contract_id__linkages_get"];
+        /** Get Exposure */
+        get: operations["get_exposure_exposures__exposure_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/finance/pipeline/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Trigger Pipeline */
+        post: operations["trigger_pipeline_finance_pipeline_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/finance/pipeline/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Runs */
+        get: operations["list_runs_finance_pipeline_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/finance/pipeline/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Run Detail */
+        get: operations["get_run_detail_finance_pipeline_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Health */
+        get: operations["health_health_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -595,6 +646,284 @@ export interface paths {
         };
         /** Get Linkage */
         get: operations["get_linkage_linkages__linkage_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/market-data/westmetall/aluminum/cash-settlement/ingest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingest Cash Settlement Daily */
+        post: operations["ingest_cash_settlement_daily_market_data_westmetall_aluminum_cash_settlement_ingest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/market-data/westmetall/aluminum/cash-settlement/ingest-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Ingest Cash Settlement Bulk */
+        post: operations["ingest_cash_settlement_bulk_market_data_westmetall_aluminum_cash_settlement_ingest_bulk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/market-data/westmetall/aluminum/cash-settlement/prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cash Settlement Prices */
+        get: operations["list_cash_settlement_prices_market_data_westmetall_aluminum_cash_settlement_prices_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Metrics
+         * @description Endpoint that serves Prometheus metrics.
+         */
+        get: operations["metrics_metrics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mtm/hedge-contracts/{contract_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Mtm For Hedge Contract */
+        get: operations["get_mtm_for_hedge_contract_mtm_hedge_contracts__contract_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mtm/orders/{order_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Mtm For Order */
+        get: operations["get_mtm_for_order_mtm_orders__order_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/mtm/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Mtm Snapshot */
+        get: operations["get_mtm_snapshot_mtm_snapshots_get"];
+        put?: never;
+        /** Create Mtm Snapshot */
+        post: operations["create_mtm_snapshot_mtm_snapshots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Orders */
+        get: operations["list_orders_orders_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/links": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Sopo Links */
+        get: operations["list_sopo_links_orders_links_get"];
+        put?: never;
+        /** Create Sopo Link */
+        post: operations["create_sopo_link_orders_links_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/purchase": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Purchase Order */
+        post: operations["create_purchase_order_orders_purchase_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Sales Order */
+        post: operations["create_sales_order_orders_sales_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{order_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Order */
+        get: operations["get_order_orders__order_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/orders/{order_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Archive Order */
+        patch: operations["archive_order_orders__order_id__archive_patch"];
+        trace?: never;
+    };
+    "/pl/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pl Snapshot */
+        get: operations["get_pl_snapshot_pl_snapshots_get"];
+        put?: never;
+        /** Post Pl Snapshot */
+        post: operations["post_pl_snapshot_pl_snapshots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pl/{entity_type}/{entity_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Pl */
+        get: operations["get_pl_pl__entity_type___entity_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Readiness */
+        get: operations["readiness_ready_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -661,6 +990,154 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/rfqs/{rfq_id}/actions/award": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Award Rfq */
+        post: operations["award_rfq_rfqs__rfq_id__actions_award_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/award-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Award Quote
+         * @description Award a specific quote — creates a contract from this counterparty's quote.
+         */
+        post: operations["award_quote_rfqs__rfq_id__actions_award_quote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Rfq
+         * @description Cancel an RFQ in CREATED or SENT state.
+         */
+        post: operations["cancel_rfq_rfqs__rfq_id__actions_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh Rfq */
+        post: operations["refresh_rfq_rfqs__rfq_id__actions_refresh_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/refresh-counterparty": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Counterparty
+         * @description Re-send invitation to a specific counterparty.
+         */
+        post: operations["refresh_counterparty_rfqs__rfq_id__actions_refresh_counterparty_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Rfq */
+        post: operations["reject_rfq_rfqs__rfq_id__actions_reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/actions/reject-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject Quote
+         * @description Reject a specific counterparty quote without closing the RFQ.
+         */
+        post: operations["reject_quote_rfqs__rfq_id__actions_reject_quote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Archive Rfq */
+        patch: operations["archive_rfq_rfqs__rfq_id__archive_patch"];
+        trace?: never;
+    };
     "/rfqs/{rfq_id}/quotes": {
         parameters: {
             query?: never;
@@ -676,6 +1153,23 @@ export interface paths {
         put?: never;
         /** Create Quote */
         post: operations["create_quote_rfqs__rfq_id__quotes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/rfqs/{rfq_id}/ranking": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Spread Ranking */
+        get: operations["get_spread_ranking_rfqs__rfq_id__ranking_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -719,309 +1213,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/rfqs/{rfq_id}/ranking": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Spread Ranking */
-        get: operations["get_spread_ranking_rfqs__rfq_id__ranking_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reject Rfq */
-        post: operations["reject_rfq_rfqs__rfq_id__actions_reject_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/cancel": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel Rfq
-         * @description Cancel an RFQ in CREATED or SENT state.
-         */
-        post: operations["cancel_rfq_rfqs__rfq_id__actions_cancel_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/reject-quote": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Reject Quote
-         * @description Reject a specific counterparty quote without closing the RFQ.
-         */
-        post: operations["reject_quote_rfqs__rfq_id__actions_reject_quote_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/refresh-counterparty": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Refresh Counterparty
-         * @description Re-send invitation to a specific counterparty.
-         */
-        post: operations["refresh_counterparty_rfqs__rfq_id__actions_refresh_counterparty_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/award-quote": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Award Quote
-         * @description Award a specific quote — creates a contract from this counterparty's quote.
-         */
-        post: operations["award_quote_rfqs__rfq_id__actions_award_quote_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh Rfq */
-        post: operations["refresh_rfq_rfqs__rfq_id__actions_refresh_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/actions/award": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Award Rfq */
-        post: operations["award_rfq_rfqs__rfq_id__actions_award_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/rfqs/{rfq_id}/archive": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        /** Archive Rfq */
-        patch: operations["archive_rfq_rfqs__rfq_id__archive_patch"];
-        trace?: never;
-    };
-    "/cashflow/analytic": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Cashflow Analytic */
-        get: operations["get_cashflow_analytic_cashflow_analytic_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cashflow/baseline/snapshots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Baseline Snapshot */
-        get: operations["get_baseline_snapshot_cashflow_baseline_snapshots_get"];
-        put?: never;
-        /** Create Baseline Snapshot */
-        post: operations["create_baseline_snapshot_cashflow_baseline_snapshots_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cashflow/projection": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Cashflow Projection */
-        get: operations["get_cashflow_projection_cashflow_projection_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cashflow/contracts/{contract_id}/settle": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Settle Hedge Contract */
-        post: operations["settle_hedge_contract_cashflow_contracts__contract_id__settle_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cashflow/ledger/hedge-contracts/{contract_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Ledger Entries For Contract */
-        get: operations["list_ledger_entries_for_contract_cashflow_ledger_hedge_contracts__contract_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/cashflow/ledger": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Ledger Entries By Event */
-        get: operations["list_ledger_entries_by_event_cashflow_ledger_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/pl/{entity_type}/{entity_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Pl */
-        get: operations["get_pl_pl__entity_type___entity_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/pl/snapshots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Pl Snapshot */
-        get: operations["get_pl_snapshot_pl_snapshots_get"];
-        put?: never;
-        /** Post Pl Snapshot */
-        post: operations["post_pl_snapshot_pl_snapshots_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/scenario/what-if/run": {
         parameters: {
             query?: never;
@@ -1033,146 +1224,6 @@ export interface paths {
         put?: never;
         /** Run What If Scenario */
         post: operations["run_what_if_scenario_scenario_what_if_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/audit/events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Audit Events */
-        get: operations["list_audit_events_audit_events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/audit/events/{event_id}/verify": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Verify Audit Event
-         * @description Verify the HMAC signature of an audit event.
-         */
-        get: operations["verify_audit_event_audit_events__event_id__verify_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/market-data/westmetall/aluminum/cash-settlement/prices": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Cash Settlement Prices */
-        get: operations["list_cash_settlement_prices_market_data_westmetall_aluminum_cash_settlement_prices_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/market-data/westmetall/aluminum/cash-settlement/ingest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Ingest Cash Settlement Daily */
-        post: operations["ingest_cash_settlement_daily_market_data_westmetall_aluminum_cash_settlement_ingest_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/market-data/westmetall/aluminum/cash-settlement/ingest-bulk": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Ingest Cash Settlement Bulk */
-        post: operations["ingest_cash_settlement_bulk_market_data_westmetall_aluminum_cash_settlement_ingest_bulk_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/mtm/hedge-contracts/{contract_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Mtm For Hedge Contract */
-        get: operations["get_mtm_for_hedge_contract_mtm_hedge_contracts__contract_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/mtm/orders/{order_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Mtm For Order */
-        get: operations["get_mtm_for_order_mtm_orders__order_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/mtm/snapshots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Mtm Snapshot */
-        get: operations["get_mtm_snapshot_mtm_snapshots_get"];
-        put?: never;
-        /** Create Mtm Snapshot */
-        post: operations["create_mtm_snapshot_mtm_snapshots_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1215,57 +1266,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/finance/pipeline/run": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Trigger Pipeline */
-        post: operations["trigger_pipeline_finance_pipeline_run_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/finance/pipeline/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Runs */
-        get: operations["list_runs_finance_pipeline_runs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/finance/pipeline/runs/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Run Detail */
-        get: operations["get_run_detail_finance_pipeline_runs__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1277,49 +1277,49 @@ export interface components {
              * @enum {string}
              */
             delta_type: "add_cash_settlement_price_override";
-            /** Symbol */
-            symbol: string;
+            /** Price Usd */
+            price_usd: number | string;
             /**
              * Settlement Date
              * Format: date
              */
             settlement_date: string;
-            /** Price Usd */
-            price_usd: number | string;
+            /** Symbol */
+            symbol: string;
         };
         /** AddUnlinkedHedgeContractDelta */
         AddUnlinkedHedgeContractDelta: {
+            /**
+             * Contract Id
+             * Format: uuid
+             */
+            contract_id: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             delta_type: "add_unlinked_hedge_contract";
             /**
-             * Contract Id
-             * Format: uuid
-             */
-            contract_id: string;
-            /** Quantity Mt */
-            quantity_mt: number | string;
-            /**
              * Fixed Leg Side
              * @enum {string}
              */
             fixed_leg_side: "buy" | "sell";
             /**
-             * Variable Leg Side
-             * @enum {string}
-             */
-            variable_leg_side: "buy" | "sell";
-            /** Fixed Price Value */
-            fixed_price_value: number | string;
-            /**
              * Fixed Price Unit
              * @constant
              */
             fixed_price_unit: "USD/MT";
+            /** Fixed Price Value */
+            fixed_price_value: number | string;
             /** Float Pricing Convention */
             float_pricing_convention: string;
+            /** Quantity Mt */
+            quantity_mt: number | string;
+            /**
+             * Variable Leg Side
+             * @enum {string}
+             */
+            variable_leg_side: "buy" | "sell";
         };
         /** AdjustOrderQuantityDelta */
         AdjustOrderQuantityDelta: {
@@ -1328,13 +1328,13 @@ export interface components {
              * @enum {string}
              */
             delta_type: "adjust_order_quantity_mt";
+            /** New Quantity Mt */
+            new_quantity_mt: number | string;
             /**
              * Order Id
              * Format: uuid
              */
             order_id: string;
-            /** New Quantity Mt */
-            new_quantity_mt: number | string;
         };
         /** AuditEventListResponse */
         AuditEventListResponse: {
@@ -1345,34 +1345,36 @@ export interface components {
         };
         /** AuditEventRead */
         AuditEventRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Timestamp Utc
-             * Format: date-time
-             */
-            timestamp_utc: string;
-            /** Entity Type */
-            entity_type: string;
+            /** Checksum */
+            checksum: string;
             /**
              * Entity Id
              * Format: uuid
              */
             entity_id: string;
+            /** Entity Type */
+            entity_type: string;
             /** Event Type */
             event_type: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Payload */
             payload: unknown;
-            /** Checksum */
-            checksum: string;
             /** Signature */
             signature?: string | null;
+            /**
+             * Timestamp Utc
+             * Format: date-time
+             */
+            timestamp_utc: string;
         };
         /** AuditVerifyResponse */
         AuditVerifyResponse: {
+            /** Detail */
+            detail: string;
             /**
              * Event Id
              * Format: uuid
@@ -1380,8 +1382,6 @@ export interface components {
             event_id: string;
             /** Valid */
             valid: boolean;
-            /** Detail */
-            detail: string;
         };
         /** CashFlowAnalyticResponse */
         CashFlowAnalyticResponse: {
@@ -1408,118 +1408,118 @@ export interface components {
         /** CashFlowBaselineSnapshotResponse */
         CashFlowBaselineSnapshotResponse: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
              * As Of Date
              * Format: date
              */
             as_of_date: string;
+            /** Correlation Id */
+            correlation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Snapshot Data */
             snapshot_data: {
                 [key: string]: unknown;
             };
             /** Total Net Cashflow */
             total_net_cashflow: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /** Correlation Id */
-            correlation_id: string;
         };
         /** CashFlowItem */
         CashFlowItem: {
-            /** Object Type */
-            object_type: string;
+            /** Amount Usd */
+            amount_usd: string;
+            /** Mtm Value */
+            mtm_value: string;
             /** Object Id */
             object_id: string;
+            /** Object Type */
+            object_type: string;
             /**
              * Settlement Date
              * Format: date
              */
             settlement_date: string;
-            /** Amount Usd */
-            amount_usd: string;
-            /** Mtm Value */
-            mtm_value: string;
         };
         /** CashFlowLedgerEntryRead */
         CashFlowLedgerEntryRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Hedge Contract Id
-             * Format: uuid
-             */
-            hedge_contract_id: string;
-            /** Source Event Type */
-            source_event_type: string;
-            /** Source Event Id */
-            source_event_id: string | null;
-            /** Leg Id */
-            leg_id: string;
+            /** Amount */
+            amount: string;
             /**
              * Cashflow Date
              * Format: date
              */
             cashflow_date: string;
-            /** Currency */
-            currency: string;
-            /** Direction */
-            direction: string;
-            /** Amount */
-            amount: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Currency */
+            currency: string;
+            /** Direction */
+            direction: string;
+            /**
+             * Hedge Contract Id
+             * Format: uuid
+             */
+            hedge_contract_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Leg Id */
+            leg_id: string;
+            /** Source Event Id */
+            source_event_id: string | null;
+            /** Source Event Type */
+            source_event_type: string;
         };
         /** CashFlowProjectionItem */
         CashFlowProjectionItem: {
-            instrument_type: components["schemas"]["ProjectionInstrumentType"];
-            /** Instrument Id */
-            instrument_id: string;
-            /**
-             * Reference
-             * @default
-             */
-            reference: string;
-            /**
-             * Counterparty
-             * @default
-             */
-            counterparty: string;
+            /** Amount Usd */
+            amount_usd: string;
             /**
              * Commodity
              * @default
              */
             commodity: string;
             /**
-             * Settlement Date
-             * Format: date
+             * Counterparty
+             * @default
              */
-            settlement_date: string;
-            /** Quantity Mt */
-            quantity_mt: string;
+            counterparty: string;
+            /** Deal Id */
+            deal_id?: string | null;
+            /** Instrument Id */
+            instrument_id: string;
+            instrument_type: components["schemas"]["ProjectionInstrumentType"];
             /** Price Per Mt */
             price_per_mt: string;
-            /** Amount Usd */
-            amount_usd: string;
             /**
              * Price Source
              * @default
              */
             price_source: string;
-            /** Deal Id */
-            deal_id?: string | null;
+            /** Quantity Mt */
+            quantity_mt: string;
+            /**
+             * Reference
+             * @default
+             */
+            reference: string;
+            /**
+             * Settlement Date
+             * Format: date
+             */
+            settlement_date: string;
         };
         /** CashFlowProjectionResponse */
         CashFlowProjectionResponse: {
@@ -1534,47 +1534,47 @@ export interface components {
         };
         /** CashFlowProjectionSummary */
         CashFlowProjectionSummary: {
+            /** Instrument Count */
+            instrument_count: number;
+            /** Net Cashflow */
+            net_cashflow: string;
             /** Total Inflows */
             total_inflows: string;
             /** Total Outflows */
             total_outflows: string;
-            /** Net Cashflow */
-            net_cashflow: string;
-            /** Instrument Count */
-            instrument_count: number;
         };
         /** CashSettlementBulkIngestRequest */
         CashSettlementBulkIngestRequest: {
-            /**
-             * Start Date
-             * @description Start of date range (inclusive)
-             */
-            start_date?: string | null;
             /**
              * End Date
              * @description End of date range (inclusive)
              */
             end_date?: string | null;
+            /**
+             * Start Date
+             * @description Start of date range (inclusive)
+             */
+            start_date?: string | null;
         };
         /** CashSettlementBulkIngestResponse */
         CashSettlementBulkIngestResponse: {
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at: string;
+            /** Html Sha256 */
+            html_sha256: string;
             /** Ingested Count */
             ingested_count: number;
             /** Skipped Count */
             skipped_count: number;
             /** Source */
             source: string;
-            /** Symbol */
-            symbol: string;
             /** Source Url */
             source_url: string;
-            /** Html Sha256 */
-            html_sha256: string;
-            /**
-             * Fetched At
-             * Format: date-time
-             */
-            fetched_at: string;
+            /** Symbol */
+            symbol: string;
         };
         /** CashSettlementIngestRequest */
         CashSettlementIngestRequest: {
@@ -1587,99 +1587,64 @@ export interface components {
         };
         /** CashSettlementIngestResponse */
         CashSettlementIngestResponse: {
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at: string;
+            /** Html Sha256 */
+            html_sha256: string;
             /** Ingested Count */
             ingested_count: number;
+            /**
+             * Settlement Date
+             * Format: date
+             */
+            settlement_date: string;
             /** Skipped Count */
             skipped_count: number;
             /** Source */
             source: string;
-            /** Symbol */
-            symbol: string;
-            /**
-             * Settlement Date
-             * Format: date
-             */
-            settlement_date: string;
             /** Source Url */
             source_url: string;
-            /** Html Sha256 */
-            html_sha256: string;
-            /**
-             * Fetched At
-             * Format: date-time
-             */
-            fetched_at: string;
+            /** Symbol */
+            symbol: string;
         };
         /** CashSettlementPriceRead */
         CashSettlementPriceRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Source */
-            source: string;
-            /** Symbol */
-            symbol: string;
-            /**
-             * Settlement Date
-             * Format: date
-             */
-            settlement_date: string;
-            /** Price Usd */
-            price_usd: number;
-            /** Source Url */
-            source_url: string;
-            /** Html Sha256 */
-            html_sha256: string;
-            /**
-             * Fetched At
-             * Format: date-time
-             */
-            fetched_at: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at: string;
+            /** Html Sha256 */
+            html_sha256: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Price Usd */
+            price_usd: number;
+            /**
+             * Settlement Date
+             * Format: date
+             */
+            settlement_date: string;
+            /** Source */
+            source: string;
+            /** Source Url */
+            source_url: string;
+            /** Symbol */
+            symbol: string;
         };
         /** CommercialExposureRead */
         CommercialExposureRead: {
-            /**
-             * Pre Reduction Commercial Active Mt
-             * @description Sum of variable-price SO quantity before linkage (MT)
-             */
-            pre_reduction_commercial_active_mt: number;
-            /**
-             * Pre Reduction Commercial Passive Mt
-             * @description Sum of variable-price PO quantity before linkage (MT)
-             */
-            pre_reduction_commercial_passive_mt: number;
-            /**
-             * Reduction Applied Active Mt
-             * @description Reduction applied to active exposure via linkages (MT)
-             */
-            reduction_applied_active_mt: number;
-            /**
-             * Reduction Applied Passive Mt
-             * @description Reduction applied to passive exposure via linkages (MT)
-             */
-            reduction_applied_passive_mt: number;
-            /**
-             * Commercial Active Mt
-             * @description Residual variable-price SO exposure (MT)
-             */
-            commercial_active_mt: number;
-            /**
-             * Commercial Passive Mt
-             * @description Residual variable-price PO exposure (MT)
-             */
-            commercial_passive_mt: number;
-            /**
-             * Commercial Net Mt
-             * @description Active minus Passive (MT)
-             */
-            commercial_net_mt: number;
             /**
              * Calculation Timestamp
              * Format: date-time
@@ -1687,10 +1652,45 @@ export interface components {
              */
             calculation_timestamp: string;
             /**
+             * Commercial Active Mt
+             * @description Residual variable-price SO exposure (MT)
+             */
+            commercial_active_mt: string;
+            /**
+             * Commercial Net Mt
+             * @description Active minus Passive (MT)
+             */
+            commercial_net_mt: string;
+            /**
+             * Commercial Passive Mt
+             * @description Residual variable-price PO exposure (MT)
+             */
+            commercial_passive_mt: string;
+            /**
              * Order Count Considered
              * @description Count of variable-price orders considered
              */
             order_count_considered: number;
+            /**
+             * Pre Reduction Commercial Active Mt
+             * @description Sum of variable-price SO quantity before linkage (MT)
+             */
+            pre_reduction_commercial_active_mt: string;
+            /**
+             * Pre Reduction Commercial Passive Mt
+             * @description Sum of variable-price PO quantity before linkage (MT)
+             */
+            pre_reduction_commercial_passive_mt: string;
+            /**
+             * Reduction Applied Active Mt
+             * @description Reduction applied to active exposure via linkages (MT)
+             */
+            reduction_applied_active_mt: string;
+            /**
+             * Reduction Applied Passive Mt
+             * @description Reduction applied to passive exposure via linkages (MT)
+             */
+            reduction_applied_passive_mt: string;
         };
         /** ContractLinkagesResponse */
         ContractLinkagesResponse: {
@@ -1707,50 +1707,50 @@ export interface components {
         };
         /** CounterpartyCreate */
         CounterpartyCreate: {
-            type: components["schemas"]["CounterpartyType"];
-            /** Name */
-            name: string;
-            /** Short Name */
-            short_name?: string | null;
-            /** Tax Id */
-            tax_id?: string | null;
-            /** Country */
-            country: string;
-            /** City */
-            city?: string | null;
             /** Address */
             address?: string | null;
-            /** Contact Name */
-            contact_name?: string | null;
+            /** City */
+            city?: string | null;
             /** Contact Email */
             contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
             /** Contact Phone */
             contact_phone?: string | null;
-            /**
-             * Whatsapp Phone
-             * @description WhatsApp number in E.164 format, e.g. +5511999999999
-             */
-            whatsapp_phone?: string | null;
-            /**
-             * Payment Terms Days
-             * @default 30
-             */
-            payment_terms_days: number;
+            /** Country */
+            country: string;
             /** Credit Limit Usd */
             credit_limit_usd?: number | null;
-            /** @default pending */
-            kyc_status: components["schemas"]["KycStatus"];
-            /** @default clear */
-            sanctions_status: components["schemas"]["SanctionsStatus"];
-            /** @default medium */
-            risk_rating: components["schemas"]["RiskRating"];
             /**
              * Is Active
              * @default true
              */
             is_active: boolean;
+            /** @default pending */
+            kyc_status: components["schemas"]["KycStatus"];
+            /** Name */
+            name: string;
             /** Notes */
             notes?: string | null;
+            /**
+             * Payment Terms Days
+             * @default 30
+             */
+            payment_terms_days: number;
+            /** @default medium */
+            risk_rating: components["schemas"]["RiskRating"];
+            /** @default clear */
+            sanctions_status: components["schemas"]["SanctionsStatus"];
+            /** Short Name */
+            short_name?: string | null;
+            /** Tax Id */
+            tax_id?: string | null;
+            type: components["schemas"]["CounterpartyType"];
+            /**
+             * Whatsapp Phone
+             * @description WhatsApp number in E.164 format, e.g. +5511999999999
+             */
+            whatsapp_phone?: string | null;
         };
         /** CounterpartyListResponse */
         CounterpartyListResponse: {
@@ -1761,54 +1761,54 @@ export interface components {
         };
         /** CounterpartyRead */
         CounterpartyRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            type: components["schemas"]["CounterpartyType"];
-            /** Name */
-            name: string;
-            /** Short Name */
-            short_name?: string | null;
-            /** Tax Id */
-            tax_id?: string | null;
-            /** Country */
-            country: string;
-            /** City */
-            city?: string | null;
             /** Address */
             address?: string | null;
-            /** Contact Name */
-            contact_name?: string | null;
+            /** City */
+            city?: string | null;
             /** Contact Email */
             contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
             /** Contact Phone */
             contact_phone?: string | null;
-            /** Whatsapp Phone */
-            whatsapp_phone?: string | null;
-            /** Payment Terms Days */
-            payment_terms_days?: number | null;
-            /** Credit Limit Usd */
-            credit_limit_usd?: number | null;
-            kyc_status: components["schemas"]["KycStatus"];
-            sanctions_status: components["schemas"]["SanctionsStatus"];
-            risk_rating: components["schemas"]["RiskRating"];
-            /** Is Active */
-            is_active: boolean;
-            /** Notes */
-            notes?: string | null;
+            /** Country */
+            country: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Updated At */
-            updated_at?: string | null;
-            /** Is Deleted */
-            is_deleted: boolean;
+            /** Credit Limit Usd */
+            credit_limit_usd?: number | null;
             /** Deleted At */
             deleted_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Is Deleted */
+            is_deleted: boolean;
+            kyc_status: components["schemas"]["KycStatus"];
+            /** Name */
+            name: string;
+            /** Notes */
+            notes?: string | null;
+            /** Payment Terms Days */
+            payment_terms_days?: number | null;
+            risk_rating: components["schemas"]["RiskRating"];
+            sanctions_status: components["schemas"]["SanctionsStatus"];
+            /** Short Name */
+            short_name?: string | null;
+            /** Tax Id */
+            tax_id?: string | null;
+            type: components["schemas"]["CounterpartyType"];
+            /** Updated At */
+            updated_at?: string | null;
+            /** Whatsapp Phone */
+            whatsapp_phone?: string | null;
         };
         /**
          * CounterpartyType
@@ -1817,40 +1817,38 @@ export interface components {
         CounterpartyType: "broker" | "bank_br" | "customer" | "supplier";
         /** CounterpartyUpdate */
         CounterpartyUpdate: {
+            /** Address */
+            address?: string | null;
+            /** City */
+            city?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Country */
+            country?: string | null;
+            /** Credit Limit Usd */
+            credit_limit_usd?: number | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            kyc_status?: components["schemas"]["KycStatus"] | null;
             /** Name */
             name?: string | null;
+            /** Notes */
+            notes?: string | null;
+            risk_rating?: components["schemas"]["RiskRating"] | null;
+            sanctions_status?: components["schemas"]["SanctionsStatus"] | null;
             /** Short Name */
             short_name?: string | null;
             /** Tax Id */
             tax_id?: string | null;
-            /** Country */
-            country?: string | null;
-            /** City */
-            city?: string | null;
-            /** Address */
-            address?: string | null;
-            /** Contact Name */
-            contact_name?: string | null;
-            /** Contact Email */
-            contact_email?: string | null;
-            /** Contact Phone */
-            contact_phone?: string | null;
             /** Whatsapp Phone */
             whatsapp_phone?: string | null;
-            /** Credit Limit Usd */
-            credit_limit_usd?: number | null;
-            kyc_status?: components["schemas"]["KycStatus"] | null;
-            sanctions_status?: components["schemas"]["SanctionsStatus"] | null;
-            risk_rating?: components["schemas"]["RiskRating"] | null;
-            /** Is Active */
-            is_active?: boolean | null;
-            /** Notes */
-            notes?: string | null;
         };
         /** DealCreate */
         DealCreate: {
-            /** Name */
-            name: string;
             /** Commodity */
             commodity: string;
             /**
@@ -1858,78 +1856,80 @@ export interface components {
              * @default []
              */
             links: components["schemas"]["DealLinkCreate"][];
+            /** Name */
+            name: string;
         };
         /**
          * DealDetailRead
          * @description Deal detail with links and latest P&L snapshot.
          */
         DealDetailRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Reference */
-            reference: string;
-            /** Name */
-            name: string;
             /** Commodity */
             commodity: string;
-            status: components["schemas"]["DealStatus"];
-            /** Total Physical Tons */
-            total_physical_tons: number;
-            /** Total Hedge Tons */
-            total_hedge_tons: number;
-            /** Hedge Ratio */
-            hedge_ratio: number;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Updated At */
-            updated_at?: string | null;
+            /** Hedge Ratio */
+            hedge_ratio: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Is Deleted */
             is_deleted: boolean;
+            latest_pnl?: components["schemas"]["DealPNLSnapshotRead"] | null;
             /**
              * Links
              * @default []
              */
             links: components["schemas"]["DealLinkRead"][];
-            latest_pnl?: components["schemas"]["DealPNLSnapshotRead"] | null;
+            /** Name */
+            name: string;
+            /** Reference */
+            reference: string;
+            status: components["schemas"]["DealStatus"];
+            /** Total Hedge Tons */
+            total_hedge_tons: string;
+            /** Total Physical Tons */
+            total_physical_tons: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /** DealLinkCreate */
         DealLinkCreate: {
-            linked_type: components["schemas"]["DealLinkedType"];
             /**
              * Linked Id
              * Format: uuid
              */
             linked_id: string;
+            linked_type: components["schemas"]["DealLinkedType"];
         };
         /** DealLinkRead */
         DealLinkRead: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Deal Id
+             * Format: uuid
+             */
+            deal_id: string;
             /**
              * Id
              * Format: uuid
              */
             id: string;
             /**
-             * Deal Id
-             * Format: uuid
-             */
-            deal_id: string;
-            linked_type: components["schemas"]["DealLinkedType"];
-            /**
              * Linked Id
              * Format: uuid
              */
             linked_id: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+            linked_type: components["schemas"]["DealLinkedType"];
         };
         /**
          * DealLinkedType
@@ -1951,95 +1951,95 @@ export interface components {
         /** DealPNLSnapshotRead */
         DealPNLSnapshotRead: {
             /**
-             * Id
-             * Format: uuid
+             * Created At
+             * Format: date-time
              */
-            id: string;
+            created_at: string;
             /**
              * Deal Id
              * Format: uuid
              */
             deal_id: string;
+            /** Hedge Pnl Mtm */
+            hedge_pnl_mtm: string;
+            /** Hedge Pnl Realized */
+            hedge_pnl_realized: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Inputs Hash */
+            inputs_hash: string;
+            /** Physical Cost */
+            physical_cost: string;
+            /** Physical Revenue */
+            physical_revenue: string;
             /**
              * Snapshot Date
              * Format: date
              */
             snapshot_date: string;
-            /** Physical Revenue */
-            physical_revenue: number;
-            /** Physical Cost */
-            physical_cost: number;
-            /** Hedge Pnl Realized */
-            hedge_pnl_realized: number;
-            /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: number;
             /** Total Pnl */
-            total_pnl: number;
-            /** Inputs Hash */
-            inputs_hash: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+            total_pnl: string;
         };
         /** DealPnlBreakdown */
         DealPnlBreakdown: {
+            /** Commodity */
+            commodity: string;
             /**
              * Deal Id
              * Format: uuid
              */
             deal_id: string;
-            /** Deal Reference */
-            deal_reference: string;
             /** Deal Name */
             deal_name: string;
-            /** Commodity */
-            commodity: string;
-            /** Physical Revenue */
-            physical_revenue: number;
-            /** Physical Cost */
-            physical_cost: number;
-            /** Hedge Pnl Realized */
-            hedge_pnl_realized: number;
-            /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: number;
-            /** Total Pnl */
-            total_pnl: number;
-            /** Physical Items */
-            physical_items: components["schemas"]["PnlPhysicalItem"][];
+            /** Deal Reference */
+            deal_reference: string;
             /** Financial Items */
             financial_items: components["schemas"]["PnlFinancialItem"][];
+            /** Hedge Pnl Mtm */
+            hedge_pnl_mtm: string;
+            /** Hedge Pnl Realized */
+            hedge_pnl_realized: string;
+            /** Physical Cost */
+            physical_cost: string;
+            /** Physical Items */
+            physical_items: components["schemas"]["PnlPhysicalItem"][];
+            /** Physical Revenue */
+            physical_revenue: string;
+            /** Total Pnl */
+            total_pnl: string;
         };
         /** DealRead */
         DealRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Reference */
-            reference: string;
-            /** Name */
-            name: string;
             /** Commodity */
             commodity: string;
-            status: components["schemas"]["DealStatus"];
-            /** Total Physical Tons */
-            total_physical_tons: number;
-            /** Total Hedge Tons */
-            total_hedge_tons: number;
-            /** Hedge Ratio */
-            hedge_ratio: number;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Updated At */
-            updated_at?: string | null;
+            /** Hedge Ratio */
+            hedge_ratio: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /** Is Deleted */
             is_deleted: boolean;
+            /** Name */
+            name: string;
+            /** Reference */
+            reference: string;
+            status: components["schemas"]["DealStatus"];
+            /** Total Hedge Tons */
+            total_hedge_tons: string;
+            /** Total Physical Tons */
+            total_physical_tons: string;
+            /** Updated At */
+            updated_at?: string | null;
         };
         /**
          * DealStatus
@@ -2048,65 +2048,65 @@ export interface components {
         DealStatus: "open" | "partially_hedged" | "fully_hedged" | "settled" | "closed";
         /** ExposureDetailRead */
         ExposureDetailRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
+            /** Avg Entry Price */
+            avg_entry_price?: string | null;
             /** Commodity */
             commodity: string;
-            direction: components["schemas"]["ExposureDirection"];
-            source_type: components["schemas"]["ExposureSourceType"];
-            /**
-             * Source Id
-             * Format: uuid
-             */
-            source_id: string;
-            /** Original Tons */
-            original_tons: number;
-            /** Open Tons */
-            open_tons: number;
-            /**
-             * Hedged Tons
-             * @default 0
-             */
-            hedged_tons: number;
-            /** Price Per Ton */
-            price_per_ton?: number | null;
-            /** Settlement Month */
-            settlement_month?: string | null;
-            status: components["schemas"]["ExposureStatus"];
+            /** Counterparty Name */
+            counterparty_name?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Updated At */
-            updated_at?: string | null;
-            /** Price Type */
-            price_type?: string | null;
+            /** Delivery Date End */
+            delivery_date_end?: string | null;
+            /** Delivery Date Start */
+            delivery_date_start?: string | null;
+            direction: components["schemas"]["ExposureDirection"];
+            /** Fixing Date */
+            fixing_date?: string | null;
+            /**
+             * Hedged Tons
+             * @default 0.000
+             */
+            hedged_tons: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Observation Date End */
+            observation_date_end?: string | null;
+            /** Observation Date Start */
+            observation_date_start?: string | null;
+            /** Open Tons */
+            open_tons: string;
+            /** Order Notes */
+            order_notes?: string | null;
             /** Order Type */
             order_type?: string | null;
-            /** Counterparty Name */
-            counterparty_name?: string | null;
+            /** Original Tons */
+            original_tons: string;
+            /** Price Per Ton */
+            price_per_ton?: string | null;
+            /** Price Type */
+            price_type?: string | null;
             /** Pricing Convention */
             pricing_convention?: string | null;
             /** Reference Month */
             reference_month?: string | null;
-            /** Observation Date Start */
-            observation_date_start?: string | null;
-            /** Observation Date End */
-            observation_date_end?: string | null;
-            /** Fixing Date */
-            fixing_date?: string | null;
-            /** Avg Entry Price */
-            avg_entry_price?: number | null;
-            /** Order Notes */
-            order_notes?: string | null;
-            /** Delivery Date Start */
-            delivery_date_start?: string | null;
-            /** Delivery Date End */
-            delivery_date_end?: string | null;
+            /** Settlement Month */
+            settlement_month?: string | null;
+            /**
+             * Source Id
+             * Format: uuid
+             */
+            source_id: string;
+            source_type: components["schemas"]["ExposureSourceType"];
+            status: components["schemas"]["ExposureStatus"];
+            /** Updated At */
+            updated_at?: string | null;
         };
         /**
          * ExposureDirection
@@ -2138,71 +2138,71 @@ export interface components {
         /** GlobalExposureRead */
         GlobalExposureRead: {
             /**
-             * Pre Reduction Global Active Mt
-             * @description Global active before linkage reduction (MT)
-             */
-            pre_reduction_global_active_mt: number;
-            /**
-             * Pre Reduction Global Passive Mt
-             * @description Global passive before linkage reduction (MT)
-             */
-            pre_reduction_global_passive_mt: number;
-            /**
-             * Reduction Applied Active Mt
-             * @description Reduction applied to global active via linkages (MT)
-             */
-            reduction_applied_active_mt: number;
-            /**
-             * Reduction Applied Passive Mt
-             * @description Reduction applied to global passive via linkages (MT)
-             */
-            reduction_applied_passive_mt: number;
-            /**
-             * Global Active Mt
-             * @description Reduced global active exposure (MT)
-             */
-            global_active_mt: number;
-            /**
-             * Global Passive Mt
-             * @description Reduced global passive exposure (MT)
-             */
-            global_passive_mt: number;
-            /**
-             * Global Net Mt
-             * @description Global active minus global passive (MT)
-             */
-            global_net_mt: number;
-            /**
-             * Commercial Active Mt
-             * @description Reduced commercial active exposure (MT)
-             */
-            commercial_active_mt: number;
-            /**
-             * Commercial Passive Mt
-             * @description Reduced commercial passive exposure (MT)
-             */
-            commercial_passive_mt: number;
-            /**
-             * Hedge Long Mt
-             * @description Unlinked hedge long quantity (MT)
-             */
-            hedge_long_mt: number;
-            /**
-             * Hedge Short Mt
-             * @description Unlinked hedge short quantity (MT)
-             */
-            hedge_short_mt: number;
-            /**
              * Calculation Timestamp
              * Format: date-time
              * @description UTC calculation timestamp
              */
             calculation_timestamp: string;
             /**
+             * Commercial Active Mt
+             * @description Reduced commercial active exposure (MT)
+             */
+            commercial_active_mt: string;
+            /**
+             * Commercial Passive Mt
+             * @description Reduced commercial passive exposure (MT)
+             */
+            commercial_passive_mt: string;
+            /**
              * Entities Count Considered
              * @description Count of variable-price orders and hedge contracts considered
              */
             entities_count_considered: number;
+            /**
+             * Global Active Mt
+             * @description Reduced global active exposure (MT)
+             */
+            global_active_mt: string;
+            /**
+             * Global Net Mt
+             * @description Global active minus global passive (MT)
+             */
+            global_net_mt: string;
+            /**
+             * Global Passive Mt
+             * @description Reduced global passive exposure (MT)
+             */
+            global_passive_mt: string;
+            /**
+             * Hedge Long Mt
+             * @description Unlinked hedge long quantity (MT)
+             */
+            hedge_long_mt: string;
+            /**
+             * Hedge Short Mt
+             * @description Unlinked hedge short quantity (MT)
+             */
+            hedge_short_mt: string;
+            /**
+             * Pre Reduction Global Active Mt
+             * @description Global active before linkage reduction (MT)
+             */
+            pre_reduction_global_active_mt: string;
+            /**
+             * Pre Reduction Global Passive Mt
+             * @description Global passive before linkage reduction (MT)
+             */
+            pre_reduction_global_passive_mt: string;
+            /**
+             * Reduction Applied Active Mt
+             * @description Reduction applied to global active via linkages (MT)
+             */
+            reduction_applied_active_mt: string;
+            /**
+             * Reduction Applied Passive Mt
+             * @description Reduction applied to global passive via linkages (MT)
+             */
+            reduction_applied_passive_mt: string;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2217,30 +2217,37 @@ export interface components {
         /** HedgeContractCreate */
         HedgeContractCreate: {
             /**
+             * Avg Computation Days
+             * @description Computation days for avginter
+             */
+            avg_computation_days?: number | null;
+            /**
              * Commodity
              * @description Commodity identifier
              */
             commodity: string;
+            /** Counterparty Id */
+            counterparty_id?: string | null;
+            /** Fixed Price Unit */
+            fixed_price_unit?: string | null;
+            /** Fixed Price Value */
+            fixed_price_value?: number | string | null;
             /**
-             * Quantity Mt
-             * @description Quantity in metric tons (MT)
+             * Fixing Date
+             * @description Fixing date for c2r
              */
-            quantity_mt: number;
+            fixing_date?: string | null;
+            /** Float Pricing Convention */
+            float_pricing_convention?: string | null;
             /**
              * Legs
              * @description Exactly two legs: one fixed, one variable
              */
             legs: components["schemas"]["HedgeLeg"][];
-            /** Counterparty Id */
-            counterparty_id?: string | null;
-            /** Fixed Price Value */
-            fixed_price_value?: number | null;
-            /** Fixed Price Unit */
-            fixed_price_unit?: string | null;
-            /** Float Pricing Convention */
-            float_pricing_convention?: string | null;
+            /** Notes */
+            notes?: string | null;
             /** Premium Discount */
-            premium_discount?: number | null;
+            premium_discount?: number | string | null;
             /**
              * Pricing Period Month
              * @description Reference month for avg
@@ -2251,26 +2258,19 @@ export interface components {
              * @description Reference year for avg
              */
             pricing_period_year?: number | null;
-            /**
-             * Fixing Date
-             * @description Fixing date for c2r
-             */
-            fixing_date?: string | null;
-            /**
-             * Avg Computation Days
-             * @description Computation days for avginter
-             */
-            avg_computation_days?: number | null;
-            /** Settlement Date */
-            settlement_date?: string | null;
             /** Prompt Date */
             prompt_date?: string | null;
-            /** Trade Date */
-            trade_date?: string | null;
+            /**
+             * Quantity Mt
+             * @description Quantity in metric tons (MT)
+             */
+            quantity_mt: number | string;
+            /** Settlement Date */
+            settlement_date?: string | null;
             /** Source Type */
             source_type?: string | null;
-            /** Notes */
-            notes?: string | null;
+            /** Trade Date */
+            trade_date?: string | null;
         };
         /** HedgeContractListResponse */
         HedgeContractListResponse: {
@@ -2281,78 +2281,73 @@ export interface components {
         };
         /** HedgeContractRead */
         HedgeContractRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Reference */
-            reference?: string | null;
-            /** Commodity */
-            commodity: string;
-            /** Quantity Mt */
-            quantity_mt: number;
-            /** Rfq Id */
-            rfq_id?: string | null;
-            /** Rfq Quote Id */
-            rfq_quote_id?: string | null;
-            /** Counterparty Id */
-            counterparty_id?: string | null;
-            /** Fixed Price Value */
-            fixed_price_value?: number | null;
-            /** Fixed Price Unit */
-            fixed_price_unit?: string | null;
-            /** Float Pricing Convention */
-            float_pricing_convention?: string | null;
-            /** Premium Discount */
-            premium_discount?: number | null;
-            /** Pricing Period Month */
-            pricing_period_month?: number | null;
-            /** Pricing Period Year */
-            pricing_period_year?: number | null;
-            /** Fixing Date */
-            fixing_date?: string | null;
             /** Avg Computation Days */
             avg_computation_days?: number | null;
-            /** Status */
-            status?: string | null;
-            /** @description Fixed leg side (buy or sell) */
-            fixed_leg_side: components["schemas"]["HedgeLegSide"];
-            /** @description Variable leg side (buy or sell) */
-            variable_leg_side: components["schemas"]["HedgeLegSide"];
             /** @description Classification based on fixed leg */
             classification: components["schemas"]["HedgeClassification"];
-            /** Settlement Date */
-            settlement_date?: string | null;
-            /** Prompt Date */
-            prompt_date?: string | null;
-            /** Trade Date */
-            trade_date?: string | null;
-            /** Source Type */
-            source_type?: string | null;
-            /** Source Id */
-            source_id?: string | null;
-            /** Notes */
-            notes?: string | null;
-            /** Created By */
-            created_by?: string | null;
+            /** Commodity */
+            commodity: string;
+            /** Counterparty Id */
+            counterparty_id?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Updated At */
-            updated_at?: string | null;
+            /** Created By */
+            created_by?: string | null;
             /** Deleted At */
             deleted_at?: string | null;
+            /** @description Fixed leg side (buy or sell) */
+            fixed_leg_side: components["schemas"]["HedgeLegSide"];
+            /** Fixed Price Unit */
+            fixed_price_unit?: string | null;
+            /** Fixed Price Value */
+            fixed_price_value?: string | null;
+            /** Fixing Date */
+            fixing_date?: string | null;
+            /** Float Pricing Convention */
+            float_pricing_convention?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Notes */
+            notes?: string | null;
+            /** Premium Discount */
+            premium_discount?: string | null;
+            /** Pricing Period Month */
+            pricing_period_month?: number | null;
+            /** Pricing Period Year */
+            pricing_period_year?: number | null;
+            /** Prompt Date */
+            prompt_date?: string | null;
+            /** Quantity Mt */
+            quantity_mt: string;
+            /** Reference */
+            reference?: string | null;
+            /** Rfq Id */
+            rfq_id?: string | null;
+            /** Rfq Quote Id */
+            rfq_quote_id?: string | null;
+            /** Settlement Date */
+            settlement_date?: string | null;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Type */
+            source_type?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Trade Date */
+            trade_date?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** @description Variable leg side (buy or sell) */
+            variable_leg_side: components["schemas"]["HedgeLegSide"];
         };
         /** HedgeContractSettlementCreate */
         HedgeContractSettlementCreate: {
-            /**
-             * Source Event Id
-             * Format: uuid
-             */
-            source_event_id: string;
             /**
              * Cashflow Date
              * Format: date
@@ -2362,19 +2357,14 @@ export interface components {
             currency?: string | null;
             /** Legs */
             legs: components["schemas"]["HedgeContractSettlementLeg"][];
+            /**
+             * Source Event Id
+             * Format: uuid
+             */
+            source_event_id: string;
         };
         /** HedgeContractSettlementEventRead */
         HedgeContractSettlementEventRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Hedge Contract Id
-             * Format: uuid
-             */
-            hedge_contract_id: string;
             /**
              * Cashflow Date
              * Format: date
@@ -2385,13 +2375,23 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /**
+             * Hedge Contract Id
+             * Format: uuid
+             */
+            hedge_contract_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
         };
         /** HedgeContractSettlementLeg */
         HedgeContractSettlementLeg: {
-            leg_id: components["schemas"]["LedgerLegId"];
-            direction: components["schemas"]["LedgerDirection"];
             /** Amount */
             amount: number | string;
+            direction: components["schemas"]["LedgerDirection"];
+            leg_id: components["schemas"]["LedgerLegId"];
         };
         /** HedgeContractSettlementResponse */
         HedgeContractSettlementResponse: {
@@ -2417,39 +2417,39 @@ export interface components {
          * @description Partial update payload for a hedge contract.
          */
         HedgeContractUpdate: {
-            /** Quantity Mt */
-            quantity_mt?: number | null;
+            /** Avg Computation Days */
+            avg_computation_days?: number | null;
             /** Counterparty Id */
             counterparty_id?: string | null;
-            /** Fixed Price Value */
-            fixed_price_value?: number | null;
             /** Fixed Price Unit */
             fixed_price_unit?: string | null;
+            /** Fixed Price Value */
+            fixed_price_value?: number | string | null;
+            /** Fixing Date */
+            fixing_date?: string | null;
             /** Float Pricing Convention */
             float_pricing_convention?: string | null;
+            /** Notes */
+            notes?: string | null;
             /** Premium Discount */
-            premium_discount?: number | null;
+            premium_discount?: number | string | null;
             /** Pricing Period Month */
             pricing_period_month?: number | null;
             /** Pricing Period Year */
             pricing_period_year?: number | null;
-            /** Fixing Date */
-            fixing_date?: string | null;
-            /** Avg Computation Days */
-            avg_computation_days?: number | null;
-            /** Settlement Date */
-            settlement_date?: string | null;
             /** Prompt Date */
             prompt_date?: string | null;
-            /** Notes */
-            notes?: string | null;
+            /** Quantity Mt */
+            quantity_mt?: number | string | null;
+            /** Settlement Date */
+            settlement_date?: string | null;
         };
         /** HedgeLeg */
         HedgeLeg: {
-            /** @description Leg side (buy or sell) */
-            side: components["schemas"]["HedgeLegSide"];
             /** @description Leg price type (fixed or variable) */
             price_type: components["schemas"]["HedgeLegPriceType"];
+            /** @description Leg side (buy or sell) */
+            side: components["schemas"]["HedgeLegSide"];
         };
         /**
          * HedgeLegPriceType
@@ -2464,22 +2464,22 @@ export interface components {
         /** HedgeOrderLinkageCreate */
         HedgeOrderLinkageCreate: {
             /**
-             * Order Id
-             * Format: uuid
-             * @description Linked order ID
-             */
-            order_id: string;
-            /**
              * Contract Id
              * Format: uuid
              * @description Linked hedge contract ID
              */
             contract_id: string;
             /**
+             * Order Id
+             * Format: uuid
+             * @description Linked order ID
+             */
+            order_id: string;
+            /**
              * Quantity Mt
              * @description Linked quantity in MT
              */
-            quantity_mt: number;
+            quantity_mt: number | string;
         };
         /** HedgeOrderLinkageListResponse */
         HedgeOrderLinkageListResponse: {
@@ -2491,6 +2491,16 @@ export interface components {
         /** HedgeOrderLinkageRead */
         HedgeOrderLinkageRead: {
             /**
+             * Contract Id
+             * Format: uuid
+             */
+            contract_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
              * Id
              * Format: uuid
              */
@@ -2500,18 +2510,8 @@ export interface components {
              * Format: uuid
              */
             order_id: string;
-            /**
-             * Contract Id
-             * Format: uuid
-             */
-            contract_id: string;
             /** Quantity Mt */
-            quantity_mt: number;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+            quantity_mt: string;
         };
         /**
          * HedgeTaskAction
@@ -2528,26 +2528,26 @@ export interface components {
         /** HedgeTaskRead */
         HedgeTaskRead: {
             /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Exposure Id
-             * Format: uuid
-             */
-            exposure_id: string;
-            /** Recommended Tons */
-            recommended_tons: number;
-            recommended_action: components["schemas"]["HedgeTaskAction"];
-            status: components["schemas"]["HedgeTaskStatus"];
-            /**
              * Created At
              * Format: date-time
              */
             created_at: string;
             /** Executed At */
             executed_at?: string | null;
+            /**
+             * Exposure Id
+             * Format: uuid
+             */
+            exposure_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            recommended_action: components["schemas"]["HedgeTaskAction"];
+            /** Recommended Tons */
+            recommended_tons: string;
+            status: components["schemas"]["HedgeTaskStatus"];
         };
         /**
          * HedgeTaskStatus
@@ -2571,31 +2571,37 @@ export interface components {
         LedgerLegId: "FIXED" | "FLOAT";
         /** LinkedDealSummary */
         LinkedDealSummary: {
+            /** Hedge Ratio */
+            hedge_ratio: string;
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Reference */
-            reference: string;
             /** Name */
             name: string;
-            /** Status */
-            status: string;
-            /** Total Physical Tons */
-            total_physical_tons: number;
-            /** Total Hedge Tons */
-            total_hedge_tons: number;
-            /** Hedge Ratio */
-            hedge_ratio: number;
             /**
              * Orders
              * @default []
              */
             orders: components["schemas"]["LinkedOrderSummary"][];
+            /** Reference */
+            reference: string;
+            /** Status */
+            status: string;
+            /** Total Hedge Tons */
+            total_hedge_tons: string;
+            /** Total Physical Tons */
+            total_physical_tons: string;
         };
         /** LinkedOrderSummary */
         LinkedOrderSummary: {
+            /** Avg Entry Price */
+            avg_entry_price?: string | null;
+            /** Counterparty Id */
+            counterparty_id?: string | null;
+            /** Currency */
+            currency?: string | null;
             /**
              * Id
              * Format: uuid
@@ -2606,13 +2612,7 @@ export interface components {
             /** Order Type */
             order_type?: string | null;
             /** Quantity Mt */
-            quantity_mt?: number | null;
-            /** Counterparty Id */
-            counterparty_id?: string | null;
-            /** Avg Entry Price */
-            avg_entry_price?: number | null;
-            /** Currency */
-            currency?: string | null;
+            quantity_mt?: string | null;
         };
         /**
          * MTMObjectType
@@ -2621,28 +2621,25 @@ export interface components {
         MTMObjectType: "hedge_contract" | "order";
         /** MTMResultResponse */
         MTMResultResponse: {
-            object_type: components["schemas"]["MTMObjectType"];
-            /** Object Id */
-            object_id: string;
             /**
              * As Of Date
              * Format: date
              */
             as_of_date: string;
-            /** Mtm Value */
-            mtm_value: string;
-            /** Price D1 */
-            price_d1: string;
             /** Entry Price */
             entry_price: string;
+            /** Mtm Value */
+            mtm_value: string;
+            /** Object Id */
+            object_id: string;
+            object_type: components["schemas"]["MTMObjectType"];
+            /** Price D1 */
+            price_d1: string;
             /** Quantity Mt */
             quantity_mt: string;
         };
         /** MTMSnapshotCreate */
         MTMSnapshotCreate: {
-            object_type: components["schemas"]["MTMObjectType"];
-            /** Object Id */
-            object_id: string;
             /**
              * As Of Date
              * Format: date
@@ -2653,27 +2650,17 @@ export interface components {
              * @description Caller-provided correlation id for evidence
              */
             correlation_id: string;
+            /** Object Id */
+            object_id: string;
+            object_type: components["schemas"]["MTMObjectType"];
         };
         /** MTMSnapshotResponse */
         MTMSnapshotResponse: {
-            /** Id */
-            id: string;
-            object_type: components["schemas"]["MTMObjectType"];
-            /** Object Id */
-            object_id: string;
             /**
              * As Of Date
              * Format: date
              */
             as_of_date: string;
-            /** Mtm Value */
-            mtm_value: string;
-            /** Price D1 */
-            price_d1: string;
-            /** Entry Price */
-            entry_price: string;
-            /** Quantity Mt */
-            quantity_mt: string;
             /** Correlation Id */
             correlation_id: string;
             /**
@@ -2681,37 +2668,50 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Entry Price */
+            entry_price: string;
+            /** Id */
+            id: string;
+            /** Mtm Value */
+            mtm_value: string;
+            /** Object Id */
+            object_id: string;
+            object_type: components["schemas"]["MTMObjectType"];
+            /** Price D1 */
+            price_d1: string;
+            /** Quantity Mt */
+            quantity_mt: string;
         };
         /** NetExposureItem */
         NetExposureItem: {
             /** Commodity */
             commodity: string;
-            /** Long Tons */
-            long_tons: number;
-            /** Short Tons */
-            short_tons: number;
-            /** Net Tons */
-            net_tons: number;
-            /**
-             * Long Original
-             * @default 0
-             */
-            long_original: number;
-            /**
-             * Short Original
-             * @default 0
-             */
-            short_original: number;
             /**
              * Long Hedged
-             * @default 0
+             * @default 0.000
              */
-            long_hedged: number;
+            long_hedged: string;
+            /**
+             * Long Original
+             * @default 0.000
+             */
+            long_original: string;
+            /** Long Tons */
+            long_tons: string;
+            /** Net Tons */
+            net_tons: string;
             /**
              * Short Hedged
-             * @default 0
+             * @default 0.000
              */
-            short_hedged: number;
+            short_hedged: string;
+            /**
+             * Short Original
+             * @default 0.000
+             */
+            short_original: string;
+            /** Short Tons */
+            short_tons: string;
         };
         /** NetExposureResponse */
         NetExposureResponse: {
@@ -2732,96 +2732,96 @@ export interface components {
         OrderPricingConvention: "AVG" | "AVGInter" | "C2R";
         /** OrderRead */
         OrderRead: {
-            /** @description Fixed or variable pricing */
-            price_type: components["schemas"]["PriceType"];
-            /**
-             * Quantity Mt
-             * @description Quantity in metric tons (MT)
-             */
-            quantity_mt: number;
-            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
-            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
             /**
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: number | null;
+            avg_entry_price?: string | null;
+            /**
+             * Counterparty Id
+             * @description FK to counterparties
+             */
+            counterparty_id?: string | null;
             /**
              * Counterparty Name
              * @description Client or supplier name (free text)
              */
             counterparty_name?: string | null;
             /**
-             * Reference Month
-             * @description Reference month yyyy-MM — required for AVG convention
+             * Created At
+             * Format: date-time
              */
-            reference_month?: string | null;
-            /**
-             * Observation Date Start
-             * @description Observation window start — required for AVGInter convention
-             */
-            observation_date_start?: string | null;
-            /**
-             * Observation Date End
-             * @description Observation window end — required for AVGInter convention
-             */
-            observation_date_end?: string | null;
-            /**
-             * Fixing Date
-             * @description Fixing date — required for C2R convention
-             */
-            fixing_date?: string | null;
-            /**
-             * Counterparty Id
-             * @description FK to counterparties
-             */
-            counterparty_id?: string | null;
-            /** @description Pricing type detail */
-            pricing_type?: components["schemas"]["PricingType"] | null;
-            /**
-             * Delivery Terms
-             * @description e.g. CIF Rotterdam
-             */
-            delivery_terms?: string | null;
-            /**
-             * Delivery Date Start
-             * @description Delivery window start
-             */
-            delivery_date_start?: string | null;
-            /**
-             * Delivery Date End
-             * @description Delivery window end
-             */
-            delivery_date_end?: string | null;
-            /**
-             * Payment Terms Days
-             * @description Payment terms in days
-             */
-            payment_terms_days?: number | null;
+            created_at: string;
             /**
              * Currency
              * @description ISO 4217 currency code
              * @default USD
              */
             currency: string;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /**
+             * Delivery Date End
+             * @description Delivery window end
+             */
+            delivery_date_end?: string | null;
+            /**
+             * Delivery Date Start
+             * @description Delivery window start
+             */
+            delivery_date_start?: string | null;
+            /**
+             * Delivery Terms
+             * @description e.g. CIF Rotterdam
+             */
+            delivery_terms?: string | null;
+            /**
+             * Fixing Date
+             * @description Fixing date — required for C2R convention
+             */
+            fixing_date?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
             /**
              * Notes
              * @description Free-form notes
              */
             notes?: string | null;
             /**
-             * Id
-             * Format: uuid
+             * Observation Date End
+             * @description Observation window end — required for AVGInter convention
              */
-            id: string;
+            observation_date_end?: string | null;
+            /**
+             * Observation Date Start
+             * @description Observation window start — required for AVGInter convention
+             */
+            observation_date_start?: string | null;
             order_type: components["schemas"]["OrderType"];
             /**
-             * Created At
-             * Format: date-time
+             * Payment Terms Days
+             * @description Payment terms in days
              */
-            created_at: string;
-            /** Deleted At */
-            deleted_at?: string | null;
+            payment_terms_days?: number | null;
+            /** @description Fixed or variable pricing */
+            price_type: components["schemas"]["PriceType"];
+            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
+            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
+            /** @description Pricing type detail */
+            pricing_type?: components["schemas"]["PricingType"] | null;
+            /**
+             * Quantity Mt
+             * @description Quantity in metric tons (MT)
+             */
+            quantity_mt: string;
+            /**
+             * Reference Month
+             * @description Reference month yyyy-MM — required for AVG convention
+             */
+            reference_month?: string | null;
         };
         /**
          * OrderType
@@ -2837,99 +2837,99 @@ export interface components {
         };
         /** PLSnapshotCreate */
         PLSnapshotCreate: {
-            /** Entity Type */
-            entity_type: string;
             /**
              * Entity Id
              * Format: uuid
              */
             entity_id: string;
-            /**
-             * Period Start
-             * Format: date
-             */
-            period_start: string;
+            /** Entity Type */
+            entity_type: string;
             /**
              * Period End
              * Format: date
              */
             period_end: string;
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
         };
         /** PLSnapshotResponse */
         PLSnapshotResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Entity Type */
-            entity_type: string;
-            /**
-             * Entity Id
-             * Format: uuid
-             */
-            entity_id: string;
-            /**
-             * Period Start
-             * Format: date
-             */
-            period_start: string;
-            /**
-             * Period End
-             * Format: date
-             */
-            period_end: string;
-            /** Realized Pl */
-            realized_pl: string;
-            /** Unrealized Mtm */
-            unrealized_mtm: string;
+            /** Correlation Id */
+            correlation_id: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-            /** Correlation Id */
-            correlation_id: string | null;
-        };
-        /** PipelineRunDetailRead */
-        PipelineRunDetailRead: {
+            /**
+             * Entity Id
+             * Format: uuid
+             */
+            entity_id: string;
+            /** Entity Type */
+            entity_type: string;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /**
+             * Period End
+             * Format: date
+             */
+            period_end: string;
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
+            /** Realized Pl */
+            realized_pl: string;
+            /** Unrealized Mtm */
+            unrealized_mtm: string;
+        };
+        /** PipelineRunDetailRead */
+        PipelineRunDetailRead: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Message */
+            error_message?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Inputs Hash */
+            inputs_hash: string;
             /**
              * Run Date
              * Format: date
              */
             run_date: string;
-            /** Status */
-            status: string;
             /**
              * Started At
              * Format: date-time
              */
             started_at: string;
-            /** Finished At */
-            finished_at?: string | null;
-            /** Steps Completed */
-            steps_completed: number;
-            /** Steps Total */
-            steps_total: number;
-            /** Error Message */
-            error_message?: string | null;
-            /** Inputs Hash */
-            inputs_hash: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
+            /** Status */
+            status: string;
             /**
              * Steps
              * @default []
              */
             steps: components["schemas"]["PipelineStepRead"][];
+            /** Steps Completed */
+            steps_completed: number;
+            /** Steps Total */
+            steps_total: number;
         };
         /** PipelineRunListResponse */
         PipelineRunListResponse: {
@@ -2939,67 +2939,67 @@ export interface components {
         /** PipelineRunRead */
         PipelineRunRead: {
             /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Message */
+            error_message?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Inputs Hash */
+            inputs_hash: string;
             /**
              * Run Date
              * Format: date
              */
             run_date: string;
-            /** Status */
-            status: string;
             /**
              * Started At
              * Format: date-time
              */
             started_at: string;
-            /** Finished At */
-            finished_at?: string | null;
+            /** Status */
+            status: string;
             /** Steps Completed */
             steps_completed: number;
             /** Steps Total */
             steps_total: number;
-            /** Error Message */
-            error_message?: string | null;
-            /** Inputs Hash */
-            inputs_hash: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /** PipelineStepRead */
         PipelineStepRead: {
+            /** Error Message */
+            error_message?: string | null;
+            /** Finished At */
+            finished_at?: string | null;
             /**
              * Id
              * Format: uuid
              */
             id: string;
             /**
-             * Run Id
-             * Format: uuid
-             */
-            run_id: string;
-            /** Step Number */
-            step_number: number;
-            /** Step Name */
-            step_name: string;
-            /** Status */
-            status: string;
-            /** Started At */
-            started_at?: string | null;
-            /** Finished At */
-            finished_at?: string | null;
-            /**
              * Records Processed
              * @default 0
              */
             records_processed: number;
-            /** Error Message */
-            error_message?: string | null;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /** Started At */
+            started_at?: string | null;
+            /** Status */
+            status: string;
+            /** Step Name */
+            step_name: string;
+            /** Step Number */
+            step_number: number;
         };
         /** PnlBreakdownRequest */
         PnlBreakdownRequest: {
@@ -3022,41 +3022,43 @@ export interface components {
         };
         /** PnlBreakdownTotals */
         PnlBreakdownTotals: {
-            /** Physical Revenue */
-            physical_revenue: number;
-            /** Physical Cost */
-            physical_cost: number;
-            /** Hedge Pnl Realized */
-            hedge_pnl_realized: number;
             /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: number;
+            hedge_pnl_mtm: string;
+            /** Hedge Pnl Realized */
+            hedge_pnl_realized: string;
+            /** Physical Cost */
+            physical_cost: string;
+            /** Physical Revenue */
+            physical_revenue: string;
             /** Total Pnl */
-            total_pnl: number;
+            total_pnl: string;
         };
         /** PnlFinancialItem */
         PnlFinancialItem: {
+            /** Classification */
+            classification: string;
+            /** Entry Price */
+            entry_price: string;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Market Price */
+            market_price?: string | null;
+            /** Pnl */
+            pnl: string;
+            /** Quantity Mt */
+            quantity_mt: string;
             /** Reference */
             reference?: string | null;
-            /** Classification */
-            classification: string;
             /** Status */
             status: string;
-            /** Quantity Mt */
-            quantity_mt: number;
-            /** Entry Price */
-            entry_price: number;
-            /** Market Price */
-            market_price?: number | null;
-            /** Pnl */
-            pnl: number;
         };
         /** PnlPhysicalItem */
         PnlPhysicalItem: {
+            /** Commodity */
+            commodity: string;
             /**
              * Id
              * Format: uuid
@@ -3064,14 +3066,12 @@ export interface components {
             id: string;
             /** Order Type */
             order_type: string;
-            /** Commodity */
-            commodity: string;
-            /** Quantity Mt */
-            quantity_mt: number;
             /** Price */
-            price: number;
+            price: string;
+            /** Quantity Mt */
+            quantity_mt: string;
             /** Value */
-            value: number;
+            value: string;
         };
         /**
          * PriceType
@@ -3090,72 +3090,21 @@ export interface components {
         ProjectionInstrumentType: "sales_order" | "purchase_order" | "hedge_buy" | "hedge_sell" | "hedge_contract";
         /** PurchaseOrderCreate */
         PurchaseOrderCreate: {
-            /** @description Fixed or variable pricing */
-            price_type: components["schemas"]["PriceType"];
-            /**
-             * Quantity Mt
-             * @description Quantity in metric tons (MT)
-             */
-            quantity_mt: number;
-            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
-            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
             /**
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: number | null;
-            /**
-             * Counterparty Name
-             * @description Client or supplier name (free text)
-             */
-            counterparty_name?: string | null;
-            /**
-             * Reference Month
-             * @description Reference month yyyy-MM — required for AVG convention
-             */
-            reference_month?: string | null;
-            /**
-             * Observation Date Start
-             * @description Observation window start — required for AVGInter convention
-             */
-            observation_date_start?: string | null;
-            /**
-             * Observation Date End
-             * @description Observation window end — required for AVGInter convention
-             */
-            observation_date_end?: string | null;
-            /**
-             * Fixing Date
-             * @description Fixing date — required for C2R convention
-             */
-            fixing_date?: string | null;
+            avg_entry_price?: number | string | null;
             /**
              * Counterparty Id
              * @description FK to counterparties
              */
             counterparty_id?: string | null;
-            /** @description Pricing type detail */
-            pricing_type?: components["schemas"]["PricingType"] | null;
             /**
-             * Delivery Terms
-             * @description e.g. CIF Rotterdam
+             * Counterparty Name
+             * @description Client or supplier name (free text)
              */
-            delivery_terms?: string | null;
-            /**
-             * Delivery Date Start
-             * @description Delivery window start
-             */
-            delivery_date_start?: string | null;
-            /**
-             * Delivery Date End
-             * @description Delivery window end
-             */
-            delivery_date_end?: string | null;
-            /**
-             * Payment Terms Days
-             * @description Payment terms in days
-             */
-            payment_terms_days?: number | null;
+            counterparty_name?: string | null;
             /**
              * Currency
              * @description ISO 4217 currency code
@@ -3163,23 +3112,74 @@ export interface components {
              */
             currency: string;
             /**
+             * Delivery Date End
+             * @description Delivery window end
+             */
+            delivery_date_end?: string | null;
+            /**
+             * Delivery Date Start
+             * @description Delivery window start
+             */
+            delivery_date_start?: string | null;
+            /**
+             * Delivery Terms
+             * @description e.g. CIF Rotterdam
+             */
+            delivery_terms?: string | null;
+            /**
+             * Fixing Date
+             * @description Fixing date — required for C2R convention
+             */
+            fixing_date?: string | null;
+            /**
              * Notes
              * @description Free-form notes
              */
             notes?: string | null;
+            /**
+             * Observation Date End
+             * @description Observation window end — required for AVGInter convention
+             */
+            observation_date_end?: string | null;
+            /**
+             * Observation Date Start
+             * @description Observation window start — required for AVGInter convention
+             */
+            observation_date_start?: string | null;
+            /**
+             * Payment Terms Days
+             * @description Payment terms in days
+             */
+            payment_terms_days?: number | null;
+            /** @description Fixed or variable pricing */
+            price_type: components["schemas"]["PriceType"];
+            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
+            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
+            /** @description Pricing type detail */
+            pricing_type?: components["schemas"]["PricingType"] | null;
+            /**
+             * Quantity Mt
+             * @description Quantity in metric tons (MT)
+             */
+            quantity_mt: number | string;
+            /**
+             * Reference Month
+             * @description Reference month yyyy-MM — required for AVG convention
+             */
+            reference_month?: string | null;
         };
         /**
          * RFQAwardQuoteRequest
          * @description Award a specific quote (per-counterparty contract creation).
          */
         RFQAwardQuoteRequest: {
-            /** User Id */
-            user_id: string;
             /**
              * Quote Id
              * Format: uuid
              */
             quote_id: string;
+            /** User Id */
+            user_id: string;
         };
         /** RFQAwardRequest */
         RFQAwardRequest: {
@@ -3196,42 +3196,42 @@ export interface components {
         };
         /** RFQCreate */
         RFQCreate: {
-            intent: components["schemas"]["RFQIntent"];
+            /**
+             * Buy Trade Id
+             * @description Referenced buy trade (RFQ id) for SPREAD
+             */
+            buy_trade_id?: string | null;
             /** Commodity */
             commodity: string;
-            /**
-             * Quantity Mt
-             * @description Quantity in metric tons (MT)
-             */
-            quantity_mt: number;
-            /**
-             * Delivery Window Start
-             * Format: date
-             */
-            delivery_window_start: string;
             /**
              * Delivery Window End
              * Format: date
              */
             delivery_window_end: string;
+            /**
+             * Delivery Window Start
+             * Format: date
+             */
+            delivery_window_start: string;
             direction: components["schemas"]["RFQDirection"];
+            intent: components["schemas"]["RFQIntent"];
+            /** Invitations */
+            invitations?: components["schemas"]["RFQInvitationCreate"][];
             /**
              * Order Id
              * @description Referenced commercial order ID
              */
             order_id?: string | null;
             /**
-             * Buy Trade Id
-             * @description Referenced buy trade (RFQ id) for SPREAD
+             * Quantity Mt
+             * @description Quantity in metric tons (MT)
              */
-            buy_trade_id?: string | null;
+            quantity_mt: number;
             /**
              * Sell Trade Id
              * @description Referenced sell trade (RFQ id) for SPREAD
              */
             sell_trade_id?: string | null;
-            /** Invitations */
-            invitations?: components["schemas"]["RFQInvitationCreate"][];
             /**
              * Text En
              * @description English LME text for brokers
@@ -3269,11 +3269,32 @@ export interface components {
         };
         /** RFQInvitationRead */
         RFQInvitationRead: {
+            channel: components["schemas"]["RFQInvitationChannel"];
+            /**
+             * Counterparty Id
+             * Format: uuid
+             */
+            counterparty_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
             /**
              * Id
              * Format: uuid
              */
             id: string;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Message Body */
+            message_body: string;
+            /** Provider Message Id */
+            provider_message_id: string;
+            /** Recipient Name */
+            recipient_name: string;
+            /** Recipient Phone */
+            recipient_phone: string;
             /**
              * Rfq Id
              * Format: uuid
@@ -3281,30 +3302,9 @@ export interface components {
             rfq_id: string;
             /** Rfq Number */
             rfq_number: string;
-            /**
-             * Counterparty Id
-             * Format: uuid
-             */
-            counterparty_id: string;
-            /** Recipient Name */
-            recipient_name: string;
-            /** Recipient Phone */
-            recipient_phone: string;
-            channel: components["schemas"]["RFQInvitationChannel"];
-            /** Message Body */
-            message_body: string;
-            /** Provider Message Id */
-            provider_message_id: string;
             send_status: components["schemas"]["RFQInvitationStatus"];
             /** Sent At */
             sent_at?: string | null;
-            /** Idempotency Key */
-            idempotency_key: string;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
         };
         /**
          * RFQInvitationStatus
@@ -3313,25 +3313,25 @@ export interface components {
         RFQInvitationStatus: "queued" | "sent" | "failed";
         /** RFQLegInput */
         RFQLegInput: {
-            side: components["schemas"]["RFQSideEnum"];
-            price_type: components["schemas"]["RFQPriceTypeEnum"];
-            /** Quantity Mt */
-            quantity_mt: number;
-            /** Month Name */
-            month_name?: string | null;
-            /** Year */
-            year?: number | null;
-            /** Start Date */
-            start_date?: string | null;
             /** End Date */
             end_date?: string | null;
             /** Fixing Date */
             fixing_date?: string | null;
+            /** Month Name */
+            month_name?: string | null;
+            /** Order Limit Price */
+            order_limit_price?: string | null;
             order_type?: components["schemas"]["RFQOrderTypeEnum"] | null;
             /** Order Validity */
             order_validity?: string | null;
-            /** Order Limit Price */
-            order_limit_price?: string | null;
+            price_type: components["schemas"]["RFQPriceTypeEnum"];
+            /** Quantity Mt */
+            quantity_mt: number;
+            side: components["schemas"]["RFQSideEnum"];
+            /** Start Date */
+            start_date?: string | null;
+            /** Year */
+            year?: number | null;
         };
         /** RFQListResponse */
         RFQListResponse: {
@@ -3352,99 +3352,68 @@ export interface components {
         RFQPriceTypeEnum: "AVG" | "AVGInter" | "Fix" | "C2R";
         /** RFQQuoteCreate */
         RFQQuoteCreate: {
-            /**
-             * Rfq Id
-             * Format: uuid
-             */
-            rfq_id: string;
             /** Counterparty Id */
             counterparty_id: string;
-            /** Fixed Price Value */
-            fixed_price_value: number;
             /** Fixed Price Unit */
             fixed_price_unit: string;
+            /** Fixed Price Value */
+            fixed_price_value: number;
             float_pricing_convention: components["schemas"]["FloatPricingConvention"];
             /**
              * Received At
              * Format: date-time
              */
             received_at: string;
+            /**
+             * Rfq Id
+             * Format: uuid
+             */
+            rfq_id: string;
         };
         /** RFQQuoteRead */
         RFQQuoteRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Rfq Id
-             * Format: uuid
-             */
-            rfq_id: string;
             /** Counterparty Id */
             counterparty_id: string;
-            /** Fixed Price Value */
-            fixed_price_value: number;
-            /** Fixed Price Unit */
-            fixed_price_unit: string;
-            float_pricing_convention: components["schemas"]["FloatPricingConvention"];
-            /**
-             * Received At
-             * Format: date-time
-             */
-            received_at: string;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
-        };
-        /** RFQRead */
-        RFQRead: {
+            /** Fixed Price Unit */
+            fixed_price_unit: string;
+            /** Fixed Price Value */
+            fixed_price_value: number;
+            float_pricing_convention: components["schemas"]["FloatPricingConvention"];
             /**
              * Id
              * Format: uuid
              */
             id: string;
-            /** Rfq Number */
-            rfq_number: string;
-            intent: components["schemas"]["RFQIntent"];
-            /** Commodity */
-            commodity: string;
-            /** Quantity Mt */
-            quantity_mt: number;
             /**
-             * Delivery Window Start
-             * Format: date
-             */
-            delivery_window_start: string;
-            /**
-             * Delivery Window End
-             * Format: date
-             */
-            delivery_window_end: string;
-            direction: components["schemas"]["RFQDirection"];
-            /** Order Id */
-            order_id: string | null;
-            /** Buy Trade Id */
-            buy_trade_id: string | null;
-            /** Sell Trade Id */
-            sell_trade_id: string | null;
-            /** Commercial Active Mt */
-            commercial_active_mt: number;
-            /** Commercial Passive Mt */
-            commercial_passive_mt: number;
-            /** Commercial Net Mt */
-            commercial_net_mt: number;
-            /** Commercial Reduction Applied Mt */
-            commercial_reduction_applied_mt: number;
-            /**
-             * Exposure Snapshot Timestamp
+             * Received At
              * Format: date-time
              */
-            exposure_snapshot_timestamp: string;
-            state: components["schemas"]["RFQState"];
+            received_at: string;
+            /**
+             * Rfq Id
+             * Format: uuid
+             */
+            rfq_id: string;
+        };
+        /** RFQRead */
+        RFQRead: {
+            /** Buy Trade Id */
+            buy_trade_id: string | null;
+            /** Commercial Active Mt */
+            commercial_active_mt: number;
+            /** Commercial Net Mt */
+            commercial_net_mt: number;
+            /** Commercial Passive Mt */
+            commercial_passive_mt: number;
+            /** Commercial Reduction Applied Mt */
+            commercial_reduction_applied_mt: number;
+            /** Commodity */
+            commodity: string;
             /**
              * Created At
              * Format: date-time
@@ -3452,18 +3421,49 @@ export interface components {
             created_at: string;
             /** Deleted At */
             deleted_at?: string | null;
+            /**
+             * Delivery Window End
+             * Format: date
+             */
+            delivery_window_end: string;
+            /**
+             * Delivery Window Start
+             * Format: date
+             */
+            delivery_window_start: string;
+            direction: components["schemas"]["RFQDirection"];
+            /**
+             * Exposure Snapshot Timestamp
+             * Format: date-time
+             */
+            exposure_snapshot_timestamp: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            intent: components["schemas"]["RFQIntent"];
             /** Invitations */
             invitations?: components["schemas"]["RFQInvitationRead"][];
+            /** Order Id */
+            order_id: string | null;
+            /** Quantity Mt */
+            quantity_mt: number;
+            /** Rfq Number */
+            rfq_number: string;
+            /** Sell Trade Id */
+            sell_trade_id: string | null;
+            state: components["schemas"]["RFQState"];
         };
         /**
          * RFQRefreshCounterpartyRequest
          * @description Re-send invitation to a specific counterparty.
          */
         RFQRefreshCounterpartyRequest: {
-            /** User Id */
-            user_id: string;
             /** Counterparty Id */
             counterparty_id: string;
+            /** User Id */
+            user_id: string;
         };
         /** RFQRefreshRequest */
         RFQRefreshRequest: {
@@ -3498,59 +3498,56 @@ export interface components {
          * @description Read schema for RFQ state transition events (timeline).
          */
         RFQStateEventRead: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Rfq Id
-             * Format: uuid
-             */
-            rfq_id: string;
-            from_state?: components["schemas"]["RFQState"] | null;
-            to_state: components["schemas"]["RFQState"];
-            /** Trigger */
-            trigger?: string | null;
-            /** Triggering Quote Id */
-            triggering_quote_id?: string | null;
-            /** Triggering Counterparty Id */
-            triggering_counterparty_id?: string | null;
-            /** Event Timestamp */
-            event_timestamp?: string | null;
-            /** User Id */
-            user_id?: string | null;
-            /** Reason */
-            reason?: string | null;
-            /** Ranking Snapshot */
-            ranking_snapshot?: string | null;
-            /** Winning Quote Ids */
-            winning_quote_ids?: string | null;
-            /** Winning Counterparty Ids */
-            winning_counterparty_ids?: string | null;
             /** Award Timestamp */
             award_timestamp?: string | null;
-            /** Created Contract Ids */
-            created_contract_ids?: string | null;
             /**
              * Created At
              * Format: date-time
              */
             created_at: string;
+            /** Created Contract Ids */
+            created_contract_ids?: string | null;
+            /** Event Timestamp */
+            event_timestamp?: string | null;
+            from_state?: components["schemas"]["RFQState"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Ranking Snapshot */
+            ranking_snapshot?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Rfq Id
+             * Format: uuid
+             */
+            rfq_id: string;
+            to_state: components["schemas"]["RFQState"];
+            /** Trigger */
+            trigger?: string | null;
+            /** Triggering Counterparty Id */
+            triggering_counterparty_id?: string | null;
+            /** Triggering Quote Id */
+            triggering_quote_id?: string | null;
+            /** User Id */
+            user_id?: string | null;
+            /** Winning Counterparty Ids */
+            winning_counterparty_ids?: string | null;
+            /** Winning Quote Ids */
+            winning_quote_ids?: string | null;
         };
         /**
          * RFQTextPreviewRequest
          * @description Request body for the RFQ text preview endpoint.
          */
         RFQTextPreviewRequest: {
-            trade_type: components["schemas"]["RFQTradeTypeEnum"];
-            leg1: components["schemas"]["RFQLegInput"];
-            leg2?: components["schemas"]["RFQLegInput"] | null;
             /**
-             * Sync Ppt
-             * @default false
+             * Channel Type
+             * @default BROKER_LME
              */
-            sync_ppt: boolean;
+            channel_type: string;
             /** Company Header */
             company_header?: string | null;
             /**
@@ -3558,27 +3555,30 @@ export interface components {
              * @default Alcast
              */
             company_label_for_payoff: string;
+            leg1: components["schemas"]["RFQLegInput"];
+            leg2?: components["schemas"]["RFQLegInput"] | null;
             /**
-             * Channel Type
-             * @default BROKER_LME
+             * Sync Ppt
+             * @default false
              */
-            channel_type: string;
+            sync_ppt: boolean;
+            trade_type: components["schemas"]["RFQTradeTypeEnum"];
         };
         /**
          * RFQTextPreviewResponse
          * @description Response from the RFQ text preview endpoint.
          */
         RFQTextPreviewResponse: {
+            /** Leg1 Ppt */
+            leg1_ppt?: string | null;
+            /** Leg2 Ppt */
+            leg2_ppt?: string | null;
             /** Text */
             text: string;
             /** Text En */
             text_en?: string | null;
             /** Text Pt */
             text_pt?: string | null;
-            /** Leg1 Ppt */
-            leg1_ppt?: string | null;
-            /** Leg2 Ppt */
-            leg2_ppt?: string | null;
             /** Trade Ppt */
             trade_ppt?: string | null;
         };
@@ -3595,15 +3595,15 @@ export interface components {
              */
             created: number;
             /**
-             * Updated
-             * @default 0
-             */
-            updated: number;
-            /**
              * Message
              * @default Reconciliation completed
              */
             message: string;
+            /**
+             * Updated
+             * @default 0
+             */
+            updated: number;
         };
         /**
          * RiskRating
@@ -3612,72 +3612,21 @@ export interface components {
         RiskRating: "low" | "medium" | "high";
         /** SalesOrderCreate */
         SalesOrderCreate: {
-            /** @description Fixed or variable pricing */
-            price_type: components["schemas"]["PriceType"];
-            /**
-             * Quantity Mt
-             * @description Quantity in metric tons (MT)
-             */
-            quantity_mt: number;
-            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
-            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
             /**
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: number | null;
-            /**
-             * Counterparty Name
-             * @description Client or supplier name (free text)
-             */
-            counterparty_name?: string | null;
-            /**
-             * Reference Month
-             * @description Reference month yyyy-MM — required for AVG convention
-             */
-            reference_month?: string | null;
-            /**
-             * Observation Date Start
-             * @description Observation window start — required for AVGInter convention
-             */
-            observation_date_start?: string | null;
-            /**
-             * Observation Date End
-             * @description Observation window end — required for AVGInter convention
-             */
-            observation_date_end?: string | null;
-            /**
-             * Fixing Date
-             * @description Fixing date — required for C2R convention
-             */
-            fixing_date?: string | null;
+            avg_entry_price?: number | string | null;
             /**
              * Counterparty Id
              * @description FK to counterparties
              */
             counterparty_id?: string | null;
-            /** @description Pricing type detail */
-            pricing_type?: components["schemas"]["PricingType"] | null;
             /**
-             * Delivery Terms
-             * @description e.g. CIF Rotterdam
+             * Counterparty Name
+             * @description Client or supplier name (free text)
              */
-            delivery_terms?: string | null;
-            /**
-             * Delivery Date Start
-             * @description Delivery window start
-             */
-            delivery_date_start?: string | null;
-            /**
-             * Delivery Date End
-             * @description Delivery window end
-             */
-            delivery_date_end?: string | null;
-            /**
-             * Payment Terms Days
-             * @description Payment terms in days
-             */
-            payment_terms_days?: number | null;
+            counterparty_name?: string | null;
             /**
              * Currency
              * @description ISO 4217 currency code
@@ -3685,10 +3634,61 @@ export interface components {
              */
             currency: string;
             /**
+             * Delivery Date End
+             * @description Delivery window end
+             */
+            delivery_date_end?: string | null;
+            /**
+             * Delivery Date Start
+             * @description Delivery window start
+             */
+            delivery_date_start?: string | null;
+            /**
+             * Delivery Terms
+             * @description e.g. CIF Rotterdam
+             */
+            delivery_terms?: string | null;
+            /**
+             * Fixing Date
+             * @description Fixing date — required for C2R convention
+             */
+            fixing_date?: string | null;
+            /**
              * Notes
              * @description Free-form notes
              */
             notes?: string | null;
+            /**
+             * Observation Date End
+             * @description Observation window end — required for AVGInter convention
+             */
+            observation_date_end?: string | null;
+            /**
+             * Observation Date Start
+             * @description Observation window start — required for AVGInter convention
+             */
+            observation_date_start?: string | null;
+            /**
+             * Payment Terms Days
+             * @description Payment terms in days
+             */
+            payment_terms_days?: number | null;
+            /** @description Fixed or variable pricing */
+            price_type: components["schemas"]["PriceType"];
+            /** @description Required only for variable orders (AVG, AVGInter, C2R) */
+            pricing_convention?: components["schemas"]["OrderPricingConvention"] | null;
+            /** @description Pricing type detail */
+            pricing_type?: components["schemas"]["PricingType"] | null;
+            /**
+             * Quantity Mt
+             * @description Quantity in metric tons (MT)
+             */
+            quantity_mt: number | string;
+            /**
+             * Reference Month
+             * @description Reference month yyyy-MM — required for AVG convention
+             */
+            reference_month?: string | null;
         };
         /**
          * SanctionsStatus
@@ -3703,25 +3703,25 @@ export interface components {
         /** ScenarioPLSnapshotItem */
         ScenarioPLSnapshotItem: {
             /**
-             * Entity Type
-             * @constant
-             */
-            entity_type: "hedge_contract";
-            /**
              * Entity Id
              * Format: uuid
              */
             entity_id: string;
             /**
-             * Period Start
-             * Format: date
+             * Entity Type
+             * @constant
              */
-            period_start: string;
+            entity_type: "hedge_contract";
             /**
              * Period End
              * Format: date
              */
             period_end: string;
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
             /** Realized Pl */
             realized_pl: string;
             /** Unrealized Mtm */
@@ -3734,43 +3734,43 @@ export interface components {
              * Format: date
              */
             as_of_date: string;
-            /**
-             * Period Start
-             * Format: date
-             */
-            period_start: string;
+            /** Deltas */
+            deltas?: (components["schemas"]["AddUnlinkedHedgeContractDelta"] | components["schemas"]["AdjustOrderQuantityDelta"] | components["schemas"]["AddCashSettlementPriceOverrideDelta"])[];
             /**
              * Period End
              * Format: date
              */
             period_end: string;
-            /** Deltas */
-            deltas?: (components["schemas"]["AddUnlinkedHedgeContractDelta"] | components["schemas"]["AdjustOrderQuantityDelta"] | components["schemas"]["AddCashSettlementPriceOverrideDelta"])[];
+            /**
+             * Period Start
+             * Format: date
+             */
+            period_start: string;
         };
         /** ScenarioWhatIfRunResponse */
         ScenarioWhatIfRunResponse: {
+            cashflow_snapshot: components["schemas"]["ScenarioCashflowSnapshot"];
             commercial_exposure_snapshot: components["schemas"]["CommercialExposureRead"];
             global_exposure_snapshot: components["schemas"]["GlobalExposureRead"];
             /** Mtm Snapshot */
             mtm_snapshot: components["schemas"]["MTMResultResponse"][];
-            cashflow_snapshot: components["schemas"]["ScenarioCashflowSnapshot"];
             /** Pl Snapshot */
             pl_snapshot: components["schemas"]["ScenarioPLSnapshotItem"][];
         };
         /** SoPoLinkCreate */
         SoPoLinkCreate: {
-            /**
-             * Sales Order Id
-             * Format: uuid
-             */
-            sales_order_id: string;
+            /** Linked Tons */
+            linked_tons: number | string;
             /**
              * Purchase Order Id
              * Format: uuid
              */
             purchase_order_id: string;
-            /** Linked Tons */
-            linked_tons: number;
+            /**
+             * Sales Order Id
+             * Format: uuid
+             */
+            sales_order_id: string;
         };
         /** SoPoLinkListResponse */
         SoPoLinkListResponse: {
@@ -3782,38 +3782,38 @@ export interface components {
         /** SoPoLinkRead */
         SoPoLinkRead: {
             /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
              * Id
              * Format: uuid
              */
             id: string;
-            /**
-             * Sales Order Id
-             * Format: uuid
-             */
-            sales_order_id: string;
+            /** Linked Tons */
+            linked_tons: string;
             /**
              * Purchase Order Id
              * Format: uuid
              */
             purchase_order_id: string;
-            /** Linked Tons */
-            linked_tons: number;
             /**
-             * Created At
-             * Format: date-time
+             * Sales Order Id
+             * Format: uuid
              */
-            created_at: string;
+            sales_order_id: string;
         };
         /** SpreadRankingEntry */
         SpreadRankingEntry: {
-            /** Rank */
-            rank: number;
+            buy_quote: components["schemas"]["RFQQuoteRead"];
             /** Counterparty Id */
             counterparty_id: string;
+            /** Rank */
+            rank: number;
+            sell_quote: components["schemas"]["RFQQuoteRead"];
             /** Spread Value */
             spread_value: number;
-            buy_quote: components["schemas"]["RFQQuoteRead"];
-            sell_quote: components["schemas"]["RFQQuoteRead"];
         };
         /**
          * SpreadRankingFailureCode
@@ -3822,6 +3822,11 @@ export interface components {
         SpreadRankingFailureCode: "NO_ELIGIBLE_QUOTES" | "NON_COMPARABLE" | "TIE" | "NOT_SPREAD_INTENT";
         /** SpreadRankingRead */
         SpreadRankingRead: {
+            failure_code?: components["schemas"]["SpreadRankingFailureCode"] | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Ranking */
+            ranking?: components["schemas"]["SpreadRankingEntry"][];
             /**
              * Rfq Id
              * Format: uuid
@@ -3829,17 +3834,12 @@ export interface components {
             rfq_id: string;
             /** Status */
             status: string;
-            failure_code?: components["schemas"]["SpreadRankingFailureCode"] | null;
-            /** Failure Reason */
-            failure_reason?: string | null;
-            /** Ranking */
-            ranking?: components["schemas"]["SpreadRankingEntry"][];
         };
         /** TradeRankingEntry */
         TradeRankingEntry: {
+            quote: components["schemas"]["RFQQuoteRead"];
             /** Rank */
             rank: number;
-            quote: components["schemas"]["RFQQuoteRead"];
         };
         /**
          * TradeRankingFailureCode
@@ -3848,6 +3848,11 @@ export interface components {
         TradeRankingFailureCode: "NO_ELIGIBLE_QUOTES" | "NON_COMPARABLE" | "TIE" | "NOT_TRADE_INTENT";
         /** TradeRankingRead */
         TradeRankingRead: {
+            failure_code?: components["schemas"]["TradeRankingFailureCode"] | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Ranking */
+            ranking?: components["schemas"]["TradeRankingEntry"][];
             /**
              * Rfq Id
              * Format: uuid
@@ -3855,11 +3860,6 @@ export interface components {
             rfq_id: string;
             /** Status */
             status: string;
-            failure_code?: components["schemas"]["TradeRankingFailureCode"] | null;
-            /** Failure Reason */
-            failure_reason?: string | null;
-            /** Ranking */
-            ranking?: components["schemas"]["TradeRankingEntry"][];
         };
         /** TriggerPipelineRequest */
         TriggerPipelineRequest: {
@@ -3871,16 +3871,16 @@ export interface components {
         };
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */
             msg: string;
             /** Error Type */
             type: string;
-            /** Input */
-            input?: unknown;
-            /** Context */
-            ctx?: Record<string, never>;
         };
     };
     responses: never;
@@ -3891,79 +3891,13 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    metrics_metrics_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-        };
-    };
-    health_health_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-        };
-    };
-    readiness_ready_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
-                };
-            };
-        };
-    };
-    list_counterparties_counterparties_get: {
+    list_audit_events_audit_events_get: {
         parameters: {
             query?: {
-                /** @description Filter by type */
-                type?: string | null;
-                /** @description Filter by KYC status */
-                kyc_status?: string | null;
-                /** @description Filter by active status */
-                is_active?: boolean | null;
+                entity_type?: string | null;
+                entity_id?: string | null;
+                start?: string | null;
+                end?: string | null;
                 cursor?: string | null;
                 limit?: number;
             };
@@ -3979,7 +3913,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CounterpartyListResponse"];
+                    "application/json": components["schemas"]["AuditEventListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -3993,45 +3927,12 @@ export interface operations {
             };
         };
     };
-    create_counterparty_counterparties_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CounterpartyCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CounterpartyRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_counterparty_counterparties__counterparty_id__get: {
+    verify_audit_event_audit_events__event_id__verify_get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                counterparty_id: string;
+                event_id: string;
             };
             cookie?: never;
         };
@@ -4043,7 +3944,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CounterpartyRead"];
+                    "application/json": components["schemas"]["AuditVerifyResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4057,529 +3958,10 @@ export interface operations {
             };
         };
     };
-    delete_counterparty_counterparties__counterparty_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                counterparty_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CounterpartyRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_counterparty_counterparties__counterparty_id__patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                counterparty_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CounterpartyUpdate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CounterpartyRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_sales_order_orders_sales_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SalesOrderCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_purchase_order_orders_purchase_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PurchaseOrderCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_orders_orders_get: {
-        parameters: {
-            query?: {
-                /** @description Filter by order type (SO or PO) */
-                order_type?: string | null;
-                /** @description Filter by price type (fixed or variable) */
-                price_type?: string | null;
-                /** @description Include soft-deleted records */
-                include_deleted?: boolean;
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_sopo_links_orders_links_get: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoPoLinkListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_sopo_link_orders_links_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SoPoLinkCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SoPoLinkRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_order_orders__order_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    archive_order_orders__order_id__archive_patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_commercial_exposure_exposures_commercial_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CommercialExposureRead"];
-                };
-            };
-        };
-    };
-    get_global_exposure_exposures_global_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GlobalExposureRead"];
-                };
-            };
-        };
-    };
-    reconcile_exposures_exposures_reconcile_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReconcileResponse"];
-                };
-            };
-        };
-    };
-    get_net_exposure_exposures_net_get: {
-        parameters: {
-            query?: {
-                commodity?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["NetExposureResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_hedge_tasks_exposures_tasks_get: {
-        parameters: {
-            query?: {
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HedgeTaskListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    execute_hedge_task_exposures_tasks__task_id__execute_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                task_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_exposures_exposures_list_get: {
-        parameters: {
-            query?: {
-                commodity?: string | null;
-                status?: string | null;
-                settlement_month?: string | null;
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ExposureListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_exposure_exposures__exposure_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                exposure_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    find_deal_by_linked_entity_deals_by_linked_entity_get: {
+    get_cashflow_analytic_cashflow_analytic_get: {
         parameters: {
             query: {
-                /** @description e.g. sales_order, purchase_order */
-                linked_type: string;
-                linked_id: string;
+                as_of_date: string;
             };
             header?: never;
             path?: never;
@@ -4593,7 +3975,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DealRead"];
+                    "application/json": components["schemas"]["CashFlowAnalyticResponse"];
                 };
             };
             /** @description Validation Error */
@@ -4607,13 +3989,175 @@ export interface operations {
             };
         };
     };
-    list_deals_deals_get: {
+    get_baseline_snapshot_cashflow_baseline_snapshots_get: {
+        parameters: {
+            query: {
+                as_of_date: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashFlowBaselineSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_baseline_snapshot_cashflow_baseline_snapshots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CashFlowBaselineSnapshotCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashFlowBaselineSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    settle_hedge_contract_cashflow_contracts__contract_id__settle_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HedgeContractSettlementCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HedgeContractSettlementResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_ledger_entries_by_event_cashflow_ledger_get: {
+        parameters: {
+            query: {
+                source_event_id: string;
+                source_event_type?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashFlowLedgerEntryRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_ledger_entries_for_contract_cashflow_ledger_hedge_contracts__contract_id__get: {
         parameters: {
             query?: {
-                commodity?: string | null;
-                status?: string | null;
-                cursor?: string | null;
-                limit?: number;
+                start?: string | null;
+                end?: string | null;
+            };
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashFlowLedgerEntryRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_cashflow_projection_cashflow_projection_get: {
+        parameters: {
+            query: {
+                as_of_date: string;
             };
             header?: never;
             path?: never;
@@ -4627,233 +4171,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DealListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_deal_deals_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DealCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DealRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    pnl_breakdown_deals_pnl_breakdown_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PnlBreakdownRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PnlBreakdownResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_deal_deals__deal_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                deal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DealDetailRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    add_link_deals__deal_id__links_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                deal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DealLinkCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DealLinkRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remove_link_deals__deal_id__links__link_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                deal_id: string;
-                link_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    trigger_pnl_snapshot_deals__deal_id__pnl_snapshot_post: {
-        parameters: {
-            query?: {
-                snapshot_date?: string;
-            };
-            header?: never;
-            path: {
-                deal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DealPNLSnapshotRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    pnl_history_deals__deal_id__pnl_history_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                deal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DealPNLHistoryResponse"];
+                    "application/json": components["schemas"]["CashFlowProjectionResponse"];
                 };
             };
             /** @description Validation Error */
@@ -5068,6 +4386,37 @@ export interface operations {
             };
         };
     };
+    get_contract_linkages_contracts_hedge__contract_id__linkages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContractLinkagesResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_hedge_contract_status_contracts_hedge__contract_id__status_patch: {
         parameters: {
             query?: never;
@@ -5103,12 +4452,83 @@ export interface operations {
             };
         };
     };
-    get_contract_linkages_contracts_hedge__contract_id__linkages_get: {
+    list_counterparties_counterparties_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by type */
+                type?: string | null;
+                /** @description Filter by KYC status */
+                kyc_status?: string | null;
+                /** @description Filter by active status */
+                is_active?: boolean | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CounterpartyListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_counterparty_counterparties_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CounterpartyCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_counterparty_counterparties__counterparty_id__get: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                contract_id: string;
+                counterparty_id: string;
             };
             cookie?: never;
         };
@@ -5120,7 +4540,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ContractLinkagesResponse"];
+                    "application/json": components["schemas"]["CounterpartyRead"];
                 };
             };
             /** @description Validation Error */
@@ -5130,6 +4550,702 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_counterparty_counterparties__counterparty_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_counterparty_counterparties__counterparty_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CounterpartyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deals_deals_get: {
+        parameters: {
+            query?: {
+                commodity?: string | null;
+                status?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_deal_deals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DealCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    find_deal_by_linked_entity_deals_by_linked_entity_get: {
+        parameters: {
+            query: {
+                /** @description e.g. sales_order, purchase_order */
+                linked_type: string;
+                linked_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pnl_breakdown_deals_pnl_breakdown_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PnlBreakdownRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PnlBreakdownResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_deal_deals__deal_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealDetailRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_link_deals__deal_id__links_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DealLinkCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealLinkRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_link_deals__deal_id__links__link_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deal_id: string;
+                link_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pnl_history_deals__deal_id__pnl_history_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealPNLHistoryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_pnl_snapshot_deals__deal_id__pnl_snapshot_post: {
+        parameters: {
+            query?: {
+                snapshot_date?: string;
+            };
+            header?: never;
+            path: {
+                deal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DealPNLSnapshotRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_commercial_exposure_exposures_commercial_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialExposureRead"];
+                };
+            };
+        };
+    };
+    get_global_exposure_exposures_global_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GlobalExposureRead"];
+                };
+            };
+        };
+    };
+    list_exposures_exposures_list_get: {
+        parameters: {
+            query?: {
+                commodity?: string | null;
+                status?: string | null;
+                settlement_month?: string | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExposureListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_net_exposure_exposures_net_get: {
+        parameters: {
+            query?: {
+                commodity?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetExposureResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reconcile_exposures_exposures_reconcile_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReconcileResponse"];
+                };
+            };
+        };
+    };
+    list_hedge_tasks_exposures_tasks_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HedgeTaskListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    execute_hedge_task_exposures_tasks__task_id__execute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_exposure_exposures__exposure_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                exposure_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trigger_pipeline_finance_pipeline_run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TriggerPipelineRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_runs_finance_pipeline_runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_detail_finance_pipeline_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunDetailRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    health_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
         };
@@ -5230,6 +5346,616 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_cash_settlement_daily_market_data_westmetall_aluminum_cash_settlement_ingest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CashSettlementIngestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashSettlementIngestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    ingest_cash_settlement_bulk_market_data_westmetall_aluminum_cash_settlement_ingest_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CashSettlementBulkIngestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashSettlementBulkIngestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_cash_settlement_prices_market_data_westmetall_aluminum_cash_settlement_prices_get: {
+        parameters: {
+            query?: {
+                /** @description Start of date range (inclusive) */
+                start_date?: string | null;
+                /** @description End of date range (inclusive) */
+                end_date?: string | null;
+                /** @description Symbol filter */
+                symbol?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CashSettlementPriceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    metrics_metrics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    get_mtm_for_hedge_contract_mtm_hedge_contracts__contract_id__get: {
+        parameters: {
+            query: {
+                as_of_date: string;
+            };
+            header?: never;
+            path: {
+                contract_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MTMResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_mtm_for_order_mtm_orders__order_id__get: {
+        parameters: {
+            query: {
+                as_of_date: string;
+            };
+            header?: never;
+            path: {
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MTMResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_mtm_snapshot_mtm_snapshots_get: {
+        parameters: {
+            query: {
+                object_type: components["schemas"]["MTMObjectType"];
+                object_id: string;
+                as_of_date: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MTMSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_mtm_snapshot_mtm_snapshots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MTMSnapshotCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MTMSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_orders_orders_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by order type (SO or PO) */
+                order_type?: string | null;
+                /** @description Filter by price type (fixed or variable) */
+                price_type?: string | null;
+                /** @description Include soft-deleted records */
+                include_deleted?: boolean;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_sopo_links_orders_links_get: {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoPoLinkListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sopo_link_orders_links_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SoPoLinkCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SoPoLinkRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_purchase_order_orders_purchase_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PurchaseOrderCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_sales_order_orders_sales_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SalesOrderCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_order_orders__order_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_order_orders__order_id__archive_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                order_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pl_snapshot_pl_snapshots_get: {
+        parameters: {
+            query: {
+                entity_type: string;
+                entity_id: string;
+                period_start: string;
+                period_end: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PLSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_pl_snapshot_pl_snapshots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PLSnapshotCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PLSnapshotResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_pl_pl__entity_type___entity_id__get: {
+        parameters: {
+            query: {
+                period_start: string;
+                period_end: string;
+            };
+            header?: never;
+            path: {
+                entity_type: string;
+                entity_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PLResultResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readiness_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
                 };
             };
         };
@@ -5373,6 +6099,284 @@ export interface operations {
             };
         };
     };
+    award_rfq_rfqs__rfq_id__actions_award_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQAwardRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    award_quote_rfqs__rfq_id__actions_award_quote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQAwardQuoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cancel_rfq_rfqs__rfq_id__actions_cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQCancelRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_rfq_rfqs__rfq_id__actions_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQRefreshRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_counterparty_rfqs__rfq_id__actions_refresh_counterparty_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQRefreshCounterpartyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_rfq_rfqs__rfq_id__actions_reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_quote_rfqs__rfq_id__actions_reject_quote_post: {
+        parameters: {
+            query: {
+                quote_id: string;
+            };
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQRejectQuoteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_rfq_rfqs__rfq_id__archive_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RFQRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_rfq_quotes_rfqs__rfq_id__quotes_get: {
         parameters: {
             query?: never;
@@ -5426,6 +6430,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RFQQuoteRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_spread_ranking_rfqs__rfq_id__ranking_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rfq_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SpreadRankingRead"];
                 };
             };
             /** @description Validation Error */
@@ -5501,644 +6536,6 @@ export interface operations {
             };
         };
     };
-    get_spread_ranking_rfqs__rfq_id__ranking_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SpreadRankingRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_rfq_rfqs__rfq_id__actions_reject_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQRejectRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cancel_rfq_rfqs__rfq_id__actions_cancel_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQCancelRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_quote_rfqs__rfq_id__actions_reject_quote_post: {
-        parameters: {
-            query: {
-                quote_id: string;
-            };
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQRejectQuoteRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    refresh_counterparty_rfqs__rfq_id__actions_refresh_counterparty_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQRefreshCounterpartyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    award_quote_rfqs__rfq_id__actions_award_quote_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQAwardQuoteRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    refresh_rfq_rfqs__rfq_id__actions_refresh_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQRefreshRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    award_rfq_rfqs__rfq_id__actions_award_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQAwardRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    archive_rfq_rfqs__rfq_id__archive_patch: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_cashflow_analytic_cashflow_analytic_get: {
-        parameters: {
-            query: {
-                as_of_date: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowAnalyticResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_baseline_snapshot_cashflow_baseline_snapshots_get: {
-        parameters: {
-            query: {
-                as_of_date: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowBaselineSnapshotResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_baseline_snapshot_cashflow_baseline_snapshots_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CashFlowBaselineSnapshotCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowBaselineSnapshotResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_cashflow_projection_cashflow_projection_get: {
-        parameters: {
-            query: {
-                as_of_date: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowProjectionResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    settle_hedge_contract_cashflow_contracts__contract_id__settle_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                contract_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HedgeContractSettlementCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HedgeContractSettlementResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_ledger_entries_for_contract_cashflow_ledger_hedge_contracts__contract_id__get: {
-        parameters: {
-            query?: {
-                start?: string | null;
-                end?: string | null;
-            };
-            header?: never;
-            path: {
-                contract_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowLedgerEntryRead"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_ledger_entries_by_event_cashflow_ledger_get: {
-        parameters: {
-            query: {
-                source_event_id: string;
-                source_event_type?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashFlowLedgerEntryRead"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_pl_pl__entity_type___entity_id__get: {
-        parameters: {
-            query: {
-                period_start: string;
-                period_end: string;
-            };
-            header?: never;
-            path: {
-                entity_type: string;
-                entity_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PLResultResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_pl_snapshot_pl_snapshots_get: {
-        parameters: {
-            query: {
-                entity_type: string;
-                entity_id: string;
-                period_start: string;
-                period_end: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PLSnapshotResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    post_pl_snapshot_pl_snapshots_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PLSnapshotCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PLSnapshotResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     run_what_if_scenario_scenario_what_if_run_post: {
         parameters: {
             query?: never;
@@ -6159,308 +6556,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScenarioWhatIfRunResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_audit_events_audit_events_get: {
-        parameters: {
-            query?: {
-                entity_type?: string | null;
-                entity_id?: string | null;
-                start?: string | null;
-                end?: string | null;
-                cursor?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuditEventListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    verify_audit_event_audit_events__event_id__verify_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                event_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuditVerifyResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_cash_settlement_prices_market_data_westmetall_aluminum_cash_settlement_prices_get: {
-        parameters: {
-            query?: {
-                /** @description Start of date range (inclusive) */
-                start_date?: string | null;
-                /** @description End of date range (inclusive) */
-                end_date?: string | null;
-                /** @description Symbol filter */
-                symbol?: string | null;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashSettlementPriceRead"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    ingest_cash_settlement_daily_market_data_westmetall_aluminum_cash_settlement_ingest_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CashSettlementIngestRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashSettlementIngestResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    ingest_cash_settlement_bulk_market_data_westmetall_aluminum_cash_settlement_ingest_bulk_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CashSettlementBulkIngestRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CashSettlementBulkIngestResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_mtm_for_hedge_contract_mtm_hedge_contracts__contract_id__get: {
-        parameters: {
-            query: {
-                as_of_date: string;
-            };
-            header?: never;
-            path: {
-                contract_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MTMResultResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_mtm_for_order_mtm_orders__order_id__get: {
-        parameters: {
-            query: {
-                as_of_date: string;
-            };
-            header?: never;
-            path: {
-                order_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MTMResultResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_mtm_snapshot_mtm_snapshots_get: {
-        parameters: {
-            query: {
-                object_type: components["schemas"]["MTMObjectType"];
-                object_id: string;
-                as_of_date: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MTMSnapshotResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_mtm_snapshot_mtm_snapshots_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MTMSnapshotCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MTMSnapshotResponse"];
                 };
             };
             /** @description Validation Error */
@@ -6527,101 +6622,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
-                };
-            };
-        };
-    };
-    trigger_pipeline_finance_pipeline_run_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TriggerPipelineRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PipelineRunRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_runs_finance_pipeline_runs_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PipelineRunListResponse"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_run_detail_finance_pipeline_runs__run_id__get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PipelineRunDetailRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

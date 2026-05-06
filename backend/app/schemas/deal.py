@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas._types import MTQuantity, Price
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -60,11 +62,11 @@ class DealPNLSnapshotRead(BaseModel):
     id: UUID
     deal_id: UUID
     snapshot_date: date
-    physical_revenue: float
-    physical_cost: float
-    hedge_pnl_realized: float
-    hedge_pnl_mtm: float
-    total_pnl: float
+    physical_revenue: Price
+    physical_cost: Price
+    hedge_pnl_realized: Price
+    hedge_pnl_mtm: Price
+    total_pnl: Price
     inputs_hash: str
     created_at: datetime
 
@@ -82,9 +84,9 @@ class DealRead(BaseModel):
     name: str
     commodity: str
     status: DealStatus
-    total_physical_tons: float
-    total_hedge_tons: float
-    hedge_ratio: float
+    total_physical_tons: MTQuantity
+    total_hedge_tons: MTQuantity
+    hedge_ratio: Price
     created_at: datetime
     updated_at: Optional[datetime] = None
     is_deleted: bool
@@ -120,9 +122,9 @@ class PnlPhysicalItem(BaseModel):
     id: UUID
     order_type: str  # "SO" / "PO"
     commodity: str
-    quantity_mt: float
-    price: float
-    value: float
+    quantity_mt: MTQuantity
+    price: Price
+    value: Price
 
 
 class PnlFinancialItem(BaseModel):
@@ -130,10 +132,10 @@ class PnlFinancialItem(BaseModel):
     reference: Optional[str] = None
     classification: str
     status: str
-    quantity_mt: float
-    entry_price: float
-    market_price: Optional[float] = None
-    pnl: float
+    quantity_mt: MTQuantity
+    entry_price: Price
+    market_price: Optional[Price] = None
+    pnl: Price
 
 
 class DealPnlBreakdown(BaseModel):
@@ -141,21 +143,21 @@ class DealPnlBreakdown(BaseModel):
     deal_reference: str
     deal_name: str
     commodity: str
-    physical_revenue: float
-    physical_cost: float
-    hedge_pnl_realized: float
-    hedge_pnl_mtm: float
-    total_pnl: float
+    physical_revenue: Price
+    physical_cost: Price
+    hedge_pnl_realized: Price
+    hedge_pnl_mtm: Price
+    total_pnl: Price
     physical_items: list[PnlPhysicalItem]
     financial_items: list[PnlFinancialItem]
 
 
 class PnlBreakdownTotals(BaseModel):
-    physical_revenue: float
-    physical_cost: float
-    hedge_pnl_realized: float
-    hedge_pnl_mtm: float
-    total_pnl: float
+    physical_revenue: Price
+    physical_cost: Price
+    hedge_pnl_realized: Price
+    hedge_pnl_mtm: Price
+    total_pnl: Price
 
 
 class PnlBreakdownResponse(BaseModel):

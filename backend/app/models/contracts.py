@@ -8,13 +8,20 @@ and variable) and a classification (long/short).
 import enum
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.core.precision import (
+    MT_NUMERIC_PRECISION,
+    MT_NUMERIC_SCALE,
+    PRICE_NUMERIC_PRECISION,
+    PRICE_NUMERIC_SCALE,
+)
 
 
 class HedgeLegSide(enum.Enum):
@@ -66,7 +73,9 @@ class HedgeContract(Base):
         String(length=50), unique=True, nullable=True
     )
     commodity: Mapped[str] = mapped_column(String(length=64), nullable=False)
-    quantity_mt: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     rfq_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("rfqs.id", ondelete="RESTRICT"), nullable=True
     )
@@ -78,15 +87,17 @@ class HedgeContract(Base):
     counterparty_id: Mapped[str | None] = mapped_column(
         String(length=100), nullable=True
     )
-    fixed_price_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fixed_price_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    )
     fixed_price_unit: Mapped[str | None] = mapped_column(
         String(length=32), nullable=True
     )
     float_pricing_convention: Mapped[str | None] = mapped_column(
         String(length=64), nullable=True
     )
-    premium_discount: Mapped[float | None] = mapped_column(
-        Float, default=0, nullable=True
+    premium_discount: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0, nullable=True
     )
 
     # ── Verification period fields ──
@@ -153,11 +164,11 @@ class HedgeContract(Base):
         return "buy" if self.classification == HedgeClassification.long else "sell"
 
     @property
-    def tons(self) -> float:
+    def tons(self) -> Decimal:
         """Alias for quantity_mt."""
         return self.quantity_mt
 
     @property
-    def price_per_ton(self) -> float:
+    def price_per_ton(self) -> Decimal:
         """Alias for fixed_price_value."""
-        return self.fixed_price_value or 0.0
+        return self.fixed_price_value or Decimal("0")

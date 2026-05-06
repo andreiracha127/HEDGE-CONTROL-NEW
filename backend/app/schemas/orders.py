@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas._types import MTQuantity, Price
+
 
 class OrderType(str, Enum):
     sales = "SO"
@@ -31,11 +33,11 @@ class PricingType(str, Enum):
 
 class OrderBase(BaseModel):
     price_type: PriceType = Field(..., description="Fixed or variable pricing")
-    quantity_mt: float = Field(..., description="Quantity in metric tons (MT)")
+    quantity_mt: MTQuantity = Field(..., description="Quantity in metric tons (MT)")
     pricing_convention: OrderPricingConvention | None = Field(
         None, description="Required only for variable orders (AVG, AVGInter, C2R)"
     )
-    avg_entry_price: float | None = Field(
+    avg_entry_price: Price | None = Field(
         None, description="Fixed price value (USD/MT) — required when price_type=fixed"
     )
     counterparty_name: str | None = Field(
@@ -95,7 +97,7 @@ class OrderListResponse(BaseModel):
 class SoPoLinkCreate(BaseModel):
     sales_order_id: UUID
     purchase_order_id: UUID
-    linked_tons: float = Field(..., gt=0)
+    linked_tons: MTQuantity = Field(..., gt=0)
 
 
 class SoPoLinkRead(BaseModel):
@@ -104,7 +106,7 @@ class SoPoLinkRead(BaseModel):
     id: UUID
     sales_order_id: UUID
     purchase_order_id: UUID
-    linked_tons: float
+    linked_tons: MTQuantity
     created_at: datetime
 
 

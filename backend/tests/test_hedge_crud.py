@@ -61,8 +61,8 @@ class TestCreateHedgeContract:
         assert r.status_code == 201
         body = r.json()
         assert body["commodity"] == "ALUMINUM"
-        assert body["quantity_mt"] == 100.0
-        assert body["fixed_price_value"] == 2450.50
+        assert float(body["quantity_mt"]) == 100.0
+        assert float(body["fixed_price_value"]) == 2450.50
         assert body["status"] == "active"
         assert body["reference"].startswith("HC-")
         assert body["classification"] == "long"
@@ -179,7 +179,7 @@ class TestUpdateHedgeContract:
         )
         assert r2.status_code == 200
         assert r2.json()["notes"] == "Updated note"
-        assert r2.json()["quantity_mt"] == 120.0
+        assert float(r2.json()["quantity_mt"]) == 120.0
 
     def test_patch_not_found(self, client):
         r = client.patch(f"{ENDPOINT}/{uuid.uuid4()}", json={"notes": "x"})

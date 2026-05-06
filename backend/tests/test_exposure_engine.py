@@ -3,6 +3,10 @@
 import pytest
 
 
+def _mt(value):
+    return float(value)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -56,6 +60,49 @@ class TestReconcileExposures:
         resp = client.post("/exposures/reconcile")
         assert resp.status_code == 200
         assert resp.json()["created"] == 0
+
+    def test_reconcile_exact_decimal_full_hedge_status(self, client):
+        order = _create_order(client, "SO", "0.3")
+        order_id = order.json()["id"]
+
+        contract_resp = client.post(
+            "/contracts/hedge",
+            json={
+                "commodity": "LME_AL",
+                "quantity_mt": "0.3",
+                "legs": [
+                    {"side": "sell", "price_type": "fixed"},
+                    {"side": "buy", "price_type": "variable"},
+                ],
+            },
+        )
+        assert contract_resp.status_code == 201
+        contract_id = contract_resp.json()["id"]
+
+        assert client.post(
+            "/linkages",
+            json={
+                "order_id": order_id,
+                "contract_id": contract_id,
+                "quantity_mt": "0.1",
+            },
+        ).status_code == 201
+        assert client.post(
+            "/linkages",
+            json={
+                "order_id": order_id,
+                "contract_id": contract_id,
+                "quantity_mt": "0.2",
+            },
+        ).status_code == 201
+
+        resp = client.post("/exposures/reconcile")
+        assert resp.status_code == 200
+
+        exposures = client.get("/exposures/list").json()["items"]
+        assert len(exposures) == 1
+        assert exposures[0]["status"] == "fully_hedged"
+        assert exposures[0]["open_tons"] == "0.000"
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +160,7 @@ class TestGetExposure:
 
         resp = client.get(f"/exposures/{exp_id}")
         assert resp.status_code == 200
-        assert resp.json()["original_tons"] == 250.0
+        assert _mt(resp.json()["original_tons"]) == 250.0
 
     def test_get_exposure_not_found(self, client):
         import uuid
@@ -139,10 +186,10 @@ class TestNetExposure:
         items = resp.json()["items"]
         assert len(items) == 1
         assert items[0]["commodity"] == "ALUMINUM"
-        assert items[0]["long_original"] == 600.0
-        assert items[0]["short_original"] == 200.0
+        assert _mt(items[0]["long_original"]) == 600.0
+        assert _mt(items[0]["short_original"]) == 200.0
         # net = (SO_open - PO_open) = (200 - 600) = -400 (net long)
-        assert items[0]["net_tons"] == -400.0
+        assert _mt(items[0]["net_tons"]) == -400.0
 
 
 # ---------------------------------------------------------------------------

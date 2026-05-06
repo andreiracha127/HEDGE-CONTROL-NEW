@@ -30,7 +30,7 @@ def test_create_sales_order_variable_without_convention(client) -> None:
     data = resp.json()
     assert data["order_type"] == "SO"
     assert data["price_type"] == "variable"
-    assert data["quantity_mt"] == 10.0
+    assert float(data["quantity_mt"]) == 10.0
     assert data["pricing_convention"] is None
     assert data["avg_entry_price"] is None
     assert "id" in data
@@ -47,7 +47,7 @@ def test_create_sales_order_variable_with_convention(client) -> None:
     assert resp.status_code == 201
     data = resp.json()
     assert data["pricing_convention"] == "AVG"
-    assert data["avg_entry_price"] == 2350.0
+    assert float(data["avg_entry_price"]) == 2350.0
 
 
 def test_create_purchase_order_fixed(client) -> None:
@@ -57,7 +57,7 @@ def test_create_purchase_order_fixed(client) -> None:
     data = resp.json()
     assert data["order_type"] == "PO"
     assert data["price_type"] == "fixed"
-    assert data["quantity_mt"] == 5.0
+    assert float(data["quantity_mt"]) == 5.0
 
 
 def test_variable_convention_without_avg_entry_price_ok(client) -> None:
@@ -136,4 +136,20 @@ def test_purchase_order_variable_with_convention(client) -> None:
     data = resp.json()
     assert data["order_type"] == "PO"
     assert data["pricing_convention"] == "C2R"
-    assert data["avg_entry_price"] == 2400.0
+    assert float(data["avg_entry_price"]) == 2400.0
+
+
+def test_order_accepts_decimal_strings(client) -> None:
+    resp = client.post(
+        "/orders/sales",
+        json={
+            "price_type": "fixed",
+            "quantity_mt": "10.125",
+            "avg_entry_price": "2500.123456",
+        },
+    )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["quantity_mt"] == "10.125"
+    assert data["avg_entry_price"] == "2500.123456"

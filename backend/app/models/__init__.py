@@ -1,3 +1,11 @@
+"""Model registry.
+
+Economic precision policy:
+- MT quantities use Numeric(15, 3).
+- Financial prices and monetary values use Numeric(18, 6).
+- Runtime arithmetic uses Decimal quantized via app.core.precision.
+"""
+
 from app.models.audit import AuditEvent
 from app.models.contracts import (
     HedgeClassification,

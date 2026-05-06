@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.contracts import HedgeContractStatus
+from app.schemas._types import MTQuantity, Price
 
 
 class HedgeLegSide(str, Enum):
@@ -31,15 +32,15 @@ class HedgeLeg(BaseModel):
 
 class HedgeContractCreate(BaseModel):
     commodity: str = Field(..., description="Commodity identifier", max_length=50)
-    quantity_mt: float = Field(..., description="Quantity in metric tons (MT)")
+    quantity_mt: MTQuantity = Field(..., description="Quantity in metric tons (MT)")
     legs: list[HedgeLeg] = Field(
         ..., description="Exactly two legs: one fixed, one variable"
     )
     counterparty_id: str | None = Field(None, max_length=100)
-    fixed_price_value: float | None = None
+    fixed_price_value: Price | None = None
     fixed_price_unit: str | None = Field(None, max_length=32)
     float_pricing_convention: str | None = Field(None, max_length=64)
-    premium_discount: float | None = None
+    premium_discount: Price | None = None
     pricing_period_month: int | None = Field(
         None, ge=1, le=12, description="Reference month for avg"
     )
@@ -79,14 +80,14 @@ class HedgeContractRead(BaseModel):
     id: UUID
     reference: str | None = None
     commodity: str = Field(..., max_length=64)
-    quantity_mt: float
+    quantity_mt: MTQuantity
     rfq_id: UUID | None = None
     rfq_quote_id: UUID | None = None
     counterparty_id: str | None = Field(None, max_length=100)
-    fixed_price_value: float | None = None
+    fixed_price_value: Price | None = None
     fixed_price_unit: str | None = Field(None, max_length=32)
     float_pricing_convention: str | None = Field(None, max_length=64)
-    premium_discount: float | None = None
+    premium_discount: Price | None = None
     pricing_period_month: int | None = None
     pricing_period_year: int | None = None
     fixing_date: date | None = None
@@ -116,12 +117,12 @@ class HedgeContractRead(BaseModel):
 class HedgeContractUpdate(BaseModel):
     """Partial update payload for a hedge contract."""
 
-    quantity_mt: float | None = None
+    quantity_mt: MTQuantity | None = None
     counterparty_id: str | None = Field(None, max_length=100)
-    fixed_price_value: float | None = None
+    fixed_price_value: Price | None = None
     fixed_price_unit: str | None = Field(None, max_length=32)
     float_pricing_convention: str | None = Field(None, max_length=64)
-    premium_discount: float | None = None
+    premium_discount: Price | None = None
     pricing_period_month: int | None = Field(None, ge=1, le=12)
     pricing_period_year: int | None = None
     fixing_date: date | None = None
@@ -151,9 +152,9 @@ class LinkedOrderSummary(BaseModel):
     id: UUID
     linked_type: str  # sales_order | purchase_order
     order_type: str | None = None
-    quantity_mt: float | None = None
+    quantity_mt: MTQuantity | None = None
     counterparty_id: str | None = None
-    avg_entry_price: float | None = None
+    avg_entry_price: Price | None = None
     currency: str | None = None
 
 
@@ -162,9 +163,9 @@ class LinkedDealSummary(BaseModel):
     reference: str
     name: str
     status: str
-    total_physical_tons: float
-    total_hedge_tons: float
-    hedge_ratio: float
+    total_physical_tons: MTQuantity
+    total_hedge_tons: MTQuantity
+    hedge_ratio: Price
     orders: list[LinkedOrderSummary] = []
 
 

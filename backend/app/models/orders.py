@@ -1,13 +1,13 @@
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -20,6 +20,12 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.core.precision import (
+    MT_NUMERIC_PRECISION,
+    MT_NUMERIC_SCALE,
+    PRICE_NUMERIC_PRECISION,
+    PRICE_NUMERIC_SCALE,
+)
 
 
 class OrderType(enum.Enum):
@@ -58,12 +64,16 @@ class Order(Base):
     price_type: Mapped[PriceType] = mapped_column(
         Enum(PriceType, name="price_type"), nullable=False
     )
-    quantity_mt: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     pricing_convention: Mapped[OrderPricingConvention | None] = mapped_column(
         Enum(OrderPricingConvention, name="order_pricing_convention"),
         nullable=True,
     )
-    avg_entry_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_entry_price: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    )
 
     # --- Counterparty (free text) ---
     counterparty_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -121,7 +131,9 @@ class SoPoLink(Base):
     purchase_order_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orders.id"), nullable=False
     )
-    linked_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
+    linked_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

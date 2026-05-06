@@ -172,7 +172,7 @@ def test_award_creates_contract_and_reduces_exposure_via_linkage(client) -> None
     assert award.json()["state"] == "CLOSED"
 
     after = _get_commercial_exposure(client)
-    assert after["commercial_active_mt"] == before["commercial_active_mt"] - 5.0
+    assert float(after["commercial_active_mt"]) == float(before["commercial_active_mt"]) - 5.0
 
     with SessionLocal() as session:
         contracts = session.query(HedgeContract).all()

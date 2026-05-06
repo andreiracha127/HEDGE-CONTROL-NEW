@@ -39,6 +39,10 @@ def _get_global_exposure(client) -> dict:
     return response.json()
 
 
+def _mt(data: dict, key: str) -> float:
+    return float(data[key])
+
+
 def test_global_exposure_reduces_when_linkages_exist(client) -> None:
     order_id = _create_sales_order(client, "variable", 10.0)
     contract_id = _create_hedge_contract(
@@ -53,10 +57,10 @@ def test_global_exposure_reduces_when_linkages_exist(client) -> None:
 
     data = _get_global_exposure(client)
 
-    assert data["pre_reduction_global_active_mt"] == 15.0
-    assert data["reduction_applied_active_mt"] == 8.0
-    assert data["global_active_mt"] == 7.0
-    assert data["hedge_short_mt"] == 1.0
+    assert _mt(data, "pre_reduction_global_active_mt") == 15.0
+    assert _mt(data, "reduction_applied_active_mt") == 8.0
+    assert _mt(data, "global_active_mt") == 7.0
+    assert _mt(data, "hedge_short_mt") == 1.0
 
 
 def test_no_double_counting_of_linked_hedge_quantities(client) -> None:
@@ -73,8 +77,8 @@ def test_no_double_counting_of_linked_hedge_quantities(client) -> None:
 
     data = _get_global_exposure(client)
 
-    assert data["hedge_short_mt"] == 3.5
-    assert data["reduction_applied_active_mt"] == 5.0
+    assert _mt(data, "hedge_short_mt") == 3.5
+    assert _mt(data, "reduction_applied_active_mt") == 5.0
 
 
 def test_unlinked_hedge_qty_still_affects_global_exposure(client) -> None:
@@ -90,8 +94,8 @@ def test_unlinked_hedge_qty_still_affects_global_exposure(client) -> None:
 
     data = _get_global_exposure(client)
 
-    assert data["global_active_mt"] == 5.0
-    assert data["hedge_short_mt"] == 3.0
+    assert _mt(data, "global_active_mt") == 5.0
+    assert _mt(data, "hedge_short_mt") == 3.0
 
 
 def test_exposure_never_negative(client) -> None:
@@ -108,8 +112,8 @@ def test_exposure_never_negative(client) -> None:
 
     data = _get_global_exposure(client)
 
-    assert data["global_active_mt"] >= 0.0
-    assert data["global_passive_mt"] >= 0.0
+    assert _mt(data, "global_active_mt") >= 0.0
+    assert _mt(data, "global_passive_mt") >= 0.0
 
 
 def test_removing_linkage_changes_global_exposure_deterministically(client) -> None:
@@ -127,9 +131,9 @@ def test_removing_linkage_changes_global_exposure_deterministically(client) -> N
     _create_linkage(client, order_id, contract_id, 3.0)
     after = _get_global_exposure(client)
 
-    assert before["global_passive_mt"] == 13.0
-    assert after["global_passive_mt"] == 7.0
-    assert after["reduction_applied_passive_mt"] == 6.0
+    assert _mt(before, "global_passive_mt") == 13.0
+    assert _mt(after, "global_passive_mt") == 7.0
+    assert _mt(after, "reduction_applied_passive_mt") == 6.0
 
 
 def test_order_insertion_sequence_does_not_affect_result(client) -> None:

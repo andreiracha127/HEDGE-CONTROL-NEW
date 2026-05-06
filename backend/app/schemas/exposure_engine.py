@@ -1,11 +1,14 @@
 """Schemas for the Exposure Engine (1.3)."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from enum import Enum
 from typing import Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.schemas._types import MTQuantity, Price
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +59,10 @@ class ExposureDetailRead(BaseModel):
     direction: ExposureDirection
     source_type: ExposureSourceType
     source_id: UUID
-    original_tons: float
-    open_tons: float
-    hedged_tons: float = 0.0
-    price_per_ton: Optional[float] = None
+    original_tons: MTQuantity
+    open_tons: MTQuantity
+    hedged_tons: MTQuantity = Decimal("0.000")
+    price_per_ton: Optional[Price] = None
     settlement_month: Optional[str] = None
     status: ExposureStatus
     created_at: datetime
@@ -73,7 +76,7 @@ class ExposureDetailRead(BaseModel):
     observation_date_start: Optional[date] = None
     observation_date_end: Optional[date] = None
     fixing_date: Optional[date] = None
-    avg_entry_price: Optional[float] = None
+    avg_entry_price: Optional[Price] = None
     order_notes: Optional[str] = None
     delivery_date_start: Optional[date] = None
     delivery_date_end: Optional[date] = None
@@ -91,13 +94,13 @@ class ExposureListResponse(BaseModel):
 
 class NetExposureItem(BaseModel):
     commodity: str
-    long_tons: float
-    short_tons: float
-    net_tons: float
-    long_original: float = 0.0
-    short_original: float = 0.0
-    long_hedged: float = 0.0
-    short_hedged: float = 0.0
+    long_tons: MTQuantity
+    short_tons: MTQuantity
+    net_tons: MTQuantity
+    long_original: MTQuantity = Decimal("0.000")
+    short_original: MTQuantity = Decimal("0.000")
+    long_hedged: MTQuantity = Decimal("0.000")
+    short_hedged: MTQuantity = Decimal("0.000")
 
 
 class NetExposureResponse(BaseModel):
@@ -114,7 +117,7 @@ class HedgeTaskRead(BaseModel):
 
     id: UUID
     exposure_id: UUID
-    recommended_tons: float
+    recommended_tons: MTQuantity
     recommended_action: HedgeTaskAction
     status: HedgeTaskStatus
     created_at: datetime

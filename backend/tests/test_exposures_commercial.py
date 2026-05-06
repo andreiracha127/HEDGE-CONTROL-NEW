@@ -50,16 +50,20 @@ def _get_exposure(client) -> dict:
     return response.json()
 
 
+def _mt(data: dict, key: str) -> float:
+    return float(data[key])
+
+
 def test_empty_orders_returns_zero_exposure(client) -> None:
     data = _get_exposure(client)
 
-    assert data["pre_reduction_commercial_active_mt"] == 0.0
-    assert data["pre_reduction_commercial_passive_mt"] == 0.0
-    assert data["reduction_applied_active_mt"] == 0.0
-    assert data["reduction_applied_passive_mt"] == 0.0
-    assert data["commercial_active_mt"] == 0.0
-    assert data["commercial_passive_mt"] == 0.0
-    assert data["commercial_net_mt"] == 0.0
+    assert _mt(data, "pre_reduction_commercial_active_mt") == 0.0
+    assert _mt(data, "pre_reduction_commercial_passive_mt") == 0.0
+    assert _mt(data, "reduction_applied_active_mt") == 0.0
+    assert _mt(data, "reduction_applied_passive_mt") == 0.0
+    assert _mt(data, "commercial_active_mt") == 0.0
+    assert _mt(data, "commercial_passive_mt") == 0.0
+    assert _mt(data, "commercial_net_mt") == 0.0
     assert data["order_count_considered"] == 0
     assert data["calculation_timestamp"]
 
@@ -70,11 +74,11 @@ def test_fixed_price_orders_do_not_affect_exposure(client) -> None:
 
     data = _get_exposure(client)
 
-    assert data["pre_reduction_commercial_active_mt"] == 0.0
-    assert data["pre_reduction_commercial_passive_mt"] == 0.0
-    assert data["commercial_active_mt"] == 0.0
-    assert data["commercial_passive_mt"] == 0.0
-    assert data["commercial_net_mt"] == 0.0
+    assert _mt(data, "pre_reduction_commercial_active_mt") == 0.0
+    assert _mt(data, "pre_reduction_commercial_passive_mt") == 0.0
+    assert _mt(data, "commercial_active_mt") == 0.0
+    assert _mt(data, "commercial_passive_mt") == 0.0
+    assert _mt(data, "commercial_net_mt") == 0.0
     assert data["order_count_considered"] == 0
 
 
@@ -86,11 +90,11 @@ def test_exposure_reduces_by_linked_quantity(client) -> None:
 
     data = _get_exposure(client)
 
-    assert data["pre_reduction_commercial_active_mt"] == 10.0
-    assert data["reduction_applied_active_mt"] == 4.0
-    assert data["commercial_active_mt"] == 6.0
-    assert data["commercial_passive_mt"] == 0.0
-    assert data["commercial_net_mt"] == 6.0
+    assert _mt(data, "pre_reduction_commercial_active_mt") == 10.0
+    assert _mt(data, "reduction_applied_active_mt") == 4.0
+    assert _mt(data, "commercial_active_mt") == 6.0
+    assert _mt(data, "commercial_passive_mt") == 0.0
+    assert _mt(data, "commercial_net_mt") == 6.0
 
 
 def test_exposure_never_negative(client) -> None:
@@ -101,8 +105,8 @@ def test_exposure_never_negative(client) -> None:
 
     data = _get_exposure(client)
 
-    assert data["commercial_active_mt"] == 0.0
-    assert data["commercial_net_mt"] == 0.0
+    assert _mt(data, "commercial_active_mt") == 0.0
+    assert _mt(data, "commercial_net_mt") == 0.0
 
 
 def test_removing_linkage_changes_exposure_deterministically(client) -> None:
@@ -115,9 +119,9 @@ def test_removing_linkage_changes_exposure_deterministically(client) -> None:
 
     after = _get_exposure(client)
 
-    assert before["commercial_passive_mt"] == 8.0
-    assert after["commercial_passive_mt"] == 5.0
-    assert after["reduction_applied_passive_mt"] == 3.0
+    assert _mt(before, "commercial_passive_mt") == 8.0
+    assert _mt(after, "commercial_passive_mt") == 5.0
+    assert _mt(after, "reduction_applied_passive_mt") == 3.0
 
 
 def test_insert_order_sequence_does_not_affect_result(client) -> None:

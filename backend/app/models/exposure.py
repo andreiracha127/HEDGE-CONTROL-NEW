@@ -3,6 +3,7 @@
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     DateTime,
@@ -19,6 +20,12 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.core.precision import (
+    MT_NUMERIC_PRECISION,
+    MT_NUMERIC_SCALE,
+    PRICE_NUMERIC_PRECISION,
+    PRICE_NUMERIC_SCALE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -75,9 +82,15 @@ class Exposure(Base):
         Enum(ExposureSourceType, name="exposure_source_type"), nullable=False
     )
     source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    original_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
-    open_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
-    price_per_ton: Mapped[float | None] = mapped_column(Numeric(15, 2), nullable=True)
+    original_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
+    open_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
+    price_per_ton: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    )
     settlement_month: Mapped[str | None] = mapped_column(String(7), nullable=True)
     status: Mapped[ExposureStatus] = mapped_column(
         Enum(ExposureStatus, name="exposure_status"),
@@ -114,7 +127,9 @@ class ContractExposure(Base):
     contract_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("hedge_contracts.id"), nullable=False
     )
-    allocated_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
+    allocated_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -138,7 +153,9 @@ class HedgeExposure(Base):
         UUID(as_uuid=True),
         nullable=False,  # FK deferred — hedges table created in 1.4
     )
-    allocated_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
+    allocated_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -158,7 +175,9 @@ class HedgeTask(Base):
     exposure_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("exposures.id"), nullable=False
     )
-    recommended_tons: Mapped[float] = mapped_column(Numeric(15, 3), nullable=False)
+    recommended_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     recommended_action: Mapped[HedgeTaskAction] = mapped_column(
         Enum(HedgeTaskAction, name="hedge_task_action"), nullable=False
     )
