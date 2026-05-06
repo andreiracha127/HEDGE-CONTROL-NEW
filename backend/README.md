@@ -23,3 +23,9 @@ deals, counterparties, cashflow, P&L, MTM, scenarios, audit trail, and market da
 ```bash
 uvicorn app.main:app --reload
 ```
+
+## Production deployment
+
+Production runs on Railway. Operational configuration, service start commands,
+healthchecks, environment variables, deployment workflow, and troubleshooting are
+documented in [`../docs/runbook-railway.md`](../docs/runbook-railway.md).
