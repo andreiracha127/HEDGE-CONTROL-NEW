@@ -82,7 +82,36 @@ Replace the `except Exception: return None` swallow with explicit handling:
 
 - **NO `return None`** — the function returns `Decimal` or raises.
 
-If `price_lookup_service.py` does not yet have a clean exception type, add one (small, in `price_lookup_service.py`). Do not refactor that service — out of scope.
+**Expand the lookup service to return structured provenance (REQUIRED — was incorrectly forbidden in an earlier draft).** Per Codex catch on PR #17: provenance fields can only be persisted accurately if the lookup service exposes the actual settlement date used. The current `get_cash_settlement_price_d1` returns only `Decimal`, but its docstring documents a fallback up to 5 calendar days for weekends/holidays — meaning the row's `settlement_date` can be several days before `as_of_date - 1`. Without exposing it, the executor would have to guess (wrong on weekends/holidays).
+
+Required change in `price_lookup_service.py`:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class PriceQuote:
+    """Structured result of a price lookup — what was consulted, where it came from, when it settles."""
+    value: Decimal
+    source: str          # e.g., "lme_cash_settlement", "westmetall_cash_settlement"
+    settlement_date: date # the ACTUAL row.settlement_date used (may differ from as_of_date - 1)
+    symbol: str          # the resolved symbol (post resolve_symbol)
+
+
+def get_cash_settlement_price_d1_with_provenance(
+    db: Session, symbol: str, as_of_date: date,
+) -> PriceQuote:
+    # Body mirrors current get_cash_settlement_price_d1, but returns the full row.
+    # Source string is determined by inspecting row.source_table or by a constant
+    # if CashSettlementPrice has only one origin today (verify by reading the model).
+    ...
+```
+
+The original `get_cash_settlement_price_d1` may remain as a thin wrapper returning `.value` for backward compat callers, OR be deleted in favor of the new function — the executor decides based on existing call sites. Whatever the choice, **`_get_market_price` in `deal_engine.py` must use the provenance-returning variant**.
+
+This is a small, scope-local refactor — not the broad rework the earlier draft forbade. The forbidden refactor was things like changing the underlying data sources, adding caching, etc.
+
+If `price_lookup_service.py` does not yet have a clean exception type for "no data within lookback window", add one — but the existing `HTTPException(424)` may already serve. Verify before introducing a new type.
 
 ### 3.2 Hard-fail in `_order_value` for variable-price + missing market
 
@@ -133,82 +162,113 @@ The exception propagates; `compute_deal_pnl` does NOT persist a `DealPNLSnapshot
 
 **Two sub-changes:**
 
-#### 3.4.1 Add provenance columns to `DealPNLSnapshot`
+#### 3.4.1 Add per-commodity provenance to `DealPNLSnapshot`
 
-The model at `backend/app/models/deal.py:129-157` (verify line range) currently has `inputs_hash: String(64)` and the P&L decimal columns. Add three **nullable** provenance columns plus a CHECK constraint that ties them together — nullability is the only honest representation of fixed-price-only snapshots that legitimately did not consult any market price:
+**Codex catch on PR #17:** an earlier draft prescribed three scalar columns `(market_price_value, market_price_source, market_price_date)` — one triplet per snapshot. That cannot represent a snapshot consuming **multiple** prices, which a single deal legitimately can: a deal with a fixed Aluminum leg + an active Copper hedge needs the Copper price; a deal with two variable-price legs in different commodities needs both. With one scalar triplet, only one is recorded; corrections to an omitted commodity's price could still return a stale snapshot via hash collision. Per-reference provenance is required.
+
+The model at `backend/app/models/deal.py:129-157` (verify line range) gets a single nullable JSONB column `price_references` that holds a dict keyed by commodity:
 
 ```python
+from sqlalchemy.dialects.postgresql import JSONB
+
 class DealPNLSnapshot(Base):
     __table_args__ = (
-        # Provenance is all-or-nothing: either the snapshot consumed a market
-        # price (fixed-price-only deals do not) and all three columns are
-        # populated, or none of them are. No fake/sentinel provenance ever.
+        # price_references is either NULL (no market price was consulted —
+        # fixed-price-only deal with no active hedges) OR a non-empty JSON
+        # object whose keys are commodities and whose values are the
+        # full {value, source, settlement_date} for that commodity's
+        # consulted price. NULL is the honest representation of "absent";
+        # an empty object {} is rejected (it would be ambiguous with NULL).
         CheckConstraint(
-            "(market_price_value IS NULL AND market_price_source IS NULL AND market_price_date IS NULL)"
-            " OR (market_price_value IS NOT NULL AND market_price_source IS NOT NULL AND market_price_date IS NOT NULL)",
-            name="chk_deal_pnl_snapshot_provenance_consistency",
+            "price_references IS NULL"
+            " OR (jsonb_typeof(price_references) = 'object' AND price_references <> '{}'::jsonb)",
+            name="chk_deal_pnl_snapshot_price_references_shape",
         ),
     )
     ...
-    market_price_value: Mapped[Decimal | None] = mapped_column(
-        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    price_references: Mapped[dict | None] = mapped_column(
+        JSONB, nullable=True
     )
-    market_price_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # e.g., "westmetall_cash_settlement", "lme_official", or whatever the
-    # price_lookup_service emits; coordinate the source-name vocabulary
-    # with the service so it's deterministic
-    market_price_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    # The actual settlement date used (D-1 of snapshot_date typically)
+    # JSONB shape (when non-NULL):
+    #   {
+    #       "ALUMINUM": {"value": "5500.123456", "source": "lme_cash_settlement", "settlement_date": "2026-05-05"},
+    #       "COPPER":   {"value": "9120.654321", "source": "lme_cash_settlement", "settlement_date": "2026-05-02"},
+    #       ...
+    #   }
+    # - keys: commodity identifiers, must match commodities used elsewhere in the schema
+    #   (verify by grep against existing Commodity enum / HedgeContract.commodity values)
+    # - values: every entry MUST have all three fields populated. Decimal values
+    #   serialized as strings to avoid float roundtrip; ISO dates as strings.
+    # - settlement_date may differ from snapshot_date - 1 for weekend/holiday lookbacks
+    #   (the actual row.settlement_date the lookup service consulted, returned via PriceQuote)
+    # The application layer (compute_deal_pnl) is responsible for emitting only
+    # well-formed entries; the CHECK constraint guards against the empty-object
+    # ambiguity. Per-entry shape is enforced by the producing code, not by
+    # CHECK — Postgres CHECK on JSONB shape is verbose and brittle.
 ```
 
-**Population rule (enforced by `compute_deal_pnl`, not by the schema):**
-- Snapshot **with** at least one variable-price physical leg or active hedge contract → all 3 columns populated with real values
-- Snapshot **with** only fixed-price legs and no active hedges → all 3 columns NULL (no market price was consulted; provenance is legitimately empty)
-- The CHECK constraint above prevents partial states (e.g., source set but value NULL)
+**Population rule (enforced by `compute_deal_pnl`):**
+- Snapshot consuming N distinct commodities (variable-price physical or active hedge) → `price_references` has N entries, one per commodity
+- Snapshot with only fixed-price legs and no active hedges → `price_references = NULL` (no market price was consulted)
+- A snapshot that touches two legs of the **same** commodity contributes one entry (deduped by commodity)
 
-**Migration:** add 3 columns nullable from the start. No backfill needed — existing rows naturally become "provenance unknown / pre-this-PR" with NULL across all three (consistent with the CHECK). Document in migration docstring: *"Provenance columns nullable by design; populated only when a market price was consulted to compute the snapshot. Pre-this-PR rows remain NULL across all three — provenance for those was never captured and cannot be reconstructed."*
+**Migration:** add the single `price_references` column nullable from the start + the CHECK constraint. No backfill needed — existing rows naturally become "provenance unknown / pre-this-PR" with NULL `price_references` (consistent with the CHECK). Document in migration docstring: *"price_references nullable by design; populated only when at least one market price was consulted. Pre-this-PR rows remain NULL — provenance for those was never captured and cannot be reconstructed."*
 
-**No preflight required** for this migration since the columns are nullable from the start; legacy rows are correctly represented as NULL (provenance unknown, predates the rule). This is the legitimate use of NULL as "absent" — distinct from the forbidden "fake sentinel" pattern.
+**No preflight required** since the column is nullable from the start; legacy rows are correctly represented as NULL.
 
-**Do not** introduce a workaround like `'pre_provenance'` source string for legacy rows. NULL is the honest representation; sentinel strings are exactly the §2.7 violation we are removing from the runtime path.
+**Do not** introduce a workaround like `'pre_provenance'` source for legacy rows. NULL is the honest representation; sentinel objects/strings are exactly the §2.7 violation we are removing from the runtime path.
 
-#### 3.4.2 Include provenance in `_compute_inputs_hash`
+**Compute_deal_pnl algorithm (REQUIRED for §3.3 to work coherently):**
 
-The provenance fields are optional in the function signature (mirroring the schema). When the snapshot did not consult a market price (fixed-price-only deal), all three are `None` and serialize as JSON `null`:
+1. Walk `links`; for each link that requires market valuation, identify the commodity
+2. Build the set of unique commodities needed
+3. For each commodity, call the new `get_cash_settlement_price_d1_with_provenance(...)` (one call per unique commodity, not per leg)
+4. If any call raises (no price within lookback): propagate `PriceReferenceUnprovable` — no snapshot is persisted; `unit_of_work` rolls back
+5. Build `price_references` dict from the PriceQuote results: `{commodity: {"value": str(quote.value), "source": quote.source, "settlement_date": quote.settlement_date.isoformat()}}`
+6. Compute MTMs using the dict (look up each leg's commodity in the dict)
+7. Persist the `DealPNLSnapshot` with `price_references=<the dict>` (or `None` if no commodity required a market price)
+
+#### 3.4.2 Include `price_references` in `_compute_inputs_hash`
+
+The hash function takes the entire `price_references` dict (or `None`). `json.dumps(..., sort_keys=True)` ensures deterministic byte-for-byte output for the same logical inputs:
 
 ```python
 def _compute_inputs_hash(
     deal_id: _uuid.UUID,
     snapshot_date: date,
     link_ids: list[_uuid.UUID],
-    market_price_source: str | None,
-    market_price_value: Decimal | None,
-    market_price_date: date | None,
+    price_references: dict[str, dict[str, str]] | None,
 ) -> str:
+    """SHA-256 hash that uniquely identifies the inputs to compute_deal_pnl,
+    including every market price consulted (per commodity).
+
+    `price_references` shape when non-None:
+        {commodity: {"value": str, "source": str, "settlement_date": str}, ...}
+    All values must be strings (Decimal-as-str, ISO-date-as-str) so JSON
+    serialization is deterministic and free of float roundtrip.
+    """
     data = json.dumps(
         {
             "deal_id": str(deal_id),
             "snapshot_date": str(snapshot_date),
             "links": sorted(str(lid) for lid in link_ids),
-            "market_price_source": market_price_source,  # str or None
-            "market_price_value": (
-                str(market_price_value) if market_price_value is not None else None
-            ),  # str avoids float roundtrip; None preserves "no market price consulted"
-            "market_price_date": (
-                str(market_price_date) if market_price_date is not None else None
-            ),
+            "price_references": price_references,  # dict of dicts, or None
         },
-        sort_keys=True,
+        sort_keys=True,  # ensures commodity keys sorted; inner dicts sorted
     )
     return hashlib.sha256(data.encode()).hexdigest()
 ```
 
-Caller (`compute_deal_pnl`) computes hash AFTER fetching `market_price` (or determining it isn't needed) so the provenance is in scope. Idempotency property:
-- Fixed-price-only deal: same `(deal, date, links)` and `(None, None, None)` provenance → same hash → returns existing snapshot
-- Variable-price/hedge deal: same `(deal, date, links)` and same `(source, value, date)` → same hash → returns existing snapshot
-- Different price ref (e.g., service patched and now returns corrected value) → different hash → new snapshot row → forensic trail preserved
+Caller (`compute_deal_pnl`) computes the hash AFTER step 5 of the algorithm (after `price_references` is fully built), then performs the existing-snapshot lookup. Idempotency property:
 
-The all-NULL provenance for fixed-price-only must be encoded into the hash deterministically (per the JSON dump above) so different fixed-price-only snapshots for the same `(deal, date, links)` collapse into one row, while a variable-price snapshot for the same identifiers produces a distinct hash.
+- Fixed-price-only deal: same `(deal, date, links)` and `price_references=None` → same hash → returns existing
+- Multi-commodity deal: same `(deal, date, links)` and same `{Aluminum: {...}, Copper: {...}}` → same hash → returns existing
+- Correction to ANY commodity's price (e.g., LME republishes with a corrected Copper value) → different inner dict → different hash → new snapshot row → forensic trail of both old and corrected snapshots
+- Adding/removing a commodity from the snapshot (because a link was added/removed or hedge status changed) → different keys → different hash → new snapshot row
+
+This is exactly the property the single-triplet design failed: now a correction in any one commodity's price changes the hash, so no stale snapshot is silently returned.
+
+**Caller-side discipline required:** `compute_deal_pnl` MUST build `price_references` with the canonical Decimal-string format before hashing. If the dict is built with `Decimal` values (not strings), serialization may produce non-deterministic output across Python/JSON library versions. Always serialize Decimals to strings at the point of building the dict, BEFORE hashing and BEFORE persisting.
 
 #### 3.4.3 Migration: do NOT backfill legacy `inputs_hash`
 
@@ -303,12 +363,16 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 
 ### 6.2 Provenance
 
-- [ ] **Migration:** schema has `market_price_value`, `market_price_source`, `market_price_date` columns (all nullable) and the `chk_deal_pnl_snapshot_provenance_consistency` CHECK constraint
+- [ ] **Migration:** schema has the single `price_references` JSONB column (nullable) and the `chk_deal_pnl_snapshot_price_references_shape` CHECK constraint
 - [ ] **Migration:** legacy `inputs_hash` values are **byte-equal** before and after the migration — the migration does not rewrite them (per §3.4.3 — backfilling from current `deal_links` would silently bind legacy snapshots to current link sets and serve stale P&L)
 - [ ] **Test (migration boundary):** create a `DealPNLSnapshot` row at the pre-migration state, run the migration, assert `inputs_hash` byte-equal pre- and post-migration; then call `compute_deal_pnl(...)` for the same deal (fixed-price-only) post-migration and assert it creates a NEW row (different `inputs_hash`), legacy row preserved
-- [ ] **Test:** Variable-price/hedge `DealPNLSnapshot` row contains the three provenance fields populated from the actual price lookup
-- [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has all three provenance fields NULL — and the CHECK constraint accepts this state
-- [ ] **Idempotency contract scoped to post-PR-8 snapshots:** test asserts two consecutive post-PR-8 calls for the same `(deal, date, links, provenance)` return the SAME row; legacy snapshots are NOT in scope of this rule
+- [ ] **Test:** Single-commodity variable-price snapshot has `price_references = {commodity: {value, source, settlement_date}}` populated from `get_cash_settlement_price_d1_with_provenance`
+- [ ] **Test (multi-commodity):** Snapshot consuming Aluminum + Copper (e.g., fixed Aluminum order + active Copper hedge) has `price_references` with BOTH commodity keys populated; correcting either price (mock different return) yields a different `inputs_hash` and produces a new snapshot row
+- [ ] **Test (weekend lookback):** Snapshot whose `snapshot_date` is a Monday and whose lookup falls back to Friday's price — `price_references[commodity]["settlement_date"]` equals the actual Friday date, NOT `Monday - 1` (Sunday)
+- [ ] **Test (deduplication):** Snapshot with two legs of the same commodity → `price_references` has exactly ONE entry for that commodity (one lookup, deduplicated)
+- [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has `price_references = NULL`; CHECK constraint accepts this state
+- [ ] **Test (CHECK):** Manually inserting a row with `price_references = {}` (empty object) is rejected by CHECK (ambiguous with NULL)
+- [ ] **Idempotency contract scoped to post-PR-8 snapshots:** test asserts two consecutive post-PR-8 calls for the same `(deal, date, links, price_references)` return the SAME row; legacy snapshots are NOT in scope of this rule
 - [ ] **Test:** Two snapshots for the same `(deal, date, links)` but with different `market_price_value` (e.g., simulated by mocking price service) produce DIFFERENT `inputs_hash` → both persist; the latest does NOT silently overwrite the earlier
 - [ ] **Test:** Re-running `compute_deal_pnl` with no input change returns the existing snapshot (idempotency preserved)
 - [ ] **Test:** `inputs_hash` SHA256 includes all provenance fields (verify by inspection of the hash composition)
