@@ -250,4 +250,26 @@ class DealPNLSnapshot(Base):
                     f"price_references[{commodity!r}].value must be a "
                     f"finite decimal: {raw_value!r}"
                 )
+            # Codex P2 follow-up (2026-05-06): settlement_date must be
+            # a real ISO calendar date (dispatch §3.4.1). The producer
+            # always emits ``date.isoformat()`` strings; a direct ORM
+            # write could otherwise smuggle ``"not-a-date"`` or
+            # ``"2026-13-01"``. ``date.fromisoformat`` (Python 3.11+)
+            # is strict-ISO-only — single-digit month/day is rejected,
+            # and impossible calendar dates raise ``ValueError`` —
+            # which mirrors the PG-side regex + ::date cast pair.
+            raw_settlement = entry["settlement_date"]
+            if not isinstance(raw_settlement, str):
+                raise ValueError(
+                    f"price_references[{commodity!r}].settlement_date "
+                    f"must be a string"
+                )
+            try:
+                date.fromisoformat(raw_settlement)
+            except ValueError as exc:
+                raise ValueError(
+                    f"price_references[{commodity!r}].settlement_date "
+                    f"is not a valid ISO calendar date: "
+                    f"{raw_settlement!r}"
+                ) from exc
         return value

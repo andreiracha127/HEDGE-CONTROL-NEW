@@ -110,6 +110,28 @@ BEGIN
         IF jsonb_typeof(entry->'settlement_date') <> 'string' THEN
             RETURN FALSE;
         END IF;
+        -- Codex P2 (2026-05-06, follow-up): settlement_date must be a
+        -- real ISO calendar date. The original CHECK only verified the
+        -- JSON type was string, so a direct-SQL repair/import could
+        -- persist ``"settlement_date": "not-a-date"`` and bypass the
+        -- ORM validator, violating the documented ISO-date provenance
+        -- contract (dispatch §3.4.1).
+        --
+        -- Layer 1 — anchored ISO regex fast-path (cheap, rejects
+        -- ``2026/05/05``, ``05-05-2026``, single-digit ``2026-5-5``).
+        IF (entry->>'settlement_date') !~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' THEN
+            RETURN FALSE;
+        END IF;
+        -- Layer 2 — load-bearing calendar validity via ::date cast.
+        -- The regex alone accepts ``2026-13-45`` (digits match but
+        -- month/day are nonsense); the cast rejects impossible months
+        -- (``2026-13-01``), impossible days (``2026-02-30``), and the
+        -- zero-date (``0000-00-00``). Belt-and-suspenders.
+        BEGIN
+            PERFORM (entry->>'settlement_date')::date;
+        EXCEPTION WHEN others THEN
+            RETURN FALSE;
+        END;
         -- Codex P2 (2026-05-06): the producer (compute_deal_pnl ->
         -- quantize_price -> str(Decimal)) only ever emits canonical
         -- fixed-point decimal strings. Reject anything a direct-SQL

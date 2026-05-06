@@ -602,6 +602,54 @@ class TestPriceReferencesValidator:
                 },
             )
 
+    @pytest.mark.parametrize(
+        "bad_date",
+        [
+            "not-a-date",       # Codex's exact example — arbitrary text
+            "2026-13-01",       # impossible month — caught by calendar check
+            "2026-02-30",       # impossible day — caught by calendar check
+            "2026-5-5",         # single-digit — strict-ISO rejects
+            "2026/05/05",       # wrong separator
+            "05-05-2026",       # wrong field order
+            "",                 # empty string
+        ],
+    )
+    def test_inner_settlement_date_invalid_rejected(self, bad_date):
+        """SQLite-portable defender: ``@validates`` must reject any
+        ``settlement_date`` that is not a strict ISO calendar date.
+        Mirrors the PG-side regex + ``::date`` cast pair so tests catch
+        malformed audit evidence in both dialects.
+        """
+        with pytest.raises(ValueError):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": "lme",
+                        "settlement_date": bad_date,
+                    }
+                },
+            )
+
+    def test_inner_settlement_date_non_string_rejected(self):
+        """``settlement_date`` must be a string (ISO date)."""
+        with pytest.raises(ValueError, match="settlement_date"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": "lme",
+                        "settlement_date": 20260505,
+                    }
+                },
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Postgres-only — direct-SQL writes are rejected by the per-entry CHECK
@@ -843,5 +891,64 @@ class TestPriceReferencesCheckOnPostgres:
 
             # Accepted: well-formed fractional
             self._try_insert(engine, _with("0.000001"))
+        finally:
+            self._teardown(engine)
+
+    def test_direct_sql_settlement_date_must_be_iso_calendar_date(self):
+        """Codex P2 follow-up (2026-05-06): the per-entry CHECK now also
+        enforces ISO calendar-date validity on ``settlement_date``. The
+        producer always emits ``date.isoformat()`` strings; direct-SQL
+        writes that smuggle in arbitrary text, wrong format, or
+        impossible calendar dates (month=13, day=30 in February) must
+        be rejected by the function-backed CHECK (regex + ``::date``
+        cast pair).
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        engine = self._setup_engine_with_check()
+        try:
+            base = {
+                "ALUMINUM": {
+                    "value": "2700",
+                    "source": "lme",
+                    "settlement_date": "PLACEHOLDER",
+                }
+            }
+
+            def _with(settlement):
+                payload = {"ALUMINUM": dict(base["ALUMINUM"])}
+                payload["ALUMINUM"]["settlement_date"] = settlement
+                return payload
+
+            # Rejected by regex layer — arbitrary text (already covered
+            # in the malformed-shapes test, repeated here for clarity).
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("not-a-date"))
+
+            # Rejected by ::date cast — impossible month (regex passes,
+            # cast fails). This is the case the regex alone CANNOT
+            # catch, justifying the belt-and-suspenders pair.
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("2026-13-01"))
+
+            # Rejected by ::date cast — impossible day in February.
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("2026-02-30"))
+
+            # Rejected by regex layer — single-digit month/day breaks
+            # strict ISO format (the producer always zero-pads).
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("2026-5-5"))
+
+            # Rejected by regex layer — wrong separator.
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("2026/05/05"))
+
+            # Rejected by regex layer — wrong field order.
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("05-05-2026"))
+
+            # Accepted: well-formed ISO date.
+            self._try_insert(engine, _with("2026-05-05"))
         finally:
             self._teardown(engine)
