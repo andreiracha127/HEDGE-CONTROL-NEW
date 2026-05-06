@@ -163,6 +163,8 @@ PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on ne
 
 Document the coordination in PR description; the orchestrator will sequence the merges to minimize rebase work.
 
+§3.8 retires existing rows. Cross-consumer parity for live-linkage semantics extends further: §3.9 fixes the reconcile linkage aggregation; §3.10 fixes the net-exposure linkage exclusion. All four sections together (§3.4, §3.5, §3.9, §3.10) establish the institutional invariant that EVERY query consulting `HedgeOrderLinkage` rows applies the dual-filter predicate (live hedge AND live order).
+
 ### 3.8 Retire derived `Exposure` rows for deleted source orders (Option A — preferred)
 
 **File:** `backend/app/services/exposure_engine.py` — `reconcile_from_orders`.
@@ -211,12 +213,79 @@ for exposure in stale_exposures:
 
 **Option B (documented fallback only — DO NOT default here).** If the retirement path proves infeasible (e.g., `compute_net_exposure` has consumers that cannot tolerate the `is_deleted` filter without a coordinated change exceeding PR-5's scope), defer to a follow-up PR. Add to §4 Scope OUT and open a GitHub issue at PR-5 merge time covering the retirement sweep + `compute_net_exposure` lifecycle alignment. Update §6.6 to document the deferred case with a reproducing fixture (Exposure row count remains positive after Order soft-delete) so the follow-up has a starting point. **Option A is the default — choose B only on a documented scope blocker, surfaced in the PR body per §9.**
 
+### 3.9 Filter linkages by live hedge AND live order in reconcile linkage map
+
+**File:** `backend/app/services/exposure_engine.py` — `_get_linked_qty_map(session)` (`exposure_engine.py:60`).
+
+The current helper sums `HedgeOrderLinkage.quantity_mt` grouped by `order_id` without joining `HedgeContract` or filtering `Order`. Result: a linkage to a settled or soft-deleted hedge still reduces `Exposure.open_tons` derived in `reconcile_from_orders`, even though `ExposureService` (the snapshot consumer) now shows the order as unhedged after §3.4. Cross-consumer parity is broken — the same data is summarized inconsistently by reconcile vs by snapshot.
+
+Apply the SAME dual-filter predicate from §3.5 — joining `HedgeContract` AND `Order`, requiring both live:
+
+```python
+@staticmethod
+def _get_linked_qty_map(session: Session) -> dict[UUID, Decimal]:
+    """Sum linkage qty per order_id, counting only linkages whose
+    hedge contract AND source order are both live (active/partially_settled
+    and not soft-deleted). Mirrors ExposureService.§3.5 dual-filter
+    for cross-consumer parity required by J-A1-OPUS-02."""
+    rows = (
+        session.query(
+            HedgeOrderLinkage.order_id,
+            func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0).label("linked_qty"),
+        )
+        .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+        .join(Order, Order.id == HedgeOrderLinkage.order_id)
+        .filter(
+            HedgeContract.deleted_at.is_(None),
+            HedgeContract.status.in_(
+                [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+            ),
+            Order.deleted_at.is_(None),
+        )
+        .group_by(HedgeOrderLinkage.order_id)
+        .all()
+    )
+    return {row.order_id: row.linked_qty for row in rows}
+```
+
+Note: the `Order` filter is technically redundant with the `Order` query in `reconcile_from_orders` (which §3.7 already filters), BUT it is load-bearing for `compute_net_exposure` (§3.10 below) which consumes Exposure rows produced by reconcile. Without the filter here, an Exposure produced from a stale linkage cycle could survive after both consumers diverge.
+
+Coordination with §3.8: §3.8 retirement uses this updated `_get_linked_qty_map` automatically — no additional changes to retirement logic.
+
+### 3.10 Filter hedge-side linkage query in `compute_net_exposure`
+
+**File:** `backend/app/services/exposure_engine.py` — `compute_net_exposure` (`exposure_engine.py:204`); the offending linkage subquery is at `exposure_engine.py:263-264`. Note: confirmed by `grep -rn "compute_net_exposure" backend/app/`, this lives in `exposure_engine.py` (NOT `exposure_service.py` as one might expect from the §3 prefix pattern).
+
+The hedge side currently excludes any `HedgeContract` whose id appears in `session.query(HedgeOrderLinkage.contract_id).distinct()`. This excludes hedges with ANY linkage, including dead ones — which is the inverse of what §3.5's snapshot fix produces. After §3.5, the global snapshot REINCLUDES a live hedge whose linkage points to a soft-deleted order; but `/exposures/net` still hides that hedge, so the two endpoints disagree. The §6.3.5 scenario reproduces this exact divergence.
+
+Apply the dual-filter to the linkage subquery so only LIVE order linkages exclude a hedge:
+
+```python
+# Before (exposure_engine.py:263-264):
+#   linked_contract_ids = (
+#       session.query(HedgeOrderLinkage.contract_id).distinct().scalar_subquery()
+#   )
+# After:
+linked_contract_ids = (
+    session.query(HedgeOrderLinkage.contract_id)
+    .join(Order, Order.id == HedgeOrderLinkage.order_id)
+    .filter(Order.deleted_at.is_(None))
+    .distinct()
+    .scalar_subquery()
+)
+```
+
+The consumer query at `exposure_engine.py:273` is `~HedgeContract.id.in_(linked_contract_ids)` — preserve that NOT IN semantic; we only narrow the inner set to live-order linkages.
+
+Note: the `HedgeContract` lifecycle filter on the outer hedge side already exists per §3.3 (and is in fact already present in `compute_net_exposure` at `exposure_engine.py:271-272`). This §3.10 fix only narrows the linkage exclusion's INNER set. The two filters compose correctly: outer = live hedge; inner exclusion = live-order linkages; result = live hedges minus those genuinely linked to live orders.
+
 ---
 
 ## 4. Scope OUT — explicitly NOT in PR-5
 
 - **Audit emission for the routes that consume snapshots** — PR-7 territory.
-- **Reconcile residual hard-fail** — PR-4 territory; this PR only adds the lifecycle filter to reconcile's order query.
+- **Reconcile residual hard-fail** — PR-4 territory; this PR only adds the lifecycle filter to reconcile's order query (§3.7) and the dual-filter to its linkage map helper (§3.9). The hard-fail assertion itself remains PR-4's surface.
+- **`compute_net_exposure` shape / convention changes** — out of scope. §3.10 narrows the inner linkage subquery only; the function's return shape, net-tons sign convention, and commodity grouping are unchanged.
 - **Decimal primitives** — PR-1 in main; preserve.
 - **UoW boundary** — PR-3 in main; preserve.
 - **Classification invariant** — PR-6/#14 in main; preserve.
@@ -285,6 +354,56 @@ This is the symmetric mirror of §6.3 — the §3.5 `linked_by_contract` dual-fi
   expected_aluminum_hedge_short_unlinked = Decimal("100")
   ```
   - **Failure mode prevented:** without the §3.5 dual filter, the linkage from the dead order still reduces the hedge's `residual_contract_qty` to zero, then `compute_global_snapshot`'s outer filter excludes the residual-zero hedge as well — so `/exposures/global` would omit BOTH the dead order AND the live hedge, silently hiding 100 MT of live risk.
+
+### 6.3.6 `_get_linked_qty_map` parity (P1, Codex catch)
+
+This is the reconcile-side mirror of §6.3 / §6.3.5 — the §3.9 dual-filter case. A linkage to a dead hedge must NOT keep reducing the order's derived `Exposure.open_tons`.
+
+- [ ] **Test:** Variable-price SO Aluminum 100 (live) + Hedge Short Aluminum 100 (active) + linkage 100. Reconcile creates `Exposure.open_tons = 0`. Now settle the hedge (`HedgeContract.status = settled`). Re-run `reconcile_from_orders`. Assert: `Exposure.open_tons` is now 100 (linkage no longer reduces because hedge is dead).
+  ```python
+  # Per §2.1 (Exposure is state, never event) + §3.9 dual filter:
+  #   open_tons = order_qty - linked_qty_from_LIVE_hedges
+  # After settle: linked_qty_from_LIVE_hedges = 0, so:
+  #   open_tons = 100 - 0 = 100
+  expected_open_tons = Decimal("100")
+  ```
+- [ ] **Test:** Same scenario but with hedge soft-deleted (`HedgeContract.deleted_at` set instead of status=settled) — same outcome, `open_tons = 100`.
+  ```python
+  # Per §3.9 dual filter (deleted_at IS NULL clause):
+  #   linked_qty_from_LIVE_hedges = 0  (hedge has deleted_at set)
+  #   open_tons = 100 - 0 = 100
+  expected_open_tons = Decimal("100")
+  ```
+- [ ] **Test:** Same scenario but with order soft-deleted — handled by §3.8 retirement; the linkage map filter is orthogonal but verified to NOT reintroduce the dead order. Assert: the previously-derived `Exposure` row is retired (`is_deleted = True`) and is NOT regenerated by reconcile while the order remains soft-deleted.
+  ```python
+  # Per §3.8 retirement + §3.9 filter composition:
+  #   stale_exposure.is_deleted == True
+  #   no new Exposure row created for the dead order
+  ```
+
+### 6.3.7 `/exposures/net` parity with global snapshot (P1, Codex catch)
+
+This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage filter case. After §3.5 reincludes a live hedge whose linkage points to a soft-deleted order in the global snapshot, `compute_net_exposure` must agree.
+
+- [ ] **Test:** Recreate §6.3.5 fixture (live SO Aluminum 100 + live Hedge Short Aluminum 100 + linkage 100; then soft-delete the SO). Call `compute_net_exposure(session, commodity="aluminum")`. Assert: hedge appears in net exposure with FULL residual (consistent with global snapshot per §3.5).
+  ```python
+  # Per §2.5 + §3.10 inner-set narrowing:
+  #   Hedge in net = total_live_hedge - linked_to_LIVE_orders
+  #                = 100 - 0 = 100  (linkage's order is soft-deleted, dropped by §3.10 filter)
+  # Net (convention: positive = Vendido/short):
+  #   net_tons = (SO_open - PO_open) + global_short - global_long
+  #            = (0 - 0) + 100 - 0 = 100
+  expected_aluminum_short_tons = Decimal("100")
+  expected_aluminum_net_tons = Decimal("100")
+  ```
+- [ ] **Test:** Same fixture but with order LIVE (no soft-delete). Call `compute_net_exposure`. Assert: hedge does NOT appear in `short_tons` / `long_tons` (it is linked to a live order — already accounted in commercial). Verifies the §3.10 filter narrows correctly without breaking the live path.
+  ```python
+  # Per §2.5 + §3.10:
+  #   linked_to_LIVE_orders = 100  (live SO linkage counted)
+  #   Hedge in net = 100 - 100 = 0
+  expected_aluminum_short_tons = Decimal("0")
+  # But commercial side reflects the (still-zero-residual) SO via Exposure rows.
+  ```
 
 ### 6.4 Multi-commodity isolation preserved (post-#16)
 
@@ -384,7 +503,10 @@ the hedge is settled. Operators may need a release note.
 - Services: exposure_engine.py (lifecycle filter in
   reconcile_from_orders' Order query — coordinated with PR-4 — AND
   retirement sweep for pre-existing Exposure rows whose source Order
-  was soft-deleted, per §3.8 Option A)
+  was soft-deleted, per §3.8 Option A; dual-filter on
+  _get_linked_qty_map at exposure_engine.py:60 per §3.9; narrowed
+  linked_contract_ids subquery inside compute_net_exposure at
+  exposure_engine.py:263-264 per §3.10)
 - Tests: test_exposures_commercial.py, test_exposures_global.py,
   test_exposure_engine.py, test_soft_delete.py, test_validate_residuals.py
 
@@ -410,6 +532,13 @@ the hedge is settled. Operators may need a release note.
 - §6.6 retirement tests demonstrate pre-existing Exposure rows are
   retired when their source Order is soft-deleted, and
   compute_net_exposure no longer counts them (Codex P2 catch closed)
+- §6.3.6 demonstrates _get_linked_qty_map dual-filter: settling or
+  soft-deleting a linked hedge causes the next reconcile to restore
+  the order's full open_tons (Codex P1 catch §3.9 closed)
+- §6.3.7 demonstrates compute_net_exposure parity with the global
+  snapshot: a live hedge linked to a soft-deleted order appears in
+  /exposures/net with full residual, matching /exposures/global
+  (Codex P1 catch §3.10 closed)
 - Multi-commodity isolation (post-#16) preserved
 - No regression in PR-15/-13/-14/-16 test suites
 - Optional EXPLAIN plan test on Postgres confirms filters appear in
@@ -440,6 +569,8 @@ J-A1-OPUS-02.
 - DO NOT use `Order.deleted_at == False` or `== None` — both produce wrong SQL on a `DateTime | None` column; use `Order.deleted_at.is_(None)` exclusively
 - DO NOT use `--no-verify` on git hooks; no force-push (except `--force-with-lease` after Codex-approved rebase if needed); no auto-merge
 - DO NOT auto-merge — Codex review mandatory (Codex outranks CI green)
+- DO NOT change `compute_net_exposure`'s return shape, net-tons sign convention, or commodity grouping in §3.10 — only narrow the inner `linked_contract_ids` subquery's filter set per the §3.10 patch
+- DO NOT split the §3.5 / §3.9 dual-filter predicate; the live-hedge clause (`HedgeContract.deleted_at IS NULL` AND `status IN (active, partially_settled)`) and the live-order clause (`Order.deleted_at IS NULL`) MUST appear together at every linkage-aggregating site (§3.4, §3.5, §3.9, §3.10) — that is the institutional invariant per §3.7's closing paragraph
 
 ---
 
@@ -472,6 +603,8 @@ When complete, report:
 - §6.3.5 evidence: the live-hedge-with-soft-deleted-order-linkage test passes (Codex P1 closed)
 - §3.8 retirement strategy chosen (Option A / B / fallback (b) / (c)) with one-line justification, plus the `compute_net_exposure` consumer audit outcome
 - §6.6 retirement test evidence: the pre-existing `Exposure` row for a soft-deleted order is retired and `compute_net_exposure` no longer counts it (Codex P2 closed)
+- §6.3.6 evidence: the settled-hedge / soft-deleted-hedge reconcile parity tests pass — `Exposure.open_tons` correctly returns to `order_qty` after `_get_linked_qty_map` drops dead-hedge linkages (Codex P1 §3.9 closed)
+- §6.3.7 evidence: the `compute_net_exposure` net-vs-global parity test passes — a live hedge linked to a soft-deleted order appears with full residual in `/exposures/net`, matching `/exposures/global`'s post-§3.5 behavior (Codex P1 §3.10 closed)
 - Reversibility behavior chosen for §3.8 (un-retire vs fresh row) when `Order.deleted_at` is cleared
 - Test counts (new, total, vs pre-PR baseline)
 - Coordination outcome with PR-4 if its merge happened mid-implementation
