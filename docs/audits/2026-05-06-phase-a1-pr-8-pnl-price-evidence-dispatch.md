@@ -284,25 +284,27 @@ This is unrecoverable without storing historical link_ids, which is out of scope
 
 ```python
 # backend/alembic/versions/0XX_pnl_provenance.py
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
 def upgrade():
-    # Add nullable columns + CHECK constraint (per §3.4.1) ONLY.
+    # Add the single nullable JSONB column + CHECK constraint (per §3.4.1) ONLY.
     # Do NOT touch existing inputs_hash values.
-    op.add_column("deal_pnl_snapshots", sa.Column("market_price_value", sa.Numeric(...), nullable=True))
-    op.add_column("deal_pnl_snapshots", sa.Column("market_price_source", sa.String(64), nullable=True))
-    op.add_column("deal_pnl_snapshots", sa.Column("market_price_date", sa.Date(), nullable=True))
-    op.create_check_constraint(
-        "chk_deal_pnl_snapshot_provenance_consistency",
+    op.add_column(
         "deal_pnl_snapshots",
-        "(market_price_value IS NULL AND market_price_source IS NULL AND market_price_date IS NULL)"
-        " OR (market_price_value IS NOT NULL AND market_price_source IS NOT NULL AND market_price_date IS NOT NULL)",
+        sa.Column("price_references", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+    )
+    op.create_check_constraint(
+        "chk_deal_pnl_snapshot_price_references_shape",
+        "deal_pnl_snapshots",
+        "price_references IS NULL"
+        " OR (jsonb_typeof(price_references) = 'object' AND price_references <> '{}'::jsonb)",
     )
 
 
 def downgrade():
-    op.drop_constraint("chk_deal_pnl_snapshot_provenance_consistency", "deal_pnl_snapshots")
-    op.drop_column("deal_pnl_snapshots", "market_price_date")
-    op.drop_column("deal_pnl_snapshots", "market_price_source")
-    op.drop_column("deal_pnl_snapshots", "market_price_value")
+    op.drop_constraint("chk_deal_pnl_snapshot_price_references_shape", "deal_pnl_snapshots")
+    op.drop_column("deal_pnl_snapshots", "price_references")
 ```
 
 **Consequence — and why this is correct, not a bug:**
@@ -311,12 +313,12 @@ After deployment, calling `compute_deal_pnl` for a deal that has a legacy snapsh
 
 This is the **forensically correct** behavior:
 
-| Row | inputs_hash format | Provenance | Semantic |
+| Row | inputs_hash format | `price_references` | Semantic |
 |---|---|---|---|
-| Legacy (pre-PR-8) | Old format, sealed | NULL across all 3 columns | Computed pre-rule; provenance unknown; preserved as audit trail |
-| Post-PR-8 | New format including provenance | Either populated (variable-price/hedge) or all-NULL (fixed-price-only) | Computed post-rule; full provenance; canonical current snapshot |
+| Legacy (pre-PR-8) | Old format, sealed | NULL (column added by this migration; never populated retroactively) | Computed pre-rule; provenance unknown; preserved as audit trail |
+| Post-PR-8 | New format including `price_references` | Either populated (≥1 commodity consumed) or NULL (fixed-price-only, no active hedges) | Computed post-rule; full per-commodity provenance; canonical current snapshot |
 
-There is no risk of hash collision between the two formats: the new format hashes a JSON that includes three additional fields (`market_price_*`), so even a fixed-price-only post-PR-8 hash (which uses `null` for all three) is computed from a different JSON document than any pre-PR-8 hash, producing a different sha256 with overwhelming probability.
+There is no risk of hash collision between the two formats: the new format hashes a JSON that includes the additional `price_references` field, so even a fixed-price-only post-PR-8 hash (which uses JSON `null` for `price_references`) is computed from a different JSON document than any pre-PR-8 hash, producing a different sha256 with overwhelming probability.
 
 **Idempotency contract clarification (binding for §6.2 acceptance):**
 
