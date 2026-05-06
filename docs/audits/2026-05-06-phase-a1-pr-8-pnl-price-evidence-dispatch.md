@@ -169,23 +169,36 @@ The exception propagates; `compute_deal_pnl` does NOT persist a `DealPNLSnapshot
 The model at `backend/app/models/deal.py:129-157` (verify line range) gets a single nullable JSONB column `price_references` that holds a dict keyed by commodity:
 
 ```python
-from sqlalchemy import event
+from sqlalchemy import JSON, Text
 from sqlalchemy.orm import validates
 from sqlalchemy.dialects.postgresql import JSONB
 
+# Portable JSON column type:
+# - On PostgreSQL: emits JSONB (efficient, indexable, supports jsonb_typeof,
+#   ::jsonb cast, GIN indexes, etc — what production needs).
+# - On SQLite (test conftest sets DATABASE_URL=sqlite+pysqlite:///:memory:
+#   and runs Base.metadata.create_all()): emits the generic JSON type
+#   (TEXT-backed) so create_all() succeeds and tests can run.
+# This is the canonical SQLAlchemy 2.0 idiom for "JSONB on Postgres,
+# generic JSON elsewhere". Verify imports against backend's requirements.txt —
+# `JSON` from sqlalchemy core is in 2.0+ (verified pinned). If the repo ever
+# downgrades to 1.x, fall back to `Column.type_annotation_map` at the Base.
+PriceReferencesType = JSON().with_variant(
+    JSONB(astext_type=Text()),
+    "postgresql",
+)
+
 class DealPNLSnapshot(Base):
     # NOTE: NO CheckConstraint on price_references in __table_args__.
-    # The repo's tests use SQLite (`backend/tests/conftest.py` sets
-    # DATABASE_URL=sqlite+pysqlite:///:memory: and recreates schema via
-    # Base.metadata.create_all()). Postgres-specific syntax like
-    # jsonb_typeof(...) and ::jsonb cast in __table_args__ would fail
-    # SQLite create_all() before any test could run. Production gets the
-    # CHECK via a dialect-guarded Alembic migration (§3.4.3); the model-
-    # layer @validates below provides portable enforcement that runs in
-    # both SQLite and Postgres test/prod paths.
+    # Postgres-specific syntax like jsonb_typeof(...) and ::jsonb cast
+    # in __table_args__ would fail SQLite create_all() before any test
+    # could run. Production gets the CHECK via a dialect-guarded Alembic
+    # migration (§3.4.3); the model-layer @validates below provides
+    # portable enforcement that runs in both SQLite and Postgres
+    # test/prod paths.
     ...
     price_references: Mapped[dict | None] = mapped_column(
-        JSONB, nullable=True
+        PriceReferencesType, nullable=True
     )
 
     @validates("price_references")
@@ -314,10 +327,17 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 def upgrade():
-    # Add the single nullable JSONB column. Do NOT touch existing inputs_hash.
+    # Add the column with portable type — JSONB on Postgres, generic JSON on
+    # other dialects (SQLite test envs). Same pattern as the model column type
+    # in §3.4.1; consistent with-variant ensures DDL emitted by Alembic matches
+    # the type SQLAlchemy uses at runtime. Do NOT touch existing inputs_hash.
+    portable_json = sa.JSON().with_variant(
+        postgresql.JSONB(astext_type=sa.Text()),
+        "postgresql",
+    )
     op.add_column(
         "deal_pnl_snapshots",
-        sa.Column("price_references", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("price_references", portable_json, nullable=True),
     )
 
     # Dialect-guarded CHECK: Postgres only. The CHECK predicate uses
