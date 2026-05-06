@@ -6,15 +6,65 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
 from app.core.precision import quantize_mt
-from app.models.contracts import HedgeContract
+from app.models.contracts import HedgeClassification, HedgeContract
 from app.models.linkages import HedgeOrderLinkage
-from app.models.orders import Order
+from app.models.orders import Order, OrderType, PriceType
 from app.services.price_lookup_service import canonical_commodity
+
+
+def _is_postgres(session: Session) -> bool:
+    bind = session.get_bind()
+    return bind is not None and bind.dialect.name == "postgresql"
+
+
+def _validate_linkage_direction(order: Order, contract: HedgeContract) -> None:
+    """Reject direction-mismatched hedge/order pairs and fixed-price hedges.
+
+    Constitution §2.3 + §2.4:
+    - Sales order (SO) requires a SHORT hedge (sell-forward hedges sales price)
+    - Purchase order (PO) requires a LONG hedge (buy-forward hedges purchase)
+    - Fixed-price orders carry no market exposure and cannot be hedged.
+
+    Rule mirrors ``DealEngineService._validate_hedge_direction`` (deal_engine.py
+    around lines 152-220) but applied to the ``HedgeOrderLinkage`` aggregate.
+    """
+    if order.price_type == PriceType.fixed:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Cannot hedge a fixed-price order. "
+                "Only variable-price orders have market exposure "
+                "and require hedging."
+            ),
+        )
+
+    if order.order_type == OrderType.sales:
+        expected = HedgeClassification.short
+    else:  # OrderType.purchase
+        expected = HedgeClassification.long
+
+    if contract.classification != expected:
+        order_label = (
+            "sales" if order.order_type == OrderType.sales else "purchase"
+        )
+        expected_label = (
+            "short (sell-forward)"
+            if expected == HedgeClassification.short
+            else "long (buy-forward)"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Linkage direction mismatch: {order_label} order requires a "
+                f"{expected_label} hedge, but contract classification is "
+                f"{contract.classification.value}."
+            ),
+        )
 
 
 class LinkageService:
@@ -27,19 +77,46 @@ class LinkageService:
         contract_id: UUID,
         quantity_mt: Decimal,
     ) -> HedgeOrderLinkage:
-        order = session.get(Order, order_id)
+        is_pg = _is_postgres(session)
+
+        # ── Layer 3 (advisory lock, PostgreSQL only) ──────────────────────
+        # Cross-transaction serialization scoped to this (order, contract) pair.
+        # Cheap; falls through cleanly on SQLite.
+        if is_pg:
+            session.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtext('linkage:' || :oid || ':' || :cid))"
+                ),
+                {"oid": str(order_id), "cid": str(contract_id)},
+            )
+
+        # ── Layer 1 (row-level lock on constraining rows) ─────────────────
+        # ``with_for_update`` is a no-op on SQLite but required on PostgreSQL
+        # to serialize concurrent capacity reads against the same order or
+        # contract. See jury §2 J-A1-03 for mechanism analysis.
+        order_query = session.query(Order).filter(Order.id == order_id)
+        contract_query = session.query(HedgeContract).filter(
+            HedgeContract.id == contract_id
+        )
+        if is_pg:
+            order_query = order_query.with_for_update()
+            contract_query = contract_query.with_for_update()
+
+        order = order_query.one_or_none()
         if not order:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Order not found",
             )
 
-        contract = session.get(HedgeContract, contract_id)
+        contract = contract_query.one_or_none()
         if not contract:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Hedge contract not found",
             )
+
         if canonical_commodity(order.commodity) != canonical_commodity(
             contract.commodity
         ):
@@ -48,6 +125,10 @@ class LinkageService:
                 detail="Order commodity must match hedge contract commodity",
             )
 
+        # ── Direction validation (J-A1-OPUS-03) ───────────────────────────
+        _validate_linkage_direction(order, contract)
+
+        # ── Capacity checks (existing, preserved) ─────────────────────────
         order_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
             .filter(HedgeOrderLinkage.order_id == order_id)

@@ -13,9 +13,11 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
+from app.core.precision import quantize_mt
 from app.models.contracts import (
     HedgeClassification,
     HedgeContract,
@@ -23,6 +25,7 @@ from app.models.contracts import (
     HedgeLegSide,
     VALID_STATUS_TRANSITIONS,
 )
+from app.models.linkages import HedgeOrderLinkage
 from app.schemas.contracts import (
     HedgeContractCreate,
     HedgeContractListResponse,
@@ -191,6 +194,34 @@ class ContractService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No fields to update",
             )
+
+        # ── Service-side defense (PR-4 / J-A1-03) ─────────────────────────
+        # Lowering ``quantity_mt`` below SUM(linkages.quantity_mt) would
+        # implicitly over-allocate without any linkage write occurring. The
+        # DB-level invariant on PostgreSQL enforces this institutionally; we
+        # check at the application layer for a clean 422 with a helpful
+        # message before the trigger fires. Also covers SQLite test paths
+        # where the trigger is not installed.
+        if "quantity_mt" in update_data and update_data["quantity_mt"] is not None:
+            new_qty = quantize_mt(update_data["quantity_mt"])
+            linked_total = (
+                session.query(
+                    func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0)
+                )
+                .filter(HedgeOrderLinkage.contract_id == contract_id)
+                .scalar()
+            )
+            linked_total = quantize_mt(linked_total)
+            if new_qty < linked_total:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Cannot reduce contract quantity to {new_qty} MT: "
+                        f"existing linkages already allocate {linked_total} MT. "
+                        "Remove or reduce linkages first."
+                    ),
+                )
+
         for field, value in update_data.items():
             setattr(contract, field, value)
         session.flush()

@@ -28,16 +28,34 @@ def _create_purchase_order(
     return response.json()["id"]
 
 
-def _create_hedge_contract(client, quantity_mt: float, commodity: str = "ALUMINUM") -> str:
+def _create_hedge_contract(
+    client,
+    quantity_mt: float,
+    commodity: str = "ALUMINUM",
+    *,
+    classification: str = "short",
+) -> str:
+    """Create a hedge with the requested classification.
+
+    Per constitution §2.3 + §2.4 (PR-4 J-A1-OPUS-03): SO ↔ short, PO ↔ long.
+    Default kept as ``short`` to match existing SO-paired tests.
+    """
+    if classification == "short":
+        legs = [
+            {"side": "sell", "price_type": "fixed"},
+            {"side": "buy", "price_type": "variable"},
+        ]
+    else:
+        legs = [
+            {"side": "buy", "price_type": "fixed"},
+            {"side": "sell", "price_type": "variable"},
+        ]
     response = client.post(
         "/contracts/hedge",
         json={
             "commodity": commodity,
             "quantity_mt": quantity_mt,
-            "legs": [
-                {"side": "sell", "price_type": "fixed"},
-                {"side": "buy", "price_type": "variable"},
-            ],
+            "legs": legs,
         },
     )
     assert response.status_code == 201
@@ -116,7 +134,8 @@ def test_exposure_never_negative(client) -> None:
 
 def test_removing_linkage_changes_exposure_deterministically(client) -> None:
     order_id = _create_purchase_order(client, "variable", 8.0)
-    contract_id = _create_hedge_contract(client, 8.0)
+    # PO ↔ LONG hedge per §2.3/§2.4 (PR-4 J-A1-OPUS-03 direction validation)
+    contract_id = _create_hedge_contract(client, 8.0, classification="long")
 
     before = _get_exposure(client)
 

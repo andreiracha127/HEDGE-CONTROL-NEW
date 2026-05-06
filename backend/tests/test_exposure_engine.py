@@ -1,5 +1,8 @@
 """Tests for Component 1.3 — Exposure Engine."""
 
+from decimal import Decimal
+from uuid import uuid4
+
 import pytest
 
 
@@ -120,6 +123,140 @@ class TestReconcileExposures:
         assert len(exposures) == 1
         assert exposures[0]["status"] == "fully_hedged"
         assert exposures[0]["open_tons"] == "0.000"
+
+
+# ---------------------------------------------------------------------------
+# §6.3 Reconcile hard-fail (J-A1-OPUS-01)
+#
+# The previous behavior silently mapped a negative residual (linked > order qty)
+# to ``open_qty=0`` → ``fully_hedged`` via ``max(...,0)`` clamp. Constitution
+# §2.6 forbids this: "Exposure would be over-allocated" is a hard-fail.
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileOverAllocationHardFail:
+    @staticmethod
+    def _seed_overallocated_linkage(session) -> tuple[str, Decimal, Decimal]:
+        """Seed an order + linkage where SUM(linkages) > order.quantity_mt.
+
+        We bypass ``LinkageService.create`` (which now blocks this) by using
+        the ORM directly; this simulates a stale row that drifted past the
+        invariant before PR-4 landed (the very over-allocation §2.6 forbids).
+        """
+        from app.models.linkages import HedgeOrderLinkage
+        from app.models.orders import Order, OrderType, PriceType
+
+        order = Order(
+            order_type=OrderType.sales,
+            price_type=PriceType.variable,
+            commodity="ALUMINUM",
+            quantity_mt=Decimal("10.000"),
+        )
+        session.add(order)
+        session.flush()
+
+        # Two linkages summing to 12 against an order quantity of 10
+        # (constitutional violation: linked = 12 > order = 10, residual = -2)
+        for qty in (Decimal("7.000"), Decimal("5.000")):
+            session.add(
+                HedgeOrderLinkage(
+                    order_id=order.id,
+                    contract_id=uuid4(),  # FK exists but we don't need a real contract for reconcile aggregation
+                    quantity_mt=qty,
+                )
+            )
+        session.flush()
+        return str(order.id), Decimal("12.000"), Decimal("10.000")
+
+    def test_reconcile_hard_fails_on_over_allocation(self, session):
+        """Per §2.6 reconcile must raise instead of clamping the residual."""
+        from app.services.exposure_engine import (
+            ExposureEngineService,
+            ExposureOverAllocationError,
+        )
+
+        order_id, linked, order_qty = self._seed_overallocated_linkage(session)
+
+        with pytest.raises(ExposureOverAllocationError) as exc_info:
+            ExposureEngineService.reconcile_from_orders(session)
+
+        # Per §2.7 the error message must name the offending order_id and
+        # the over-allocation amount = linked - order_qty = 12 - 10 = 2.
+        assert order_id in str(exc_info.value)
+        assert exc_info.value.over_allocation == Decimal("2.000")
+        assert exc_info.value.linked_qty == linked
+        assert exc_info.value.order_qty == order_qty
+
+    def test_reconcile_overallocation_persists_no_exposure(self, session):
+        """No Exposure row should exist when reconcile aborts."""
+        from app.models.exposure import Exposure
+        from app.services.exposure_engine import (
+            ExposureEngineService,
+            ExposureOverAllocationError,
+        )
+
+        self._seed_overallocated_linkage(session)
+        session.commit()  # commit the seed so a rollback by the service path
+        # cannot wipe it; we want to assert that NO Exposure row was added.
+
+        with pytest.raises(ExposureOverAllocationError):
+            ExposureEngineService.reconcile_from_orders(session)
+        session.rollback()
+
+        assert session.query(Exposure).count() == 0
+
+    def test_reconcile_route_returns_409_on_over_allocation(self, client, session):
+        """Route layer surfaces the hard-fail as 409 Conflict (constitution §2.6)."""
+        order_id, _, _ = self._seed_overallocated_linkage(session)
+        session.commit()
+
+        resp = client.post("/exposures/reconcile")
+        assert resp.status_code == 409
+        detail = resp.json()["detail"]
+        assert order_id in detail
+        # Constitution §2.7: error names the offending residual delta.
+        assert "over-allocated" in detail.lower()
+
+    def test_reconcile_normal_case_still_produces_correct_snapshot(self, client):
+        """Direction-correct, in-bounds linkage still reconciles cleanly.
+
+        Per §2.4: SO Aluminum 10 MT + SHORT hedge 10 MT (linked qty 6.0)
+        → exposure: original=10, linked=6, open=4 → partially_hedged.
+        """
+        order = _create_order(client, "SO", 10.0)
+        order_id = order.json()["id"]
+
+        contract_resp = client.post(
+            "/contracts/hedge",
+            json={
+                "commodity": "LME_AL",
+                "quantity_mt": 10.0,
+                "legs": [
+                    {"side": "sell", "price_type": "fixed"},
+                    {"side": "buy", "price_type": "variable"},
+                ],
+            },
+        )
+        contract_id = contract_resp.json()["id"]
+        link = client.post(
+            "/linkages",
+            json={
+                "order_id": order_id,
+                "contract_id": contract_id,
+                "quantity_mt": 6.0,
+            },
+        )
+        assert link.status_code == 201
+
+        resp = client.post("/exposures/reconcile")
+        assert resp.status_code == 200
+
+        exposures = client.get("/exposures/list").json()["items"]
+        assert len(exposures) == 1
+        # §2.4 derivation: open = order_qty - linked = 10 - 6 = 4
+        assert exposures[0]["original_tons"] == "10.000"
+        assert exposures[0]["open_tons"] == "4.000"
+        assert exposures[0]["status"] == "partially_hedged"
 
 
 # ---------------------------------------------------------------------------
