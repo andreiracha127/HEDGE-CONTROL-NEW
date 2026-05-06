@@ -430,3 +430,159 @@ class TestHappyPathProvenance:
         assert Decimal(prov["ALUMINUM"]["value"]) == Decimal("2700.0")
         # revenue = 100 * 2700 = 270000
         assert body["physical_revenue"] == "270000.000000"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# §6.1 — compute_pnl_breakdown: per-commodity pricing parity with
+# compute_deal_pnl when legs/hedges differ from deal-level commodity.
+# (Codex P2 follow-up — see PR #22 review.)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestBreakdownPerCommodityPricing:
+    """compute_pnl_breakdown must use the leg's own commodity price.
+
+    Prior implementation looked up a single price for ``deal.commodity``
+    and applied it to every leg/hedge, which either hard-failed when
+    ``deal.commodity`` had no price (but a leg's commodity did) or
+    silently valued e.g. a COPPER hedge with the ALUMINUM price. This
+    diverged from ``compute_deal_pnl`` (already per-commodity).
+    """
+
+    def test_breakdown_uses_per_leg_commodity_prices(self, client, session):
+        # Distinct prices for ALUMINUM (deal commodity + SO leg) and
+        # COPPER (cross-commodity hedge leg).
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+        _insert_price(
+            session,
+            symbol="LME_CU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=9100.0,
+        )
+
+        cp_id = _create_counterparty(session)
+        r = client.post(ENDPOINT, json={"name": "BreakMix", "commodity": "ALUMINUM"})
+        deal_id = r.json()["id"]
+
+        # Variable-price ALUMINUM SO (uses 2700 → revenue 270 000)
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price_type=PriceType.variable,
+            commodity="ALUMINUM",
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+
+        # Active SHORT COPPER hedge — different commodity from the deal.
+        # qty=100 fixed_price=2450; mtm = 100*(2450-9100) = -665 000.
+        cu_hedge_id = _create_active_hedge(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="COPPER",
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "hedge", "linked_id": str(cu_hedge_id)},
+        )
+
+        # Breakdown via the API endpoint.
+        r2 = client.post(
+            f"{ENDPOINT}/pnl-breakdown",
+            json={"deal_ids": [deal_id], "snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 200, r2.text
+        body = r2.json()
+        assert len(body["deals"]) == 1
+        d = body["deals"][0]
+
+        # ALUMINUM SO valued at 2700 (NOT at 9100 / NOT a hard-fail).
+        assert Decimal(d["physical_revenue"]) == Decimal("270000")
+        assert Decimal(d["physical_cost"]) == Decimal("0")
+        # Each physical_item carries its own (per-leg) commodity.
+        so_item = next(
+            it for it in d["physical_items"] if it["order_type"] == "SO"
+        )
+        assert so_item["commodity"] == "ALUMINUM"
+        assert Decimal(so_item["price"]) == Decimal("2500.000000")
+        assert Decimal(so_item["value"]) == Decimal("270000.000000")
+
+        # COPPER hedge valued at 9100 → MTM = 100*(2450-9100) = -665 000.
+        cu_item = next(it for it in d["financial_items"])
+        assert Decimal(cu_item["market_price"]) == Decimal("9100.000000")
+        assert Decimal(cu_item["pnl"]) == Decimal("-665000")
+        assert Decimal(d["hedge_pnl_mtm"]) == Decimal("-665000")
+
+        # Total reconciles: revenue - cost + realized + mtm.
+        # 270 000 - 0 + 0 + (-665 000) = -395 000.
+        assert Decimal(d["total_pnl"]) == Decimal("-395000")
+
+        # Compute_deal_pnl on identical inputs must agree on the totals.
+        from app.core.database import SessionLocal
+        from app.services.deal_engine import DealEngineService
+
+        with SessionLocal() as s:
+            snap = DealEngineService.compute_deal_pnl(
+                s, uuid.UUID(deal_id), date(2026, 2, 1)
+            )
+            assert snap.physical_revenue == Decimal("270000.000000")
+            assert snap.hedge_pnl_mtm == Decimal("-665000.000000")
+            assert snap.total_pnl == Decimal("-395000.000000")
+
+    def test_breakdown_hardfails_when_cross_commodity_price_missing(
+        self, client, session
+    ):
+        # ALUMINUM price published; COPPER price NOT published → the
+        # COPPER hedge cannot be MTM-valued. The whole breakdown must
+        # 422 — no partial-success path (consistent with §3.3).
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+
+        cp_id = _create_counterparty(session)
+        r = client.post(ENDPOINT, json={"name": "BreakMiss", "commodity": "ALUMINUM"})
+        deal_id = r.json()["id"]
+
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price_type=PriceType.variable,
+            commodity="ALUMINUM",
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+
+        cu_hedge_id = _create_active_hedge(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="COPPER",
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "hedge", "linked_id": str(cu_hedge_id)},
+        )
+
+        r2 = client.post(
+            f"{ENDPOINT}/pnl-breakdown",
+            json={"deal_ids": [deal_id], "snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 422
+        # No partial result returned — error envelope only.
+        body = r2.json()
+        assert "deals" not in body
