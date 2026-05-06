@@ -567,8 +567,21 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
   # the derived Exposure row's open_tons must NOT count toward net exposure.
   assert exposure.is_deleted is True
   assert exposure.deleted_at is not None
-  # compute_net_exposure aggregates over Exposure.is_deleted.is_(False), so:
-  assert compute_net_exposure(session, commodity="aluminum") == Decimal("0")
+  # compute_net_exposure aggregates over Exposure.is_deleted.is_(False) and
+  # returns list[dict] with per-row "commodity" and "net_tons" fields (NOT a
+  # scalar Decimal map). Comparing the list to Decimal("0") is a TRAP — the
+  # comparison fails for the wrong reason regardless of content. Iterate the
+  # list and assert against the "commodity" field instead. Same idiom as §6.3.7.
+  # Cleanest assertion: after Option A retirement, the only Exposure row for
+  # aluminum is now is_deleted=True, the SUM-grouped query returns no rows
+  # for aluminum, and the response shape (per §4 / §10 invariant) drops the
+  # commodity entirely — NOT a zero-valued row.
+  result = compute_net_exposure(session, commodity="aluminum")
+  commodities_in_response = {row["commodity"] for row in result}
+  assert "aluminum" not in commodities_in_response, (
+      f"Retired Exposure row's commodity should NOT appear in net-exposure "
+      f"response after §3.8 retirement sweep (Option A). Got: {result}"
+  )
   ```
 - [ ] **Test:** A retired `Exposure` row from a soft-deleted order is NOT re-created or un-retired by a subsequent `reconcile_from_orders` while the source order is still soft-deleted (idempotent retirement).
 - [ ] **Test (reversibility):** If `Order.deleted_at` is cleared (un-deleted), the next `reconcile_from_orders` produces a live `Exposure` row for that order again — either by un-retiring (clearing `is_deleted` / `deleted_at`) or by creating a fresh row, depending on the implementation choice documented in §9.
@@ -585,8 +598,9 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
 | Test file | Status | Covers |
 |---|---|---|
 | `backend/tests/test_exposures_commercial.py` | EXTEND | §6.1, §6.3 commercial-side cases |
-| `backend/tests/test_exposures_global.py` | EXTEND | §6.2, §6.3, §6.4 global-side cases |
-| `backend/tests/test_exposure_engine.py` | EXTEND | §6.6 reconcile lifecycle filter |
+| `backend/tests/test_exposures_global.py` | EXTEND | §6.2, §6.3, §6.4 global-side cases (incl. §3.5 linked_by_contract dual-filter) |
+| `backend/tests/test_exposure_engine.py` | EXTEND | §6.6 reconcile lifecycle filter (§3.7) + retirement of pre-existing Exposure rows (§3.8) + §6.3.6 `_get_linked_qty_map` parity (§3.9) |
+| `backend/tests/test_compute_net_exposure.py` | NEW | §6.3.7 `compute_net_exposure` residual-subtraction rewrite (§3.10) — partly-linked Codex case, response-shape invariant (zero-residual group MUST be skipped), cross-endpoint parity vs `compute_global_snapshot` |
 | `backend/tests/test_soft_delete.py` | EXTEND | overall lifecycle behavior — soft-delete an entity, assert all snapshots reflect immediately |
 | `backend/tests/test_validate_residuals.py` (NEW or extend if exists) | NEW/EXTEND | §6.5 false-409 prevention |
 
@@ -723,12 +737,23 @@ J-A1-OPUS-02.
 2. Verify upstream: `git log --oneline origin/main | head -10` shows #15, #13, #14, #16, #17 merge commits
 3. Read jury §3 J-A1-OPUS-02 + Opus F-A1-OPUS-06 in full
 4. Read current state of the 5 helper/snapshot methods in `exposure_service.py`; note line numbers for your own reference
-5. Implement: `_linked_by_order_subquery` filter → `compute_commercial_snapshot` filters → `compute_global_snapshot` filters (orders + hedges + linked_by_contract) → `_validate_residuals_non_negative` filter → `reconcile_from_orders` filter → tests
+5. Implement (in order — DO NOT skip the engine-side steps; without §3.8/§3.9/§3.10 the J-A1-OPUS-02 lifecycle invariant stays open and `/exposures/net` diverges from `/exposures/global`):
+   - `_linked_by_order_subquery` filter (§3.4) — `exposure_service.py`
+   - `compute_commercial_snapshot` filters (§3.1) — `exposure_service.py`
+   - `compute_global_snapshot` filters: orders, hedges, `linked_by_contract` subquery (§3.2, §3.3, §3.5) — `exposure_service.py`
+   - `_validate_residuals_non_negative` filter (§3.6) — `exposure_service.py`
+   - `reconcile_from_orders` filter on `Order` (§3.7) — `exposure_engine.py`
+   - **`reconcile_from_orders` retirement of pre-existing `Exposure` rows for soft-deleted source orders (§3.8)** — `exposure_engine.py` — **REQUIRED**, do not skip; without this, J-A1-OPUS-02 stays open and §6.6 retirement test fails (the snapshot filters alone do NOT retire the derived state)
+   - **`_get_linked_qty_map` dual-filter (live hedge AND live order) + string-key fix (§3.9)** — `exposure_engine.py` — **REQUIRED** for reconcile/snapshot parity (§6.3.6); a UUID-keyed map silently produces 100% lookup misses per §10
+   - **`compute_net_exposure` residual-subtraction rewrite (whole-contract `NOT IN` → SUM grouped + zero-residual `continue` guard) (§3.10)** — `exposure_engine.py` — **REQUIRED** for net-exposure/global parity (§6.3.7); without this, partly-linked hedges contribute 0 instead of (qty − linked) and the §6.3.7 cross-endpoint parity test fails
+   - Tests covering §6.1–§6.7, plus §6.3.5, §6.3.6, §6.3.7
 6. Run targeted tests between each step:
-   - `pytest backend/tests/test_exposures_commercial.py -v`
-   - `pytest backend/tests/test_exposures_global.py -v`
-   - `pytest backend/tests/test_exposure_engine.py -v`
-   - `pytest backend/tests/test_soft_delete.py -v`
+   - `pytest backend/tests/test_exposures_commercial.py -v` — covers §6.1, §6.3 commercial-side
+   - `pytest backend/tests/test_exposures_global.py -v` — covers §6.2, §6.3, §6.4 global-side (incl. §3.5 linked_by_contract)
+   - `pytest backend/tests/test_exposure_engine.py -v` — covers §6.6 reconcile lifecycle filter + retirement (§3.7, §3.8) and §6.3.6 `_get_linked_qty_map` parity (§3.9)
+   - `pytest backend/tests/test_compute_net_exposure.py -v` (NEW file per §7) — covers §6.3.7 net-vs-global parity (§3.10), incl. partly-linked Codex case + cross-endpoint parity assertion
+   - `pytest backend/tests/test_validate_residuals.py -v` (NEW or extend) — covers §6.5 false-409 prevention
+   - `pytest backend/tests/test_soft_delete.py -v` — overall lifecycle behavior across all snapshots
 7. Run full backend test suite to verify no regression: `pytest backend/tests/ -v` (target: ≥ 688 passed, no new flakes)
 8. `git push -u origin audit-a1/snapshot-lifecycle`
 9. `gh pr create --base main --title "<§9 title>" --body-file <body>`
