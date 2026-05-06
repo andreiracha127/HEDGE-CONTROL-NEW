@@ -36,6 +36,34 @@ This is a constitutional Tier 1 violation (§2.1: "Exposure is state, never even
 
 ## 3. Scope IN
 
+### 3.0 Import prerequisites (Codex P2)
+
+The prescriptions in §3.3, §3.5, §3.9, §3.10 reference `HedgeContractStatus` for the live-hedge predicate. The current service files do **not** import this symbol in the relevant scope, so applying any of those prescriptions verbatim would raise `NameError` at the first affected endpoint or reconcile run. Update the imports BEFORE applying any of those prescriptions.
+
+**`backend/app/services/exposure_service.py`** — current line 18:
+
+```python
+# Before
+from app.models.contracts import HedgeClassification, HedgeContract
+
+# After
+from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
+```
+
+**`backend/app/services/exposure_engine.py`** — current line 155 (function-scope import inside `compute_net_exposure`):
+
+```python
+# Before
+from app.models.contracts import HedgeContract, HedgeClassification
+
+# After
+from app.models.contracts import HedgeContract, HedgeClassification, HedgeContractStatus
+```
+
+Note the second import lives at function scope (inside `compute_net_exposure`), not module-top — `_get_linked_qty_map` (§3.9) and the §3.10 rewrite both run inside that scope, so adding `HedgeContractStatus` to the function-scope import is sufficient. If the executor prefers, lifting the import to module-top is acceptable but out of scope for this PR.
+
+**Verify the exact `from app.models.contracts import ...` line in each file before editing** — the import order may have shifted between dispatch authoring and execution. Match the current order verbatim, just append `HedgeContractStatus`. If `HedgeContractStatus` is already present in either file (e.g., a refactor between dispatch authoring and execution adds it), no change is needed there — `grep -n "from app.models.contracts" backend/app/services/exposure_service.py backend/app/services/exposure_engine.py` first to confirm.
+
 ### 3.1 Filter `Order.deleted_at IS NULL` in commercial snapshot queries
 
 **File:** `backend/app/services/exposure_service.py` — `compute_commercial_snapshot` (~71-169).
@@ -60,6 +88,8 @@ Apply the same filter to the two `Order` queries (`pre_order_rows`, `residual_or
 ### 3.3 Filter `HedgeContract` lifecycle in global snapshot hedge-side queries
 
 **File:** `backend/app/services/exposure_service.py` — `compute_global_snapshot`, the `total_hedge_rows` and `residual_hedge_rows` queries.
+
+> **Import prerequisite:** this snippet uses `HedgeContractStatus`. See §3.0 for the import update required in `exposure_service.py` before applying.
 
 Currently both query `HedgeContract` without lifecycle filter. Add to each:
 
@@ -115,6 +145,8 @@ Note: this changes the subquery's residual semantics. An order that was previous
 ### 3.5 Apply same lifecycle predicate to `linked_by_contract` subquery — with dual hedge AND order filter
 
 **File:** `backend/app/services/exposure_service.py` — the inline `linked_by_contract` subquery inside `compute_global_snapshot` (~257-265 in current main).
+
+> **Import prerequisite:** this snippet uses `HedgeContractStatus`. See §3.0 for the import update required in `exposure_service.py` before applying.
 
 The bug this subquery hides is more acute than §3.4's. Consider: a live Hedge Short Aluminum 100 linked to a Sales Order Aluminum 100 that is then **soft-deleted**. If the subquery only filters `HedgeContract`, the linkage from the dead order still subtracts from the hedge's residual, zeroing `residual_contract_qty`. Then `compute_global_snapshot` filters out the dead order on the commercial side AND the residual-zero hedge on the global hedge-short-unlinked side, so `/exposures/global` omits **both** the deleted commercial order and the still-live hedge — the operator loses sight of the hedge entirely. This is a worse failure mode than §3.4: the hedge isn't dead, but it disappears from the snapshot.
 
@@ -217,6 +249,8 @@ for exposure in stale_exposures:
 
 **File:** `backend/app/services/exposure_engine.py` — `_get_linked_qty_map(session)` (`exposure_engine.py:60`).
 
+> **Import prerequisite:** this snippet uses `HedgeContractStatus`. See §3.0 for the import update required in `exposure_engine.py` (function-scope import inside `compute_net_exposure` covers `_get_linked_qty_map`'s call site) before applying.
+
 The current helper sums `HedgeOrderLinkage.quantity_mt` grouped by `order_id` without joining `HedgeContract` or filtering `Order`. Result: a linkage to a settled or soft-deleted hedge still reduces `Exposure.open_tons` derived in `reconcile_from_orders`, even though `ExposureService` (the snapshot consumer) now shows the order as unhedged after §3.4. Cross-consumer parity is broken — the same data is summarized inconsistently by reconcile vs by snapshot.
 
 Apply the SAME dual-filter predicate from §3.5 — joining `HedgeContract` AND `Order`, requiring both live:
@@ -261,6 +295,8 @@ Coordination with §3.8: §3.8 retirement uses this updated `_get_linked_qty_map
 ### 3.10 Hedge residual aggregation in `compute_net_exposure` (corrects whole-contract `NOT IN` semantics)
 
 **File:** `backend/app/services/exposure_engine.py` — `compute_net_exposure` (`exposure_engine.py:141`); the offending hedge-side block is at `exposure_engine.py:199-215` (linkage subquery + global hedge query). Note: confirmed by `git grep -n "compute_net_exposure" backend/app/`, this lives in `exposure_engine.py` (NOT `exposure_service.py` as one might expect from the §3 prefix pattern).
+
+> **Import prerequisite:** the "Before" snippet below already uses `HedgeContract.status.in_(["active", "partially_settled"])` (string literals — current code form). The "After" snippet preserves that string-literal form, so no `HedgeContractStatus` import is strictly required for §3.10 alone. However, if the executor opts to align with the §3.3 / §3.5 / §3.9 enum form (`HedgeContractStatus.active`, `HedgeContractStatus.partially_settled`) for consistency across the engine, see §3.0 for the import update.
 
 The current implementation excludes any hedge whose id appears in `linked_contract_ids` via `~HedgeContract.id.in_(linked_contract_ids)` — a whole-contract boolean exclusion. This produces incorrect output for hedges with PARTIAL linkages: a 100 MT hedge with a 40 MT linkage to a live order should show 60 MT residual unlinked exposure, but the boolean exclusion zeroes the entire contract.
 
@@ -738,6 +774,7 @@ J-A1-OPUS-02.
 3. Read jury §3 J-A1-OPUS-02 + Opus F-A1-OPUS-06 in full
 4. Read current state of the 5 helper/snapshot methods in `exposure_service.py`; note line numbers for your own reference
 5. Implement (in order — DO NOT skip the engine-side steps; without §3.8/§3.9/§3.10 the J-A1-OPUS-02 lifecycle invariant stays open and `/exposures/net` diverges from `/exposures/global`):
+   - **Import prerequisite (per §3.0):** add `HedgeContractStatus` to the `from app.models.contracts import ...` line in `exposure_service.py` (module-top, current line 18) AND to the function-scope import in `exposure_engine.py` inside `compute_net_exposure` (current line 155). Verify with `grep -n "from app.models.contracts" backend/app/services/exposure_service.py backend/app/services/exposure_engine.py` first; skip whichever file already imports it. **Without this step, §3.3 / §3.5 / §3.9 (and optionally §3.10 if executor uses the enum form) raise `NameError` at the first affected endpoint or reconcile run.**
    - `_linked_by_order_subquery` filter (§3.4) — `exposure_service.py`
    - `compute_commercial_snapshot` filters (§3.1) — `exposure_service.py`
    - `compute_global_snapshot` filters: orders, hedges, `linked_by_contract` subquery (§3.2, §3.3, §3.5) — `exposure_service.py`
