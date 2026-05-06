@@ -15,7 +15,7 @@ COPY docker-entrypoint.sh /docker-entrypoint.sh
 USER root
 RUN chmod +x /docker-entrypoint.sh \
     && rm -f /etc/nginx/conf.d/default.conf \
-    && chown -R nginx:nginx /etc/nginx/conf.d
+    && chown -R nginx:nginx /etc/nginx/conf.d /usr/share/nginx/html
 USER nginx
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
