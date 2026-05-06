@@ -53,7 +53,23 @@ Files to edit (scan for usage of `float` in fields that hold quantity_mt / price
 - `backend/app/schemas/deal.py`
 - `backend/app/schemas/cashflow.py`, `pl.py`, `mtm.py` if they expose MT/price
 
-Use `pydantic.Decimal` with explicit `max_digits` / `decimal_places` matching the model column.
+Use **stdlib** `Decimal` (Pydantic 2.12 does not export a `pydantic.Decimal` type — importing it will fail). The idiomatic Pydantic 2.x pattern is `Annotated[Decimal, Field(...)]`:
+
+```python
+from decimal import Decimal
+from typing import Annotated
+from pydantic import BaseModel, ConfigDict, Field
+
+MTQuantity = Annotated[Decimal, Field(max_digits=15, decimal_places=3)]
+Price       = Annotated[Decimal, Field(max_digits=18, decimal_places=6)]
+
+class OrderCreate(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    quantity_mt: MTQuantity
+    avg_entry_price: Price | None = None
+```
+
+Plain `Field(max_digits=..., decimal_places=...)` directly on the field is also acceptable. Define the `MTQuantity` / `Price` aliases in a single module (e.g., `app/schemas/_types.py` or alongside the precision helpers in `app/core/precision.py`) so schemas across the codebase stay consistent. Do NOT import `Decimal` from `pydantic`.
 
 ### 3.3 Service-layer arithmetic — eliminate `float()` conversions on MT/price
 
