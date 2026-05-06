@@ -37,8 +37,7 @@ _CANONICAL_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 # (``"2026-13-01"``, ``"2026-02-30"``).
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-from itertools import count
-
+import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
     BigInteger,
@@ -74,18 +73,55 @@ PriceReferencesType = JSON().with_variant(
 )
 
 
-# Codex P2 (PR #22 follow-up, 2026-05-06): monotonic-insertion counter for
-# DealPNLSnapshot.sequence. Used as the SQLAlchemy column ``default=`` so
-# the SQLite test path (which has no SEQUENCE objects) gets a strictly
-# monotonic value per Python process. On Postgres the explicit Sequence
-# DDL takes precedence — the server-side nextval() is what actually
-# populates the column, and this counter is never consulted.
+# Codex P2 (PR #22 follow-up #2, 2026-05-06): dialect-aware default for
+# ``DealPNLSnapshot.sequence``.
 #
-# The counter is process-local; that is sufficient for the SQLite test
-# environment (single writer, in-memory DB, sequential inserts). It is
-# NOT a multi-writer correctness mechanism — Postgres deployments rely
-# on the SEQUENCE for that.
-_SNAPSHOT_SEQUENCE_COUNTER = count(start=1)
+# Background: SQLAlchemy's ``default=`` (Python client-side) takes
+# precedence over the column's ``Sequence(...)`` declaration AND over any
+# server-side ``DEFAULT nextval(...)``. A previous iteration used a
+# process-local ``itertools.count`` here — which silently broke
+# multi-worker production: each gunicorn worker started its own counter
+# at 1, so two workers inserting concurrently would persist duplicate
+# ``sequence`` values, defeating the whole point of the monotonic
+# ordering used by the outage-fallback ``ORDER BY sequence DESC``.
+#
+# The fix is to return ``None`` on PostgreSQL so SQLAlchemy falls through
+# to the server-side default (``nextval('deal_pnl_snapshots_sequence_seq')``
+# bound by the migration via ``op.alter_column(server_default=...)``).
+# That sequence is the single source of truth across all workers and is
+# strictly monotonic by construction.
+#
+# On SQLite (test env only) there is no SEQUENCE object, so we fall back
+# to ``MAX(sequence) + 1`` read from the same table inside the flush
+# transaction. SQLite serializes writes (the in-memory test engine uses
+# StaticPool), so this MAX read is race-free for the single-process
+# pytest path. Multi-process xdist would race; tests on this DB do not
+# use xdist.
+def _portable_sequence_default(context):
+    """Return a value for ``DealPNLSnapshot.sequence`` per dialect.
+
+    PostgreSQL: returns ``None`` so SQLAlchemy emits the column's
+    server-side default ``nextval('deal_pnl_snapshots_sequence_seq')``.
+    This is the institutional path — multi-worker safe, monotonic
+    across all processes connected to the same database.
+
+    SQLite: queries ``MAX(sequence) + 1`` inline using the same
+    in-flight connection. SQLite serializes writes, so this is
+    race-free in single-process pytest. The ``COALESCE`` covers the
+    empty-table case (returns 1).
+    """
+    if context.dialect.name == "postgresql":
+        # Returning None signals SQLAlchemy to fall through to the
+        # server-side DEFAULT (nextval). Do NOT return a Python value
+        # here on Postgres — that would shadow the sequence and re-introduce
+        # the multi-worker duplicate-sequence bug.
+        return None
+    result = context.connection.execute(
+        sa.text(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM deal_pnl_snapshots"
+        )
+    ).scalar()
+    return int(result)
 
 from app.models.base import Base
 from app.core.precision import (
@@ -236,19 +272,27 @@ class DealPNLSnapshot(Base):
     price_references: Mapped[dict | None] = mapped_column(
         PriceReferencesType, nullable=True
     )
-    # Codex P2 (PR #22 follow-up, 2026-05-06): monotonic insertion counter
+    # Codex P2 (PR #22 follow-ups, 2026-05-06): monotonic insertion counter
     # used by ``compute_deal_pnl``'s outage fallback to deterministically
     # identify the newest reusable snapshot for a given (deal_id,
     # snapshot_date) when timestamps tie. ``id`` is a random UUID and
     # ``created_at`` is second-precision on SQLite — neither is monotonic
-    # across rows that land in the same second. Postgres uses an explicit
-    # SEQUENCE (``deal_pnl_snapshots_sequence_seq``); SQLite uses the
-    # process-local Python counter as the column ``default=`` — race-free
-    # under SQLite's serialized writes (single writer, in-memory test DB).
+    # across rows that land in the same second.
+    #
+    # Postgres path (production): the explicit ``Sequence(...)`` declaration
+    # together with the column-level ``server_default = nextval(...)``
+    # bound by migration 031 means the database — not Python — owns the
+    # monotonic counter. Multi-worker safe by construction. The
+    # ``_portable_sequence_default`` callable returns ``None`` on PG so
+    # SQLAlchemy emits the server-side default rather than shadowing it.
+    #
+    # SQLite path (tests only): no SEQUENCE objects exist; the callable
+    # falls back to ``COALESCE(MAX(sequence), 0) + 1`` read in-transaction
+    # — race-free under SQLite's serialized writes.
     sequence: Mapped[int] = mapped_column(
         BigInteger,
         Sequence("deal_pnl_snapshots_sequence_seq"),
-        default=lambda: next(_SNAPSHOT_SEQUENCE_COUNTER),
+        default=_portable_sequence_default,
         nullable=False,
         index=True,
     )

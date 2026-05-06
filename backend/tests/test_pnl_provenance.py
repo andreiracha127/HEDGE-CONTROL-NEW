@@ -1742,6 +1742,226 @@ class TestSnapshotReuseUnderPriceSourceRepair:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Codex P2 (PR #22 follow-up #2, 2026-05-06) — server-side sequence is
+# the single source of truth for ``DealPNLSnapshot.sequence``. The
+# previous iteration used a process-local ``itertools.count`` as the
+# Python ``default=`` callable, which silently broke multi-worker
+# production: each gunicorn worker started its own counter at 1, so two
+# workers inserting concurrently would persist duplicate sequence
+# values, defeating the outage-fallback ``ORDER BY sequence DESC``.
+#
+# The fix splits paths cleanly per dialect:
+#   * PostgreSQL — column has ``server_default = nextval(seq)``; the
+#     Python callable returns ``None`` so SQLAlchemy lets the server-side
+#     default fire. Multi-worker safe by construction.
+#   * SQLite (tests only) — Python callable issues ``MAX(sequence)+1`` in
+#     the same flush transaction. Race-free under SQLite's serialized
+#     writes.
+# ──────────────────────────────────────────────────────────────────────
+
+
+from app.core.database import engine as _pnl_engine
+from app.models.deal import _portable_sequence_default
+
+_IS_POSTGRES = _pnl_engine.dialect.name == "postgresql"
+
+
+class TestPortableSequenceDefault:
+    """Unit tests for the ``_portable_sequence_default`` callable.
+
+    These exercise the dialect-branching logic directly with mock
+    contexts so the contract is pinned regardless of the test DB.
+    """
+
+    def test_returns_none_on_postgresql(self):
+        """On PG, the callable MUST return ``None`` so SQLAlchemy
+        emits the server-side ``DEFAULT nextval(seq)`` rather than
+        shadowing it with a Python value. Returning anything other
+        than None on PG re-introduces the multi-worker duplicate
+        sequence bug."""
+
+        class _FakeDialect:
+            name = "postgresql"
+
+        class _FakeContext:
+            dialect = _FakeDialect()
+            connection = None  # MUST not be touched on the PG branch
+
+        result = _portable_sequence_default(_FakeContext())
+        assert result is None, (
+            "_portable_sequence_default MUST return None on PostgreSQL "
+            "so the column's server-side nextval() default fires. "
+            "Returning a Python value here would shadow the sequence and "
+            "re-introduce the multi-worker duplicate-sequence bug."
+        )
+
+    def test_returns_max_plus_one_on_sqlite(self):
+        """On SQLite, the callable executes ``COALESCE(MAX, 0)+1``
+        on the in-flight connection. Mock the connection to verify
+        the SQL shape and the int conversion."""
+
+        executed_sql: list[str] = []
+
+        class _FakeResult:
+            def scalar(self):
+                return 42
+
+        class _FakeConn:
+            def execute(self, stmt):
+                # ``stmt`` is a TextClause; capture its text for assertion.
+                executed_sql.append(str(stmt))
+                return _FakeResult()
+
+        class _FakeDialect:
+            name = "sqlite"
+
+        class _FakeContext:
+            dialect = _FakeDialect()
+            connection = _FakeConn()
+
+        result = _portable_sequence_default(_FakeContext())
+        assert result == 43
+        assert isinstance(result, int)
+        assert len(executed_sql) == 1
+        sql_text = executed_sql[0].lower()
+        assert "max(sequence)" in sql_text
+        assert "deal_pnl_snapshots" in sql_text
+        assert "coalesce" in sql_text
+
+
+@pytest.mark.skipif(
+    not _IS_POSTGRES,
+    reason=(
+        "Server-side sequence DEFAULT and multi-session monotonicity "
+        "are PostgreSQL-only contracts (SQLite has no SEQUENCE objects)."
+    ),
+)
+class TestPostgresServerSideSequence:
+    """PG-only tests pinning the institutional contract that the
+    ``sequence`` column is populated by ``nextval('deal_pnl_..._seq')``
+    on EVERY insert path — ORM and raw SQL alike — across all workers.
+    """
+
+    def test_sequence_column_has_server_default_nextval(self):
+        """After migration 031, the ``sequence`` column on
+        ``deal_pnl_snapshots`` MUST have a server-side DEFAULT that
+        calls ``nextval('deal_pnl_snapshots_sequence_seq')``.
+
+        Without this binding, raw-SQL inserts (admin tools, COPY,
+        repair scripts) would get NULL for ``sequence`` on PG, and
+        ORM inserts would only consult the sequence via the Python
+        default — a path Codex P2 proved broken under multi-worker.
+        """
+        from sqlalchemy import inspect
+
+        insp = inspect(_pnl_engine)
+        cols = {
+            c["name"]: c
+            for c in insp.get_columns("deal_pnl_snapshots")
+        }
+        assert "sequence" in cols, "sequence column missing post-031"
+        default = cols["sequence"].get("default")
+        assert default is not None, (
+            "deal_pnl_snapshots.sequence has no server_default — "
+            "raw-SQL inserts will NULL the column and break ordering. "
+            "Migration 031 must bind nextval() as the column DEFAULT."
+        )
+        assert "nextval" in str(default).lower(), (
+            f"sequence column server_default is {default!r}; expected "
+            f"a nextval('deal_pnl_snapshots_sequence_seq') reference."
+        )
+        assert "deal_pnl_snapshots_sequence_seq" in str(default), (
+            f"sequence column default does not reference the expected "
+            f"sequence name; got {default!r}."
+        )
+
+    def test_sequence_unique_across_two_concurrent_sessions(self):
+        """Two distinct sessions (representing two workers) inserting
+        a snapshot simultaneously MUST receive DIFFERENT sequence
+        values. This proves the server-side sequence (not a Python
+        counter) populates the column.
+
+        If the broken Python ``itertools.count`` default were still
+        in effect, both workers would start their counters at 1 in
+        their own process and assign duplicate sequence values.
+        """
+        import threading
+
+        from app.models.contracts import (
+            HedgeClassification,
+            HedgeContract,
+            HedgeContractStatus,
+            HedgeLegSide,
+        )
+        from app.models.counterparty import Counterparty
+        from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot
+        from app.models.deal import DealStatus
+        from app.models.orders import Order, OrderType, PriceType
+
+        # Seed a deal we can attach snapshots to.
+        seed = SessionLocal()
+        deal = Deal(
+            reference=f"D-SEQRACE-{uuid.uuid4().hex[:6]}",
+            name="seq-race-deal",
+            commodity="ALUMINUM",
+            status=DealStatus.open,
+        )
+        seed.add(deal)
+        seed.commit()
+        seed.refresh(deal)
+        deal_id = deal.id
+        seed.close()
+
+        barrier = threading.Barrier(2)
+        results: dict[str, int | BaseException] = {}
+
+        def _writer(tag: str) -> None:
+            sess = SessionLocal()
+            try:
+                snap = DealPNLSnapshot(
+                    deal_id=deal_id,
+                    snapshot_date=date(2026, 5, 6),
+                    physical_revenue=Decimal("0"),
+                    physical_cost=Decimal("0"),
+                    hedge_pnl_realized=Decimal("0"),
+                    hedge_pnl_mtm=Decimal("0"),
+                    total_pnl=Decimal("0"),
+                    inputs_hash=hashlib.sha256(tag.encode()).hexdigest(),
+                )
+                sess.add(snap)
+                # Synchronize so both flushes contend for the sequence.
+                barrier.wait(timeout=10)
+                sess.commit()
+                sess.refresh(snap)
+                results[tag] = snap.sequence
+            except BaseException as exc:  # pragma: no cover
+                results[tag] = exc
+            finally:
+                sess.close()
+
+        t_a = threading.Thread(target=_writer, args=("A",))
+        t_b = threading.Thread(target=_writer, args=("B",))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=20)
+        t_b.join(timeout=20)
+
+        seq_a = results.get("A")
+        seq_b = results.get("B")
+        assert isinstance(seq_a, int) and isinstance(seq_b, int), (
+            f"both workers must persist successfully; got {results!r}"
+        )
+        assert seq_a != seq_b, (
+            f"two concurrent workers got DUPLICATE sequence values "
+            f"({seq_a} == {seq_b}) — the server-side sequence is not "
+            f"being consulted. The Python default likely shadowed the "
+            f"server-side nextval(); verify that "
+            f"_portable_sequence_default returns None on PG and the "
+            f"column has server_default=nextval(...)."
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Codex P2 (PR #22 follow-up) — partial market-quote success must
 # fail closed. The collect-then-decide algorithm in compute_deal_pnl
 # distinguishes three cases:

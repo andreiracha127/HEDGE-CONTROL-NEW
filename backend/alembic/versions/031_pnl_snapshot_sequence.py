@@ -11,14 +11,18 @@ return the stale pre-correction snapshot when two rows tied.
 This migration introduces a strictly monotonic insertion counter:
 
 * PostgreSQL — explicit ``CREATE SEQUENCE deal_pnl_snapshots_sequence_seq``
-  bound to the column via SQLAlchemy ``Sequence(...)``. Existing rows are
-  backfilled deterministically via ``ROW_NUMBER() OVER (ORDER BY
-  created_at, id)``; the sequence's last value is then realigned to
-  ``MAX(sequence)`` so future inserts continue cleanly.
+  AND ``ALTER TABLE ... ALTER COLUMN sequence SET DEFAULT nextval(...)``
+  so the database — not the application — owns the counter. Existing rows
+  are backfilled deterministically via ``ROW_NUMBER() OVER (ORDER BY
+  created_at, id)``; the sequence's last value is realigned to
+  ``MAX(sequence)`` so future inserts continue cleanly. The model's
+  Python ``default=`` callable returns ``None`` on PG, letting the
+  server-side default fire — multi-worker safe by construction.
 * SQLite — no SEQUENCE objects exist; existing rows are backfilled via a
   correlated subquery that mirrors the same deterministic ordering
-  (``created_at, id``). The ORM column ``default=`` (a Python counter on
-  the model) populates new rows under SQLite's serialized writes.
+  (``created_at, id``). The ORM column ``default=`` (a callable on the
+  model that issues ``COALESCE(MAX(sequence), 0) + 1`` in-transaction)
+  populates new rows under SQLite's serialized writes.
 
 The ORDER BY in the production query is then changed to
 ``sequence DESC`` only — no tiebreaker needed, sequence is monotonic by
@@ -91,6 +95,24 @@ def upgrade() -> None:
             )
             """
         )
+
+        # Step 5 (PG) — bind the sequence as the column's server-side
+        # DEFAULT. Codex P2 (2026-05-06): without this, SQLAlchemy ORM
+        # inserts that route through the column's Python ``default=`` were
+        # the only path that consulted any sequence — and the original
+        # implementation (process-local ``itertools.count``) restarted at
+        # 1 in every worker, producing duplicate sequence values across
+        # workers and breaking the outage-fallback ordering.
+        #
+        # With ``server_default = nextval(...)`` set on the column itself,
+        # BOTH ORM inserts (when their Python default returns ``None``) and
+        # raw-SQL inserts (admin tools, COPY, repair scripts) automatically
+        # call the sequence — multi-worker safe by construction.
+        op.alter_column(
+            "deal_pnl_snapshots",
+            "sequence",
+            server_default=sa.text(f"nextval('{_SEQUENCE_NAME}')"),
+        )
     else:
         # Step 2-4 (SQLite) — no SEQUENCE objects exist. Backfill via a
         # correlated subquery that produces the same deterministic
@@ -121,9 +143,18 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    # On PG, drop the column's server_default before dropping the column
+    # so the sequence reference is removed cleanly (otherwise the column
+    # still depends on the sequence and DROP COLUMN can fail with a
+    # dependency error).
+    if bind.dialect.name == "postgresql":
+        op.alter_column(
+            "deal_pnl_snapshots",
+            "sequence",
+            server_default=None,
+        )
     op.drop_index(_INDEX_NAME, table_name="deal_pnl_snapshots")
     op.drop_column("deal_pnl_snapshots", "sequence")
-
-    bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         op.execute(f"DROP SEQUENCE IF EXISTS {_SEQUENCE_NAME}")
