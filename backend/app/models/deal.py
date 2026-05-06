@@ -5,13 +5,13 @@ from __future__ import annotations
 import enum
 import uuid as _uuid
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
     Enum,
-    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -24,6 +24,12 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
+from app.core.precision import (
+    MT_NUMERIC_PRECISION,
+    MT_NUMERIC_SCALE,
+    PRICE_NUMERIC_PRECISION,
+    PRICE_NUMERIC_SCALE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -63,13 +69,15 @@ class Deal(Base):
     status: Mapped[DealStatus] = mapped_column(
         Enum(DealStatus, name="deal_status"), nullable=False, default=DealStatus.open
     )
-    total_physical_tons: Mapped[float] = mapped_column(
-        Numeric(15, 3), nullable=False, default=0
+    total_physical_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False, default=0
     )
-    total_hedge_tons: Mapped[float] = mapped_column(
-        Numeric(15, 3), nullable=False, default=0
+    total_hedge_tons: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False, default=0
     )
-    hedge_ratio: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False, default=0)
+    hedge_ratio: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=0
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -129,11 +137,21 @@ class DealPNLSnapshot(Base):
         UUID(as_uuid=True), ForeignKey("deals.id", ondelete="CASCADE"), nullable=False
     )
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
-    physical_revenue: Mapped[float] = mapped_column(Numeric(15, 2), default=0)
-    physical_cost: Mapped[float] = mapped_column(Numeric(15, 2), default=0)
-    hedge_pnl_realized: Mapped[float] = mapped_column(Numeric(15, 2), default=0)
-    hedge_pnl_mtm: Mapped[float] = mapped_column(Numeric(15, 2), default=0)
-    total_pnl: Mapped[float] = mapped_column(Numeric(15, 2), default=0)
+    physical_revenue: Mapped[Decimal] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
+    )
+    physical_cost: Mapped[Decimal] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
+    )
+    hedge_pnl_realized: Mapped[Decimal] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
+    )
+    hedge_pnl_mtm: Mapped[Decimal] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
+    )
+    total_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
+    )
     inputs_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

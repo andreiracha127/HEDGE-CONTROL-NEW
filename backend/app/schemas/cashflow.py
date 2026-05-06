@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas._types import Money
+
 
 class CashFlowView(str, Enum):
     analytic = "analytic"
@@ -16,7 +18,7 @@ class CashFlowView(str, Enum):
 class CashFlowBase(BaseModel):
     contract_id: UUID = Field(..., description="Source contract ID")
     view: CashFlowView = Field(..., description="CashFlow view type")
-    amount: float = Field(..., description="Derived cashflow amount")
+    amount: Money = Field(..., description="Derived cashflow amount")
     value_date: date = Field(..., description="Cashflow value date")
 
 

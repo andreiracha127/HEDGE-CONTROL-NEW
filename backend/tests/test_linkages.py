@@ -64,6 +64,20 @@ def test_multiple_linkages_accumulate_correctly(client) -> None:
     assert third.status_code == 400
 
 
+def test_decimal_boundary_allows_exact_full_allocation_and_rejects_next(client) -> None:
+    order_id = _create_sales_order(client, "0.3")
+    contract_id = _create_hedge_contract(client, "0.3")
+
+    first = _create_linkage(client, order_id, contract_id, "0.1")
+    assert first.status_code == 201
+
+    second = _create_linkage(client, order_id, contract_id, "0.2")
+    assert second.status_code == 201
+
+    third = _create_linkage(client, order_id, contract_id, "0.001")
+    assert third.status_code == 400
+
+
 def test_insert_order_does_not_change_linkage_validity(client) -> None:
     from app.core.database import engine
     from app.models.base import Base
@@ -82,5 +96,4 @@ def test_insert_order_does_not_change_linkage_validity(client) -> None:
 
     second = _create_linkage(client, order_id, contract_id, 7.0)
     assert second.status_code == 201
-
 

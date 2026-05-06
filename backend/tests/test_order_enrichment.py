@@ -61,7 +61,7 @@ def test_create_sopo_link(client):
     body = r.json()
     assert body["sales_order_id"] == so["id"]
     assert body["purchase_order_id"] == po["id"]
-    assert body["linked_tons"] == 50.0
+    assert float(body["linked_tons"]) == 50.0
 
 
 def test_sopo_link_validates_so_type(client):

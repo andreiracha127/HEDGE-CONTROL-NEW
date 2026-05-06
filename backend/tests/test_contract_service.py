@@ -1,6 +1,7 @@
 """Tests for ContractService — unit tests for the contract business logic."""
 
 import uuid
+from decimal import Decimal
 
 import pytest
 from sqlalchemy.orm import Session
@@ -225,7 +226,7 @@ def test_update_partial_fields(session: Session) -> None:
     contract = ContractService.create(session, _make_payload())
     payload = HedgeContractUpdate(quantity_mt=99.9, notes="updated")
     updated = ContractService.update(session, contract.id, payload)
-    assert updated.quantity_mt == 99.9
+    assert updated.quantity_mt == Decimal("99.900")
     assert updated.notes == "updated"
 
 

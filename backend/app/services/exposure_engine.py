@@ -20,6 +20,7 @@ from app.models.exposure import (
 )
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
+from app.core.precision import quantize_mt
 
 
 class ExposureEngineService:
@@ -42,7 +43,7 @@ class ExposureEngineService:
             .group_by(HedgeOrderLinkage.order_id)
             .all()
         )
-        return {str(r.order_id): float(r.linked_qty) for r in rows}
+        return {str(r.order_id): quantize_mt(r.linked_qty) for r in rows}
 
     @staticmethod
     def reconcile_from_orders(session: Session) -> dict:
@@ -71,13 +72,14 @@ class ExposureEngineService:
                 source_type = ExposureSourceType.sales_order
 
             # Compute hedge-adjusted open tons
-            hedged_qty = linked_map.get(str(order.id), 0.0)
-            open_qty = max(float(order.quantity_mt) - hedged_qty, 0.0)
+            hedged_qty = quantize_mt(linked_map.get(str(order.id), Decimal("0")))
+            order_qty = quantize_mt(order.quantity_mt)
+            open_qty = quantize_mt(max(order_qty - hedged_qty, Decimal("0")))
 
             # Determine status based on hedging
-            if hedged_qty <= 0:
+            if hedged_qty <= Decimal("0"):
                 exp_status = ExposureStatus.open
-            elif open_qty <= 0:
+            elif open_qty <= Decimal("0"):
                 exp_status = ExposureStatus.fully_hedged
             else:
                 exp_status = ExposureStatus.partially_hedged
@@ -94,10 +96,10 @@ class ExposureEngineService:
 
             if existing:
                 changed = False
-                if float(existing.original_tons) != float(order.quantity_mt):
-                    existing.original_tons = order.quantity_mt
+                if quantize_mt(existing.original_tons) != order_qty:
+                    existing.original_tons = order_qty
                     changed = True
-                if float(existing.open_tons) != open_qty:
+                if quantize_mt(existing.open_tons) != open_qty:
                     existing.open_tons = open_qty
                     changed = True
                 if existing.status != exp_status:
@@ -111,7 +113,7 @@ class ExposureEngineService:
                     direction=direction,
                     source_type=source_type,
                     source_id=order.id,
-                    original_tons=order.quantity_mt,
+                    original_tons=order_qty,
                     open_tons=open_qty,
                     price_per_ton=order.avg_entry_price,
                     status=exp_status,
@@ -171,17 +173,17 @@ class ExposureEngineService:
             if c not in agg:
                 agg[c] = {
                     "commodity": c,
-                    "long_tons": 0.0,
-                    "short_tons": 0.0,
-                    "net_tons": 0.0,
-                    "long_original": 0.0,
-                    "short_original": 0.0,
-                    "long_hedged": 0.0,
-                    "short_hedged": 0.0,
+                    "long_tons": Decimal("0.000"),
+                    "short_tons": Decimal("0.000"),
+                    "net_tons": Decimal("0.000"),
+                    "long_original": Decimal("0.000"),
+                    "short_original": Decimal("0.000"),
+                    "long_hedged": Decimal("0.000"),
+                    "short_hedged": Decimal("0.000"),
                 }
-            open_val = float(row.total_open)
-            original_val = float(row.total_original)
-            hedged_val = original_val - open_val
+            open_val = quantize_mt(row.total_open)
+            original_val = quantize_mt(row.total_original)
+            hedged_val = quantize_mt(original_val - open_val)
             if row.direction == ExposureDirection.long:
                 agg[c]["long_original"] += original_val
                 agg[c]["long_hedged"] += hedged_val
@@ -212,15 +214,15 @@ class ExposureEngineService:
             if c not in agg:
                 agg[c] = {
                     "commodity": c,
-                    "long_tons": 0.0,
-                    "short_tons": 0.0,
-                    "net_tons": 0.0,
-                    "long_original": 0.0,
-                    "short_original": 0.0,
-                    "long_hedged": 0.0,
-                    "short_hedged": 0.0,
+                    "long_tons": Decimal("0.000"),
+                    "short_tons": Decimal("0.000"),
+                    "net_tons": Decimal("0.000"),
+                    "long_original": Decimal("0.000"),
+                    "short_original": Decimal("0.000"),
+                    "long_hedged": Decimal("0.000"),
+                    "short_hedged": Decimal("0.000"),
                 }
-            qty = float(grow.total_qty)
+            qty = quantize_mt(grow.total_qty)
             if grow.classification == HedgeClassification.long:
                 agg[c]["long_tons"] += qty
             else:
@@ -230,7 +232,9 @@ class ExposureEngineService:
         for v in agg.values():
             so_open = v["short_original"] - v["short_hedged"]
             po_open = v["long_original"] - v["long_hedged"]
-            v["net_tons"] = (so_open - po_open) + v["short_tons"] - v["long_tons"]
+            v["net_tons"] = quantize_mt(
+                (so_open - po_open) + v["short_tons"] - v["long_tons"]
+            )
 
         return list(agg.values())
 

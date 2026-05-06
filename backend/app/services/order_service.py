@@ -12,6 +12,7 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
+from app.core.precision import quantize_price
 from app.models.orders import (
     Order,
     OrderPricingConvention,
@@ -212,7 +213,7 @@ class OrderService:
 
         if payload.price_type.value == PriceType.fixed.value:
             if payload.avg_entry_price is not None:
-                order.avg_entry_price = float(payload.avg_entry_price)
+                order.avg_entry_price = quantize_price(payload.avg_entry_price)
         else:
             # Variable pricing
             if payload.pricing_convention is not None:
@@ -220,7 +221,7 @@ class OrderService:
                     payload.pricing_convention.value
                 )
             if payload.avg_entry_price is not None:
-                order.avg_entry_price = float(payload.avg_entry_price)
+                order.avg_entry_price = quantize_price(payload.avg_entry_price)
             order.reference_month = payload.reference_month
             order.observation_date_start = payload.observation_date_start
             order.observation_date_end = payload.observation_date_end

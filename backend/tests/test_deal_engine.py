@@ -3,7 +3,6 @@
 import uuid
 from datetime import date
 
-import pytest
 from sqlalchemy.orm import Session
 
 from app.models.counterparty import Counterparty
@@ -110,9 +109,9 @@ class TestCreateDeal:
         assert body["commodity"] == "ALUMINUM"
         assert body["status"] == "open"
         assert body["reference"].startswith("D-")
-        assert body["total_physical_tons"] == 0
-        assert body["total_hedge_tons"] == 0
-        assert body["hedge_ratio"] == 0
+        assert body["total_physical_tons"] == "0.000"
+        assert body["total_hedge_tons"] == "0.000"
+        assert body["hedge_ratio"] == "0.00"
 
     def test_create_deal_with_initial_links(self, client, session):
         so_id = _create_order(session, OrderType.sales, 200.0)
@@ -126,7 +125,7 @@ class TestCreateDeal:
         r = client.post(ENDPOINT, json=payload)
         assert r.status_code == 201
         body = r.json()
-        assert body["total_physical_tons"] == pytest.approx(200.0)
+        assert body["total_physical_tons"] == "200.000"
 
 
 # -----------------------------------------------------------------------
@@ -198,7 +197,7 @@ class TestDealLinks:
 
         # Verify deal tons updated
         r3 = client.get(f"{ENDPOINT}/{deal_id}")
-        assert r3.json()["total_physical_tons"] == pytest.approx(150.0)
+        assert r3.json()["total_physical_tons"] == "150.000"
 
     def test_add_duplicate_link_fails(self, client, session):
         r = client.post(ENDPOINT, json={"name": "D1", "commodity": "ALUMINUM"})
@@ -237,7 +236,7 @@ class TestDealLinks:
 
         # Verify tons reset
         r4 = client.get(f"{ENDPOINT}/{deal_id}")
-        assert r4.json()["total_physical_tons"] == pytest.approx(0.0)
+        assert r4.json()["total_physical_tons"] == "0.000"
 
     def test_hedge_link_updates_hedge_tons(self, client, session):
         cp_id = _create_counterparty(session)
@@ -275,8 +274,8 @@ class TestDealLinks:
 
         r3 = client.get(f"{ENDPOINT}/{deal_id}")
         body = r3.json()
-        assert body["total_hedge_tons"] == pytest.approx(100.0)
-        assert body["hedge_ratio"] == pytest.approx(0.5)
+        assert body["total_hedge_tons"] == "100.000"
+        assert body["hedge_ratio"] == "0.50"
         assert body["status"] == "partially_hedged"
 
 
@@ -307,9 +306,9 @@ class TestPNLSnapshot:
         assert r2.status_code == 201
         body = r2.json()
         # revenue = 100 * 2600 = 260000, cost = 100 * 2400 = 240000
-        assert body["physical_revenue"] == pytest.approx(260000.0)
-        assert body["physical_cost"] == pytest.approx(240000.0)
-        assert body["total_pnl"] == pytest.approx(20000.0)
+        assert body["physical_revenue"] == "260000.000000"
+        assert body["physical_cost"] == "240000.000000"
+        assert body["total_pnl"] == "20000.000000"
 
     def test_pnl_snapshot_idempotent(self, client):
         r = client.post(ENDPOINT, json={"name": "D1", "commodity": "ALUMINUM"})
@@ -383,4 +382,4 @@ class TestDealStatus:
 
         r2 = client.get(f"{ENDPOINT}/{deal_id}")
         assert r2.json()["status"] == "fully_hedged"
-        assert r2.json()["hedge_ratio"] == pytest.approx(1.0)
+        assert r2.json()["hedge_ratio"] == "1.00"

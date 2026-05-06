@@ -143,7 +143,7 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
     )
     assert response.status_code == 200
     data = response.json()["global_exposure_snapshot"]
-    assert data["hedge_long_mt"] == 10.0
+    assert float(data["hedge_long_mt"]) == 10.0
 
 
 def test_adjust_order_quantity_changes_exposure(client) -> None:
@@ -165,7 +165,7 @@ def test_adjust_order_quantity_changes_exposure(client) -> None:
     )
     assert response.status_code == 200
     data = response.json()["commercial_exposure_snapshot"]
-    assert data["commercial_active_mt"] == 10.0
+    assert float(data["commercial_active_mt"]) == 10.0
 
 
 def test_scenario_does_not_persist(client) -> None:

@@ -27,6 +27,7 @@ from decimal import Decimal
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.precision import quantize_money, quantize_mt, quantize_price, quantize_ratio
 from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot, DealStatus
 from app.models.contracts import HedgeContract, HedgeContractStatus, HedgeClassification
 from app.models.orders import Order, OrderType, PriceType
@@ -60,7 +61,7 @@ def _compute_inputs_hash(
 
 def _get_market_price(
     session: Session, commodity: str, as_of_date: date
-) -> float | None:
+) -> Decimal | None:
     """Try to fetch the D-1 settlement price; return None on failure."""
     try:
         from app.services.price_lookup_service import (
@@ -69,7 +70,7 @@ def _get_market_price(
         )
 
         symbol = resolve_symbol(commodity)
-        return float(
+        return quantize_price(
             get_cash_settlement_price_d1(session, symbol=symbol, as_of_date=as_of_date)
         )
     except Exception:
@@ -98,7 +99,7 @@ class DealEngineService:
             status=DealStatus.open,
         )
         session.add(deal)
-        session.flush()
+        session.commit()
 
         # Add initial links (with cross-deal uniqueness validation)
         for link_data in links_data:
@@ -134,7 +135,7 @@ class DealEngineService:
             )
             session.add(link)
 
-        session.flush()
+        session.commit()
 
         # Validate hedge-direction constraints after all links are created
         DealEngineService._validate_hedge_direction(session, deal)
@@ -208,12 +209,12 @@ class DealEngineService:
                             f"and require hedging."
                         ),
                     )
-                if contract.quantity_mt > float(order.quantity_mt):
+                if quantize_mt(contract.quantity_mt) > quantize_mt(order.quantity_mt):
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail=(
                             f"Hedge quantity ({contract.quantity_mt} MT) exceeds "
-                            f"order quantity ({float(order.quantity_mt)} MT). "
+                            f"order quantity ({quantize_mt(order.quantity_mt)} MT). "
                             f"Hedge must be ≤ the order it covers."
                         ),
                     )
@@ -333,13 +334,15 @@ class DealEngineService:
                                     f"exposure and require hedging."
                                 ),
                             )
-                        if contract.quantity_mt > float(order.quantity_mt):
+                        if quantize_mt(contract.quantity_mt) > quantize_mt(
+                            order.quantity_mt
+                        ):
                             raise HTTPException(
                                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                                 detail=(
                                     f"Hedge quantity ({contract.quantity_mt} MT) "
                                     f"exceeds order quantity "
-                                    f"({float(order.quantity_mt)} MT). "
+                                    f"({quantize_mt(order.quantity_mt)} MT). "
                                     f"Hedge must be ≤ the order it covers."
                                 ),
                             )
@@ -350,7 +353,7 @@ class DealEngineService:
             linked_id=linked_id,
         )
         session.add(link)
-        session.flush()
+        session.commit()
 
         DealEngineService._recompute_tons(session, deal)
         session.commit()
@@ -389,20 +392,20 @@ class DealEngineService:
     @staticmethod
     def _order_value(
         order: Order,
-        market_price: float | None,
-    ) -> float:
+        market_price: Decimal | None,
+    ) -> Decimal:
         """Return the monetary value for one order (qty × effective price).
 
         Fixed-price orders always use ``avg_entry_price``.
         Variable-price orders prefer the market settlement price;
         fall back to ``avg_entry_price`` when market data is unavailable.
         """
-        qty = float(order.quantity_mt)
+        qty = quantize_mt(order.quantity_mt)
         if order.price_type == PriceType.fixed:
-            return qty * float(order.avg_entry_price or 0)
+            return quantize_money(qty * quantize_price(order.avg_entry_price))
         if market_price is not None:
-            return qty * market_price
-        return qty * float(order.avg_entry_price or 0)
+            return quantize_money(qty * quantize_price(market_price))
+        return quantize_money(qty * quantize_price(order.avg_entry_price))
 
     @staticmethod
     def compute_deal_pnl(
@@ -435,10 +438,10 @@ class DealEngineService:
 
         market_price = _get_market_price(session, deal.commodity, snapshot_date)
 
-        physical_revenue = 0.0
-        physical_cost = 0.0
-        hedge_pnl_realized = 0.0
-        hedge_pnl_mtm = 0.0
+        physical_revenue = Decimal("0")
+        physical_cost = Decimal("0")
+        hedge_pnl_realized = Decimal("0")
+        hedge_pnl_mtm = Decimal("0")
 
         for link in links:
             # ── Physical side (orders) ──
@@ -462,25 +465,25 @@ class DealEngineService:
                 if not contract:
                     continue
 
-                tons = float(contract.quantity_mt)
-                price = float(contract.fixed_price_value or 0)
+                tons = quantize_mt(contract.quantity_mt)
+                price = quantize_price(contract.fixed_price_value)
                 is_sell = contract.classification == HedgeClassification.short
 
                 if market_price is not None:
-                    mtm = (
+                    mtm = quantize_money(
                         tons * (price - market_price)
                         if is_sell
                         else tons * (market_price - price)
                     )
                 else:
-                    mtm = 0.0
+                    mtm = Decimal("0")
 
                 if contract.status == HedgeContractStatus.settled:
                     hedge_pnl_realized += mtm
                 else:
                     hedge_pnl_mtm += mtm
 
-        total_pnl = (
+        total_pnl = quantize_money(
             physical_revenue - physical_cost + hedge_pnl_realized + hedge_pnl_mtm
         )
 
@@ -544,21 +547,21 @@ class DealEngineService:
                 .all()
             )
 
-        tot_revenue = 0.0
-        tot_cost = 0.0
-        tot_hedge_real = 0.0
-        tot_hedge_mtm = 0.0
-        tot_pnl = 0.0
+        tot_revenue = Decimal("0")
+        tot_cost = Decimal("0")
+        tot_hedge_real = Decimal("0")
+        tot_hedge_mtm = Decimal("0")
+        tot_pnl = Decimal("0")
         result_deals: list[dict] = []
 
         for deal in deals:
             market_price = _get_market_price(session, deal.commodity, snapshot_date)
             links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
 
-            physical_revenue = 0.0
-            physical_cost = 0.0
-            hedge_pnl_realized = 0.0
-            hedge_pnl_mtm = 0.0
+            physical_revenue = Decimal("0")
+            physical_cost = Decimal("0")
+            hedge_pnl_realized = Decimal("0")
+            hedge_pnl_mtm = Decimal("0")
             physical_items: list[dict] = []
             financial_items: list[dict] = []
 
@@ -574,8 +577,8 @@ class DealEngineService:
                                 "id": order.id,
                                 "order_type": "SO",
                                 "commodity": deal.commodity,
-                                "quantity_mt": float(order.quantity_mt),
-                                "price": float(order.avg_entry_price or 0),
+                                "quantity_mt": quantize_mt(order.quantity_mt),
+                                "price": quantize_price(order.avg_entry_price),
                                 "value": value,
                             }
                         )
@@ -590,8 +593,8 @@ class DealEngineService:
                                 "id": order.id,
                                 "order_type": "PO",
                                 "commodity": deal.commodity,
-                                "quantity_mt": float(order.quantity_mt),
-                                "price": float(order.avg_entry_price or 0),
+                                "quantity_mt": quantize_mt(order.quantity_mt),
+                                "price": quantize_price(order.avg_entry_price),
                                 "value": -value,
                             }
                         )
@@ -606,18 +609,18 @@ class DealEngineService:
                     if not contract:
                         continue
 
-                    tons = float(contract.quantity_mt)
-                    price = float(contract.fixed_price_value or 0)
+                    tons = quantize_mt(contract.quantity_mt)
+                    price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
                     if market_price is not None:
-                        pnl = (
+                        pnl = quantize_money(
                             tons * (price - market_price)
                             if is_sell
                             else tons * (market_price - price)
                         )
                     else:
-                        pnl = 0.0
+                        pnl = Decimal("0")
 
                     if contract.status == HedgeContractStatus.settled:
                         hedge_pnl_realized += pnl
@@ -646,7 +649,7 @@ class DealEngineService:
                         }
                     )
 
-            total_pnl = (
+            total_pnl = quantize_money(
                 physical_revenue - physical_cost + hedge_pnl_realized + hedge_pnl_mtm
             )
 
@@ -666,11 +669,11 @@ class DealEngineService:
                 }
             )
 
-            tot_revenue += physical_revenue
-            tot_cost += physical_cost
-            tot_hedge_real += hedge_pnl_realized
-            tot_hedge_mtm += hedge_pnl_mtm
-            tot_pnl += total_pnl
+            tot_revenue = quantize_money(tot_revenue + physical_revenue)
+            tot_cost = quantize_money(tot_cost + physical_cost)
+            tot_hedge_real = quantize_money(tot_hedge_real + hedge_pnl_realized)
+            tot_hedge_mtm = quantize_money(tot_hedge_mtm + hedge_pnl_mtm)
+            tot_pnl = quantize_money(tot_pnl + total_pnl)
 
         return {
             "deals": result_deals,
@@ -696,10 +699,10 @@ class DealEngineService:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found"
             )
 
-        ratio = float(deal.hedge_ratio)
-        if ratio <= 0:
+        ratio = quantize_ratio(deal.hedge_ratio)
+        if ratio <= Decimal("0"):
             deal.status = DealStatus.open
-        elif ratio < 1.0:
+        elif ratio < Decimal("1.00"):
             deal.status = DealStatus.partially_hedged
         else:
             deal.status = DealStatus.fully_hedged
@@ -776,8 +779,8 @@ class DealEngineService:
         """Recompute physical/hedge tons and ratio from links."""
         links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
 
-        physical_tons = 0.0
-        hedge_tons = 0.0
+        physical_tons = Decimal("0")
+        hedge_tons = Decimal("0")
 
         for link in links:
             if link.linked_type in (
@@ -786,7 +789,9 @@ class DealEngineService:
             ):
                 order = session.query(Order).filter(Order.id == link.linked_id).first()
                 if order:
-                    physical_tons += float(order.quantity_mt)
+                    physical_tons = quantize_mt(
+                        physical_tons + quantize_mt(order.quantity_mt)
+                    )
             elif link.linked_type in (DealLinkedType.hedge, DealLinkedType.contract):
                 contract = (
                     session.query(HedgeContract)
@@ -794,17 +799,23 @@ class DealEngineService:
                     .first()
                 )
                 if contract:
-                    hedge_tons += float(contract.quantity_mt)
+                    hedge_tons = quantize_mt(
+                        hedge_tons + quantize_mt(contract.quantity_mt)
+                    )
 
-        deal.total_physical_tons = physical_tons
-        deal.total_hedge_tons = hedge_tons
-        deal.hedge_ratio = (hedge_tons / physical_tons) if physical_tons > 0 else 0
+        deal.total_physical_tons = quantize_mt(physical_tons)
+        deal.total_hedge_tons = quantize_mt(hedge_tons)
+        deal.hedge_ratio = (
+            quantize_ratio(hedge_tons / physical_tons)
+            if physical_tons > Decimal("0")
+            else Decimal("0.00")
+        )
 
         # Auto-update status
         ratio = deal.hedge_ratio
-        if ratio <= 0:
+        if ratio <= Decimal("0"):
             deal.status = DealStatus.open
-        elif ratio < 1.0:
+        elif ratio < Decimal("1.00"):
             deal.status = DealStatus.partially_hedged
         else:
             deal.status = DealStatus.fully_hedged
