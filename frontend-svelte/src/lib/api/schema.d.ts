@@ -3775,8 +3775,10 @@ export interface components {
         /** ScenarioWhatIfRunResponse */
         ScenarioWhatIfRunResponse: {
             cashflow_snapshot: components["schemas"]["ScenarioCashflowSnapshot"];
-            commercial_exposure_snapshot: components["schemas"]["CommercialExposureRead"];
-            global_exposure_snapshot: components["schemas"]["GlobalExposureRead"];
+            /** Commercial Exposure Snapshot */
+            commercial_exposure_snapshot: components["schemas"]["CommercialExposureRead"][];
+            /** Global Exposure Snapshot */
+            global_exposure_snapshot: components["schemas"]["GlobalExposureRead"][];
             /** Mtm Snapshot */
             mtm_snapshot: components["schemas"]["MTMResultResponse"][];
             /** Pl Snapshot */

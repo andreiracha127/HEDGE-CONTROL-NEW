@@ -98,8 +98,8 @@ class ScenarioPLSnapshotItem(BaseModel):
 
 
 class ScenarioWhatIfRunResponse(BaseModel):
-    commercial_exposure_snapshot: CommercialExposureRead
-    global_exposure_snapshot: GlobalExposureRead
+    commercial_exposure_snapshot: list[CommercialExposureRead]
+    global_exposure_snapshot: list[GlobalExposureRead]
     mtm_snapshot: list[MTMResultResponse]
     cashflow_snapshot: ScenarioCashflowSnapshot
     pl_snapshot: list[ScenarioPLSnapshotItem]

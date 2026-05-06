@@ -19,6 +19,7 @@ from app.models.contracts import HedgeClassification, HedgeContract
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
 from app.core.precision import quantize_mt
+from app.services.price_lookup_service import canonical_commodity
 
 
 class ExposureService:
@@ -74,6 +75,7 @@ class ExposureService:
         rows: dict[str, dict] = {}
 
         def ensure_row(commodity: str) -> dict:
+            commodity = canonical_commodity(commodity) or commodity
             if commodity not in rows:
                 rows[commodity] = {
                     "commodity": commodity,
@@ -116,9 +118,11 @@ class ExposureService:
         for row in pre_rows:
             item = ensure_row(row.commodity)
             if row.order_type == OrderType.sales:
-                item["pre_reduction_commercial_active_mt"] = quantize_mt(row.quantity)
+                item["pre_reduction_commercial_active_mt"] += quantize_mt(row.quantity)
             else:
-                item["pre_reduction_commercial_passive_mt"] = quantize_mt(row.quantity)
+                item["pre_reduction_commercial_passive_mt"] += quantize_mt(
+                    row.quantity
+                )
             item["order_count_considered"] += int(row.order_count)
 
         residual_rows = (
@@ -135,9 +139,9 @@ class ExposureService:
         for row in residual_rows:
             item = ensure_row(row.commodity)
             if row.order_type == OrderType.sales:
-                item["commercial_active_mt"] = quantize_mt(row.quantity)
+                item["commercial_active_mt"] += quantize_mt(row.quantity)
             else:
-                item["commercial_passive_mt"] = quantize_mt(row.quantity)
+                item["commercial_passive_mt"] += quantize_mt(row.quantity)
 
         reduction_rows = (
             session.query(
@@ -180,6 +184,7 @@ class ExposureService:
         rows: dict[str, dict] = {}
 
         def ensure_row(commodity: str) -> dict:
+            commodity = canonical_commodity(commodity) or commodity
             if commodity not in rows:
                 rows[commodity] = {
                     "commodity": commodity,
@@ -246,9 +251,9 @@ class ExposureService:
         for row in residual_order_rows:
             item = ensure_row(row.commodity)
             if row.order_type == OrderType.sales:
-                item["commercial_active_mt"] = quantize_mt(row.quantity)
+                item["commercial_active_mt"] += quantize_mt(row.quantity)
             else:
-                item["commercial_passive_mt"] = quantize_mt(row.quantity)
+                item["commercial_passive_mt"] += quantize_mt(row.quantity)
 
         # --- Hedge contracts ---
         linked_by_contract = (

@@ -31,6 +31,45 @@ COMMODITY_SYMBOL_MAP: dict[str, str] = {
 }
 
 
+CANONICAL_COMMODITY_MAP: dict[str, str] = {
+    "LME_AL": "ALUMINUM",
+    "ALUMINUM": "ALUMINUM",
+    "ALUMINIUM": "ALUMINUM",
+    "LME_CU": "COPPER",
+    "COPPER": "COPPER",
+    "LME_ZN": "ZINC",
+    "ZINC": "ZINC",
+    "LME_NI": "NICKEL",
+    "NICKEL": "NICKEL",
+    "LME_PB": "LEAD",
+    "LEAD": "LEAD",
+    "LME_SN": "TIN",
+    "TIN": "TIN",
+}
+
+
+def canonical_commodity(commodity: str | None) -> str | None:
+    """Return the exposure grouping key for a commodity string."""
+    if commodity is None:
+        return None
+    key = commodity.strip().upper()
+    return CANONICAL_COMMODITY_MAP.get(key, key)
+
+
+def commodity_aliases(commodity: str) -> set[str]:
+    """Return known raw aliases that map to the same canonical commodity."""
+    canonical = canonical_commodity(commodity)
+    aliases = {
+        alias
+        for alias, alias_canonical in CANONICAL_COMMODITY_MAP.items()
+        if alias_canonical == canonical
+    }
+    aliases.add(commodity)
+    if canonical is not None:
+        aliases.add(canonical)
+    return aliases
+
+
 def resolve_symbol(commodity: str) -> str:
     """Return the settlement-price symbol for *commodity*.
 

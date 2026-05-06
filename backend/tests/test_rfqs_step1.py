@@ -110,6 +110,27 @@ def test_commercial_hedge_rejects_order_commodity_mismatch(client) -> None:
     assert "commodity" in response.json()["detail"].lower()
 
 
+def test_commercial_hedge_accepts_supported_order_commodity_alias(client) -> None:
+    order_id = _create_sales_order(client, 10.0)
+
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["commodity"] == "LME_AL"
+
+
 def test_rfq_number_is_deterministic_and_server_generated(client) -> None:
     payload = {
         "intent": "GLOBAL_POSITION",

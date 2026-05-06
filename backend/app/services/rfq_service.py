@@ -43,6 +43,7 @@ from app.schemas.rfq import (
 )
 from app.services.exposure_service import ExposureService
 from app.services.linkage_service import LinkageService
+from app.services.price_lookup_service import canonical_commodity
 from app.services.whatsapp_service import WhatsAppService
 from app.core.logging import get_logger
 from app.core.utils import now_utc
@@ -371,7 +372,9 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ direction mismatch for order type",
                 )
-            if payload.commodity != order.commodity:
+            if canonical_commodity(payload.commodity) != canonical_commodity(
+                order.commodity
+            ):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(

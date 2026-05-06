@@ -29,10 +29,12 @@ def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
         session.commit()
 
 
-def _insert_contract(quantity_mt: float, entry_price: float) -> uuid4:
+def _insert_contract(
+    quantity_mt: float, entry_price: float, commodity: str = "LME_AL"
+) -> uuid4:
     with SessionLocal() as session:
         contract = HedgeContract(
-            commodity="LME_AL",
+            commodity=commodity,
             quantity_mt=quantity_mt,
             fixed_leg_side=HedgeLegSide.buy,
             variable_leg_side=HedgeLegSide.sell,
@@ -48,12 +50,12 @@ def _insert_contract(quantity_mt: float, entry_price: float) -> uuid4:
         return contract.id
 
 
-def _insert_order(quantity_mt: float) -> uuid4:
+def _insert_order(quantity_mt: float, commodity: str = "ALUMINUM") -> uuid4:
     with SessionLocal() as session:
         order = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
-            commodity="ALUMINUM",
+            commodity=commodity,
             quantity_mt=quantity_mt,
             pricing_convention=OrderPricingConvention.avg,
             avg_entry_price=100.0,
@@ -62,6 +64,10 @@ def _insert_order(quantity_mt: float) -> uuid4:
         session.commit()
         session.refresh(order)
         return order.id
+
+
+def _row_by_commodity(rows: list[dict], commodity: str) -> dict:
+    return next(row for row in rows if row["commodity"] == commodity)
 
 
 def test_scenario_run_returns_outputs(client) -> None:
@@ -143,8 +149,8 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
         },
     )
     assert response.status_code == 200
-    data = response.json()["global_exposure_snapshot"]
-    assert float(data["hedge_long_mt"]) == 10.0
+    data = _row_by_commodity(response.json()["global_exposure_snapshot"], "ALUMINUM")
+    assert data["hedge_long_mt"] == 10.0
 
 
 def test_adjust_order_quantity_changes_exposure(client) -> None:
@@ -165,8 +171,40 @@ def test_adjust_order_quantity_changes_exposure(client) -> None:
         },
     )
     assert response.status_code == 200
-    data = response.json()["commercial_exposure_snapshot"]
-    assert float(data["commercial_active_mt"]) == 10.0
+    data = _row_by_commodity(
+        response.json()["commercial_exposure_snapshot"], "ALUMINUM"
+    )
+    assert data["commercial_active_mt"] == 10.0
+
+
+def test_scenario_exposure_snapshots_are_commodity_scoped(client) -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_order(quantity_mt=5.0, commodity="ALUMINUM")
+    _insert_order(quantity_mt=7.0, commodity="COPPER")
+    _insert_contract(quantity_mt=3.0, entry_price=100.0, commodity="LME_CU")
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [],
+        },
+    )
+
+    assert response.status_code == 200
+    commercial = response.json()["commercial_exposure_snapshot"]
+    global_rows = response.json()["global_exposure_snapshot"]
+
+    assert {row["commodity"] for row in commercial} == {"ALUMINUM", "COPPER"}
+    assert _row_by_commodity(commercial, "ALUMINUM")["commercial_active_mt"] == 5.0
+    assert _row_by_commodity(commercial, "COPPER")["commercial_active_mt"] == 7.0
+    copper_global = _row_by_commodity(global_rows, "COPPER")
+    assert copper_global["commercial_active_mt"] == 7.0
+    assert copper_global["hedge_long_mt"] == 3.0
 
 
 def test_scenario_does_not_persist(client) -> None:

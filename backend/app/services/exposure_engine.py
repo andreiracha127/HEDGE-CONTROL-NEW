@@ -21,6 +21,7 @@ from app.models.exposure import (
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
 from app.core.precision import quantize_mt
+from app.services.price_lookup_service import canonical_commodity, commodity_aliases
 
 
 class ExposureEngineService:
@@ -70,6 +71,7 @@ class ExposureEngineService:
             else:
                 direction = ExposureDirection.short
                 source_type = ExposureSourceType.sales_order
+            commodity = canonical_commodity(order.commodity) or order.commodity
 
             # Compute hedge-adjusted open tons
             hedged_qty = quantize_mt(linked_map.get(str(order.id), Decimal("0")))
@@ -105,14 +107,14 @@ class ExposureEngineService:
                 if existing.status != exp_status:
                     existing.status = exp_status
                     changed = True
-                if existing.commodity != order.commodity:
-                    existing.commodity = order.commodity
+                if existing.commodity != commodity:
+                    existing.commodity = commodity
                     changed = True
                 if changed:
                     updated += 1
             else:
                 exposure = Exposure(
-                    commodity=order.commodity,
+                    commodity=commodity,
                     direction=direction,
                     source_type=source_type,
                     source_id=order.id,
@@ -164,7 +166,7 @@ class ExposureEngineService:
         )
 
         if commodity:
-            q = q.filter(Exposure.commodity == commodity)
+            q = q.filter(Exposure.commodity.in_(commodity_aliases(commodity)))
 
         q = q.group_by(Exposure.commodity, Exposure.direction)
         rows = q.all()
@@ -172,7 +174,7 @@ class ExposureEngineService:
         # Aggregate commercial data by commodity (normalised to uppercase)
         agg: dict[str, dict] = {}
         for row in rows:
-            c = row.commodity.upper() if row.commodity else row.commodity
+            c = canonical_commodity(row.commodity) if row.commodity else row.commodity
             if c not in agg:
                 agg[c] = {
                     "commodity": c,
@@ -208,12 +210,16 @@ class ExposureEngineService:
             ~HedgeContract.id.in_(linked_contract_ids),
         )
         if commodity:
-            gq = gq.filter(HedgeContract.commodity == commodity)
+            gq = gq.filter(HedgeContract.commodity.in_(commodity_aliases(commodity)))
         gq = gq.group_by(HedgeContract.commodity, HedgeContract.classification)
         global_rows = gq.all()
 
         for grow in global_rows:
-            c = grow.commodity.upper() if grow.commodity else grow.commodity
+            c = (
+                canonical_commodity(grow.commodity)
+                if grow.commodity
+                else grow.commodity
+            )
             if c not in agg:
                 agg[c] = {
                     "commodity": c,
@@ -383,7 +389,7 @@ class ExposureEngineService:
 
         q = session.query(Exposure).filter(Exposure.is_deleted == False)  # noqa: E712
         if commodity:
-            q = q.filter(Exposure.commodity == commodity)
+            q = q.filter(Exposure.commodity.in_(commodity_aliases(commodity)))
         if status_filter:
             q = q.filter(Exposure.status == ExposureStatus(status_filter))
         if settlement_month:

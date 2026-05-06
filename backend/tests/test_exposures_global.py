@@ -195,6 +195,27 @@ def test_cross_commodity_orders_and_hedges_are_returned_as_isolated_rows(client)
     assert not any(_mt(row, "global_active_mt") == 260.0 for row in data)
 
 
+def test_global_exposure_groups_supported_commodity_aliases(client) -> None:
+    _create_sales_order(client, "variable", 100.0, commodity="ALUMINUM")
+    _create_hedge_contract(
+        client,
+        quantity_mt=80.0,
+        commodity="LME_AL",
+        legs=[
+            {"side": "sell", "price_type": "fixed"},
+            {"side": "buy", "price_type": "variable"},
+        ],
+    )
+
+    data = _get_global_exposure(client)
+
+    assert len(data) == 1
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+    assert _mt(aluminum, "global_active_mt") == 180.0
+    assert _mt(aluminum, "hedge_short_mt") == 80.0
+    assert not any(row["commodity"] == "LME_AL" for row in data)
+
+
 def test_order_insertion_sequence_does_not_affect_result(client) -> None:
     from app.core.database import engine
     from app.models.base import Base

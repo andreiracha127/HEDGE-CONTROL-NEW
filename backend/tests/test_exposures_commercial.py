@@ -145,6 +145,18 @@ def test_cross_commodity_orders_are_returned_as_isolated_rows(client) -> None:
     assert not any(_mt(row, "commercial_active_mt") == 150.0 for row in data)
 
 
+def test_commercial_exposure_groups_supported_commodity_aliases(client) -> None:
+    _create_sales_order(client, "variable", 100.0, commodity="ALUMINUM")
+    _create_sales_order(client, "variable", 25.0, commodity="LME_AL")
+
+    data = _get_exposure(client)
+
+    assert len(data) == 1
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+    assert _mt(aluminum, "commercial_active_mt") == 125.0
+    assert not any(row["commodity"] == "LME_AL" for row in data)
+
+
 def test_linkage_reduction_is_scoped_to_order_commodity(client) -> None:
     aluminum_order_id = _create_sales_order(
         client, "variable", 100.0, commodity="ALUMINUM"

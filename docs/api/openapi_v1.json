@@ -6264,10 +6264,18 @@
             "$ref": "#/components/schemas/ScenarioCashflowSnapshot"
           },
           "commercial_exposure_snapshot": {
-            "$ref": "#/components/schemas/CommercialExposureRead"
+            "items": {
+              "$ref": "#/components/schemas/CommercialExposureRead"
+            },
+            "title": "Commercial Exposure Snapshot",
+            "type": "array"
           },
           "global_exposure_snapshot": {
-            "$ref": "#/components/schemas/GlobalExposureRead"
+            "items": {
+              "$ref": "#/components/schemas/GlobalExposureRead"
+            },
+            "title": "Global Exposure Snapshot",
+            "type": "array"
           },
           "mtm_snapshot": {
             "items": {
