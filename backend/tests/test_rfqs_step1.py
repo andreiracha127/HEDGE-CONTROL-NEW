@@ -33,14 +33,16 @@ def _create_sales_order(
 
 
 def _create_hedge_contract(client, quantity_mt: float) -> str:
+    # SHORT hedge (fixed leg = sell) — direction-correct for the SO-paired
+    # tests below per constitution §2.3 + §2.4 (PR-4 J-A1-OPUS-03).
     response = client.post(
         "/contracts/hedge",
         json={
             "commodity": "LME_AL",
             "quantity_mt": quantity_mt,
             "legs": [
-                {"side": "buy", "price_type": "fixed"},
-                {"side": "sell", "price_type": "variable"},
+                {"side": "sell", "price_type": "fixed"},
+                {"side": "buy", "price_type": "variable"},
             ],
         },
     )

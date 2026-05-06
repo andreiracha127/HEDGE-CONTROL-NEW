@@ -29,6 +29,26 @@ from app.core.utils import now_utc
 from app.services.price_lookup_service import canonical_commodity, commodity_aliases
 
 
+class ExposureOverAllocationError(Exception):
+    """Raised by reconcile when linked qty exceeds order qty (constitution §2.6).
+
+    Replaces the previous silent ``max(open, 0)`` clamp. Carries the offending
+    order id and the exact over-allocation amount so the caller can audit /
+    surface the violation.
+    """
+
+    def __init__(self, order_id, linked_qty: Decimal, order_qty: Decimal) -> None:
+        self.order_id = order_id
+        self.linked_qty = linked_qty
+        self.order_qty = order_qty
+        self.over_allocation = quantize_mt(linked_qty - order_qty)
+        super().__init__(
+            f"Exposure would be over-allocated for order {order_id}: "
+            f"linked={linked_qty} MT exceeds order quantity={order_qty} MT "
+            f"by {self.over_allocation} MT"
+        )
+
+
 class ExposureEngineService:
     """Stateless service for the Exposure Engine."""
 
@@ -95,7 +115,22 @@ class ExposureEngineService:
             # Compute hedge-adjusted open tons
             hedged_qty = quantize_mt(linked_map.get(str(order.id), Decimal("0")))
             order_qty = quantize_mt(order.quantity_mt)
-            open_qty = quantize_mt(max(order_qty - hedged_qty, Decimal("0")))
+
+            # ── Constitution §2.6 hard-fail (J-A1-OPUS-01) ────────────────
+            # Previously this branch silently clamped a negative residual via
+            # ``max(order_qty - hedged_qty, 0)`` and mapped it to
+            # ``fully_hedged``, hiding the over-allocation. Per §2.6 an
+            # over-allocated exposure is a hard-fail: raise explicitly and
+            # leave no Exposure row behind (route-level rollback handles it
+            # because the service flush is part of the unit_of_work).
+            if hedged_qty > order_qty:
+                raise ExposureOverAllocationError(
+                    order_id=order.id,
+                    linked_qty=hedged_qty,
+                    order_qty=order_qty,
+                )
+
+            open_qty = quantize_mt(order_qty - hedged_qty)
 
             # Determine status based on hedging
             if hedged_qty <= Decimal("0"):

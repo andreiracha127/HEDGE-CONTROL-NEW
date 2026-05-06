@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,10 @@ from app.schemas.exposure_engine import (
     NetExposureResponse,
     ReconcileResponse,
 )
-from app.services.exposure_engine import ExposureEngineService
+from app.services.exposure_engine import (
+    ExposureEngineService,
+    ExposureOverAllocationError,
+)
 from app.services.exposure_service import ExposureService
 
 router = APIRouter()
@@ -62,9 +65,18 @@ def reconcile_exposures(
     _user: dict = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    with unit_of_work(session, request=request):
-        run, summary = ExposureEngineService.reconcile_from_orders(session)
-        mark_audit_success(request, run.id)
+    try:
+        with unit_of_work(session, request=request):
+            run, summary = ExposureEngineService.reconcile_from_orders(session)
+            mark_audit_success(request, run.id)
+    except ExposureOverAllocationError as exc:
+        # Constitution §2.6: over-allocation is a hard-fail. The unit_of_work
+        # context manager already rolled back, so no Exposure snapshot — and
+        # no ReconciliationRun anchor or audit row — was persisted. Surface
+        # the violation with offending order id + delta.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return summary
 
 
