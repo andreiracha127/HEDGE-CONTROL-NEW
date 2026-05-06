@@ -1,12 +1,13 @@
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_any_role
 from app.core.database import get_session
+from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
 from app.schemas.exposure import CommercialExposureRead, GlobalExposureRead
 from app.schemas.exposure_engine import (
@@ -51,12 +52,20 @@ def get_global_exposure(
 
 @router.post("/reconcile", response_model=ReconcileResponse)
 def reconcile_exposures(
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="exposure_reconciliation",
+            event_type="executed",
+        )
+    ),
     _user: dict = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    with unit_of_work(session):
-        result = ExposureEngineService.reconcile_from_orders(session)
-    return result
+    with unit_of_work(session, request=request):
+        run, summary = ExposureEngineService.reconcile_from_orders(session)
+        mark_audit_success(request, run.id)
+    return summary
 
 
 @router.get("/net", response_model=NetExposureResponse)
@@ -85,11 +94,19 @@ def list_hedge_tasks(
 @router.post("/tasks/{task_id}/execute")
 def execute_hedge_task(
     task_id: UUID,
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="hedge_task",
+            event_type="executed",
+        )
+    ),
     _user: dict = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    with unit_of_work(session):
+    with unit_of_work(session, request=request):
         task = ExposureEngineService.execute_task(session, task_id)
+        mark_audit_success(request, task.id)
     return HedgeTaskRead.model_validate(task)
 
 

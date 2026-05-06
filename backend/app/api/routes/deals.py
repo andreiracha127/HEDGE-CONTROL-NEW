@@ -4,12 +4,13 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_any_role
 from app.core.database import get_session
 from app.core.pagination import paginate
+from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
 from app.models.deal import Deal, DealLink, DealLinkedType
 from app.schemas.deal import (
@@ -71,7 +72,14 @@ def find_deal_by_linked_entity(
 @router.post("", response_model=DealRead, status_code=status.HTTP_201_CREATED)
 def create_deal(
     body: DealCreate,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="deal",
+            event_type="created",
+        )
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
     data = body.model_dump()
@@ -80,8 +88,9 @@ def create_deal(
         for link in data["links"]:
             if hasattr(link.get("linked_type"), "value"):
                 link["linked_type"] = link["linked_type"].value
-    with unit_of_work(session):
+    with unit_of_work(session, request=request):
         deal = DealEngineService.create_deal(session, data)
+        mark_audit_success(request, deal.id)
     return deal
 
 
@@ -138,13 +147,21 @@ def get_deal(
 def add_link(
     deal_id: UUID,
     body: DealLinkCreate,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="deal_link",
+            event_type="created",
+        )
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
-    with unit_of_work(session):
+    with unit_of_work(session, request=request):
         link = DealEngineService.add_link(
             session, deal_id, body.linked_type.value, body.linked_id
         )
+        mark_audit_success(request, link.id)
     return link
 
 
@@ -152,11 +169,22 @@ def add_link(
 def remove_link(
     deal_id: UUID,
     link_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="deal_link",
+            event_type="deleted",
+        )
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
-    with unit_of_work(session):
+    with unit_of_work(session, request=request):
         DealEngineService.remove_link(session, deal_id, link_id)
+        # Service returns None — anchor the audit on the path parameter
+        # (canonical id of the entity that was just deleted).
+        mark_audit_success(request, link_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -166,14 +194,22 @@ def remove_link(
 )
 def trigger_pnl_snapshot(
     deal_id: UUID,
+    request: Request,
     snapshot_date: date = Query(default=None),
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    _: None = Depends(
+        audit_event(
+            entity_type="deal_pnl_snapshot",
+            event_type="created",
+        )
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
     if snapshot_date is None:
         snapshot_date = date.today()
-    with unit_of_work(session):
+    with unit_of_work(session, request=request):
         snapshot = DealEngineService.compute_deal_pnl(session, deal_id, snapshot_date)
+        mark_audit_success(request, snapshot.id)
     return snapshot
 
 

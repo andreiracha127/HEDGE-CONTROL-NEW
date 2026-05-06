@@ -8,6 +8,10 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("SCHEDULER_DISABLED", "1")
+# Default audit signing key for tests — fail-closed audit emission requires
+# AUDIT_SIGNING_KEY to be a non-empty value. Individual tests may override
+# (or unset) this within their own fixtures to exercise the fail-closed path.
+os.environ.setdefault("AUDIT_SIGNING_KEY", "test-signing-key-for-audit-hmac")
 os.environ.setdefault(
     "JWT_ISSUER",
     "https://login.microsoftonline.com/e75d5f00-51bd-48c1-adb6-b5df988e2685/v2.0",

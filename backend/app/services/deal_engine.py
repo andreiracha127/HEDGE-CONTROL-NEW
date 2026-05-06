@@ -99,7 +99,7 @@ class DealEngineService:
             status=DealStatus.open,
         )
         session.add(deal)
-        session.commit()
+        session.flush()
 
         # Add initial links (with cross-deal uniqueness validation)
         for link_data in links_data:
@@ -135,7 +135,7 @@ class DealEngineService:
             )
             session.add(link)
 
-        session.commit()
+        session.flush()
 
         # Validate hedge-direction constraints after all links are created
         DealEngineService._validate_hedge_direction(session, deal)
@@ -353,7 +353,7 @@ class DealEngineService:
             linked_id=linked_id,
         )
         session.add(link)
-        session.commit()
+        session.flush()
 
         DealEngineService._recompute_tons(session, deal)
         session.flush()

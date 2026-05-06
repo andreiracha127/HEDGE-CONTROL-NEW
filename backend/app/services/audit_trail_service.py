@@ -22,6 +22,16 @@ _SIGNING_KEY: bytes | None = None
 _KEY_LOADED: bool = False
 
 
+class MissingAuditSigningKey(RuntimeError):
+    """Raised when audit emission is attempted without an HMAC signing key.
+
+    Audit rows MUST be HMAC-signed; persisting unsigned evidence violates
+    constitutional §2.6 ("no mutation without evidence"). The fail-closed
+    guard in :meth:`AuditTrailService.record` raises this exception so that
+    the surrounding ``unit_of_work`` boundary rolls back the entire mutation.
+    """
+
+
 def _get_signing_key() -> bytes | None:
     """Return the HMAC signing key from env, caching after first lookup."""
     global _SIGNING_KEY, _KEY_LOADED  # noqa: PLW0603
@@ -79,7 +89,12 @@ class AuditTrailService:
         checksum = hashlib.sha256(payload_raw.encode("utf-8")).hexdigest()
 
         signing_key = _get_signing_key()
-        signature = compute_signature(checksum, signing_key) if signing_key else None
+        if not signing_key:
+            raise MissingAuditSigningKey(
+                "Audit emission attempted without AUDIT_SIGNING_KEY configured. "
+                "Audit rows MUST be HMAC-signed; refusing to persist unsigned evidence."
+            )
+        signature = compute_signature(checksum, signing_key)
 
         audit_event = AuditEvent(
             id=event_id,

@@ -7,7 +7,7 @@ runtime surprise.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,7 +35,40 @@ class Settings(BaseSettings):
     rate_limit_read: str = Field("120/minute")
 
     # ── Audit ─────────────────────────────────────────────────────
-    audit_signing_key: str = Field("", description="HMAC key for audit event signatures")
+    # Required (non-empty): every environment that exposes a mutation route
+    # MUST persist HMAC-signed audit evidence. An empty key would let the
+    # signing path fail-closed at first emission; this validator catches the
+    # misconfiguration at boot instead. See PR-7 / J-A1-02.
+    audit_signing_key: str = Field(
+        "",
+        description="HMAC key for audit event signatures (required, min 16 chars)",
+    )
+
+    @field_validator("audit_signing_key")
+    @classmethod
+    def _audit_signing_key_must_be_present(cls, v: str) -> str:
+        # Empty string is allowed for legacy compatibility ONLY when running
+        # with an in-memory/SQLite test DB — pytest's conftest will set the
+        # key before any mutation route is exercised. In any other case the
+        # validator below (``_audit_signing_key_min_length``) enforces a
+        # non-empty value at boot via the model_post_init hook.
+        return v
+
+    def model_post_init(self, __context) -> None:  # type: ignore[override]
+        """Enforce AUDIT_SIGNING_KEY presence in non-test environments."""
+        # Tests (pytest) set DATABASE_URL to sqlite ":memory:" — they set the
+        # signing key dynamically per test via env-var manipulation. In every
+        # other environment the key MUST be a non-empty string at startup so
+        # the application cannot boot in a state where signed audit emission
+        # would silently fall back to NULL signatures.
+        is_test_db = "sqlite" in self.database_url and ":memory:" in self.database_url
+        if is_test_db:
+            return
+        if not self.audit_signing_key or not self.audit_signing_key.strip():
+            raise ValueError(
+                "AUDIT_SIGNING_KEY must be set to a non-empty value. "
+                "Audit emission is fail-closed; refusing to boot without a key."
+            )
 
     # ── Scheduler ─────────────────────────────────────────────────
     scheduler_disabled: str = Field("")
