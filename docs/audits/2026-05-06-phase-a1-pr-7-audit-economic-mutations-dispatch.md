@@ -75,6 +75,29 @@ For each route:
 
 **Service-side:** if any deal service still calls `session.commit()` (it shouldn't post-PR-3 but verify by `grep -n "session\\.commit" backend/app/services/deal_engine.py`), replace with `session.flush()`.
 
+**Special case — services that return `None` (e.g., delete routes).** Verified: `DealEngineService.remove_link(...) -> None` returns nothing. If the executor follows step 4 literally and writes `mark_audit_success(request, service_result)` for a void-returning service, `entity_id` is `None`, the deferred audit dependency raises "entity_id missing", and `unit_of_work` rolls back — every successful delete becomes a 500. Skipping `mark_audit_success` is also wrong: the audit dependency was registered but not finalized, leaving an unaudited committed mutation (the very §2.6 violation this PR removes).
+
+**Fix directive for void-returning services:** use the **path parameter** as the entity_id. Example:
+
+```python
+@router.delete("/{deal_id}/links/{link_id}")
+def remove_link(
+    deal_id: UUID,
+    link_id: UUID,
+    request: Request,
+    _: None = Depends(audit_event(entity_type="deal_link", event_type="deleted")),
+    session: Session = Depends(get_session),
+):
+    with unit_of_work(session, request=request):
+        DealEngineService.remove_link(session, deal_id, link_id)
+        mark_audit_success(request, link_id)  # ← path parameter, not service result
+    return Response(status_code=204)
+```
+
+The path parameter is known to the route layer before the service runs and is the canonical identifier of the entity that was just deleted — perfect anchor for the audit row. This pattern applies to **any** delete route (and any service that mutates state but returns `None`); apply it without changing the service signature. Do NOT modify `DealEngineService.remove_link` to return the deleted link just to satisfy the audit pattern — that's needless coupling. The route already has the id.
+
+**Acceptance:** route delete tests must assert (a) the AuditEvent row exists post-delete with `entity_id == link_id`, (b) the link is gone from the DB, (c) HTTP 204 returned (or whatever the existing convention is — verify before assuming).
+
 ### 3.2 Exposure reconcile route + service
 
 **File:** `backend/app/api/routes/exposures.py:51-57` (verify line range — main may have shifted post #15 and #13).
