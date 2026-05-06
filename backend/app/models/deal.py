@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import decimal
 import enum
 import uuid as _uuid
 from datetime import date, datetime, timezone
@@ -224,4 +225,29 @@ class DealPNLSnapshot(Base):
                         f"price_references[{commodity!r}] missing required "
                         f"key {required!r}"
                     )
+            # Codex P2 (2026-05-06): the producer pipeline is
+            # quantize_price() -> str(Decimal); a direct ORM write that
+            # smuggles a non-decimal string ("not-a-number", "5500.0e-2",
+            # "NaN", "+5500", etc.) would otherwise be persisted and
+            # surfaced by the snapshot API. Decimal() rejects all of
+            # these except scientific notation and NaN — both of which
+            # the producer never emits — so we additionally fail closed
+            # if the Decimal isn't finite.
+            raw_value = entry["value"]
+            if not isinstance(raw_value, str):
+                raise ValueError(
+                    f"price_references[{commodity!r}].value must be a string"
+                )
+            try:
+                parsed = Decimal(raw_value)
+            except decimal.InvalidOperation as exc:
+                raise ValueError(
+                    f"price_references[{commodity!r}].value is not a "
+                    f"valid decimal string: {raw_value!r}"
+                ) from exc
+            if not parsed.is_finite():
+                raise ValueError(
+                    f"price_references[{commodity!r}].value must be a "
+                    f"finite decimal: {raw_value!r}"
+                )
         return value

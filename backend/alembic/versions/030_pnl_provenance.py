@@ -110,7 +110,14 @@ BEGIN
         IF jsonb_typeof(entry->'settlement_date') <> 'string' THEN
             RETURN FALSE;
         END IF;
-        IF (entry->>'settlement_date') !~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' THEN
+        -- Codex P2 (2026-05-06): the producer (compute_deal_pnl ->
+        -- quantize_price -> str(Decimal)) only ever emits canonical
+        -- fixed-point decimal strings. Reject anything a direct-SQL
+        -- repair/import might smuggle in: scientific notation, NaN,
+        -- Infinity, leading +, leading/trailing dots, whitespace, or
+        -- arbitrary text. Anchored from start and end like the
+        -- settlement_date regex above.
+        IF (entry->>'value') !~ '^-?\\d+(\\.\\d+)?$' THEN
             RETURN FALSE;
         END IF;
     END LOOP;

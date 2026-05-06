@@ -556,6 +556,52 @@ class TestPriceReferencesValidator:
         )
         assert snap.price_references is not None
 
+    @pytest.mark.parametrize(
+        "bad_value",
+        [
+            "not-a-number",  # Codex's exact example
+            "NaN",
+            "Infinity",
+            "-Infinity",
+        ],
+    )
+    def test_inner_value_non_decimal_string_rejected(self, bad_value):
+        """SQLite-portable defender: ``@validates`` must reject any
+        ``value`` that ``Decimal(...)`` cannot parse to a finite number,
+        even when the JSON shape is otherwise well-formed.
+        Mirrors the PG-side function-backed CHECK so tests catch
+        malformed audit evidence in both dialects.
+        """
+        with pytest.raises(ValueError):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": bad_value,
+                        "source": "lme",
+                        "settlement_date": "2026-05-05",
+                    }
+                },
+            )
+
+    def test_inner_value_non_string_rejected(self):
+        """Numeric ``value`` (not even a string) must also be rejected."""
+        with pytest.raises(ValueError, match="must be a string"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": 2700,
+                        "source": "lme",
+                        "settlement_date": "2026-05-05",
+                    }
+                },
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Postgres-only — direct-SQL writes are rejected by the per-entry CHECK
@@ -725,5 +771,77 @@ class TestPriceReferencesCheckOnPostgres:
                     ),
                     {"h": "y" * 64},
                 )
+        finally:
+            self._teardown(engine)
+
+    def test_direct_sql_value_must_match_decimal_regex(self):
+        """Codex P2 (2026-05-06): the per-entry CHECK now also enforces
+        the documented Decimal-as-string contract on ``value``. The
+        producer (compute_deal_pnl -> quantize_price -> str(Decimal))
+        only ever emits canonical fixed-point strings; direct-SQL writes
+        that smuggle in scientific notation, NaN, +sign, leading or
+        trailing dots, whitespace, or arbitrary text must be rejected
+        by the function-backed CHECK.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        engine = self._setup_engine_with_check()
+        try:
+            base = {
+                "ALUMINUM": {
+                    "value": "PLACEHOLDER",
+                    "source": "lme",
+                    "settlement_date": "2026-05-05",
+                }
+            }
+
+            def _with(value):
+                payload = {"ALUMINUM": dict(base["ALUMINUM"])}
+                payload["ALUMINUM"]["value"] = value
+                return payload
+
+            # Rejected: arbitrary text (Codex's exact example)
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("not-a-number"))
+
+            # Rejected: scientific notation
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("5500.0e-2"))
+
+            # Rejected: NaN
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("NaN"))
+
+            # Rejected: leading +
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("+5500"))
+
+            # Rejected: trailing dot
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("5500."))
+
+            # Rejected: leading dot
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with(".5"))
+
+            # Rejected: empty string
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with(""))
+
+            # Rejected: surrounding whitespace
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, _with("  5500  "))
+
+            # Accepted: well-formed negative
+            self._try_insert(engine, _with("-5500.123456"))
+
+            # Accepted: well-formed zero
+            self._try_insert(engine, _with("0"))
+
+            # Accepted: well-formed plain integer
+            self._try_insert(engine, _with("5500"))
+
+            # Accepted: well-formed fractional
+            self._try_insert(engine, _with("0.000001"))
         finally:
             self._teardown(engine)
