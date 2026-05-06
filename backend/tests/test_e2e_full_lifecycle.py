@@ -5,6 +5,7 @@ Full flow: Order → RFQ → Quote → Award → Contract/Linkage → Settlement
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
@@ -108,6 +109,10 @@ def _commercial_row(response):
     return next(row for row in rows if row["commodity"] == "ALUMINUM")
 
 
+def _dec(value) -> Decimal:
+    return Decimal(str(value))
+
+
 # -- lifecycle test ---------------------------------------------------------
 
 
@@ -124,7 +129,7 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     exposure_before = client.get("/exposures/commercial")
     assert exposure_before.status_code == 200
     before_row = _commercial_row(exposure_before)
-    assert before_row["commercial_active_mt"] > 0
+    assert _dec(before_row["commercial_active_mt"]) > Decimal("0")
 
     # Step 3 – Create an RFQ for a commercial hedge
     rfq = _create_rfq(client, order_id, 5.0, counterparty_id=cp_id)
@@ -152,7 +157,9 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     exposure_after = client.get("/exposures/commercial")
     assert exposure_after.status_code == 200
     after_row = _commercial_row(exposure_after)
-    assert after_row["commercial_active_mt"] < before_row["commercial_active_mt"]
+    assert _dec(after_row["commercial_active_mt"]) < _dec(
+        before_row["commercial_active_mt"]
+    )
 
     # Step 7 – Settle the contract
     settlement = _settle_contract(client, contract_id)

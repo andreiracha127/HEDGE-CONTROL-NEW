@@ -14,6 +14,7 @@ from app.core.precision import quantize_mt
 from app.models.contracts import HedgeContract
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order
+from app.services.price_lookup_service import canonical_commodity
 
 
 class LinkageService:
@@ -38,6 +39,13 @@ class LinkageService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Hedge contract not found",
+            )
+        if canonical_commodity(order.commodity) != canonical_commodity(
+            contract.commodity
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Order commodity must match hedge contract commodity",
             )
 
         order_linked_qty = (

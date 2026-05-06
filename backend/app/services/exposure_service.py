@@ -158,9 +158,9 @@ class ExposureService:
         for row in reduction_rows:
             item = ensure_row(row.commodity)
             if row.order_type == OrderType.sales:
-                item["reduction_applied_active_mt"] = quantize_mt(row.quantity)
+                item["reduction_applied_active_mt"] += quantize_mt(row.quantity)
             else:
-                item["reduction_applied_passive_mt"] = quantize_mt(row.quantity)
+                item["reduction_applied_passive_mt"] += quantize_mt(row.quantity)
 
         for item in rows.values():
             item["commercial_net_mt"] = quantize_mt(

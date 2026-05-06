@@ -157,6 +157,28 @@ def test_commercial_exposure_groups_supported_commodity_aliases(client) -> None:
     assert not any(row["commodity"] == "LME_AL" for row in data)
 
 
+def test_commercial_reductions_accumulate_supported_commodity_aliases(client) -> None:
+    aluminum_order_id = _create_sales_order(
+        client, "variable", 100.0, commodity="ALUMINUM"
+    )
+    lme_al_order_id = _create_sales_order(client, "variable", 50.0, commodity="LME_AL")
+    aluminum_contract_id = _create_hedge_contract(
+        client, 100.0, commodity="ALUMINUM"
+    )
+    lme_al_contract_id = _create_hedge_contract(client, 50.0, commodity="LME_AL")
+
+    _create_linkage(client, aluminum_order_id, aluminum_contract_id, 40.0)
+    _create_linkage(client, lme_al_order_id, lme_al_contract_id, 10.0)
+
+    data = _get_exposure(client)
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+
+    assert len(data) == 1
+    assert _mt(aluminum, "pre_reduction_commercial_active_mt") == 150.0
+    assert _mt(aluminum, "commercial_active_mt") == 100.0
+    assert _mt(aluminum, "reduction_applied_active_mt") == 50.0
+
+
 def test_linkage_reduction_is_scoped_to_order_commodity(client) -> None:
     aluminum_order_id = _create_sales_order(
         client, "variable", 100.0, commodity="ALUMINUM"

@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.precision import quantize_money, quantize_mt, quantize_price
 from app.models.cashflow import CashFlowLedgerEntry
 from app.models.contracts import (
     HedgeClassification,
@@ -85,7 +86,10 @@ def _mtm_for_contract(
     as_of_date: date,
     price_d1: Decimal,
 ) -> MTMResultResponse:
-    mtm_value = quantity_mt * (price_d1 - entry_price)
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(entry_price)
+    price_d1 = quantize_price(price_d1)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.hedge_contract,
         object_id=str(contract_id),
@@ -123,8 +127,10 @@ def _mtm_for_order(
             detail="Order avg_entry_price is missing",
         )
 
-    entry_price = Decimal(str(order.avg_entry_price))
-    mtm_value = quantity_mt * (price_d1 - entry_price)
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(order.avg_entry_price)
+    price_d1 = quantize_price(price_d1)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.order,
         object_id=str(order.id),
@@ -444,8 +450,6 @@ def run_what_if(
     contracts = base_contracts
 
     lookup = _build_price_lookup(price_overrides)
-    price_d1_as_of = _resolve_price_d1(db, req.as_of_date, lookup)
-    price_d1_period_end = _resolve_price_d1(db, req.period_end, lookup)
 
     mtm_results: list[MTMResultResponse] = []
     for contract in contracts:
@@ -462,7 +466,9 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.as_of_date,
-                price_d1=price_d1_as_of,
+                price_d1=_resolve_price_d1(
+                    db, req.as_of_date, lookup, contract.commodity
+                ),
             )
         )
 
@@ -473,7 +479,9 @@ def run_what_if(
                 quantity_mt=contract.quantity_mt,
                 entry_price=contract.fixed_price_value,
                 as_of_date=req.as_of_date,
-                price_d1=price_d1_as_of,
+                price_d1=_resolve_price_d1(
+                    db, req.as_of_date, lookup, contract.commodity
+                ),
             )
         )
 
@@ -481,7 +489,12 @@ def run_what_if(
         if order.price_type != PriceType.variable:
             continue
         mtm_results.append(
-            _mtm_for_order(order, quantity, req.as_of_date, price_d1_as_of)
+            _mtm_for_order(
+                order,
+                quantity,
+                req.as_of_date,
+                _resolve_price_d1(db, req.as_of_date, lookup, order.commodity),
+            )
         )
 
     cashflow_items: list[CashFlowItem] = [
@@ -489,12 +502,14 @@ def run_what_if(
             object_type=result.object_type.value,
             object_id=result.object_id,
             settlement_date=req.as_of_date,
-            amount_usd=Decimal(result.mtm_value),
-            mtm_value=Decimal(result.mtm_value),
+            amount_usd=quantize_money(result.mtm_value),
+            mtm_value=quantize_money(result.mtm_value),
         )
         for result in mtm_results
     ]
-    total_cashflow = sum((item.amount_usd for item in cashflow_items), Decimal("0"))
+    total_cashflow = quantize_money(
+        sum((item.amount_usd for item in cashflow_items), Decimal("0"))
+    )
     cashflow_analytic = CashFlowAnalyticResponse(
         as_of_date=req.as_of_date,
         cashflow_items=cashflow_items,
@@ -529,7 +544,9 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.period_end,
-                price_d1=price_d1_period_end,
+                price_d1=_resolve_price_d1(
+                    db, req.period_end, lookup, contract.commodity
+                ),
             ).mtm_value
 
         realized = Decimal("0")
@@ -544,7 +561,7 @@ def run_what_if(
             .all()
         )
         for entry in ledger_entries:
-            amount = Decimal(str(entry.amount))
+            amount = quantize_money(entry.amount)
             if entry.direction == "IN":
                 realized += amount
             elif entry.direction == "OUT":
@@ -561,8 +578,8 @@ def run_what_if(
                 entity_id=contract.id,
                 period_start=req.period_start,
                 period_end=req.period_end,
-                realized_pl=realized,
-                unrealized_mtm=Decimal(unrealized),
+                realized_pl=quantize_money(realized),
+                unrealized_mtm=quantize_money(unrealized),
             )
         )
 
@@ -572,7 +589,7 @@ def run_what_if(
             quantity_mt=contract.quantity_mt,
             entry_price=contract.fixed_price_value,
             as_of_date=req.period_end,
-            price_d1=price_d1_period_end,
+            price_d1=_resolve_price_d1(db, req.period_end, lookup, contract.commodity),
         ).mtm_value
         pl_snapshots.append(
             ScenarioPLSnapshotItem(
@@ -580,8 +597,8 @@ def run_what_if(
                 entity_id=contract.id,
                 period_start=req.period_start,
                 period_end=req.period_end,
-                realized_pl=Decimal("0"),
-                unrealized_mtm=Decimal(unrealized),
+                realized_pl=Decimal("0.000000"),
+                unrealized_mtm=quantize_money(unrealized),
             )
         )
 

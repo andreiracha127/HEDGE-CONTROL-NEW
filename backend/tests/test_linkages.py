@@ -1,17 +1,24 @@
-def _create_sales_order(client, quantity_mt: float) -> str:
+def _create_sales_order(
+    client, quantity_mt: float, commodity: str | None = None
+) -> str:
+    payload = {"price_type": "variable", "quantity_mt": quantity_mt}
+    if commodity is not None:
+        payload["commodity"] = commodity
     response = client.post(
         "/orders/sales",
-        json={"price_type": "variable", "quantity_mt": quantity_mt},
+        json=payload,
     )
     assert response.status_code == 201
     return response.json()["id"]
 
 
-def _create_hedge_contract(client, quantity_mt: float) -> str:
+def _create_hedge_contract(
+    client, quantity_mt: float, commodity: str = "LME_AL"
+) -> str:
     response = client.post(
         "/contracts/hedge",
         json={
-            "commodity": "LME_AL",
+            "commodity": commodity,
             "quantity_mt": quantity_mt,
             "legs": [
                 {"side": "buy", "price_type": "fixed"},
@@ -48,6 +55,25 @@ def test_linkage_qty_exceeding_contract_quantity_hard_fails(client) -> None:
 
     response = _create_linkage(client, order_id, contract_id, 5.0)
     assert response.status_code == 400
+
+
+def test_cross_commodity_linkage_hard_fails(client) -> None:
+    order_id = _create_sales_order(client, 10.0, commodity="COPPER")
+    contract_id = _create_hedge_contract(client, 10.0, commodity="LME_AL")
+
+    response = _create_linkage(client, order_id, contract_id, 5.0)
+
+    assert response.status_code == 400
+    assert "commodity" in response.json()["detail"].lower()
+
+
+def test_linkage_accepts_supported_commodity_aliases(client) -> None:
+    order_id = _create_sales_order(client, 10.0, commodity="ALUMINUM")
+    contract_id = _create_hedge_contract(client, 10.0, commodity="LME_AL")
+
+    response = _create_linkage(client, order_id, contract_id, 5.0)
+
+    assert response.status_code == 201
 
 
 def test_multiple_linkages_accumulate_correctly(client) -> None:
