@@ -163,7 +163,7 @@ PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on ne
 
 Document the coordination in PR description; the orchestrator will sequence the merges to minimize rebase work.
 
-§3.8 retires existing rows. Cross-consumer parity for live-linkage semantics extends further: §3.9 fixes the reconcile linkage aggregation; §3.10 changes `compute_net_exposure`'s hedge aggregation from whole-contract `NOT IN` exclusion to residual subtraction (`quantity_mt - SUM(live linkages)`), ensuring it produces the SAME per-contract residual as `compute_global_snapshot`. All four sections together (§3.4, §3.5, §3.9, §3.10) establish the institutional invariant that EVERY query consulting `HedgeOrderLinkage` rows applies the dual-filter predicate (live hedge AND live order) AND that EVERY hedge residual is computed by subtraction (not whole-contract exclusion).
+§3.8 retires existing rows. Cross-consumer parity for live-linkage semantics extends further: §3.9 fixes the reconcile linkage aggregation AND preserves its `dict[str, Decimal]` caller-contract (Codex P1); §3.10 changes `compute_net_exposure`'s hedge aggregation from whole-contract `NOT IN` exclusion to residual subtraction (`quantity_mt - SUM(live linkages)`) AND skips zero-residual grouped rows in the downstream loop to preserve the response-shape invariant (Codex P2), ensuring it produces the SAME per-contract residual as `compute_global_snapshot` AND the same response shape as the pre-fix code. All five concerns together (§3.4 hedge-side filter on `_linked_by_order_subquery`; §3.5 dual filter on `linked_by_contract`; §3.9 dual filter on `_get_linked_qty_map` with string-key contract; §3.10 residual subtraction with zero-residual skip in `compute_net_exposure`) establish the institutional invariant that EVERY consumer of `HedgeOrderLinkage` rows must (a) apply the dual lifecycle filter (live hedge AND live order), (b) compute residuals by subtraction, not whole-contract exclusion, AND (c) preserve the caller's expected key/shape contract (`dict[str, Decimal]` from `_get_linked_qty_map`; per-commodity entries only when residual > 0 from `compute_net_exposure`).
 
 ### 3.8 Retire derived `Exposure` rows for deleted source orders (Option A — preferred)
 
@@ -223,11 +223,15 @@ Apply the SAME dual-filter predicate from §3.5 — joining `HedgeContract` AND 
 
 ```python
 @staticmethod
-def _get_linked_qty_map(session: Session) -> dict[UUID, Decimal]:
+def _get_linked_qty_map(session: Session) -> dict[str, Decimal]:
     """Sum linkage qty per order_id, counting only linkages whose
     hedge contract AND source order are both live (active/partially_settled
     and not soft-deleted). Mirrors ExposureService.§3.5 dual-filter
-    for cross-consumer parity required by J-A1-OPUS-02."""
+    for cross-consumer parity required by J-A1-OPUS-02.
+
+    Keys are `str(order_id)` — `reconcile_from_orders` calls
+    `linked_map.get(str(order.id), ...)` (exposure_engine.py:77);
+    UUID keys would silently miss every lookup."""
     rows = (
         session.query(
             HedgeOrderLinkage.order_id,
@@ -245,8 +249,10 @@ def _get_linked_qty_map(session: Session) -> dict[UUID, Decimal]:
         .group_by(HedgeOrderLinkage.order_id)
         .all()
     )
-    return {row.order_id: row.linked_qty for row in rows}
+    return {str(row.order_id): row.linked_qty for row in rows}
 ```
+
+**Caller-contract invariant (P1, Codex catch):** Keys MUST be stringified — `reconcile_from_orders` looks up `linked_map.get(str(order.id), ...)` per existing convention (verified at `backend/app/services/exposure_engine.py:77`). Returning UUID keys breaks every lookup silently and inflates `Exposure.open_tons` for all linked orders (the `.get()` falls through to the `Decimal("0")` default, so `hedged_qty = 0`, `open_qty = order_qty`, and every linked order is treated as fully unhedged). Preserve the existing `dict[str, Decimal]` shape; only add the lifecycle filter — do NOT change the key type.
 
 Note: the `Order` filter is technically redundant with the `Order` query in `reconcile_from_orders` (which §3.7 already filters), BUT it is load-bearing for `compute_net_exposure` (§3.10 below) which consumes Exposure rows produced by reconcile. Without the filter here, an Exposure produced from a stale linkage cycle could survive after both consumers diverge.
 
@@ -315,7 +321,33 @@ if commodity:
 gq = gq.group_by(HedgeContract.commodity, HedgeContract.classification)
 ```
 
-The `outerjoin` is essential: hedges with NO linkage at all join to NULL `linked_qty`, then `coalesce(NULL, 0)` makes the residual = full quantity. Hedges with partial linkages get partial residuals. Hedges fully linked to live orders get residual = 0 — and because the outer query SUMs by `(commodity, classification)`, those zero-residual rows naturally contribute 0 to the aggregate `total_qty` without inflating the response shape (verified by reading `compute_net_exposure`'s downstream loop at `exposure_engine.py:217-238`, which adds `qty` to either `long_tons` or `short_tons` regardless of whether `qty == 0`; per-commodity rows are only created via `agg[c]`, so a commodity that was already added by commercial aggregation will simply receive a `+= 0`, preserving response shape).
+The `outerjoin` is essential: hedges with NO linkage at all join to NULL `linked_qty`, then `coalesce(NULL, 0)` makes the residual = full quantity. Hedges with partial linkages get partial residuals. Hedges fully linked to live orders get residual = 0.
+
+**Zero-residual skip (P2, Codex catch — required to preserve response shape):** when ALL of a commodity's live hedges are fully linked to live orders, the grouped `SUM(residual)` is `0`, but the GROUP BY still emits one row per `(commodity, classification)`. The downstream loop at `exposure_engine.py:217-238` creates a fresh `agg[c]` entry on first sight of a commodity (via `agg.setdefault(...)`), so a zero-residual grouped row would inflate the response shape with a commodity entry that should NOT exist (commercial side already filtered the commodity out as `fully_hedged`, and the §4 / §10 invariant says response shape is preserved). Skip those rows in the loop:
+
+```python
+# After the residual SUM query, in the downstream aggregation loop:
+for row in gq.all():
+    if row.total_qty == 0:
+        continue  # Skip zero-residual groups: a commodity whose hedges
+                  # are all fully linked has no unhedged exposure to
+                  # report. Preserves response shape per §4/§10 — without
+                  # this skip, a fully-hedged commodity gains a zero-valued
+                  # row in the response, vs. the pre-fix "no row" semantic.
+    agg.setdefault(row.commodity, ...)
+    if row.classification == HedgeClassification.short:
+        agg[row.commodity].short_tons += row.total_qty
+    else:
+        agg[row.commodity].long_tons += row.total_qty
+```
+
+**Why the Python-side skip (Option b) over a SQL `HAVING` clause (Option a).**
+
+1. **Fewer SQL surprises.** `HAVING SUM(quantity_mt - COALESCE(linked_qty, 0)) > 0` requires repeating the computed expression literally, which is brittle across SQLAlchemy versions and SQL dialects (SQLite vs Postgres handling of `coalesce` inside aggregate predicates differs subtly).
+2. **Symmetric with the existing pattern.** The prior implementation used `if c not in agg`-style guards in Python; keeping the skip in Python aligns with the surrounding code style.
+3. **Easier to test in unit form.** A Python `continue` is exercised by any unit test on the loop; a SQL `HAVING` requires DB-introspection assertions to verify it fired.
+
+**Decision: implement Option b (Python-side `continue` in the loop).** Do NOT add a SQL `HAVING` clause; the SQL stays as-is and the loop carries the guard.
 
 **Key invariant (CONSTITUTIONAL):** `compute_net_exposure` and `compute_global_snapshot` MUST produce the same per-contract residual for the same input data. After this fix, the two formulas align byte-for-byte:
 
@@ -428,6 +460,21 @@ This is the reconcile-side mirror of §6.3 / §6.3.5 — the §3.9 dual-filter c
   #   stale_exposure.is_deleted == True
   #   no new Exposure row created for the dead order
   ```
+- [ ] **Test (caller contract — P1, Codex catch):** Set up a live SO + live linkage. Call `_get_linked_qty_map`. Assert: keys are `str` instances (`all(isinstance(k, str) for k in linked_map.keys())`). Cross-check via integration: run `reconcile_from_orders` and assert `Exposure.open_tons` correctly reflects the linkage (NOT inflated by silent `.get()` misses).
+  ```python
+  # Per §3.9 caller-contract invariant:
+  #   reconcile_from_orders does linked_map.get(str(order.id), Decimal("0"))
+  #   at exposure_engine.py:77. If keys were UUID, every .get() would miss
+  #   and hedged_qty would default to 0, inflating open_tons.
+  # Constitutional formula:
+  #   open_tons = order_qty - linked_map.get(str(order.id), 0)
+  #             = 100 - 40 = 60   (NOT 100, which would mean lookup missed)
+  linked_map = ExposureEngine._get_linked_qty_map(session)
+  assert all(isinstance(k, str) for k in linked_map.keys())
+  reconcile_from_orders(session)
+  exposure = session.query(Exposure).filter(Exposure.source_id == so.id).one()
+  assert exposure.open_tons == Decimal("60")  # not Decimal("100")
+  ```
 
 ### 6.3.7 `/exposures/net` parity with global snapshot (P1, Codex catch)
 
@@ -462,6 +509,19 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
   expected_aluminum_short_tons_from_hedge = Decimal("60")
   # Cross-check: compute_global_snapshot for the same fixture must produce
   # identical hedge_short_mt = 60 for the hedge — same constitutional formula.
+  ```
+- [ ] **Test (response-shape invariant — P2, Codex catch):** Aluminum has only live hedges and they are ALL fully linked to live orders; no live SO/PO Aluminum (commercial = `fully_hedged`, filtered out per §3.1). Call `compute_net_exposure(session)`. Assert: response does NOT contain an Aluminum entry (NOT a zero-valued one). Without the §3.10 zero-residual `continue` guard, the SUM grouped row of `total_qty == 0` would still create an `agg["aluminum"]` entry via `setdefault`, breaking the §4 / §10 response-shape preservation invariant.
+  ```python
+  # Per §3.10 response-shape invariant (constitutional):
+  #   if SUM(residual) == 0 across all live Aluminum hedges
+  #     → no Aluminum row in response (shape preserved per §4 / §10)
+  #   NOT a zero-valued Aluminum row.
+  # Fixture: Hedge Short Aluminum 100 (active, deleted_at NULL)
+  #          + live SO Aluminum 100 + linkage 100  (so residual = 0)
+  #          + no other live Aluminum SO/PO
+  # Expected: response.commodities does NOT contain "aluminum"
+  result = compute_net_exposure(session)
+  assert "aluminum" not in result  # NOT {"aluminum": NetExposure(0, 0, 0)}
   ```
 - [ ] **Test (cross-endpoint parity — institutional invariant):** For ANY hedge in ANY fixture (live, partially_settled, with/without linkages, with linkages to live OR dead orders), assert that the hedge's contribution to `compute_net_exposure`'s `long_tons` / `short_tons` equals the same hedge's contribution to `compute_global_snapshot`'s `hedge_long_mt` / `hedge_short_mt`. This is the institutional invariant that §3.10 closes; can be implemented as a parametrized test over the §6.1–§6.3.6 fixtures or as a property-based test if a hypothesis fixture exists.
   ```python
@@ -642,6 +702,8 @@ J-A1-OPUS-02.
 - DO NOT change `compute_net_exposure`'s return shape, net-tons sign convention, or commodity grouping in §3.10 — the §3.10 rewrite changes the AGGREGATION FORMULA on the hedge side (whole-contract `NOT IN` → residual subtraction grouped by `(commodity, classification)`), but the response dict shape, sign convention, and per-commodity grouping are preserved verbatim
 - DO NOT keep the whole-contract `NOT IN` semantic on the hedge side of `compute_net_exposure` — `~HedgeContract.id.in_(linked_contract_ids)` diverges from `compute_global_snapshot` for partly-linked hedges (a 100 MT hedge with a 40 MT live-order linkage must contribute 60 MT, not 0). Replace the EXCLUSION with SUBTRACTION per §3.10; do NOT preserve the `~ ... .in_(...)` filter
 - DO NOT split the §3.5 / §3.9 dual-filter predicate; the live-hedge clause (`HedgeContract.deleted_at IS NULL` AND `status IN (active, partially_settled)`) and the live-order clause (`Order.deleted_at IS NULL`) MUST appear together at every linkage-aggregating site (§3.4, §3.5, §3.9, §3.10) — that is the institutional invariant per §3.7's closing paragraph
+- DO NOT change `_get_linked_qty_map`'s key type from `str` — `reconcile_from_orders` calls `linked_map.get(str(order.id), ...)` at `exposure_engine.py:77` and a UUID-keyed map silently produces 100% lookup misses, inflating `Exposure.open_tons` for every linked order. Keys MUST be `str(row.order_id)`; the return type stays `dict[str, Decimal]`
+- DO NOT include zero-residual commodity rows in `compute_net_exposure`'s response — even though the SUM grouped query returns one row per `(commodity, classification)`, the downstream caller treats the absence of a commodity entry as "no exposure"; emitting a zero-valued row inflates the response shape vs the §4 / §10 invariant. The §3.10 Python-side `if row.total_qty == 0: continue` guard MUST be present in the loop. Do NOT replace it with a SQL `HAVING` clause — Option (a) is rejected per §3.10's decision rationale
 
 ---
 
