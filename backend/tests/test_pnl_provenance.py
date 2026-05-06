@@ -1761,44 +1761,57 @@ class TestSnapshotReuseUnderPriceSourceRepair:
 
 
 from app.core.database import engine as _pnl_engine
-from app.models.deal import _portable_sequence_default
+from app.models.deal import (
+    DealPNLSnapshot as _PnlSnap,
+    _assign_sqlite_sequence_before_insert,
+)
 
 _IS_POSTGRES = _pnl_engine.dialect.name == "postgresql"
 
 
-class TestPortableSequenceDefault:
-    """Unit tests for the ``_portable_sequence_default`` callable.
+class TestSqliteSequenceBeforeInsertListener:
+    """Unit tests for the SQLite-only ``before_insert`` event listener.
 
-    These exercise the dialect-branching logic directly with mock
-    contexts so the contract is pinned regardless of the test DB.
+    These exercise the dialect-branching logic directly with fake
+    connection objects so the contract is pinned regardless of the
+    test DB. The listener must be a no-op on PostgreSQL (since the
+    ``Sequence(...)`` declaration on the column drives the value via
+    ``nextval``) and must populate ``target.sequence`` with
+    ``COALESCE(MAX, 0)+1`` on SQLite.
     """
 
-    def test_returns_none_on_postgresql(self):
-        """On PG, the callable MUST return ``None`` so SQLAlchemy
-        emits the server-side ``DEFAULT nextval(seq)`` rather than
-        shadowing it with a Python value. Returning anything other
-        than None on PG re-introduces the multi-worker duplicate
-        sequence bug."""
+    def test_noop_on_postgresql(self):
+        """On PG, the listener MUST NOT touch ``target.sequence`` —
+        SQLAlchemy's ``Sequence(...)`` handling and the column's
+        server-side ``DEFAULT nextval(...)`` already populate it.
+        If the listener overwrote ``sequence`` here it would
+        shadow the database sequence and re-introduce the
+        multi-worker duplicate-sequence bug Codex flagged."""
 
         class _FakeDialect:
             name = "postgresql"
 
-        class _FakeContext:
+        class _FakeConn:
             dialect = _FakeDialect()
-            connection = None  # MUST not be touched on the PG branch
 
-        result = _portable_sequence_default(_FakeContext())
-        assert result is None, (
-            "_portable_sequence_default MUST return None on PostgreSQL "
-            "so the column's server-side nextval() default fires. "
-            "Returning a Python value here would shadow the sequence and "
-            "re-introduce the multi-worker duplicate-sequence bug."
+            def execute(self, stmt):  # pragma: no cover - must not be called
+                raise AssertionError(
+                    "listener must not execute SQL on PostgreSQL"
+                )
+
+        class _Target:
+            sequence = None
+
+        target = _Target()
+        _assign_sqlite_sequence_before_insert(None, _FakeConn(), target)
+        assert target.sequence is None, (
+            "before_insert listener fired on PostgreSQL — must be a "
+            "no-op so the database-owned Sequence drives the column."
         )
 
-    def test_returns_max_plus_one_on_sqlite(self):
-        """On SQLite, the callable executes ``COALESCE(MAX, 0)+1``
-        on the in-flight connection. Mock the connection to verify
-        the SQL shape and the int conversion."""
+    def test_assigns_max_plus_one_on_sqlite(self):
+        """On SQLite, the listener executes ``COALESCE(MAX, 0)+1``
+        on the in-flight connection and assigns ``target.sequence``."""
 
         executed_sql: list[str] = []
 
@@ -1806,27 +1819,52 @@ class TestPortableSequenceDefault:
             def scalar(self):
                 return 42
 
+        class _FakeDialect:
+            name = "sqlite"
+
         class _FakeConn:
+            dialect = _FakeDialect()
+
             def execute(self, stmt):
                 # ``stmt`` is a TextClause; capture its text for assertion.
                 executed_sql.append(str(stmt))
                 return _FakeResult()
 
-        class _FakeDialect:
-            name = "sqlite"
+        class _Target:
+            sequence = None
 
-        class _FakeContext:
-            dialect = _FakeDialect()
-            connection = _FakeConn()
-
-        result = _portable_sequence_default(_FakeContext())
-        assert result == 43
-        assert isinstance(result, int)
+        target = _Target()
+        _assign_sqlite_sequence_before_insert(None, _FakeConn(), target)
+        assert target.sequence == 43
+        assert isinstance(target.sequence, int)
         assert len(executed_sql) == 1
         sql_text = executed_sql[0].lower()
         assert "max(sequence)" in sql_text
         assert "deal_pnl_snapshots" in sql_text
         assert "coalesce" in sql_text
+
+    def test_preserves_caller_supplied_sequence_on_sqlite(self):
+        """If the caller already set ``target.sequence`` (e.g. a
+        backfill or test fixture), the listener MUST NOT overwrite
+        it — preserving the explicit value."""
+
+        class _FakeDialect:
+            name = "sqlite"
+
+        class _FakeConn:
+            dialect = _FakeDialect()
+
+            def execute(self, stmt):  # pragma: no cover - must not be called
+                raise AssertionError(
+                    "listener must not query when sequence is preset"
+                )
+
+        class _Target:
+            sequence = 99
+
+        target = _Target()
+        _assign_sqlite_sequence_before_insert(None, _FakeConn(), target)
+        assert target.sequence == 99
 
 
 @pytest.mark.skipif(
