@@ -53,6 +53,75 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+# ---------------------------------------------------------------------------
+# Per-entry shape assertion function (Postgres only).
+#
+# A bare CHECK on JSONB can only verify "non-empty object" — it cannot iterate
+# and validate per-key structure. Codex P2 correctly identified that direct
+# SQL writes (production repairs, imports, hot-fixes) bypass the ORM
+# @validates and would have persisted malformed audit evidence like
+# ``{"ALUMINUM": {"value": "2700"}}`` (missing source + settlement_date) or
+# entries with numeric ``value`` instead of stringified Decimal.
+#
+# CHECK constraints CANNOT contain subqueries, but CAN call IMMUTABLE
+# functions. We define ``_assert_price_references_shape(jsonb)`` once and
+# reference it from the CHECK. ``STRICT`` makes NULL input return NULL —
+# Postgres treats CHECKs returning NULL as satisfied, which preserves the
+# documented "NULL price_references is legitimately valid" contract.
+# ---------------------------------------------------------------------------
+_ASSERT_FUNCTION_NAME = "_assert_price_references_shape"
+
+_ASSERT_FUNCTION_SQL = f"""
+CREATE OR REPLACE FUNCTION {_ASSERT_FUNCTION_NAME}(payload jsonb)
+RETURNS boolean
+LANGUAGE plpgsql
+IMMUTABLE
+STRICT
+AS $$
+DECLARE
+    commodity text;
+    entry jsonb;
+BEGIN
+    -- STRICT means NULL input never reaches here, but keep an explicit
+    -- guard so direct SELECT calls behave the same way.
+    IF payload IS NULL THEN
+        RETURN TRUE;
+    END IF;
+    IF jsonb_typeof(payload) <> 'object' THEN
+        RETURN FALSE;
+    END IF;
+    -- Empty object is ambiguous with NULL — forbidden by dispatch §3.4.1.
+    IF payload = '{{}}'::jsonb THEN
+        RETURN FALSE;
+    END IF;
+    FOR commodity, entry IN SELECT * FROM jsonb_each(payload) LOOP
+        IF jsonb_typeof(entry) <> 'object' THEN
+            RETURN FALSE;
+        END IF;
+        IF NOT (entry ? 'value' AND entry ? 'source' AND entry ? 'settlement_date') THEN
+            RETURN FALSE;
+        END IF;
+        IF jsonb_typeof(entry->'value') <> 'string' THEN
+            RETURN FALSE;
+        END IF;
+        IF jsonb_typeof(entry->'source') <> 'string' THEN
+            RETURN FALSE;
+        END IF;
+        IF jsonb_typeof(entry->'settlement_date') <> 'string' THEN
+            RETURN FALSE;
+        END IF;
+        IF (entry->>'settlement_date') !~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}$' THEN
+            RETURN FALSE;
+        END IF;
+    END LOOP;
+    RETURN TRUE;
+END;
+$$;
+"""
+
+_DROP_ASSERT_FUNCTION_SQL = f"DROP FUNCTION IF EXISTS {_ASSERT_FUNCTION_NAME}(jsonb);"
+
+
 def upgrade() -> None:
     # Portable JSON column type — JSONB on Postgres (efficient,
     # indexable, supports GIN), generic JSON on SQLite (TEXT-backed).
@@ -67,30 +136,31 @@ def upgrade() -> None:
         sa.Column("price_references", portable_json, nullable=True),
     )
 
-    # Dialect-guarded CHECK: Postgres only. The predicate uses
-    # jsonb_typeof(...) and ::jsonb literal cast which SQLite does not
-    # support; an unguarded CHECK in __table_args__ would break
-    # Base.metadata.create_all() in the test conftest. Portable shape
-    # enforcement is provided by the ORM-level @validates on the
-    # model — runs in BOTH SQLite (tests) and Postgres (prod). This
-    # CHECK is the production belt-and-suspenders that catches
-    # malformed direct-SQL writes.
+    # Dialect-guarded CHECK: Postgres only. The predicate calls an
+    # IMMUTABLE STRICT plpgsql function that iterates jsonb_each and
+    # validates per-entry shape (Codex P2). SQLite test envs (used by
+    # the project's conftest.py via Base.metadata.create_all()) get
+    # shape enforcement from the ORM-level @validates("price_references")
+    # on DealPNLSnapshot instead — keeping this CHECK off SQLite is
+    # required because plpgsql functions don't exist there.
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
+        # Function FIRST, then the CHECK that depends on it.
+        op.execute(_ASSERT_FUNCTION_SQL)
         op.create_check_constraint(
             "chk_deal_pnl_snapshot_price_references_shape",
             "deal_pnl_snapshots",
-            "price_references IS NULL"
-            " OR (jsonb_typeof(price_references) = 'object'"
-            "     AND price_references <> '{}'::jsonb)",
+            f"{_ASSERT_FUNCTION_NAME}(price_references)",
         )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
+        # CHECK FIRST (depends on the function), then drop the function.
         op.drop_constraint(
             "chk_deal_pnl_snapshot_price_references_shape",
             "deal_pnl_snapshots",
         )
+        op.execute(_DROP_ASSERT_FUNCTION_SQL)
     op.drop_column("deal_pnl_snapshots", "price_references")

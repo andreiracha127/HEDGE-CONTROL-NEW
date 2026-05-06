@@ -13,11 +13,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
+import sqlalchemy as sa
 
 from app.core.database import SessionLocal
 from app.models.contracts import (
@@ -553,3 +555,175 @@ class TestPriceReferencesValidator:
             },
         )
         assert snap.price_references is not None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Postgres-only — direct-SQL writes are rejected by the per-entry CHECK
+#
+# Codex P2 (2026-05-06) flagged that the original CHECK only verified
+# "non-empty object" and would accept entries like
+# ``{"ALUMINUM": {"value": "2700"}}`` (missing source + settlement_date)
+# or numeric ``value`` if a production repair/import wrote
+# ``price_references`` directly via SQL (bypassing the ORM @validates).
+#
+# The migration now creates an IMMUTABLE STRICT plpgsql function
+# ``_assert_price_references_shape(jsonb)`` that iterates jsonb_each and
+# enforces per-entry shape; the CHECK calls that function. These tests
+# are PG-only because the function and the CHECK both live behind the
+# Postgres dialect guard in ``028_pnl_provenance.py``. SQLite test envs
+# already exercise the same shapes via the @validates suite above.
+# ──────────────────────────────────────────────────────────────────────
+
+_TEST_PG_URL = os.environ.get("TEST_DATABASE_URL_PG")
+
+
+@pytest.mark.skipif(
+    not _TEST_PG_URL,
+    reason="TEST_DATABASE_URL_PG not set — PG-only CHECK function tests skipped",
+)
+class TestPriceReferencesCheckOnPostgres:
+    """Direct-SQL inserts must be rejected by the function-backed CHECK.
+
+    Builds a minimal table mirroring the production columns referenced by
+    the CHECK, runs the migration's ``upgrade()`` which creates the
+    function and constraint, and asserts each malformed shape raises
+    ``IntegrityError``. The well-formed entry must succeed.
+    """
+
+    @staticmethod
+    def _setup_engine_with_check():
+        """Create engine + bare table + run migration upgrade()."""
+        from sqlalchemy import create_engine
+        from alembic.migration import MigrationContext
+        from alembic.operations import Operations
+
+        engine = create_engine(_TEST_PG_URL)  # type: ignore[arg-type]
+        # Build a minimal table to run the migration's add_column +
+        # create_check_constraint + function-creation against.
+        with engine.begin() as conn:
+            conn.execute(sa.text("DROP TABLE IF EXISTS deal_pnl_snapshots"))
+            conn.execute(
+                sa.text(
+                    """
+                    CREATE TABLE deal_pnl_snapshots (
+                        id uuid PRIMARY KEY,
+                        deal_id uuid NOT NULL,
+                        snapshot_date date NOT NULL,
+                        inputs_hash varchar(64) NOT NULL,
+                        created_at timestamp NOT NULL DEFAULT NOW()
+                    )
+                    """
+                )
+            )
+            # Run only the bits of upgrade() we care about (column + check).
+            import importlib.util
+            from pathlib import Path
+
+            mig_path = (
+                Path(__file__).resolve().parents[1]
+                / "alembic"
+                / "versions"
+                / "028_pnl_provenance.py"
+            )
+            spec = importlib.util.spec_from_file_location(
+                "_pr8_pnl_provenance_pgcheck", mig_path
+            )
+            migration = importlib.util.module_from_spec(spec)
+            assert spec and spec.loader
+            spec.loader.exec_module(migration)
+            ctx = MigrationContext.configure(conn)
+            migration.op = Operations(ctx)
+            migration.upgrade()
+        return engine
+
+    @staticmethod
+    def _teardown(engine):
+        from sqlalchemy import text as _t
+        with engine.begin() as conn:
+            conn.execute(_t("DROP TABLE IF EXISTS deal_pnl_snapshots"))
+            conn.execute(_t("DROP FUNCTION IF EXISTS _assert_price_references_shape(jsonb)"))
+        engine.dispose()
+
+    @staticmethod
+    def _try_insert(engine, payload):
+        """Try a raw insert with the given price_references JSON."""
+        import json as _json
+        from sqlalchemy import text as _t
+
+        with engine.begin() as conn:
+            conn.execute(
+                _t(
+                    "INSERT INTO deal_pnl_snapshots "
+                    "(id, deal_id, snapshot_date, inputs_hash, price_references) "
+                    "VALUES (gen_random_uuid(), gen_random_uuid(), CURRENT_DATE, "
+                    ":h, CAST(:p AS jsonb))"
+                ),
+                {"h": "x" * 64, "p": _json.dumps(payload)},
+            )
+
+    def test_direct_sql_malformed_shapes_rejected_well_formed_accepted(self):
+        from sqlalchemy.exc import IntegrityError
+
+        engine = self._setup_engine_with_check()
+        try:
+            # 1. Missing source + settlement_date (Codex's exact example)
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, {"ALUMINUM": {"value": "2700"}})
+
+            # 2. settlement_date not ISO date format
+            with pytest.raises(IntegrityError):
+                self._try_insert(
+                    engine,
+                    {
+                        "ALUMINUM": {
+                            "value": "2700",
+                            "source": "lme",
+                            "settlement_date": "not-a-date",
+                        }
+                    },
+                )
+
+            # 3. value is numeric, not string
+            with pytest.raises(IntegrityError):
+                self._try_insert(
+                    engine,
+                    {
+                        "ALUMINUM": {
+                            "value": 2700,
+                            "source": "lme",
+                            "settlement_date": "2026-05-05",
+                        }
+                    },
+                )
+
+            # 4. Empty object — also forbidden
+            with pytest.raises(IntegrityError):
+                self._try_insert(engine, {})
+
+            # 5. Well-formed entry — must succeed
+            self._try_insert(
+                engine,
+                {
+                    "ALUMINUM": {
+                        "value": "2700",
+                        "source": "lme",
+                        "settlement_date": "2026-05-05",
+                    }
+                },
+            )
+
+            # 6. NULL price_references — also valid (nullable column)
+            from sqlalchemy import text as _t
+
+            with engine.begin() as conn:
+                conn.execute(
+                    _t(
+                        "INSERT INTO deal_pnl_snapshots "
+                        "(id, deal_id, snapshot_date, inputs_hash, price_references) "
+                        "VALUES (gen_random_uuid(), gen_random_uuid(), CURRENT_DATE, "
+                        ":h, NULL)"
+                    ),
+                    {"h": "y" * 64},
+                )
+        finally:
+            self._teardown(engine)
