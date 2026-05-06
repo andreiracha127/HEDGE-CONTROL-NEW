@@ -36,10 +36,12 @@ def _make_order(
     delivery_date_end=None,
     delivery_date_start=None,
     deleted_at=None,
+    commodity="ALUMINUM",
 ):
     o = Order(
         order_type=order_type,
         price_type=price_type,
+        commodity=commodity,
         quantity_mt=quantity_mt,
         avg_entry_price=avg_entry_price,
         delivery_date_end=delivery_date_end,

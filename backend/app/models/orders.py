@@ -64,6 +64,9 @@ class Order(Base):
     price_type: Mapped[PriceType] = mapped_column(
         Enum(PriceType, name="price_type"), nullable=False
     )
+    commodity: Mapped[str] = mapped_column(
+        String(length=64), nullable=False, index=True
+    )
     quantity_mt: Mapped[Decimal] = mapped_column(
         Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
     )

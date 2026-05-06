@@ -199,6 +199,7 @@ class OrderService:
         order = Order(
             order_type=order_type,
             price_type=PriceType(payload.price_type.value),
+            commodity=payload.commodity,
             quantity_mt=payload.quantity_mt,
             counterparty_id=payload.counterparty_id,
             counterparty_name=payload.counterparty_name,

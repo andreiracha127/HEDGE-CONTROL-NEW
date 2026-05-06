@@ -105,11 +105,14 @@ class ExposureEngineService:
                 if existing.status != exp_status:
                     existing.status = exp_status
                     changed = True
+                if existing.commodity != order.commodity:
+                    existing.commodity = order.commodity
+                    changed = True
                 if changed:
                     updated += 1
             else:
                 exposure = Exposure(
-                    commodity="ALUMINUM",  # default commodity
+                    commodity=order.commodity,
                     direction=direction,
                     source_type=source_type,
                     source_id=order.id,

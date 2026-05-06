@@ -253,6 +253,7 @@ def _compute_commercial_exposure(
             reduction_passive += linked_qty
 
     return CommercialExposureRead(
+        commodity="ALUMINUM",
         pre_reduction_commercial_active_mt=float(pre_active),
         pre_reduction_commercial_passive_mt=float(pre_passive),
         reduction_applied_active_mt=float(reduction_active),
@@ -350,6 +351,7 @@ def _compute_global_exposure(
     entities_count = order_count + len(contracts) + len(virtual_contracts)
 
     return GlobalExposureRead(
+        commodity="ALUMINUM",
         pre_reduction_global_active_mt=float(pre_global_active),
         pre_reduction_global_passive_mt=float(pre_global_passive),
         reduction_applied_active_mt=float(pre_global_active - post_global_active),

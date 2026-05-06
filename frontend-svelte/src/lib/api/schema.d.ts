@@ -1655,17 +1655,22 @@ export interface components {
              * Commercial Active Mt
              * @description Residual variable-price SO exposure (MT)
              */
-            commercial_active_mt: string;
+            commercial_active_mt: number;
             /**
              * Commercial Net Mt
              * @description Active minus Passive (MT)
              */
-            commercial_net_mt: string;
+            commercial_net_mt: number;
             /**
              * Commercial Passive Mt
              * @description Residual variable-price PO exposure (MT)
              */
-            commercial_passive_mt: string;
+            commercial_passive_mt: number;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Order Count Considered
              * @description Count of variable-price orders considered
@@ -1675,22 +1680,22 @@ export interface components {
              * Pre Reduction Commercial Active Mt
              * @description Sum of variable-price SO quantity before linkage (MT)
              */
-            pre_reduction_commercial_active_mt: string;
+            pre_reduction_commercial_active_mt: number;
             /**
              * Pre Reduction Commercial Passive Mt
              * @description Sum of variable-price PO quantity before linkage (MT)
              */
-            pre_reduction_commercial_passive_mt: string;
+            pre_reduction_commercial_passive_mt: number;
             /**
              * Reduction Applied Active Mt
              * @description Reduction applied to active exposure via linkages (MT)
              */
-            reduction_applied_active_mt: string;
+            reduction_applied_active_mt: number;
             /**
              * Reduction Applied Passive Mt
              * @description Reduction applied to passive exposure via linkages (MT)
              */
-            reduction_applied_passive_mt: string;
+            reduction_applied_passive_mt: number;
         };
         /** ContractLinkagesResponse */
         ContractLinkagesResponse: {
@@ -1872,7 +1877,7 @@ export interface components {
              */
             created_at: string;
             /** Hedge Ratio */
-            hedge_ratio: string;
+            hedge_ratio: number;
             /**
              * Id
              * Format: uuid
@@ -1892,9 +1897,9 @@ export interface components {
             reference: string;
             status: components["schemas"]["DealStatus"];
             /** Total Hedge Tons */
-            total_hedge_tons: string;
+            total_hedge_tons: number;
             /** Total Physical Tons */
-            total_physical_tons: string;
+            total_physical_tons: number;
             /** Updated At */
             updated_at?: string | null;
         };
@@ -1961,9 +1966,9 @@ export interface components {
              */
             deal_id: string;
             /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: string;
+            hedge_pnl_mtm: number;
             /** Hedge Pnl Realized */
-            hedge_pnl_realized: string;
+            hedge_pnl_realized: number;
             /**
              * Id
              * Format: uuid
@@ -1972,16 +1977,16 @@ export interface components {
             /** Inputs Hash */
             inputs_hash: string;
             /** Physical Cost */
-            physical_cost: string;
+            physical_cost: number;
             /** Physical Revenue */
-            physical_revenue: string;
+            physical_revenue: number;
             /**
              * Snapshot Date
              * Format: date
              */
             snapshot_date: string;
             /** Total Pnl */
-            total_pnl: string;
+            total_pnl: number;
         };
         /** DealPnlBreakdown */
         DealPnlBreakdown: {
@@ -1999,17 +2004,17 @@ export interface components {
             /** Financial Items */
             financial_items: components["schemas"]["PnlFinancialItem"][];
             /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: string;
+            hedge_pnl_mtm: number;
             /** Hedge Pnl Realized */
-            hedge_pnl_realized: string;
+            hedge_pnl_realized: number;
             /** Physical Cost */
-            physical_cost: string;
+            physical_cost: number;
             /** Physical Items */
             physical_items: components["schemas"]["PnlPhysicalItem"][];
             /** Physical Revenue */
-            physical_revenue: string;
+            physical_revenue: number;
             /** Total Pnl */
-            total_pnl: string;
+            total_pnl: number;
         };
         /** DealRead */
         DealRead: {
@@ -2021,7 +2026,7 @@ export interface components {
              */
             created_at: string;
             /** Hedge Ratio */
-            hedge_ratio: string;
+            hedge_ratio: number;
             /**
              * Id
              * Format: uuid
@@ -2035,9 +2040,9 @@ export interface components {
             reference: string;
             status: components["schemas"]["DealStatus"];
             /** Total Hedge Tons */
-            total_hedge_tons: string;
+            total_hedge_tons: number;
             /** Total Physical Tons */
-            total_physical_tons: string;
+            total_physical_tons: number;
             /** Updated At */
             updated_at?: string | null;
         };
@@ -2049,7 +2054,7 @@ export interface components {
         /** ExposureDetailRead */
         ExposureDetailRead: {
             /** Avg Entry Price */
-            avg_entry_price?: string | null;
+            avg_entry_price?: number | null;
             /** Commodity */
             commodity: string;
             /** Counterparty Name */
@@ -2068,9 +2073,9 @@ export interface components {
             fixing_date?: string | null;
             /**
              * Hedged Tons
-             * @default 0.000
+             * @default 0
              */
-            hedged_tons: string;
+            hedged_tons: number;
             /**
              * Id
              * Format: uuid
@@ -2081,15 +2086,15 @@ export interface components {
             /** Observation Date Start */
             observation_date_start?: string | null;
             /** Open Tons */
-            open_tons: string;
+            open_tons: number;
             /** Order Notes */
             order_notes?: string | null;
             /** Order Type */
             order_type?: string | null;
             /** Original Tons */
-            original_tons: string;
+            original_tons: number;
             /** Price Per Ton */
-            price_per_ton?: string | null;
+            price_per_ton?: number | null;
             /** Price Type */
             price_type?: string | null;
             /** Pricing Convention */
@@ -2147,12 +2152,17 @@ export interface components {
              * Commercial Active Mt
              * @description Reduced commercial active exposure (MT)
              */
-            commercial_active_mt: string;
+            commercial_active_mt: number;
             /**
              * Commercial Passive Mt
              * @description Reduced commercial passive exposure (MT)
              */
-            commercial_passive_mt: string;
+            commercial_passive_mt: number;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Entities Count Considered
              * @description Count of variable-price orders and hedge contracts considered
@@ -2162,47 +2172,47 @@ export interface components {
              * Global Active Mt
              * @description Reduced global active exposure (MT)
              */
-            global_active_mt: string;
+            global_active_mt: number;
             /**
              * Global Net Mt
              * @description Global active minus global passive (MT)
              */
-            global_net_mt: string;
+            global_net_mt: number;
             /**
              * Global Passive Mt
              * @description Reduced global passive exposure (MT)
              */
-            global_passive_mt: string;
+            global_passive_mt: number;
             /**
              * Hedge Long Mt
              * @description Unlinked hedge long quantity (MT)
              */
-            hedge_long_mt: string;
+            hedge_long_mt: number;
             /**
              * Hedge Short Mt
              * @description Unlinked hedge short quantity (MT)
              */
-            hedge_short_mt: string;
+            hedge_short_mt: number;
             /**
              * Pre Reduction Global Active Mt
              * @description Global active before linkage reduction (MT)
              */
-            pre_reduction_global_active_mt: string;
+            pre_reduction_global_active_mt: number;
             /**
              * Pre Reduction Global Passive Mt
              * @description Global passive before linkage reduction (MT)
              */
-            pre_reduction_global_passive_mt: string;
+            pre_reduction_global_passive_mt: number;
             /**
              * Reduction Applied Active Mt
              * @description Reduction applied to global active via linkages (MT)
              */
-            reduction_applied_active_mt: string;
+            reduction_applied_active_mt: number;
             /**
              * Reduction Applied Passive Mt
              * @description Reduction applied to global passive via linkages (MT)
              */
-            reduction_applied_passive_mt: string;
+            reduction_applied_passive_mt: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2231,7 +2241,7 @@ export interface components {
             /** Fixed Price Unit */
             fixed_price_unit?: string | null;
             /** Fixed Price Value */
-            fixed_price_value?: number | string | null;
+            fixed_price_value?: number | null;
             /**
              * Fixing Date
              * @description Fixing date for c2r
@@ -2247,7 +2257,7 @@ export interface components {
             /** Notes */
             notes?: string | null;
             /** Premium Discount */
-            premium_discount?: number | string | null;
+            premium_discount?: number | null;
             /**
              * Pricing Period Month
              * @description Reference month for avg
@@ -2264,7 +2274,7 @@ export interface components {
              * Quantity Mt
              * @description Quantity in metric tons (MT)
              */
-            quantity_mt: number | string;
+            quantity_mt: number;
             /** Settlement Date */
             settlement_date?: string | null;
             /** Source Type */
@@ -2303,7 +2313,7 @@ export interface components {
             /** Fixed Price Unit */
             fixed_price_unit?: string | null;
             /** Fixed Price Value */
-            fixed_price_value?: string | null;
+            fixed_price_value?: number | null;
             /** Fixing Date */
             fixing_date?: string | null;
             /** Float Pricing Convention */
@@ -2316,7 +2326,7 @@ export interface components {
             /** Notes */
             notes?: string | null;
             /** Premium Discount */
-            premium_discount?: string | null;
+            premium_discount?: number | null;
             /** Pricing Period Month */
             pricing_period_month?: number | null;
             /** Pricing Period Year */
@@ -2324,7 +2334,7 @@ export interface components {
             /** Prompt Date */
             prompt_date?: string | null;
             /** Quantity Mt */
-            quantity_mt: string;
+            quantity_mt: number;
             /** Reference */
             reference?: string | null;
             /** Rfq Id */
@@ -2424,7 +2434,7 @@ export interface components {
             /** Fixed Price Unit */
             fixed_price_unit?: string | null;
             /** Fixed Price Value */
-            fixed_price_value?: number | string | null;
+            fixed_price_value?: number | null;
             /** Fixing Date */
             fixing_date?: string | null;
             /** Float Pricing Convention */
@@ -2432,7 +2442,7 @@ export interface components {
             /** Notes */
             notes?: string | null;
             /** Premium Discount */
-            premium_discount?: number | string | null;
+            premium_discount?: number | null;
             /** Pricing Period Month */
             pricing_period_month?: number | null;
             /** Pricing Period Year */
@@ -2440,7 +2450,7 @@ export interface components {
             /** Prompt Date */
             prompt_date?: string | null;
             /** Quantity Mt */
-            quantity_mt?: number | string | null;
+            quantity_mt?: number | null;
             /** Settlement Date */
             settlement_date?: string | null;
         };
@@ -2479,7 +2489,7 @@ export interface components {
              * Quantity Mt
              * @description Linked quantity in MT
              */
-            quantity_mt: number | string;
+            quantity_mt: number;
         };
         /** HedgeOrderLinkageListResponse */
         HedgeOrderLinkageListResponse: {
@@ -2511,7 +2521,7 @@ export interface components {
              */
             order_id: string;
             /** Quantity Mt */
-            quantity_mt: string;
+            quantity_mt: number;
         };
         /**
          * HedgeTaskAction
@@ -2546,7 +2556,7 @@ export interface components {
             id: string;
             recommended_action: components["schemas"]["HedgeTaskAction"];
             /** Recommended Tons */
-            recommended_tons: string;
+            recommended_tons: number;
             status: components["schemas"]["HedgeTaskStatus"];
         };
         /**
@@ -2572,7 +2582,7 @@ export interface components {
         /** LinkedDealSummary */
         LinkedDealSummary: {
             /** Hedge Ratio */
-            hedge_ratio: string;
+            hedge_ratio: number;
             /**
              * Id
              * Format: uuid
@@ -2590,14 +2600,14 @@ export interface components {
             /** Status */
             status: string;
             /** Total Hedge Tons */
-            total_hedge_tons: string;
+            total_hedge_tons: number;
             /** Total Physical Tons */
-            total_physical_tons: string;
+            total_physical_tons: number;
         };
         /** LinkedOrderSummary */
         LinkedOrderSummary: {
             /** Avg Entry Price */
-            avg_entry_price?: string | null;
+            avg_entry_price?: number | null;
             /** Counterparty Id */
             counterparty_id?: string | null;
             /** Currency */
@@ -2612,7 +2622,7 @@ export interface components {
             /** Order Type */
             order_type?: string | null;
             /** Quantity Mt */
-            quantity_mt?: string | null;
+            quantity_mt?: number | null;
         };
         /**
          * MTMObjectType
@@ -2688,30 +2698,30 @@ export interface components {
             commodity: string;
             /**
              * Long Hedged
-             * @default 0.000
+             * @default 0
              */
-            long_hedged: string;
+            long_hedged: number;
             /**
              * Long Original
-             * @default 0.000
+             * @default 0
              */
-            long_original: string;
+            long_original: number;
             /** Long Tons */
-            long_tons: string;
+            long_tons: number;
             /** Net Tons */
-            net_tons: string;
+            net_tons: number;
             /**
              * Short Hedged
-             * @default 0.000
+             * @default 0
              */
-            short_hedged: string;
+            short_hedged: number;
             /**
              * Short Original
-             * @default 0.000
+             * @default 0
              */
-            short_original: string;
+            short_original: number;
             /** Short Tons */
-            short_tons: string;
+            short_tons: number;
         };
         /** NetExposureResponse */
         NetExposureResponse: {
@@ -2736,7 +2746,12 @@ export interface components {
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: string | null;
+            avg_entry_price?: number | null;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Counterparty Id
              * @description FK to counterparties
@@ -2816,7 +2831,7 @@ export interface components {
              * Quantity Mt
              * @description Quantity in metric tons (MT)
              */
-            quantity_mt: string;
+            quantity_mt: number;
             /**
              * Reference Month
              * @description Reference month yyyy-MM — required for AVG convention
@@ -3023,33 +3038,33 @@ export interface components {
         /** PnlBreakdownTotals */
         PnlBreakdownTotals: {
             /** Hedge Pnl Mtm */
-            hedge_pnl_mtm: string;
+            hedge_pnl_mtm: number;
             /** Hedge Pnl Realized */
-            hedge_pnl_realized: string;
+            hedge_pnl_realized: number;
             /** Physical Cost */
-            physical_cost: string;
+            physical_cost: number;
             /** Physical Revenue */
-            physical_revenue: string;
+            physical_revenue: number;
             /** Total Pnl */
-            total_pnl: string;
+            total_pnl: number;
         };
         /** PnlFinancialItem */
         PnlFinancialItem: {
             /** Classification */
             classification: string;
             /** Entry Price */
-            entry_price: string;
+            entry_price: number;
             /**
              * Id
              * Format: uuid
              */
             id: string;
             /** Market Price */
-            market_price?: string | null;
+            market_price?: number | null;
             /** Pnl */
-            pnl: string;
+            pnl: number;
             /** Quantity Mt */
-            quantity_mt: string;
+            quantity_mt: number;
             /** Reference */
             reference?: string | null;
             /** Status */
@@ -3067,11 +3082,11 @@ export interface components {
             /** Order Type */
             order_type: string;
             /** Price */
-            price: string;
+            price: number;
             /** Quantity Mt */
-            quantity_mt: string;
+            quantity_mt: number;
             /** Value */
-            value: string;
+            value: number;
         };
         /**
          * PriceType
@@ -3094,7 +3109,12 @@ export interface components {
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: number | string | null;
+            avg_entry_price?: number | null;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Counterparty Id
              * @description FK to counterparties
@@ -3161,7 +3181,7 @@ export interface components {
              * Quantity Mt
              * @description Quantity in metric tons (MT)
              */
-            quantity_mt: number | string;
+            quantity_mt: number;
             /**
              * Reference Month
              * @description Reference month yyyy-MM — required for AVG convention
@@ -3616,7 +3636,12 @@ export interface components {
              * Avg Entry Price
              * @description Fixed price value (USD/MT) — required when price_type=fixed
              */
-            avg_entry_price?: number | string | null;
+            avg_entry_price?: number | null;
+            /**
+             * Commodity
+             * @description Commodity identifier
+             */
+            commodity: string;
             /**
              * Counterparty Id
              * @description FK to counterparties
@@ -3683,7 +3708,7 @@ export interface components {
              * Quantity Mt
              * @description Quantity in metric tons (MT)
              */
-            quantity_mt: number | string;
+            quantity_mt: number;
             /**
              * Reference Month
              * @description Reference month yyyy-MM — required for AVG convention
@@ -3760,7 +3785,7 @@ export interface components {
         /** SoPoLinkCreate */
         SoPoLinkCreate: {
             /** Linked Tons */
-            linked_tons: number | string;
+            linked_tons: number;
             /**
              * Purchase Order Id
              * Format: uuid
@@ -3792,7 +3817,7 @@ export interface components {
              */
             id: string;
             /** Linked Tons */
-            linked_tons: string;
+            linked_tons: number;
             /**
              * Purchase Order Id
              * Format: uuid
@@ -4928,7 +4953,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CommercialExposureRead"];
+                    "application/json": components["schemas"]["CommercialExposureRead"][];
                 };
             };
         };
@@ -4948,7 +4973,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["GlobalExposureRead"];
+                    "application/json": components["schemas"]["GlobalExposureRead"][];
                 };
             };
         };

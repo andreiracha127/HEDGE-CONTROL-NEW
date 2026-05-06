@@ -818,20 +818,22 @@
           },
           "commercial_active_mt": {
             "description": "Residual variable-price SO exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "commercial_net_mt": {
             "description": "Active minus Passive (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Net Mt",
-            "type": "string"
+            "type": "number"
           },
           "commercial_passive_mt": {
             "description": "Residual variable-price PO exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Passive Mt",
+            "type": "number"
+          },
+          "commodity": {
+            "description": "Commodity identifier",
+            "title": "Commodity",
             "type": "string"
           },
           "order_count_considered": {
@@ -841,30 +843,27 @@
           },
           "pre_reduction_commercial_active_mt": {
             "description": "Sum of variable-price SO quantity before linkage (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Pre Reduction Commercial Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "pre_reduction_commercial_passive_mt": {
             "description": "Sum of variable-price PO quantity before linkage (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Pre Reduction Commercial Passive Mt",
-            "type": "string"
+            "type": "number"
           },
           "reduction_applied_active_mt": {
             "description": "Reduction applied to active exposure via linkages (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Reduction Applied Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "reduction_applied_passive_mt": {
             "description": "Reduction applied to passive exposure via linkages (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Reduction Applied Passive Mt",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
+          "commodity",
           "pre_reduction_commercial_active_mt",
           "pre_reduction_commercial_passive_mt",
           "reduction_applied_active_mt",
@@ -1532,9 +1531,8 @@
             "type": "string"
           },
           "hedge_ratio": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Ratio",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -1575,14 +1573,12 @@
             "$ref": "#/components/schemas/DealStatus"
           },
           "total_hedge_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Hedge Tons",
-            "type": "string"
+            "type": "number"
           },
           "total_physical_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Physical Tons",
-            "type": "string"
+            "type": "number"
           },
           "updated_at": {
             "anyOf": [
@@ -1732,14 +1728,12 @@
             "type": "string"
           },
           "hedge_pnl_mtm": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Mtm",
-            "type": "string"
+            "type": "number"
           },
           "hedge_pnl_realized": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Realized",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -1751,14 +1745,12 @@
             "type": "string"
           },
           "physical_cost": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Cost",
-            "type": "string"
+            "type": "number"
           },
           "physical_revenue": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Revenue",
-            "type": "string"
+            "type": "number"
           },
           "snapshot_date": {
             "format": "date",
@@ -1766,9 +1758,8 @@
             "type": "string"
           },
           "total_pnl": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Total Pnl",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -1813,19 +1804,16 @@
             "type": "array"
           },
           "hedge_pnl_mtm": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Mtm",
-            "type": "string"
+            "type": "number"
           },
           "hedge_pnl_realized": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Realized",
-            "type": "string"
+            "type": "number"
           },
           "physical_cost": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Cost",
-            "type": "string"
+            "type": "number"
           },
           "physical_items": {
             "items": {
@@ -1835,14 +1823,12 @@
             "type": "array"
           },
           "physical_revenue": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Revenue",
-            "type": "string"
+            "type": "number"
           },
           "total_pnl": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Total Pnl",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -1873,9 +1859,8 @@
             "type": "string"
           },
           "hedge_ratio": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Ratio",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -1898,14 +1883,12 @@
             "$ref": "#/components/schemas/DealStatus"
           },
           "total_hedge_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Hedge Tons",
-            "type": "string"
+            "type": "number"
           },
           "total_physical_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Physical Tons",
-            "type": "string"
+            "type": "number"
           },
           "updated_at": {
             "anyOf": [
@@ -1951,8 +1934,7 @@
           "avg_entry_price": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -2020,10 +2002,9 @@
             "title": "Fixing Date"
           },
           "hedged_tons": {
-            "default": "0.000",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+            "default": 0.0,
             "title": "Hedged Tons",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -2055,9 +2036,8 @@
             "title": "Observation Date Start"
           },
           "open_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Open Tons",
-            "type": "string"
+            "type": "number"
           },
           "order_notes": {
             "anyOf": [
@@ -2082,15 +2062,13 @@
             "title": "Order Type"
           },
           "original_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Original Tons",
-            "type": "string"
+            "type": "number"
           },
           "price_per_ton": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -2252,14 +2230,17 @@
           },
           "commercial_active_mt": {
             "description": "Reduced commercial active exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "commercial_passive_mt": {
             "description": "Reduced commercial passive exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Passive Mt",
+            "type": "number"
+          },
+          "commodity": {
+            "description": "Commodity identifier",
+            "title": "Commodity",
             "type": "string"
           },
           "entities_count_considered": {
@@ -2269,60 +2250,52 @@
           },
           "global_active_mt": {
             "description": "Reduced global active exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Global Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "global_net_mt": {
             "description": "Global active minus global passive (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Global Net Mt",
-            "type": "string"
+            "type": "number"
           },
           "global_passive_mt": {
             "description": "Reduced global passive exposure (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Global Passive Mt",
-            "type": "string"
+            "type": "number"
           },
           "hedge_long_mt": {
             "description": "Unlinked hedge long quantity (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Hedge Long Mt",
-            "type": "string"
+            "type": "number"
           },
           "hedge_short_mt": {
             "description": "Unlinked hedge short quantity (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Hedge Short Mt",
-            "type": "string"
+            "type": "number"
           },
           "pre_reduction_global_active_mt": {
             "description": "Global active before linkage reduction (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Pre Reduction Global Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "pre_reduction_global_passive_mt": {
             "description": "Global passive before linkage reduction (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Pre Reduction Global Passive Mt",
-            "type": "string"
+            "type": "number"
           },
           "reduction_applied_active_mt": {
             "description": "Reduction applied to global active via linkages (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Reduction Applied Active Mt",
-            "type": "string"
+            "type": "number"
           },
           "reduction_applied_passive_mt": {
             "description": "Reduction applied to global passive via linkages (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Reduction Applied Passive Mt",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
+          "commodity",
           "pre_reduction_global_active_mt",
           "pre_reduction_global_passive_mt",
           "reduction_applied_active_mt",
@@ -2412,10 +2385,6 @@
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
-              },
-              {
                 "type": "null"
               }
             ],
@@ -2471,10 +2440,6 @@
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
-              },
-              {
                 "type": "null"
               }
             ],
@@ -2519,17 +2484,9 @@
             "title": "Prompt Date"
           },
           "quantity_mt": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
-              }
-            ],
             "description": "Quantity in metric tons (MT)",
-            "title": "Quantity Mt"
+            "title": "Quantity Mt",
+            "type": "number"
           },
           "settlement_date": {
             "anyOf": [
@@ -2685,8 +2642,7 @@
           "fixed_price_value": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -2737,8 +2693,7 @@
           "premium_discount": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -2781,9 +2736,8 @@
             "title": "Prompt Date"
           },
           "quantity_mt": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "string"
+            "type": "number"
           },
           "reference": {
             "anyOf": [
@@ -3098,10 +3052,6 @@
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
-              },
-              {
                 "type": "null"
               }
             ],
@@ -3146,10 +3096,6 @@
             "anyOf": [
               {
                 "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
               },
               {
                 "type": "null"
@@ -3197,10 +3143,6 @@
             "anyOf": [
               {
                 "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
               },
               {
                 "type": "null"
@@ -3273,17 +3215,9 @@
             "type": "string"
           },
           "quantity_mt": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
-              }
-            ],
             "description": "Linked quantity in MT",
-            "title": "Quantity Mt"
+            "title": "Quantity Mt",
+            "type": "number"
           }
         },
         "required": [
@@ -3344,9 +3278,8 @@
             "type": "string"
           },
           "quantity_mt": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -3429,9 +3362,8 @@
             "$ref": "#/components/schemas/HedgeTaskAction"
           },
           "recommended_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Recommended Tons",
-            "type": "string"
+            "type": "number"
           },
           "status": {
             "$ref": "#/components/schemas/HedgeTaskStatus"
@@ -3486,9 +3418,8 @@
       "LinkedDealSummary": {
         "properties": {
           "hedge_ratio": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Ratio",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -3516,14 +3447,12 @@
             "type": "string"
           },
           "total_hedge_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Hedge Tons",
-            "type": "string"
+            "type": "number"
           },
           "total_physical_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Total Physical Tons",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -3543,8 +3472,7 @@
           "avg_entry_price": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -3597,8 +3525,7 @@
           "quantity_mt": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -3774,43 +3701,36 @@
             "type": "string"
           },
           "long_hedged": {
-            "default": "0.000",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+            "default": 0.0,
             "title": "Long Hedged",
-            "type": "string"
+            "type": "number"
           },
           "long_original": {
-            "default": "0.000",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+            "default": 0.0,
             "title": "Long Original",
-            "type": "string"
+            "type": "number"
           },
           "long_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Long Tons",
-            "type": "string"
+            "type": "number"
           },
           "net_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Net Tons",
-            "type": "string"
+            "type": "number"
           },
           "short_hedged": {
-            "default": "0.000",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+            "default": 0.0,
             "title": "Short Hedged",
-            "type": "string"
+            "type": "number"
           },
           "short_original": {
-            "default": "0.000",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+            "default": 0.0,
             "title": "Short Original",
-            "type": "string"
+            "type": "number"
           },
           "short_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Short Tons",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -3880,8 +3800,7 @@
           "avg_entry_price": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -3889,6 +3808,12 @@
             ],
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
+          },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
           },
           "counterparty_id": {
             "anyOf": [
@@ -4078,9 +4003,8 @@
           },
           "quantity_mt": {
             "description": "Quantity in metric tons (MT)",
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "string"
+            "type": "number"
           },
           "reference_month": {
             "anyOf": [
@@ -4097,6 +4021,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt",
           "id",
@@ -4530,29 +4455,24 @@
       "PnlBreakdownTotals": {
         "properties": {
           "hedge_pnl_mtm": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Mtm",
-            "type": "string"
+            "type": "number"
           },
           "hedge_pnl_realized": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Hedge Pnl Realized",
-            "type": "string"
+            "type": "number"
           },
           "physical_cost": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Cost",
-            "type": "string"
+            "type": "number"
           },
           "physical_revenue": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Physical Revenue",
-            "type": "string"
+            "type": "number"
           },
           "total_pnl": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Total Pnl",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -4572,9 +4492,8 @@
             "type": "string"
           },
           "entry_price": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Entry Price",
-            "type": "string"
+            "type": "number"
           },
           "id": {
             "format": "uuid",
@@ -4584,8 +4503,7 @@
           "market_price": {
             "anyOf": [
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
+                "type": "number"
               },
               {
                 "type": "null"
@@ -4594,14 +4512,12 @@
             "title": "Market Price"
           },
           "pnl": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Pnl",
-            "type": "string"
+            "type": "number"
           },
           "quantity_mt": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "string"
+            "type": "number"
           },
           "reference": {
             "anyOf": [
@@ -4646,19 +4562,16 @@
             "type": "string"
           },
           "price": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Price",
-            "type": "string"
+            "type": "number"
           },
           "quantity_mt": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "string"
+            "type": "number"
           },
           "value": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Value",
-            "type": "string"
+            "type": "number"
           }
         },
         "required": [
@@ -4710,15 +4623,17 @@
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
-              },
-              {
                 "type": "null"
               }
             ],
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
+          },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
           },
           "counterparty_id": {
             "anyOf": [
@@ -4882,17 +4797,9 @@
             "description": "Pricing type detail"
           },
           "quantity_mt": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
-              }
-            ],
             "description": "Quantity in metric tons (MT)",
-            "title": "Quantity Mt"
+            "title": "Quantity Mt",
+            "type": "number"
           },
           "reference_month": {
             "anyOf": [
@@ -4909,6 +4816,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt"
         ],
@@ -6030,15 +5938,17 @@
                 "type": "number"
               },
               {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
-                "type": "string"
-              },
-              {
                 "type": "null"
               }
             ],
             "description": "Fixed price value (USD/MT) \u2014 required when price_type=fixed",
             "title": "Avg Entry Price"
+          },
+          "commodity": {
+            "description": "Commodity identifier",
+            "maxLength": 50,
+            "title": "Commodity",
+            "type": "string"
           },
           "counterparty_id": {
             "anyOf": [
@@ -6202,17 +6112,9 @@
             "description": "Pricing type detail"
           },
           "quantity_mt": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
-              }
-            ],
             "description": "Quantity in metric tons (MT)",
-            "title": "Quantity Mt"
+            "title": "Quantity Mt",
+            "type": "number"
           },
           "reference_month": {
             "anyOf": [
@@ -6229,6 +6131,7 @@
           }
         },
         "required": [
+          "commodity",
           "price_type",
           "quantity_mt"
         ],
@@ -6394,17 +6297,9 @@
       "SoPoLinkCreate": {
         "properties": {
           "linked_tons": {
-            "anyOf": [
-              {
-                "exclusiveMinimum": 0.0,
-                "type": "number"
-              },
-              {
-                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
-                "type": "string"
-              }
-            ],
-            "title": "Linked Tons"
+            "exclusiveMinimum": 0.0,
+            "title": "Linked Tons",
+            "type": "number"
           },
           "purchase_order_id": {
             "format": "uuid",
@@ -6466,9 +6361,8 @@
             "type": "string"
           },
           "linked_tons": {
-            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Linked Tons",
-            "type": "string"
+            "type": "number"
           },
           "purchase_order_id": {
             "format": "uuid",
@@ -8456,7 +8350,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CommercialExposureRead"
+                  "items": {
+                    "$ref": "#/components/schemas/CommercialExposureRead"
+                  },
+                  "title": "Response Get Commercial Exposure Exposures Commercial Get",
+                  "type": "array"
                 }
               }
             },
@@ -8477,7 +8375,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/GlobalExposureRead"
+                  "items": {
+                    "$ref": "#/components/schemas/GlobalExposureRead"
+                  },
+                  "title": "Response Get Global Exposure Exposures Global Get",
+                  "type": "array"
                 }
               }
             },

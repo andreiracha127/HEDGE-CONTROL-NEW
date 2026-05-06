@@ -64,7 +64,8 @@ def _create_rfq(client, payload: dict):
 def _get_commercial_exposure(client) -> dict:
     response = client.get("/exposures/commercial")
     assert response.status_code == 200
-    return response.json()
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
 
 
 def test_rfq_qty_exceeding_residual_exposure_hard_fails(client) -> None:

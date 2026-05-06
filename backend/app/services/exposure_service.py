@@ -69,26 +69,25 @@ class ExposureService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def compute_commercial_snapshot(session: Session) -> dict:
-        """Return commercial exposure dict (variable-price orders only)."""
-        pre_active = quantize_mt(
-            session.query(func.coalesce(func.sum(Order.quantity_mt), 0.0))
-            .filter(
-                Order.order_type == OrderType.sales,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
-        pre_passive = quantize_mt(
-            session.query(func.coalesce(func.sum(Order.quantity_mt), 0.0))
-            .filter(
-                Order.order_type == OrderType.purchase,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
+    def compute_commercial_snapshot(session: Session) -> list[dict]:
+        """Return commercial exposure rows by commodity."""
+        rows: dict[str, dict] = {}
+
+        def ensure_row(commodity: str) -> dict:
+            if commodity not in rows:
+                rows[commodity] = {
+                    "commodity": commodity,
+                    "pre_reduction_commercial_active_mt": Decimal("0.000"),
+                    "pre_reduction_commercial_passive_mt": Decimal("0.000"),
+                    "reduction_applied_active_mt": Decimal("0.000"),
+                    "reduction_applied_passive_mt": Decimal("0.000"),
+                    "commercial_active_mt": Decimal("0.000"),
+                    "commercial_passive_mt": Decimal("0.000"),
+                    "commercial_net_mt": Decimal("0.000"),
+                    "calculation_timestamp": now_utc(),
+                    "order_count_considered": 0,
+                }
+            return rows[commodity]
 
         linked = ExposureService._linked_by_order_subquery(session)
         residual_qty = Order.quantity_mt - func.coalesce(linked.c.linked_qty, 0.0)
@@ -103,101 +102,102 @@ class ExposureService:
             Order.price_type == PriceType.variable,
         )
 
-        residual_active = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_qty), 0.0))
-            .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(
-                Order.order_type == OrderType.sales,
-                Order.price_type == PriceType.variable,
+        pre_rows = (
+            session.query(
+                Order.commodity,
+                Order.order_type,
+                func.coalesce(func.sum(Order.quantity_mt), 0.0).label("quantity"),
+                func.count(Order.id).label("order_count"),
             )
-            .scalar()
-            or Decimal("0")
-        )
-        residual_passive = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_qty), 0.0))
-            .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(
-                Order.order_type == OrderType.purchase,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
-
-        reduction_active = quantize_mt(
-            session.query(func.coalesce(func.sum(linked.c.linked_qty), 0.0))
-            .select_from(Order)
-            .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(
-                Order.order_type == OrderType.sales,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
-        reduction_passive = quantize_mt(
-            session.query(func.coalesce(func.sum(linked.c.linked_qty), 0.0))
-            .select_from(Order)
-            .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(
-                Order.order_type == OrderType.purchase,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
-
-        order_count = int(
-            session.query(func.count(Order.id))
             .filter(Order.price_type == PriceType.variable)
-            .scalar()
-            or 0
+            .group_by(Order.commodity, Order.order_type)
+            .all()
         )
+        for row in pre_rows:
+            item = ensure_row(row.commodity)
+            if row.order_type == OrderType.sales:
+                item["pre_reduction_commercial_active_mt"] = quantize_mt(row.quantity)
+            else:
+                item["pre_reduction_commercial_passive_mt"] = quantize_mt(row.quantity)
+            item["order_count_considered"] += int(row.order_count)
 
-        return {
-            "pre_reduction_commercial_active_mt": pre_active,
-            "pre_reduction_commercial_passive_mt": pre_passive,
-            "reduction_applied_active_mt": reduction_active,
-            "reduction_applied_passive_mt": reduction_passive,
-            "commercial_active_mt": residual_active,
-            "commercial_passive_mt": residual_passive,
-            "commercial_net_mt": quantize_mt(residual_active - residual_passive),
-            "calculation_timestamp": now_utc(),
-            "order_count_considered": order_count,
-        }
+        residual_rows = (
+            session.query(
+                Order.commodity,
+                Order.order_type,
+                func.coalesce(func.sum(residual_qty), 0.0).label("quantity"),
+            )
+            .outerjoin(linked, Order.id == linked.c.order_id)
+            .filter(Order.price_type == PriceType.variable)
+            .group_by(Order.commodity, Order.order_type)
+            .all()
+        )
+        for row in residual_rows:
+            item = ensure_row(row.commodity)
+            if row.order_type == OrderType.sales:
+                item["commercial_active_mt"] = quantize_mt(row.quantity)
+            else:
+                item["commercial_passive_mt"] = quantize_mt(row.quantity)
+
+        reduction_rows = (
+            session.query(
+                Order.commodity,
+                Order.order_type,
+                func.coalesce(func.sum(linked.c.linked_qty), 0.0).label("quantity"),
+            )
+            .select_from(Order)
+            .outerjoin(linked, Order.id == linked.c.order_id)
+            .filter(Order.price_type == PriceType.variable)
+            .group_by(Order.commodity, Order.order_type)
+            .all()
+        )
+        for row in reduction_rows:
+            item = ensure_row(row.commodity)
+            if row.order_type == OrderType.sales:
+                item["reduction_applied_active_mt"] = quantize_mt(row.quantity)
+            else:
+                item["reduction_applied_passive_mt"] = quantize_mt(row.quantity)
+
+        for item in rows.values():
+            item["commercial_net_mt"] = quantize_mt(
+                item["commercial_active_mt"] - item["commercial_passive_mt"]
+            )
+
+        return [rows[key] for key in sorted(rows)]
 
     # ------------------------------------------------------------------
     # Global snapshot
     # ------------------------------------------------------------------
 
     @staticmethod
-    def compute_global_snapshot(session: Session) -> dict:
-        """Return global exposure dict (orders + hedge contracts).
+    def compute_global_snapshot(session: Session) -> list[dict]:
+        """Return global exposure rows by commodity (orders + hedge contracts).
 
         Mapping:
         - Short hedge → contributes to global **active** side (selling exposure)
         - Long hedge  → contributes to global **passive** side (buying exposure)
         """
+        rows: dict[str, dict] = {}
 
-        # --- Commercial (variable-price orders) ---
-        pre_commercial_active = quantize_mt(
-            session.query(func.coalesce(func.sum(Order.quantity_mt), 0.0))
-            .filter(
-                Order.order_type == OrderType.sales,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
-        pre_commercial_passive = quantize_mt(
-            session.query(func.coalesce(func.sum(Order.quantity_mt), 0.0))
-            .filter(
-                Order.order_type == OrderType.purchase,
-                Order.price_type == PriceType.variable,
-            )
-            .scalar()
-            or Decimal("0")
-        )
+        def ensure_row(commodity: str) -> dict:
+            if commodity not in rows:
+                rows[commodity] = {
+                    "commodity": commodity,
+                    "pre_reduction_global_active_mt": Decimal("0.000"),
+                    "pre_reduction_global_passive_mt": Decimal("0.000"),
+                    "reduction_applied_active_mt": Decimal("0.000"),
+                    "reduction_applied_passive_mt": Decimal("0.000"),
+                    "global_active_mt": Decimal("0.000"),
+                    "global_passive_mt": Decimal("0.000"),
+                    "global_net_mt": Decimal("0.000"),
+                    "commercial_active_mt": Decimal("0.000"),
+                    "commercial_passive_mt": Decimal("0.000"),
+                    "hedge_long_mt": Decimal("0.000"),
+                    "hedge_short_mt": Decimal("0.000"),
+                    "calculation_timestamp": now_utc(),
+                    "entities_count_considered": 0,
+                }
+            return rows[commodity]
 
         linked_by_order = ExposureService._linked_by_order_subquery(session)
         residual_order_qty = Order.quantity_mt - func.coalesce(
@@ -213,26 +213,42 @@ class ExposureService:
             Order.price_type == PriceType.variable,
         )
 
-        commercial_active = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_order_qty), 0.0))
-            .outerjoin(linked_by_order, Order.id == linked_by_order.c.order_id)
-            .filter(
-                Order.order_type == OrderType.sales,
-                Order.price_type == PriceType.variable,
+        pre_order_rows = (
+            session.query(
+                Order.commodity,
+                Order.order_type,
+                func.coalesce(func.sum(Order.quantity_mt), 0.0).label("quantity"),
+                func.count(Order.id).label("order_count"),
             )
-            .scalar()
-            or Decimal("0")
+            .filter(Order.price_type == PriceType.variable)
+            .group_by(Order.commodity, Order.order_type)
+            .all()
         )
-        commercial_passive = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_order_qty), 0.0))
-            .outerjoin(linked_by_order, Order.id == linked_by_order.c.order_id)
-            .filter(
-                Order.order_type == OrderType.purchase,
-                Order.price_type == PriceType.variable,
+        for row in pre_order_rows:
+            item = ensure_row(row.commodity)
+            if row.order_type == OrderType.sales:
+                item["pre_reduction_global_active_mt"] += quantize_mt(row.quantity)
+            else:
+                item["pre_reduction_global_passive_mt"] += quantize_mt(row.quantity)
+            item["entities_count_considered"] += int(row.order_count)
+
+        residual_order_rows = (
+            session.query(
+                Order.commodity,
+                Order.order_type,
+                func.coalesce(func.sum(residual_order_qty), 0.0).label("quantity"),
             )
-            .scalar()
-            or Decimal("0")
+            .outerjoin(linked_by_order, Order.id == linked_by_order.c.order_id)
+            .filter(Order.price_type == PriceType.variable)
+            .group_by(Order.commodity, Order.order_type)
+            .all()
         )
+        for row in residual_order_rows:
+            item = ensure_row(row.commodity)
+            if row.order_type == OrderType.sales:
+                item["commercial_active_mt"] = quantize_mt(row.quantity)
+            else:
+                item["commercial_passive_mt"] = quantize_mt(row.quantity)
 
         # --- Hedge contracts ---
         linked_by_contract = (
@@ -266,79 +282,60 @@ class ExposureService:
                 detail="Residual hedge quantity cannot be negative",
             )
 
-        hedge_long = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_contract_qty), 0.0))
+        residual_hedge_rows = (
+            session.query(
+                HedgeContract.commodity,
+                HedgeContract.classification,
+                func.coalesce(func.sum(residual_contract_qty), 0.0).label("quantity"),
+            )
             .outerjoin(
                 linked_by_contract, HedgeContract.id == linked_by_contract.c.contract_id
             )
-            .filter(HedgeContract.classification == HedgeClassification.long)
-            .scalar()
-            or Decimal("0")
+            .group_by(HedgeContract.commodity, HedgeContract.classification)
+            .all()
         )
-        hedge_short = quantize_mt(
-            session.query(func.coalesce(func.sum(residual_contract_qty), 0.0))
-            .outerjoin(
-                linked_by_contract, HedgeContract.id == linked_by_contract.c.contract_id
+        for row in residual_hedge_rows:
+            item = ensure_row(row.commodity)
+            if row.classification == HedgeClassification.long:
+                item["hedge_long_mt"] = quantize_mt(row.quantity)
+            else:
+                item["hedge_short_mt"] = quantize_mt(row.quantity)
+
+        total_hedge_rows = (
+            session.query(
+                HedgeContract.commodity,
+                HedgeContract.classification,
+                func.coalesce(func.sum(HedgeContract.quantity_mt), 0.0).label(
+                    "quantity"
+                ),
+                func.count(HedgeContract.id).label("hedge_count"),
             )
-            .filter(HedgeContract.classification == HedgeClassification.short)
-            .scalar()
-            or Decimal("0")
+            .group_by(HedgeContract.commodity, HedgeContract.classification)
+            .all()
         )
+        for row in total_hedge_rows:
+            item = ensure_row(row.commodity)
+            if row.classification == HedgeClassification.long:
+                item["pre_reduction_global_passive_mt"] += quantize_mt(row.quantity)
+            else:
+                item["pre_reduction_global_active_mt"] += quantize_mt(row.quantity)
+            item["entities_count_considered"] += int(row.hedge_count)
 
-        total_hedge_long = quantize_mt(
-            session.query(func.coalesce(func.sum(HedgeContract.quantity_mt), 0.0))
-            .filter(HedgeContract.classification == HedgeClassification.long)
-            .scalar()
-            or Decimal("0")
-        )
-        total_hedge_short = quantize_mt(
-            session.query(func.coalesce(func.sum(HedgeContract.quantity_mt), 0.0))
-            .filter(HedgeContract.classification == HedgeClassification.short)
-            .scalar()
-            or Decimal("0")
-        )
+        for item in rows.values():
+            item["global_active_mt"] = quantize_mt(
+                item["commercial_active_mt"] + item["hedge_short_mt"]
+            )
+            item["global_passive_mt"] = quantize_mt(
+                item["commercial_passive_mt"] + item["hedge_long_mt"]
+            )
+            item["reduction_applied_active_mt"] = quantize_mt(
+                item["pre_reduction_global_active_mt"] - item["global_active_mt"]
+            )
+            item["reduction_applied_passive_mt"] = quantize_mt(
+                item["pre_reduction_global_passive_mt"] - item["global_passive_mt"]
+            )
+            item["global_net_mt"] = quantize_mt(
+                item["global_active_mt"] - item["global_passive_mt"]
+            )
 
-        # --- Counts ---
-        order_count = int(
-            session.query(func.count(Order.id))
-            .filter(Order.price_type == PriceType.variable)
-            .scalar()
-            or 0
-        )
-        hedge_count = int(session.query(func.count(HedgeContract.id)).scalar() or 0)
-
-        # --- Derived values ---
-        # Short hedges → active side; Long hedges → passive side
-        commercial_reduction_active = quantize_mt(
-            pre_commercial_active - commercial_active
-        )
-        commercial_reduction_passive = quantize_mt(
-            pre_commercial_passive - commercial_passive
-        )
-        hedge_reduction_short = quantize_mt(total_hedge_short - hedge_short)
-        hedge_reduction_long = quantize_mt(total_hedge_long - hedge_long)
-
-        global_active = quantize_mt(commercial_active + hedge_short)
-        global_passive = quantize_mt(commercial_passive + hedge_long)
-        pre_global_active = quantize_mt(pre_commercial_active + total_hedge_short)
-        pre_global_passive = quantize_mt(pre_commercial_passive + total_hedge_long)
-        reduction_active = quantize_mt(commercial_reduction_active + hedge_reduction_short)
-        reduction_passive = quantize_mt(
-            commercial_reduction_passive + hedge_reduction_long
-        )
-
-        return {
-            "pre_reduction_global_active_mt": pre_global_active,
-            "pre_reduction_global_passive_mt": pre_global_passive,
-            "reduction_applied_active_mt": reduction_active,
-            "reduction_applied_passive_mt": reduction_passive,
-            "global_active_mt": global_active,
-            "global_passive_mt": global_passive,
-            "global_net_mt": quantize_mt(global_active - global_passive),
-            "commercial_active_mt": commercial_active,
-            "commercial_passive_mt": commercial_passive,
-            "hedge_long_mt": hedge_long,
-            "hedge_short_mt": hedge_short,
-            "calculation_timestamp": now_utc(),
-            "entities_count_considered": order_count + hedge_count,
-        }
+        return [rows[key] for key in sorted(rows)]

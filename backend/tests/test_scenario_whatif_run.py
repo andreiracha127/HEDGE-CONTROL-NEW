@@ -53,6 +53,7 @@ def _insert_order(quantity_mt: float) -> uuid4:
         order = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
+            commodity="ALUMINUM",
             quantity_mt=quantity_mt,
             pricing_convention=OrderPricingConvention.avg,
             avg_entry_price=100.0,

@@ -1,30 +1,42 @@
-def _create_sales_order(client, price_type: str, quantity_mt: float) -> str:
+def _create_sales_order(
+    client, price_type: str, quantity_mt: float, commodity: str = "ALUMINUM"
+) -> str:
     response = client.post(
         "/orders/sales",
-        json={"price_type": price_type, "quantity_mt": quantity_mt},
+        json={
+            "commodity": commodity,
+            "price_type": price_type,
+            "quantity_mt": quantity_mt,
+        },
     )
     assert response.status_code == 201
     return response.json()["id"]
 
 
-def _create_purchase_order(client, price_type: str, quantity_mt: float) -> str:
+def _create_purchase_order(
+    client, price_type: str, quantity_mt: float, commodity: str = "ALUMINUM"
+) -> str:
     response = client.post(
         "/orders/purchase",
-        json={"price_type": price_type, "quantity_mt": quantity_mt},
+        json={
+            "commodity": commodity,
+            "price_type": price_type,
+            "quantity_mt": quantity_mt,
+        },
     )
     assert response.status_code == 201
     return response.json()["id"]
 
 
-def _create_hedge_contract(client, quantity_mt: float) -> str:
+def _create_hedge_contract(client, quantity_mt: float, commodity: str = "ALUMINUM") -> str:
     response = client.post(
         "/contracts/hedge",
         json={
-            "commodity": "LME_AL",
+            "commodity": commodity,
             "quantity_mt": quantity_mt,
             "legs": [
-                {"side": "buy", "price_type": "fixed"},
-                {"side": "sell", "price_type": "variable"},
+                {"side": "sell", "price_type": "fixed"},
+                {"side": "buy", "price_type": "variable"},
             ],
         },
     )
@@ -50,22 +62,18 @@ def _get_exposure(client) -> dict:
     return response.json()
 
 
-def _mt(data: dict, key: str) -> float:
-    return float(data[key])
+def _row_by_commodity(rows: list[dict], commodity: str) -> dict:
+    return next(row for row in rows if row["commodity"] == commodity)
+
+
+def _mt(row: dict, key: str) -> float:
+    return float(row[key])
 
 
 def test_empty_orders_returns_zero_exposure(client) -> None:
     data = _get_exposure(client)
 
-    assert _mt(data, "pre_reduction_commercial_active_mt") == 0.0
-    assert _mt(data, "pre_reduction_commercial_passive_mt") == 0.0
-    assert _mt(data, "reduction_applied_active_mt") == 0.0
-    assert _mt(data, "reduction_applied_passive_mt") == 0.0
-    assert _mt(data, "commercial_active_mt") == 0.0
-    assert _mt(data, "commercial_passive_mt") == 0.0
-    assert _mt(data, "commercial_net_mt") == 0.0
-    assert data["order_count_considered"] == 0
-    assert data["calculation_timestamp"]
+    assert data == []
 
 
 def test_fixed_price_orders_do_not_affect_exposure(client) -> None:
@@ -74,12 +82,7 @@ def test_fixed_price_orders_do_not_affect_exposure(client) -> None:
 
     data = _get_exposure(client)
 
-    assert _mt(data, "pre_reduction_commercial_active_mt") == 0.0
-    assert _mt(data, "pre_reduction_commercial_passive_mt") == 0.0
-    assert _mt(data, "commercial_active_mt") == 0.0
-    assert _mt(data, "commercial_passive_mt") == 0.0
-    assert _mt(data, "commercial_net_mt") == 0.0
-    assert data["order_count_considered"] == 0
+    assert data == []
 
 
 def test_exposure_reduces_by_linked_quantity(client) -> None:
@@ -89,12 +92,13 @@ def test_exposure_reduces_by_linked_quantity(client) -> None:
     _create_linkage(client, order_id, contract_id, 4.0)
 
     data = _get_exposure(client)
+    row = _row_by_commodity(data, "ALUMINUM")
 
-    assert _mt(data, "pre_reduction_commercial_active_mt") == 10.0
-    assert _mt(data, "reduction_applied_active_mt") == 4.0
-    assert _mt(data, "commercial_active_mt") == 6.0
-    assert _mt(data, "commercial_passive_mt") == 0.0
-    assert _mt(data, "commercial_net_mt") == 6.0
+    assert _mt(row, "pre_reduction_commercial_active_mt") == 10.0
+    assert _mt(row, "reduction_applied_active_mt") == 4.0
+    assert _mt(row, "commercial_active_mt") == 6.0
+    assert _mt(row, "commercial_passive_mt") == 0.0
+    assert _mt(row, "commercial_net_mt") == 6.0
 
 
 def test_exposure_never_negative(client) -> None:
@@ -104,9 +108,10 @@ def test_exposure_never_negative(client) -> None:
     _create_linkage(client, order_id, contract_id, 5.0)
 
     data = _get_exposure(client)
+    row = _row_by_commodity(data, "ALUMINUM")
 
-    assert _mt(data, "commercial_active_mt") == 0.0
-    assert _mt(data, "commercial_net_mt") == 0.0
+    assert _mt(row, "commercial_active_mt") == 0.0
+    assert _mt(row, "commercial_net_mt") == 0.0
 
 
 def test_removing_linkage_changes_exposure_deterministically(client) -> None:
@@ -118,10 +123,44 @@ def test_removing_linkage_changes_exposure_deterministically(client) -> None:
     _create_linkage(client, order_id, contract_id, 3.0)
 
     after = _get_exposure(client)
+    before_row = _row_by_commodity(before, "ALUMINUM")
+    after_row = _row_by_commodity(after, "ALUMINUM")
 
-    assert _mt(before, "commercial_passive_mt") == 8.0
-    assert _mt(after, "commercial_passive_mt") == 5.0
-    assert _mt(after, "reduction_applied_passive_mt") == 3.0
+    assert _mt(before_row, "commercial_passive_mt") == 8.0
+    assert _mt(after_row, "commercial_passive_mt") == 5.0
+    assert _mt(after_row, "reduction_applied_passive_mt") == 3.0
+
+
+def test_cross_commodity_orders_are_returned_as_isolated_rows(client) -> None:
+    _create_sales_order(client, "variable", 100.0, commodity="ALUMINUM")
+    _create_sales_order(client, "variable", 50.0, commodity="COPPER")
+
+    data = _get_exposure(client)
+
+    assert len(data) == 2
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+    copper = _row_by_commodity(data, "COPPER")
+    assert _mt(aluminum, "commercial_active_mt") == 100.0
+    assert _mt(copper, "commercial_active_mt") == 50.0
+    assert not any(_mt(row, "commercial_active_mt") == 150.0 for row in data)
+
+
+def test_linkage_reduction_is_scoped_to_order_commodity(client) -> None:
+    aluminum_order_id = _create_sales_order(
+        client, "variable", 100.0, commodity="ALUMINUM"
+    )
+    _create_sales_order(client, "variable", 50.0, commodity="COPPER")
+    aluminum_contract_id = _create_hedge_contract(
+        client, 100.0, commodity="ALUMINUM"
+    )
+
+    _create_linkage(client, aluminum_order_id, aluminum_contract_id, 100.0)
+
+    data = _get_exposure(client)
+    aluminum = _row_by_commodity(data, "ALUMINUM")
+    copper = _row_by_commodity(data, "COPPER")
+    assert _mt(aluminum, "commercial_active_mt") == 0.0
+    assert _mt(copper, "commercial_active_mt") == 50.0
 
 
 def test_insert_order_sequence_does_not_affect_result(client) -> None:
@@ -153,4 +192,6 @@ def test_insert_order_sequence_does_not_affect_result(client) -> None:
         "commercial_net_mt",
         "order_count_considered",
     ]:
-        assert first[key] == second[key]
+        assert _row_by_commodity(first, "ALUMINUM")[key] == _row_by_commodity(
+            second, "ALUMINUM"
+        )[key]

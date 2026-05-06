@@ -103,6 +103,11 @@ def _settle_contract(client, contract_id: str) -> dict:
     return resp.json()
 
 
+def _commercial_row(response):
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
+
+
 # -- lifecycle test ---------------------------------------------------------
 
 
@@ -118,7 +123,8 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     # Step 2 – Verify commercial exposure increases
     exposure_before = client.get("/exposures/commercial")
     assert exposure_before.status_code == 200
-    assert float(exposure_before.json()["commercial_active_mt"]) > 0
+    before_row = _commercial_row(exposure_before)
+    assert before_row["commercial_active_mt"] > 0
 
     # Step 3 – Create an RFQ for a commercial hedge
     rfq = _create_rfq(client, order_id, 5.0, counterparty_id=cp_id)
@@ -145,9 +151,8 @@ def test_full_lifecycle_order_to_pl(client) -> None:
     # Step 6 – Exposure reduced after linkage
     exposure_after = client.get("/exposures/commercial")
     assert exposure_after.status_code == 200
-    assert float(exposure_after.json()["commercial_active_mt"]) < float(
-        exposure_before.json()["commercial_active_mt"]
-    )
+    after_row = _commercial_row(exposure_after)
+    assert after_row["commercial_active_mt"] < before_row["commercial_active_mt"]
 
     # Step 7 – Settle the contract
     settlement = _settle_contract(client, contract_id)

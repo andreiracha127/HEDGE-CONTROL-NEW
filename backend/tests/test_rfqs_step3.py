@@ -51,7 +51,8 @@ def _get_rfq(client, rfq_id: str) -> dict:
 def _get_commercial_exposure(client) -> dict:
     response = client.get("/exposures/commercial")
     assert response.status_code == 200
-    return response.json()
+    rows = response.json()
+    return next(row for row in rows if row["commodity"] == "ALUMINUM")
 
 
 def test_refresh_keeps_state_and_persists_refresh_invitations(client) -> None:

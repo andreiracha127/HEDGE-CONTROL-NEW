@@ -333,12 +333,24 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        snapshot = ExposureService.compute_commercial_snapshot(session)
-        post_active = float(snapshot["commercial_active_mt"])
-        post_passive = float(snapshot["commercial_passive_mt"])
-        pre_active = float(snapshot["pre_reduction_commercial_active_mt"])
+        snapshot_rows = ExposureService.compute_commercial_snapshot(session)
+
+        def snapshot_for(commodity: str | None) -> dict:
+            if commodity is not None:
+                for row in snapshot_rows:
+                    if row["commodity"] == commodity:
+                        return row
+            return {
+                "commodity": commodity or payload.commodity,
+                "pre_reduction_commercial_active_mt": 0,
+                "pre_reduction_commercial_passive_mt": 0,
+                "commercial_active_mt": 0,
+                "commercial_passive_mt": 0,
+                "calculation_timestamp": now_utc(),
+            }
 
         order: Order | None = None
+        snapshot = snapshot_for(payload.commodity)
         if payload.intent.value == RFQIntent.commercial_hedge.value:
             order = session.get(Order, payload.order_id)
             if not order:
@@ -359,6 +371,9 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ direction mismatch for order type",
                 )
+            snapshot = snapshot_for(order.commodity)
+            post_active = float(snapshot["commercial_active_mt"])
+            post_passive = float(snapshot["commercial_passive_mt"])
             residual_side = (
                 post_active if order.order_type == OrderType.sales else post_passive
             )
@@ -367,6 +382,10 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ quantity exceeds residual exposure",
                 )
+        else:
+            post_active = float(snapshot["commercial_active_mt"])
+            post_passive = float(snapshot["commercial_passive_mt"])
+        pre_active = float(snapshot["pre_reduction_commercial_active_mt"])
 
         if payload.intent.value == RFQIntent.spread.value:
             buy_trade_rfq = session.get(RFQ, payload.buy_trade_id)

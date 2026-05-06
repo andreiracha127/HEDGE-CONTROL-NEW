@@ -49,7 +49,26 @@ def client() -> TestClient:
     app.dependency_overrides[get_current_user] = lambda: {
         "roles": ["trader", "risk_manager", "auditor"]
     }
-    return TestClient(app)
+    return _DefaultCommodityTestClient(app)
+
+
+class _DefaultCommodityTestClient(TestClient):
+    """Preserve legacy order fixtures after commodity became required."""
+
+    def post(self, url, *args, **kwargs):  # type: ignore[no-untyped-def]
+        json_payload = kwargs.get("json")
+        if (
+            url in {"/orders/sales", "/orders/purchase"}
+            and isinstance(json_payload, dict)
+            and "commodity" not in json_payload
+        ):
+            json_payload = dict(json_payload)
+            if json_payload.pop("__skip_default_commodity", False):
+                kwargs["json"] = json_payload
+            else:
+                json_payload["commodity"] = "ALUMINUM"
+                kwargs["json"] = json_payload
+        return super().post(url, *args, **kwargs)
 
 
 @pytest.fixture()

@@ -26,6 +26,7 @@ class ExposureRead(ExposureBase):
 
 
 class CommercialExposureRead(BaseModel):
+    commodity: str = Field(..., description="Commodity identifier")
     pre_reduction_commercial_active_mt: MTQuantity = Field(
         ..., description="Sum of variable-price SO quantity before linkage (MT)"
     )
@@ -54,6 +55,7 @@ class CommercialExposureRead(BaseModel):
 
 
 class GlobalExposureRead(BaseModel):
+    commodity: str = Field(..., description="Commodity identifier")
     pre_reduction_global_active_mt: MTQuantity = Field(
         ..., description="Global active before linkage reduction (MT)"
     )
