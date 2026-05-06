@@ -163,7 +163,7 @@ PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on ne
 
 Document the coordination in PR description; the orchestrator will sequence the merges to minimize rebase work.
 
-§3.8 retires existing rows. Cross-consumer parity for live-linkage semantics extends further: §3.9 fixes the reconcile linkage aggregation; §3.10 fixes the net-exposure linkage exclusion. All four sections together (§3.4, §3.5, §3.9, §3.10) establish the institutional invariant that EVERY query consulting `HedgeOrderLinkage` rows applies the dual-filter predicate (live hedge AND live order).
+§3.8 retires existing rows. Cross-consumer parity for live-linkage semantics extends further: §3.9 fixes the reconcile linkage aggregation; §3.10 changes `compute_net_exposure`'s hedge aggregation from whole-contract `NOT IN` exclusion to residual subtraction (`quantity_mt - SUM(live linkages)`), ensuring it produces the SAME per-contract residual as `compute_global_snapshot`. All four sections together (§3.4, §3.5, §3.9, §3.10) establish the institutional invariant that EVERY query consulting `HedgeOrderLinkage` rows applies the dual-filter predicate (live hedge AND live order) AND that EVERY hedge residual is computed by subtraction (not whole-contract exclusion).
 
 ### 3.8 Retire derived `Exposure` rows for deleted source orders (Option A — preferred)
 
@@ -252,32 +252,80 @@ Note: the `Order` filter is technically redundant with the `Order` query in `rec
 
 Coordination with §3.8: §3.8 retirement uses this updated `_get_linked_qty_map` automatically — no additional changes to retirement logic.
 
-### 3.10 Filter hedge-side linkage query in `compute_net_exposure`
+### 3.10 Hedge residual aggregation in `compute_net_exposure` (corrects whole-contract `NOT IN` semantics)
 
-**File:** `backend/app/services/exposure_engine.py` — `compute_net_exposure` (`exposure_engine.py:204`); the offending linkage subquery is at `exposure_engine.py:263-264`. Note: confirmed by `grep -rn "compute_net_exposure" backend/app/`, this lives in `exposure_engine.py` (NOT `exposure_service.py` as one might expect from the §3 prefix pattern).
+**File:** `backend/app/services/exposure_engine.py` — `compute_net_exposure` (`exposure_engine.py:141`); the offending hedge-side block is at `exposure_engine.py:199-215` (linkage subquery + global hedge query). Note: confirmed by `git grep -n "compute_net_exposure" backend/app/`, this lives in `exposure_engine.py` (NOT `exposure_service.py` as one might expect from the §3 prefix pattern).
 
-The hedge side currently excludes any `HedgeContract` whose id appears in `session.query(HedgeOrderLinkage.contract_id).distinct()`. This excludes hedges with ANY linkage, including dead ones — which is the inverse of what §3.5's snapshot fix produces. After §3.5, the global snapshot REINCLUDES a live hedge whose linkage points to a soft-deleted order; but `/exposures/net` still hides that hedge, so the two endpoints disagree. The §6.3.5 scenario reproduces this exact divergence.
+The current implementation excludes any hedge whose id appears in `linked_contract_ids` via `~HedgeContract.id.in_(linked_contract_ids)` — a whole-contract boolean exclusion. This produces incorrect output for hedges with PARTIAL linkages: a 100 MT hedge with a 40 MT linkage to a live order should show 60 MT residual unlinked exposure, but the boolean exclusion zeroes the entire contract.
 
-Apply the dual-filter to the linkage subquery so only LIVE order linkages exclude a hedge:
+The global snapshot path (`compute_global_snapshot` in `exposure_service.py:259-307`) computes `residual_contract_qty = HedgeContract.quantity_mt - func.coalesce(linked_by_contract.c.linked_qty, 0.0)` and groups `func.sum(residual_contract_qty)` by `(commodity, classification)`. `compute_net_exposure` MUST mirror that semantic so the two endpoints agree on the same input data — particularly after §3.5 reincludes a live hedge whose linkage points to a soft-deleted order. The §6.3.5 / §6.3.7 scenarios reproduce this exact divergence, and the partly-linked Codex case (100 MT hedge + 40 MT linkage to a live order: net should show 60 MT, not 0 and not 100) is covered identically by the same residual-subtraction formula.
+
+Replace the linkage-id subquery + `NOT IN` filter (currently `exposure_engine.py:199-211`) with a residual subquery that aggregates LIVE-ORDER linkage qty per contract, then computes `quantity_mt - coalesce(linked_qty, 0)` per row and sums by `(commodity, classification)`:
 
 ```python
-# Before (exposure_engine.py:263-264):
-#   linked_contract_ids = (
-#       session.query(HedgeOrderLinkage.contract_id).distinct().scalar_subquery()
-#   )
-# After:
+# Before (incorrect — whole-contract exclusion):
 linked_contract_ids = (
-    session.query(HedgeOrderLinkage.contract_id)
-    .join(Order, Order.id == HedgeOrderLinkage.order_id)
-    .filter(Order.deleted_at.is_(None))
-    .distinct()
-    .scalar_subquery()
+    session.query(HedgeOrderLinkage.contract_id).distinct().scalar_subquery()
 )
+gq = session.query(
+    HedgeContract.commodity,
+    HedgeContract.classification,
+    func.coalesce(func.sum(HedgeContract.quantity_mt), 0).label("total_qty"),
+).filter(
+    HedgeContract.deleted_at.is_(None),
+    HedgeContract.status.in_(["active", "partially_settled"]),
+    ~HedgeContract.id.in_(linked_contract_ids),
+)
+
+# After (correct — residual subtraction matching §3.5 / global snapshot):
+live_linked_qty_per_contract = (
+    session.query(
+        HedgeOrderLinkage.contract_id.label("contract_id"),
+        func.coalesce(
+            func.sum(HedgeOrderLinkage.quantity_mt), 0.0
+        ).label("linked_qty"),
+    )
+    .join(Order, Order.id == HedgeOrderLinkage.order_id)
+    .filter(Order.deleted_at.is_(None))  # only live-order linkages count
+    .group_by(HedgeOrderLinkage.contract_id)
+    .subquery()
+)
+
+residual_contract_qty = HedgeContract.quantity_mt - func.coalesce(
+    live_linked_qty_per_contract.c.linked_qty, 0.0
+)
+
+gq = (
+    session.query(
+        HedgeContract.commodity,
+        HedgeContract.classification,
+        func.coalesce(func.sum(residual_contract_qty), 0).label("total_qty"),
+    )
+    .outerjoin(
+        live_linked_qty_per_contract,
+        HedgeContract.id == live_linked_qty_per_contract.c.contract_id,
+    )
+    .filter(
+        HedgeContract.deleted_at.is_(None),
+        HedgeContract.status.in_(["active", "partially_settled"]),
+    )
+)
+if commodity:
+    gq = gq.filter(HedgeContract.commodity.in_(commodity_aliases(commodity)))
+gq = gq.group_by(HedgeContract.commodity, HedgeContract.classification)
 ```
 
-The consumer query at `exposure_engine.py:273` is `~HedgeContract.id.in_(linked_contract_ids)` — preserve that NOT IN semantic; we only narrow the inner set to live-order linkages.
+The `outerjoin` is essential: hedges with NO linkage at all join to NULL `linked_qty`, then `coalesce(NULL, 0)` makes the residual = full quantity. Hedges with partial linkages get partial residuals. Hedges fully linked to live orders get residual = 0 — and because the outer query SUMs by `(commodity, classification)`, those zero-residual rows naturally contribute 0 to the aggregate `total_qty` without inflating the response shape (verified by reading `compute_net_exposure`'s downstream loop at `exposure_engine.py:217-238`, which adds `qty` to either `long_tons` or `short_tons` regardless of whether `qty == 0`; per-commodity rows are only created via `agg[c]`, so a commodity that was already added by commercial aggregation will simply receive a `+= 0`, preserving response shape).
 
-Note: the `HedgeContract` lifecycle filter on the outer hedge side already exists per §3.3 (and is in fact already present in `compute_net_exposure` at `exposure_engine.py:271-272`). This §3.10 fix only narrows the linkage exclusion's INNER set. The two filters compose correctly: outer = live hedge; inner exclusion = live-order linkages; result = live hedges minus those genuinely linked to live orders.
+**Key invariant (CONSTITUTIONAL):** `compute_net_exposure` and `compute_global_snapshot` MUST produce the same per-contract residual for the same input data. After this fix, the two formulas align byte-for-byte:
+
+```
+residual_contract_qty = HedgeContract.quantity_mt
+                      - SUM(linkage.quantity_mt WHERE linkage.order is LIVE
+                                             AND linkage.contract is LIVE)
+```
+
+The hedge-side lifecycle filter (live hedge: `deleted_at IS NULL` AND `status IN (active, partially_settled)`) is enforced on the OUTER query; the linkage-side lifecycle filter (live order: `Order.deleted_at IS NULL`) is enforced on the INNER subquery. This composes the dual-filter invariant from §3.5 / §3.9 to BOTH the hedge contract and its linkages — the same composition the global snapshot performs.
 
 ---
 
@@ -285,7 +333,7 @@ Note: the `HedgeContract` lifecycle filter on the outer hedge side already exist
 
 - **Audit emission for the routes that consume snapshots** — PR-7 territory.
 - **Reconcile residual hard-fail** — PR-4 territory; this PR only adds the lifecycle filter to reconcile's order query (§3.7) and the dual-filter to its linkage map helper (§3.9). The hard-fail assertion itself remains PR-4's surface.
-- **`compute_net_exposure` shape / convention changes** — out of scope. §3.10 narrows the inner linkage subquery only; the function's return shape, net-tons sign convention, and commodity grouping are unchanged.
+- **`compute_net_exposure` shape / convention changes** — out of scope. §3.10 changes the hedge-side AGGREGATION FORMULA from whole-contract `NOT IN` exclusion to residual subtraction (matching `compute_global_snapshot`); the function's return dict shape, net-tons sign convention, and commodity grouping are unchanged.
 - **Decimal primitives** — PR-1 in main; preserve.
 - **UoW boundary** — PR-3 in main; preserve.
 - **Classification invariant** — PR-6/#14 in main; preserve.
@@ -398,11 +446,30 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
   ```
 - [ ] **Test:** Same fixture but with order LIVE (no soft-delete). Call `compute_net_exposure`. Assert: hedge does NOT appear in `short_tons` / `long_tons` (it is linked to a live order — already accounted in commercial). Verifies the §3.10 filter narrows correctly without breaking the live path.
   ```python
-  # Per §2.5 + §3.10:
+  # Per §2.5 + §3.10 residual subtraction:
   #   linked_to_LIVE_orders = 100  (live SO linkage counted)
-  #   Hedge in net = 100 - 100 = 0
+  #   residual_contract_qty = 100 - 100 = 0
+  #   Hedge contribution to short_tons = sum(residual) = 0
   expected_aluminum_short_tons = Decimal("0")
   # But commercial side reflects the (still-zero-residual) SO via Exposure rows.
+  ```
+- [ ] **Test (P1, partly-linked — Codex catch):** Hedge Short Aluminum 100 (active, deleted_at NULL) + linkage 40 to a live SO Aluminum 100. Call `compute_net_exposure`. Assert: hedge residual contribution to `short_tons` = 60 MT (NOT 0, NOT 100). The previous whole-contract `NOT IN` semantic would zero the entire hedge; the §3.10 residual-subtraction fix correctly carries the 60 MT unlinked portion.
+  ```python
+  # Per §3.10 residual subtraction (constitutional formula):
+  #   residual_contract_qty = quantity_mt - SUM(live linkages)
+  #                         = 100 - 40 = 60
+  # Hedge contribution to short_tons = sum(residual) = 60
+  expected_aluminum_short_tons_from_hedge = Decimal("60")
+  # Cross-check: compute_global_snapshot for the same fixture must produce
+  # identical hedge_short_mt = 60 for the hedge — same constitutional formula.
+  ```
+- [ ] **Test (cross-endpoint parity — institutional invariant):** For ANY hedge in ANY fixture (live, partially_settled, with/without linkages, with linkages to live OR dead orders), assert that the hedge's contribution to `compute_net_exposure`'s `long_tons` / `short_tons` equals the same hedge's contribution to `compute_global_snapshot`'s `hedge_long_mt` / `hedge_short_mt`. This is the institutional invariant that §3.10 closes; can be implemented as a parametrized test over the §6.1–§6.3.6 fixtures or as a property-based test if a hypothesis fixture exists.
+  ```python
+  # Per §3.10 invariant: net and global must agree per-contract.
+  # For each (commodity, classification):
+  #   net_contribution    = sum over hedges of residual_contract_qty
+  #   global_contribution = sum over hedges of residual_contract_qty
+  #   assert net_contribution == global_contribution
   ```
 
 ### 6.4 Multi-commodity isolation preserved (post-#16)
@@ -504,9 +571,12 @@ the hedge is settled. Operators may need a release note.
   reconcile_from_orders' Order query — coordinated with PR-4 — AND
   retirement sweep for pre-existing Exposure rows whose source Order
   was soft-deleted, per §3.8 Option A; dual-filter on
-  _get_linked_qty_map at exposure_engine.py:60 per §3.9; narrowed
-  linked_contract_ids subquery inside compute_net_exposure at
-  exposure_engine.py:263-264 per §3.10)
+  _get_linked_qty_map at exposure_engine.py:60 per §3.9; hedge-side
+  aggregation in compute_net_exposure at exposure_engine.py:199-215
+  switched from whole-contract `NOT IN` exclusion to residual
+  subtraction (`quantity_mt - SUM(live linkages)` via outerjoin +
+  coalesce) per §3.10 — matching compute_global_snapshot's per-contract
+  residual formula)
 - Tests: test_exposures_commercial.py, test_exposures_global.py,
   test_exposure_engine.py, test_soft_delete.py, test_validate_residuals.py
 
@@ -569,7 +639,8 @@ J-A1-OPUS-02.
 - DO NOT use `Order.deleted_at == False` or `== None` — both produce wrong SQL on a `DateTime | None` column; use `Order.deleted_at.is_(None)` exclusively
 - DO NOT use `--no-verify` on git hooks; no force-push (except `--force-with-lease` after Codex-approved rebase if needed); no auto-merge
 - DO NOT auto-merge — Codex review mandatory (Codex outranks CI green)
-- DO NOT change `compute_net_exposure`'s return shape, net-tons sign convention, or commodity grouping in §3.10 — only narrow the inner `linked_contract_ids` subquery's filter set per the §3.10 patch
+- DO NOT change `compute_net_exposure`'s return shape, net-tons sign convention, or commodity grouping in §3.10 — the §3.10 rewrite changes the AGGREGATION FORMULA on the hedge side (whole-contract `NOT IN` → residual subtraction grouped by `(commodity, classification)`), but the response dict shape, sign convention, and per-commodity grouping are preserved verbatim
+- DO NOT keep the whole-contract `NOT IN` semantic on the hedge side of `compute_net_exposure` — `~HedgeContract.id.in_(linked_contract_ids)` diverges from `compute_global_snapshot` for partly-linked hedges (a 100 MT hedge with a 40 MT live-order linkage must contribute 60 MT, not 0). Replace the EXCLUSION with SUBTRACTION per §3.10; do NOT preserve the `~ ... .in_(...)` filter
 - DO NOT split the §3.5 / §3.9 dual-filter predicate; the live-hedge clause (`HedgeContract.deleted_at IS NULL` AND `status IN (active, partially_settled)`) and the live-order clause (`Order.deleted_at IS NULL`) MUST appear together at every linkage-aggregating site (§3.4, §3.5, §3.9, §3.10) — that is the institutional invariant per §3.7's closing paragraph
 
 ---
@@ -604,7 +675,7 @@ When complete, report:
 - §3.8 retirement strategy chosen (Option A / B / fallback (b) / (c)) with one-line justification, plus the `compute_net_exposure` consumer audit outcome
 - §6.6 retirement test evidence: the pre-existing `Exposure` row for a soft-deleted order is retired and `compute_net_exposure` no longer counts it (Codex P2 closed)
 - §6.3.6 evidence: the settled-hedge / soft-deleted-hedge reconcile parity tests pass — `Exposure.open_tons` correctly returns to `order_qty` after `_get_linked_qty_map` drops dead-hedge linkages (Codex P1 §3.9 closed)
-- §6.3.7 evidence: the `compute_net_exposure` net-vs-global parity test passes — a live hedge linked to a soft-deleted order appears with full residual in `/exposures/net`, matching `/exposures/global`'s post-§3.5 behavior (Codex P1 §3.10 closed)
+- §6.3.7 evidence: the `compute_net_exposure` net-vs-global parity test passes — a live hedge linked to a soft-deleted order appears with full residual in `/exposures/net`, matching `/exposures/global`'s post-§3.5 behavior (Codex P1 §3.10 closed). Includes the partly-linked Codex case (100 MT hedge + 40 MT live linkage → 60 MT residual contribution, NOT 0) AND the cross-endpoint parity assertion that net's hedge contribution equals global's per-contract residual sum byte-for-byte
 - Reversibility behavior chosen for §3.8 (un-retire vs fresh row) when `Order.deleted_at` is cleared
 - Test counts (new, total, vs pre-PR baseline)
 - Coordination outcome with PR-4 if its merge happened mid-implementation
