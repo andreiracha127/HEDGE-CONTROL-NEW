@@ -132,9 +132,50 @@ def reconcile_exposures(
 
 The orchestrator coordinates merge order. From this PR's point of view: **assume PR-4 has not landed yet**; if it has, harmonize the exception handling so the rollback path is consistent.
 
-### 3.3 Verify other mutation surfaces
+### 3.3 Hedge task execution route — REQUIRED, not catch-all
 
-The jury cited `routes/deals.py:70-170`, `routes/exposures.py:51-57`, `services/exposure_engine.py:95-122`. Beyond those, the executor should grep for any mutating route or service that lacks audit emission:
+**File:** `backend/app/api/routes/exposures.py:85-93` (verify by grep — line numbers may shift).
+
+This is currently:
+
+```python
+@router.post("/tasks/{task_id}/execute")
+def execute_hedge_task(
+    task_id: UUID,
+    _user: dict = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    with unit_of_work(session):
+        task = ExposureEngineService.execute_task(session, task_id)
+    return HedgeTaskRead.model_validate(task)
+```
+
+`ExposureEngineService.execute_task` mutates `task.status = executed` — a **hedge task economic status** change explicitly named in jury §2 J-A1-02 mission ("...mutates `Deal`, `DealLink`, `DealPNLSnapshot`, `Exposure`, or **hedge task economic status**"). Today it commits via `unit_of_work(session)` but with NO `audit_event` Depends and NO `mark_audit_success` call — the route satisfies the boundary mechanism but not the audit invariant.
+
+**Fix directive (REQUIRED, not optional, not catch-all):**
+
+```python
+@router.post("/tasks/{task_id}/execute")
+def execute_hedge_task(
+    task_id: UUID,
+    request: Request,
+    _: None = Depends(audit_event(entity_type="hedge_task", event_type="executed")),
+    _user: dict = Depends(get_current_user),
+    session: Session = Depends(get_session),
+):
+    with unit_of_work(session, request=request):
+        task = ExposureEngineService.execute_task(session, task_id)
+        mark_audit_success(request, task.id)
+    return HedgeTaskRead.model_validate(task)
+```
+
+Note that `unit_of_work(session)` becomes `unit_of_work(session, request=request)` so the boundary picks up `request.state.audit_commit`. The `audit_event` Depends factory must include this entity_type/event_type pair in any allowlist that exists in `dependencies/audit.py` — verify and extend if needed (read the current state of that file before assuming).
+
+**Acceptance:** failing to wire this route is the difference between J-A1-02 closed and J-A1-02 left open. The checklist in §6 below makes this row explicit.
+
+### 3.4 Verify other mutation surfaces
+
+The jury cited `routes/deals.py:70-170`, `routes/exposures.py:51-57`, `services/exposure_engine.py:95-122`. Beyond §3.1–3.3, the executor should grep for any other mutating route or service that lacks audit emission:
 
 ```bash
 grep -rn "@router\\.\\(post\\|put\\|patch\\|delete\\)" backend/app/api/routes/ \
@@ -174,6 +215,7 @@ Document the audit coverage matrix in the PR description as a table.
 
 - [ ] **Coverage:** every deal-mutating route (create_deal, add/remove_link, compute_pnl_snapshot) emits a signed `AuditEvent` on success
 - [ ] **Coverage:** the reconcile route emits a signed `AuditEvent` anchored on a persisted `ReconciliationRun` (entity_id = run.id)
+- [ ] **Coverage:** `POST /exposures/tasks/{task_id}/execute` emits a signed `AuditEvent` with entity_type=`hedge_task`, event_type=`executed`, entity_id=`task.id` — fails the test if missing (per §3.3)
 - [ ] **Atomicity:** failure-injection test — service raises after `mark_audit_success` is called → `unit_of_work` rollback → no AuditEvent persisted, no Deal/DealLink/Exposure mutation persisted
 - [ ] **Atomicity:** failure-injection test — `request.state.audit_commit()` raises (e.g., signing key missing) → `unit_of_work` rollback → no mutation persisted
 - [ ] **HMAC verified:** test asserts the AuditEvent.signature is non-NULL when signing key is configured (via `_get_signing_key()`)
