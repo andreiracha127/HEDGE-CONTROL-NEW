@@ -482,23 +482,45 @@ class DealEngineService:
         link sets and serve stale P&L).
 
         Idempotency under price-source repair (Codex P2 follow-up,
-        re-revised — live-first / candidate-fallback-on-unprovable):
-        the live market lookup runs FIRST. If it succeeds, the freshly
-        computed ``price_references`` drives the hash; on a price
-        correction the hash differs from the existing row's hash and a
-        new row is persisted alongside the old (forensic trail
-        preserved). Only if the live lookup raises
-        :class:`PriceReferenceUnprovable` do we probe existing
-        snapshots: each candidate's hash is recomputed from the current
-        link set + its persisted ``price_references``, and the first
-        match is returned without raising. If no candidate matches the
-        original ``PriceReferenceUnprovable`` propagates (→ 422) so the
-        caller gets the honest "no provable evidence" answer. The probe
-        was previously the FIRST step — that variant returned the old
-        snapshot even when the live source had been corrected, so a
-        repeated ``POST /pnl-snapshot`` served stale P&L and never
-        produced the new row that the price-provenance hash is meant
-        to produce after corrections (Codex P2 on PR #22).
+        re-revised — collect-then-decide / fail-closed on partial
+        success): the live market lookup runs FIRST and is performed
+        for EVERY commodity needing a price (collect successes and
+        ``PriceReferenceUnprovable`` failures separately — never break
+        the loop on the first failure). Three outcomes:
+
+        * **All commodities priced fresh** → standard path. The freshly
+          built ``price_references`` drives the hash; on a price
+          correction the hash differs from the existing row's hash and
+          a new row is persisted alongside the old (forensic trail
+          preserved).
+        * **Partial success** (some commodities priced fresh, at least
+          one unprovable) → fail closed. Reusing a candidate would
+          silently serve stale data for the partially-corrected
+          commodities (e.g. ALU was corrected and fetched, COPPER is
+          missing, the candidate's stored ALU price is now stale);
+          building a fresh snapshot is impossible because the
+          unprovable commodity has no value. Both options are unsafe,
+          so we propagate the first ``PriceReferenceUnprovable`` (→
+          422). This is the strict interpretation: even when the
+          fresh value happens to equal the candidate's stored value,
+          we fail closed because we cannot prove the unprovable
+          commodity is consistent without a live quote.
+        * **Total unavailability** (no commodity could be priced
+          fresh) → repair scenario (e.g. upstream price feed wiped).
+          Probe existing snapshots: each candidate's hash is recomputed
+          from the current link set + its persisted
+          ``price_references``, and the first match is returned. If
+          none matches, the original ``PriceReferenceUnprovable``
+          propagates (→ 422). The candidate fallback is honest here
+          because we have ZERO fresh evidence to be stale relative to.
+
+        Earlier variants of this algorithm broke the loop on the first
+        failure and fell through to the candidate probe; that path
+        discarded the partial successes and could match a candidate
+        whose stored ``price_references`` contained the now-stale
+        corrected commodity value, returning stale P&L silently
+        (Codex P2 on PR #22). The collect-then-decide structure closes
+        that gap.
         """
         from app.services.price_lookup_service import (
             PriceQuote,
@@ -563,30 +585,60 @@ class DealEngineService:
 
         # ── Step 3-4: one lookup per unique commodity. The live
         #             lookup runs FIRST so price corrections produce a
-        #             fresh hash and a new row (forensic trail). Only
-        #             when the live source is UNPROVABLE do we fall
-        #             back to probing existing snapshots — that is the
-        #             repair scenario (CashSettlementPrice deleted
-        #             after the snapshot was persisted) and is the
-        #             ONLY case where reusing the stored
-        #             price_references is correct.
+        #             fresh hash and a new row (forensic trail).
+        #             Collect successes AND unprovable failures
+        #             separately — never break the loop on the first
+        #             failure. The collect-then-decide structure is
+        #             required to detect the partial-success case
+        #             (some commodities priced fresh, at least one
+        #             unprovable) which MUST fail closed; an earlier
+        #             try/except-around-the-loop variant could match
+        #             a candidate whose stored price_references held
+        #             the now-stale corrected commodity value and
+        #             return stale P&L silently (Codex P2 on PR #22).
+        #
+        #             ``sorted(...)`` is preserved so error reporting
+        #             is deterministic across runs (the FIRST failure
+        #             in commodity-name order is the one propagated).
+        #             Only domain-level ``PriceReferenceUnprovable`` is
+        #             collected — infrastructure errors (DB, network,
+        #             unexpected) propagate immediately as 5xx, which
+        #             is the existing contract.
         quotes_by_commodity: dict[str, PriceQuote] = {}
-        try:
-            for commodity in sorted(commodities_needing_price):
+        unprovable_errors: list[tuple[str, PriceReferenceUnprovable]] = []
+        for commodity in sorted(commodities_needing_price):
+            try:
                 quotes_by_commodity[commodity] = _get_market_quote(
                     session, commodity, snapshot_date
                 )
-        except PriceReferenceUnprovable:
-            # Live lookup failed → repair scenario. Probe existing
-            # snapshots: each candidate's hash is recomputed from the
-            # current link set + its persisted price_references; the
-            # first match is returned. Legacy (pre-PR-8) rows have
-            # their hash computed in the old format (no
-            # price_references key) so candidate_hash will not equal
-            # their stored inputs_hash — intentionally not reusable
-            # per §3.4.3 (legacy rows are sealed). If no candidate
-            # matches the ORIGINAL PriceReferenceUnprovable propagates
-            # (→ 422 at the route).
+            except PriceReferenceUnprovable as exc:
+                unprovable_errors.append((commodity, exc))
+
+        if unprovable_errors and quotes_by_commodity:
+            # Partial success → fail closed. We cannot honestly serve
+            # any answer: a candidate snapshot's stored
+            # price_references for a fresh-and-corrected commodity is
+            # stale by definition, and a fresh build is impossible
+            # because at least one commodity has no value. Even when
+            # the fresh value happens to equal the candidate's stored
+            # value, we still fail closed — we cannot prove the
+            # unprovable commodity is consistent without a live quote.
+            # Propagate the first PriceReferenceUnprovable (preserves
+            # original error context); the route maps it to 422.
+            raise unprovable_errors[0][1]
+
+        if unprovable_errors:
+            # Total unavailability → repair scenario. ZERO fresh
+            # quotes obtained, so probing existing snapshots is
+            # honest: there is no fresh evidence to be stale relative
+            # to. Each candidate's hash is recomputed from the current
+            # link set + its persisted price_references; the first
+            # match is returned. Legacy (pre-PR-8) rows have their
+            # hash computed in the old format (no price_references
+            # key) so candidate_hash will not equal their stored
+            # inputs_hash — intentionally not reusable per §3.4.3
+            # (legacy rows are sealed). If no candidate matches, the
+            # original PriceReferenceUnprovable propagates (→ 422).
             candidate_snapshots = (
                 session.query(DealPNLSnapshot)
                 .filter(
@@ -604,9 +656,7 @@ class DealEngineService:
                 )
                 if candidate_hash == candidate.inputs_hash:
                     return candidate
-            # No reusable candidate — propagate the original
-            # PriceReferenceUnprovable; the route layer maps it to 422.
-            raise
+            raise unprovable_errors[0][1]
 
         # ── Step 5: build the canonical price_references dict with
         #            string values BEFORE hashing and BEFORE persisting

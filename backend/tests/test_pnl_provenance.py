@@ -1443,3 +1443,239 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             ids = {str(r.id) for r in rows}
             assert str(legacy_id) in ids
             assert new["id"] in ids
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex P2 (PR #22 follow-up) — partial market-quote success must
+# fail closed. The collect-then-decide algorithm in compute_deal_pnl
+# distinguishes three cases:
+#   * all commodities priced fresh → standard hash-match path
+#   * partial success (≥1 fresh + ≥1 unprovable) → propagate 422
+#   * total unavailability (0 fresh) → probe candidates (repair
+#     scenario)
+# These tests pin the partial-success and total-unavailability
+# behavior for multi-commodity deals.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestPartialQuoteSuccessFailsClosed:
+    """Codex P2 — partial market-quote success must fail closed.
+
+    A multi-commodity deal where ALU is priced fresh but COPPER
+    raises ``PriceReferenceUnprovable`` previously fell through to
+    the candidate-fallback probe, which could match a candidate
+    whose stored ``price_references`` carried the now-stale
+    corrected ALU value and silently return stale P&L. The fix is
+    the collect-then-decide structure in ``compute_deal_pnl``: any
+    partial success propagates the first
+    ``PriceReferenceUnprovable`` (→ 422) and persists no new row.
+    """
+
+    def _build_multi_commodity_deal_with_snapshot(
+        self, client, session, *, snapshot_date_str: str = "2026-02-01"
+    ):
+        """Helper: ALU variable-price SO + COPPER active short hedge,
+        with a baseline snapshot persisted (both prices known).
+        """
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+        _insert_price(
+            session,
+            symbol="LME_CU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=9100.0,
+        )
+        cp_id = _create_counterparty(session)
+        r = client.post(
+            ENDPOINT, json={"name": "Partial", "commodity": "ALUMINUM"}
+        )
+        deal_id = r.json()["id"]
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price_type=PriceType.variable,
+            commodity="ALUMINUM",
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+        cu_hedge_id = _create_active_hedge(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="COPPER",
+            qty=Decimal("50"),
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "hedge", "linked_id": str(cu_hedge_id)},
+        )
+        r1 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": snapshot_date_str},
+        )
+        assert r1.status_code == 201, r1.text
+        return deal_id, r1.json()
+
+    def test_compute_deal_pnl_partial_quote_success_with_correction_fails_closed(
+        self, client, session, monkeypatch
+    ):
+        """Codex P2 — partial success + correction → fail closed.
+
+        ALU lookup returns a CORRECTED value (different from the
+        baseline snapshot's stored ALU price); COPPER lookup raises
+        ``PriceReferenceUnprovable``. The previous (try/except-around-
+        the-loop) variant would discard the partial ALU success,
+        probe candidates, and match the existing snapshot via its
+        old (uncorrected) stored ALU value — silently serving stale
+        ALU P&L. The fix propagates the first
+        ``PriceReferenceUnprovable`` (→ 422); no new snapshot is
+        persisted; the existing baseline row is unchanged.
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import (
+            PriceQuote,
+            PriceReferenceUnprovable,
+        )
+
+        deal_id, snap1 = self._build_multi_commodity_deal_with_snapshot(
+            client, session
+        )
+
+        def _mixed_quote(_session, commodity, _as_of_date):
+            if commodity == "ALUMINUM":
+                # Corrected value — DIFFERENT from the baseline 2700.
+                return PriceQuote(
+                    value=Decimal("2750"),
+                    source="lme_cash_settlement",
+                    settlement_date=date(2026, 1, 31),
+                    symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                )
+            raise PriceReferenceUnprovable(
+                f"simulated repair: {commodity} source row deleted",
+                commodity=commodity,
+            )
+
+        monkeypatch.setattr(deal_engine_mod, "_get_market_quote", _mixed_quote)
+
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        # Route must map PriceReferenceUnprovable to 422 (4xx contract).
+        assert r2.status_code == 422, r2.text
+        # The baseline snapshot is NOT returned and no new row is
+        # persisted — exactly one row exists, and it is snap1.
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .all()
+            )
+            assert len(rows) == 1
+            assert str(rows[0].id) == snap1["id"]
+            assert rows[0].inputs_hash == snap1["inputs_hash"]
+
+    def test_compute_deal_pnl_partial_quote_success_unchanged_value_fails_closed(
+        self, client, session, monkeypatch
+    ):
+        """Strict semantics — partial success ALWAYS fails closed,
+        even when the fresh ALU value EQUALS the baseline.
+
+        The unprovable COPPER commodity cannot be proven consistent
+        without a live quote, so reusing the candidate is unsafe by
+        contract regardless of whether the freshly-quoted commodities
+        happen to match. This pins the strict interpretation in the
+        dispatch §3.4.1 partial-success row.
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import (
+            PriceQuote,
+            PriceReferenceUnprovable,
+        )
+
+        deal_id, snap1 = self._build_multi_commodity_deal_with_snapshot(
+            client, session
+        )
+
+        def _mixed_quote(_session, commodity, _as_of_date):
+            if commodity == "ALUMINUM":
+                # SAME value as the baseline — no correction.
+                return PriceQuote(
+                    value=Decimal("2700"),
+                    source="lme_cash_settlement",
+                    settlement_date=date(2026, 1, 31),
+                    symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                )
+            raise PriceReferenceUnprovable(
+                f"simulated repair: {commodity} source row deleted",
+                commodity=commodity,
+            )
+
+        monkeypatch.setattr(deal_engine_mod, "_get_market_quote", _mixed_quote)
+
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 422, r2.text
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .all()
+            )
+            assert len(rows) == 1
+            assert str(rows[0].id) == snap1["id"]
+            assert rows[0].inputs_hash == snap1["inputs_hash"]
+
+    def test_compute_deal_pnl_total_unavailability_reuses_candidate(
+        self, client, session, monkeypatch
+    ):
+        """Total unavailability (multi-commodity) → repair scenario
+        reuses the candidate. ZERO fresh quotes obtained, so the
+        candidate fallback is honest (no fresh evidence to be stale
+        relative to). Mirrors the single-commodity reuse test but
+        confirms multi-commodity coverage.
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
+        deal_id, snap1 = self._build_multi_commodity_deal_with_snapshot(
+            client, session
+        )
+        snapshot_date_obj = date(2026, 2, 1)
+
+        def _all_unprovable(_session, commodity, _as_of_date):
+            raise PriceReferenceUnprovable(
+                f"simulated repair: {commodity} source row deleted",
+                commodity=commodity,
+            )
+
+        monkeypatch.setattr(
+            deal_engine_mod, "_get_market_quote", _all_unprovable
+        )
+
+        with SessionLocal() as s:
+            snap2 = DealEngineService.compute_deal_pnl(
+                s, uuid.UUID(deal_id), snapshot_date_obj
+            )
+            s.commit()
+            snap2_id = str(snap2.id)
+            snap2_hash = snap2.inputs_hash
+
+        assert snap2_id == snap1["id"]
+        assert snap2_hash == snap1["inputs_hash"]
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 1
+            )
