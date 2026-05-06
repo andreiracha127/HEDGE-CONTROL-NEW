@@ -103,8 +103,33 @@ def upgrade():
 
 **Migration constraints:**
 - Up + down + up roundtrip must pass cleanly on local Postgres
-- Do NOT run a data migration that mutates existing rows beyond the implicit cast (jury §6 subsumed S-A1-J-03/04 do NOT require data backfill, only type)
-- Document in migration docstring: "Type-only migration — values preserved by implicit cast; precision/scale match existing `Exposure.original_tons` policy."
+- **Preflight data-loss check (REQUIRED, fail-closed default).** The current schema accepts unbounded floats, so existing rows MAY have more than 3 fractional digits for MT or more than 6 for prices. Naive `ALTER COLUMN ... TYPE numeric(15,3)` would silently round those values — a §2.7 violation (precise, verifiable, audit-friendly) and exactly the kind of silent mutation §2.6 forbids. Before performing the cast, the migration must run a preflight per affected column:
+
+  ```python
+  def _assert_no_loss(op, table, col, scale):
+      result = op.get_bind().execute(sa.text(f"""
+          SELECT COUNT(*) AS n,
+                 COALESCE(MAX(scale_decimals), 0) AS max_scale
+          FROM (
+              SELECT length(split_part(({col})::text, '.', 2)) AS scale_decimals
+              FROM {table}
+              WHERE {col} IS NOT NULL
+          ) AS sub
+          WHERE scale_decimals > :scale
+      """), {"scale": scale}).one()
+      if result.n > 0:
+          raise RuntimeError(
+              f"{table}.{col}: {result.n} rows have more than {scale} fractional "
+              f"digits (max observed = {result.max_scale}). Refusing to migrate "
+              f"with silent rounding. Resolve the data first or pick a wider scale."
+          )
+  ```
+
+  Run this for each MT column at `scale=3` and each price column at `scale=6` BEFORE the `alter_column` call. If any preflight fails, the migration aborts and reports the offending table/column/count to the operator — no rounding without explicit operator action.
+
+- If a preflight reports loss, the operator's options are: (a) clean the data manually with explicit audit emission, (b) widen the target scale in this migration to preserve all observed values (and update `app/core/precision.py` to match), or (c) run a separate "round + audit" migration first that records every rounded value in audit_events. Default behavior of THIS migration is to refuse to silently round.
+- Do NOT run a data migration that mutates existing rows beyond the implicit cast (jury §6 subsumed S-A1-J-03/04 do NOT require data backfill, only type — but the preflight is required before the cast).
+- Document in migration docstring: "Type-only migration with preflight data-loss assertion; refuses silent rounding. precision/scale match existing `Exposure.original_tons` policy."
 
 ### 3.5 Frontend types regeneration
 
