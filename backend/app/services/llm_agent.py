@@ -1,14 +1,13 @@
 """LLM Agent for parsing inbound counterparty messages into structured quotes.
 
-Integrates with Azure OpenAI (GPT-4o-mini) to:
+Integrates with OpenAI (GPT-4o-mini) to:
 1. Classify message intent (QUOTE / REJECTION / QUESTION / OTHER).
 2. Extract structured quote data when intent is QUOTE.
 3. Generate outbound messages for different RFQ lifecycle events.
 
 Configuration via environment variables:
-- ``AZURE_OPENAI_ENDPOINT``
-- ``AZURE_OPENAI_API_KEY``
-- ``AZURE_OPENAI_DEPLOYMENT`` (default: ``gpt-4o-mini``)
+- ``OPENAI_API_KEY``
+- ``OPENAI_MODEL`` (default: ``gpt-4o-mini``)
 
 The agent is designed to be cost-efficient (< $0.001 per call with GPT-4o-mini)
 and includes a confidence threshold (0.85) for automatic processing.
@@ -17,11 +16,10 @@ and includes a confidence threshold (0.85) for automatic processing.
 from __future__ import annotations
 
 import json
-import os
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-import httpx
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, OpenAI
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -29,6 +27,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.schemas.llm import LLMClassifyResult, MessageIntent, ParsedQuote
 
@@ -140,38 +139,34 @@ _GENERATE_TEMPLATES = {
 
 
 # ---------------------------------------------------------------------------
-# Azure OpenAI client helpers
+# OpenAI client helpers
 # ---------------------------------------------------------------------------
 
 
-def _get_endpoint() -> str:
-    return os.getenv("AZURE_OPENAI_ENDPOINT", "").rstrip("/")
-
-
-def _get_api_key() -> str:
-    return os.getenv("AZURE_OPENAI_API_KEY", "")
-
-
-def _get_deployment() -> str:
-    return os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini")
-
-
 @retry(
-    retry=retry_if_exception_type((httpx.TimeoutException, httpx.HTTPStatusError)),
+    retry=retry_if_exception_type(
+        (APITimeoutError, APIConnectionError, APIStatusError)
+    ),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=8),
     reraise=True,
 )
 def _call_openai_with_retry(
-    url: str,
-    headers: dict[str, str],
-    body: dict[str, Any],
+    client: OpenAI,
+    model: str,
+    messages: list[dict[str, str]],
 ) -> dict[str, Any]:
     """HTTP call with exponential-backoff retry on transient failures."""
-    resp = httpx.post(url, json=body, headers=headers, timeout=30.0)
-    resp.raise_for_status()
-    data = resp.json()
-    content = data["choices"][0]["message"]["content"]
+    completion = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=0.1,
+        max_tokens=500,
+        response_format={"type": "json_object"},
+    )
+    content = completion.choices[0].message.content
+    if content is None:
+        raise KeyError("choices[0].message.content")
     return json.loads(content)
 
 
@@ -179,44 +174,32 @@ def _call_openai(
     system_prompt: str,
     user_prompt: str,
 ) -> dict[str, Any]:
-    """Call Azure OpenAI chat completions and return the parsed JSON response.
+    """Call OpenAI chat completions and return the parsed JSON response.
 
     Retries up to 3 times with exponential backoff on transient failures.
     Raises ``LLMUnavailableError`` if all attempts fail.
     """
-    endpoint = _get_endpoint()
-    api_key = _get_api_key()
-    deployment = _get_deployment()
+    settings = get_settings()
+    api_key = settings.openai_api_key
+    model = settings.openai_model or "gpt-4o-mini"
 
-    if not endpoint or not api_key:
-        raise LLMUnavailableError("Azure OpenAI not configured")
+    if not api_key:
+        raise LLMUnavailableError("OpenAI not configured")
 
-    url = (
-        f"{endpoint}/openai/deployments/{deployment}"
-        f"/chat/completions?api-version=2024-02-01"
-    )
-    headers = {
-        "api-key": api_key,
-        "Content-Type": "application/json",
-    }
-    body = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 500,
-        "response_format": {"type": "json_object"},
-    }
+    client = OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     try:
-        return _call_openai_with_retry(url, headers, body)
-    except httpx.TimeoutException:
+        return _call_openai_with_retry(client, model, messages)
+    except APITimeoutError:
         logger.error("llm_timeout_after_retries")
-        raise LLMUnavailableError("Azure OpenAI request timed out after retries")
-    except (httpx.HTTPError, KeyError, json.JSONDecodeError) as exc:
+        raise LLMUnavailableError("OpenAI request timed out after retries")
+    except (APIError, KeyError, json.JSONDecodeError) as exc:
         logger.error("llm_call_failed_after_retries", error=str(exc), exc_info=True)
-        raise LLMUnavailableError(f"Azure OpenAI call failed: {exc}") from exc
+        raise LLMUnavailableError(f"OpenAI call failed: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------

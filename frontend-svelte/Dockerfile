@@ -9,11 +9,13 @@ RUN npm run build
 # Runtime stage — non-root nginx
 FROM nginxinc/nginx-unprivileged:1-alpine
 COPY --from=build /app/build /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 
 USER root
-RUN chmod +x /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh \
+    && rm -f /etc/nginx/conf.d/default.conf \
+    && chown -R nginx:nginx /etc/nginx/conf.d
 USER nginx
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
