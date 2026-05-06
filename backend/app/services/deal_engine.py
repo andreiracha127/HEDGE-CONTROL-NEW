@@ -7,10 +7,16 @@ Physical P&L  = SO revenue − PO cost
   * Variable-price orders → qty × settlement_price (market)
 
 Financial P&L = hedge positions linked to the deal
-  All hedges use a single MTM formula (last settlement price):
+  Active hedges use a single MTM formula (last settlement price):
       sell/short → tons × (entry_price − market_price)
       buy/long   → tons × (market_price − entry_price)
-  Settled hedges are classified as **realized**, active as **MTM**.
+  Non-active hedges (settled / partially_settled / cancelled)
+  contribute **zero unrealized MTM** and require NO current price
+  lookup — their realized P&L is locked in at settlement and
+  captured by the cashflow ledger / ``compute_pl`` path. This
+  mirrors the existing ``compute_pl`` rule and is the Codex P2
+  fix for PR #22 (settled hedge must not block snapshot
+  creation on missing current quote).
 
 Total P&L = physical_revenue − physical_cost + hedge_realized + hedge_mtm
 """
@@ -448,13 +454,22 @@ class DealEngineService:
         """Compute deal P&L and persist a snapshot.
 
         Hard-fail policy (PR-8 J-A1-01): when a variable-price physical
-        leg or an active hedge requires a market price that cannot be
+        leg or an ACTIVE hedge requires a market price that cannot be
         proven (no row within the 5-day lookback), this raises
         :class:`PriceReferenceUnprovable` and persists NO snapshot —
         the unit_of_work boundary rolls back any partial work. Fixed-
         price-only deals with no active hedges persist a snapshot
         with ``price_references = NULL`` (no market price was
         consulted; NULL is the honest representation).
+
+        Settled / partially_settled / cancelled hedges contribute
+        zero unrealized MTM and require NO current price lookup
+        (Codex P2 PR #22 — mirrors ``compute_pl``'s "non-active →
+        unrealized=0" rule). Realized P&L from settlement is locked
+        in at settlement time and recorded by the cashflow ledger /
+        ``compute_pl`` path; ``compute_deal_pnl`` only re-aggregates
+        what the snapshot ledger already knows for non-active hedges
+        and does not synthesize a new market value.
 
         Idempotency (post-PR-8 only): identical
         ``(deal_id, snapshot_date, links, price_references)`` tuples
@@ -478,8 +493,14 @@ class DealEngineService:
 
         # ── Step 1-2: walk links once to determine which commodities
         #             actually require a market lookup (variable-price
-        #             physical legs + non-cancelled hedges). Fixed-
-        #             price legs and orphan-link rows do not.
+        #             physical legs + ACTIVE hedges only). Fixed-price
+        #             legs, orphan-link rows, and non-active hedges
+        #             (settled / partially_settled / cancelled) do not
+        #             — settled hedges contribute realized P&L locked
+        #             in at settlement, not unrealized MTM, so a
+        #             missing current quote MUST NOT block snapshot
+        #             creation (Codex P2 PR #22; mirrors compute_pl's
+        #             "non-active hedge → zero unrealized MTM" rule).
         commodities_needing_price: set[str] = set()
         # We also pre-resolve order/contract objects to avoid double
         # session.get() calls below.
@@ -508,7 +529,14 @@ class DealEngineService:
                 if contract.status == HedgeContractStatus.cancelled:
                     continue
                 resolved_contracts[link.id] = contract
-                commodities_needing_price.add(contract.commodity)
+                # Only ACTIVE hedges require a current market quote.
+                # Settled / partially_settled hedges have zero
+                # unrealized MTM (their realized P&L is locked at
+                # settlement and captured separately by the cashflow
+                # ledger / compute_pl path); a missing current quote
+                # for them must not block snapshot creation.
+                if contract.status == HedgeContractStatus.active:
+                    commodities_needing_price.add(contract.commodity)
 
         # ── Step 3-4: one lookup per unique commodity. Any missing
         #             price hard-fails the entire snapshot — no
@@ -595,28 +623,38 @@ class DealEngineService:
                 price = quantize_price(contract.fixed_price_value)
                 is_sell = contract.classification == HedgeClassification.short
 
-                quote = quotes_by_commodity.get(contract.commodity)
-                if quote is None:
-                    # Defensive: step 3 should have raised. Re-raise
-                    # here rather than fall back to Decimal("0") —
-                    # never silently zero a hedge MTM.
-                    from app.services.price_lookup_service import (
-                        PriceReferenceUnprovable,
-                    )
+                if contract.status != HedgeContractStatus.active:
+                    # Settled / partially_settled hedges: zero
+                    # unrealized MTM. Realized P&L from settlement
+                    # is locked in at settlement time and captured
+                    # by the cashflow ledger (see compute_pl) — not
+                    # recomputed here from a current market price.
+                    # Mirrors the existing compute_pl semantics:
+                    # ``contract.status != active → unrealized=0``.
+                    mtm = Decimal("0")
+                else:
+                    quote = quotes_by_commodity.get(contract.commodity)
+                    if quote is None:
+                        # Defensive: step 3 should have raised. Re-raise
+                        # here rather than fall back to Decimal("0") —
+                        # never silently zero an ACTIVE hedge MTM.
+                        from app.services.price_lookup_service import (
+                            PriceReferenceUnprovable,
+                        )
 
-                    raise PriceReferenceUnprovable(
-                        f"hedge contract {contract.id} cannot be MTM-valued: "
-                        f"no market price for {contract.commodity} on "
-                        f"snapshot date",
-                        commodity=contract.commodity,
-                    )
-                market_price = quantize_price(quote.value)
+                        raise PriceReferenceUnprovable(
+                            f"hedge contract {contract.id} cannot be MTM-valued: "
+                            f"no market price for {contract.commodity} on "
+                            f"snapshot date",
+                            commodity=contract.commodity,
+                        )
+                    market_price = quantize_price(quote.value)
 
-                mtm = quantize_money(
-                    tons * (price - market_price)
-                    if is_sell
-                    else tons * (market_price - price)
-                )
+                    mtm = quantize_money(
+                        tons * (price - market_price)
+                        if is_sell
+                        else tons * (market_price - price)
+                    )
 
                 if contract.status == HedgeContractStatus.settled:
                     hedge_pnl_realized += mtm
@@ -738,7 +776,14 @@ class DealEngineService:
                         # below short-circuits to pnl=0.
                         continue
                     resolved_contracts[link.id] = contract
-                    commodities_needing_price.add(contract.commodity)
+                    # Only ACTIVE hedges require a current market quote.
+                    # Settled / partially_settled hedges have zero
+                    # unrealized MTM (Codex P2 PR #22 — settled hedges
+                    # must not be blocked by a missing current quote;
+                    # mirrors compute_pl's "non-active → unrealized=0"
+                    # rule).
+                    if contract.status == HedgeContractStatus.active:
+                        commodities_needing_price.add(contract.commodity)
 
             # One lookup per unique commodity; PriceReferenceUnprovable
             # propagates from any missing commodity → 422 at the route.
@@ -825,11 +870,18 @@ class DealEngineService:
                     price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
-                    # Cancelled hedges contribute zero P&L. All other
-                    # hedge statuses MUST have a per-commodity market
-                    # price; a missing one would have raised
+                    # Non-active hedges contribute zero unrealized
+                    # MTM and require no current quote (Codex P2
+                    # PR #22):
+                    #   * cancelled → no P&L at all
+                    #   * settled / partially_settled → realized
+                    #     P&L locked in at settlement (captured by
+                    #     compute_pl / cashflow ledger), zero
+                    #     unrealized MTM here
+                    # Only ACTIVE hedges MUST have a per-commodity
+                    # market price; a missing one would have raised
                     # PriceReferenceUnprovable above.
-                    if contract.status == HedgeContractStatus.cancelled:
+                    if contract.status != HedgeContractStatus.active:
                         pnl = Decimal("0")
                         hedge_market_price: Decimal | None = None
                     else:
@@ -837,7 +889,7 @@ class DealEngineService:
                         if quote is None:
                             # Defensive: the per-commodity loop above
                             # should have raised. Re-raise rather than
-                            # silently zero a hedge MTM.
+                            # silently zero an ACTIVE hedge MTM.
                             from app.services.price_lookup_service import (
                                 PriceReferenceUnprovable,
                             )

@@ -22,7 +22,7 @@ from app.models.contracts import (
     HedgeLegSide,
 )
 from app.models.counterparty import Counterparty
-from app.models.deal import DealPNLSnapshot
+from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
 from app.services.deal_engine import DealEngineService
@@ -586,3 +586,272 @@ class TestBreakdownPerCommodityPricing:
         # No partial result returned — error envelope only.
         body = r2.json()
         assert "deals" not in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex P2 (PR #22): settled hedges must NOT trigger a current price
+# lookup. Snapshot creation succeeds with `price_references = NULL`
+# when the only market-price-needing leg is a settled hedge; the
+# settled hedge contributes ZERO unrealized MTM. Mirrors the existing
+# `compute_pl` semantics ("contract.status != active → unrealized=0").
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _create_hedge_with_status(
+    session,
+    cp_id: uuid.UUID,
+    *,
+    classification: HedgeClassification,
+    commodity: str,
+    contract_status: HedgeContractStatus,
+) -> uuid.UUID:
+    """Create a hedge contract pinned to a specific status.
+
+    Used to test the settled-hedge price-skip path. Note that the
+    public `add_link` API can only attach hedges to deals that
+    contain a variable-price order matching the hedge direction;
+    this fixture is paired with direct ``DealLink`` inserts to
+    bypass that gate when the scenario under test is intentionally
+    a fixed-price + settled-hedge data state.
+    """
+    fixed_side = (
+        HedgeLegSide.buy
+        if classification == HedgeClassification.long
+        else HedgeLegSide.sell
+    )
+    var_side = (
+        HedgeLegSide.sell if fixed_side == HedgeLegSide.buy else HedgeLegSide.buy
+    )
+    contract = HedgeContract(
+        reference=f"HC-{uuid.uuid4().hex[:8].upper()}",
+        counterparty_id=str(cp_id),
+        commodity=commodity,
+        quantity_mt=Decimal("100"),
+        fixed_price_value=Decimal("2450"),
+        fixed_price_unit="USD/MT",
+        fixed_leg_side=fixed_side,
+        variable_leg_side=var_side,
+        classification=classification,
+        premium_discount=Decimal("0"),
+        settlement_date=date(2026, 9, 30),
+        trade_date=date(2026, 1, 1),
+        status=contract_status,
+        source_type="manual",
+    )
+    session.add(contract)
+    session.commit()
+    session.refresh(contract)
+    return contract.id
+
+
+class TestSettledHedgeSkipsMarketLookup:
+    """A settled hedge must not require a current D-1 quote.
+
+    Codex P2 finding (PR #22): when a deal has only fixed-price
+    physical legs plus a fully settled hedge, the prior PR-22 code
+    still added the hedge commodity to ``commodities_needing_price``
+    and called the price service, returning 422 on missing quotes.
+    That contradicted both PR-8's stated contract for fixed-price-
+    only deals and the repo's ``compute_pl`` rule (non-active hedge
+    → zero unrealized MTM). This test pins the corrected behavior:
+    settled hedges contribute zero MTM and need no quote.
+    """
+
+    def test_compute_deal_pnl_skips_settled_hedge_market_price_lookup(
+        self, session
+    ):
+        # Setup: deal with one fixed-price PO (no market price needed)
+        # and one fully SETTLED short hedge in the same commodity.
+        # No CashSettlementPrice rows exist for ALUMINUM, so any call
+        # into the price-lookup service would raise. The expected
+        # behavior is: snapshot is created, price_references = None,
+        # and the settled hedge contributes zero unrealized MTM.
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="FixedPlusSettledHedge",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.settled,
+        )
+
+        # Direct DealLink inserts — bypass the API hedge-direction
+        # gate, which would reject linking a hedge to a deal that
+        # has only a fixed-price order. The data state under test
+        # (fixed-price leg + settled hedge) is reachable in
+        # production via prior mutations (e.g., hedge created
+        # while the SO was variable, then SO and hedge mutated to
+        # their current states).
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        # Act: compute_deal_pnl must NOT raise PriceReferenceUnprovable.
+        snap = DealEngineService.compute_deal_pnl(
+            session, deal.id, date(2026, 2, 1)
+        )
+
+        # Assert: snapshot was created, price_references is None
+        # (no commodity was looked up), and the settled hedge
+        # contributed zero unrealized MTM.
+        assert snap is not None
+        assert snap.price_references is None
+        assert snap.physical_revenue == Decimal("0")
+        assert snap.physical_cost == Decimal("240000.000000")
+        # Settled hedge → zero unrealized MTM (Codex P2 fix); also
+        # zero realized P&L from this snapshot path (true realized
+        # P&L lives in the cashflow ledger / compute_pl, untouched).
+        assert snap.hedge_pnl_realized == Decimal("0")
+        assert snap.hedge_pnl_mtm == Decimal("0")
+        assert snap.total_pnl == Decimal("-240000.000000")
+
+    def test_compute_deal_pnl_active_hedge_still_requires_quote(self, session):
+        """Regression guard: same scenario but with an ACTIVE hedge → 422.
+
+        The settled-hedge price-skip must NOT relax the active-hedge
+        contract; missing market price for an active hedge is still
+        a PriceReferenceUnprovable.
+        """
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="FixedPlusActiveHedge",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.active,
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        with pytest.raises(PriceReferenceUnprovable):
+            DealEngineService.compute_deal_pnl(
+                session, deal.id, date(2026, 2, 1)
+            )
+
+    def test_compute_pnl_breakdown_skips_settled_hedge_market_price_lookup(
+        self, session
+    ):
+        """compute_pnl_breakdown must apply the same filter.
+
+        Same data state as the compute_deal_pnl test: fixed-price PO
+        + settled hedge, no D-1 prices in DB. Breakdown must succeed
+        with hedge_pnl_mtm = 0 and the settled hedge appearing in
+        financial_items with pnl=0 and market_price=None.
+        """
+        cp_id = _create_counterparty(session)
+        deal = Deal(
+            reference=f"D-{uuid.uuid4().hex[:8].upper()}",
+            name="BreakdownFixedPlusSettled",
+            commodity="ALUMINUM",
+        )
+        session.add(deal)
+        session.commit()
+        session.refresh(deal)
+
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("100"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+            commodity="ALUMINUM",
+        )
+        hedge_id = _create_hedge_with_status(
+            session,
+            cp_id,
+            classification=HedgeClassification.short,
+            commodity="ALUMINUM",
+            contract_status=HedgeContractStatus.settled,
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.purchase_order,
+                linked_id=po_id,
+            )
+        )
+        session.add(
+            DealLink(
+                deal_id=deal.id,
+                linked_type=DealLinkedType.hedge,
+                linked_id=hedge_id,
+            )
+        )
+        session.commit()
+
+        result = DealEngineService.compute_pnl_breakdown(
+            session, [deal.id], date(2026, 2, 1)
+        )
+
+        assert len(result["deals"]) == 1
+        d = result["deals"][0]
+        assert d["physical_revenue"] == Decimal("0")
+        assert d["physical_cost"] == Decimal("240000.000000")
+        assert d["hedge_pnl_realized"] == Decimal("0")
+        assert d["hedge_pnl_mtm"] == Decimal("0")
+        assert d["total_pnl"] == Decimal("-240000.000000")
+        assert len(d["financial_items"]) == 1
+        fi = d["financial_items"][0]
+        assert fi["status"] == "settled"
+        # Settled hedge: no market price was consulted; pnl is zero.
+        assert fi["market_price"] is None
+        assert fi["pnl"] == Decimal("0")
