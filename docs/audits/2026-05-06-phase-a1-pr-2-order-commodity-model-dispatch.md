@@ -31,16 +31,19 @@ Add a required `commodity` column to `Order`, populate existing rows by data mig
 
 File: `backend/app/models/orders.py:49-106`
 
-- Add `commodity: Mapped[str] = mapped_column(String(32), nullable=False, index=True)`
-- Mirror existing `HedgeContract.commodity` semantics (case, length, allowed values). Read `backend/app/models/contracts.py` for the existing pattern; reuse the same enum / constants if a `Commodity` enum exists, else define one (look in `backend/app/models/__init__.py` for existing Commodity definitions before creating a new one).
+- Mirror existing `HedgeContract.commodity` **exactly** — column length, case convention, and validation. Before writing the column definition, verify the actual values:
+  - `grep -n "commodity" backend/app/models/contracts.py` — the column is `String(length=64)` at the time of writing; use the value you observe, not this number, in case the file evolves before this PR lands.
+  - `grep -n "commodity" backend/app/schemas/contracts.py` — the create schema accepts up to ~50 chars; reuse the same `max_length` validator on `OrderCreate.commodity`.
+- Add `commodity: Mapped[str] = mapped_column(String(<observed length, match HedgeContract>), nullable=False, index=True)`. Do NOT use a smaller length than `HedgeContract.commodity`; identifiers in the 33–50 char range that are valid for hedge contracts must remain assignable to orders.
+- If a `Commodity` enum exists (search `backend/app/models/__init__.py` and `backend/app/models/contracts.py` for `class Commodity` or similar), reuse it. If only a plain `str + max_length` validator exists today (likely), match that — do NOT invent an enum just for orders.
 
 ### 3.2 Pydantic schema update
 
 Files: `backend/app/schemas/orders.py` (or wherever `OrderCreate` / `OrderRead` live; grep `class OrderCreate` to locate).
 
-- Add `commodity: str` (or the Commodity enum) as **required** in `OrderCreate`.
+- Add `commodity: str` as **required** in `OrderCreate` (or the existing `Commodity` enum if one is in use for HedgeContract — verify by grep before assuming).
 - Read in `OrderRead`.
-- Validation: must match an allowed Commodity value (use the same enum used for HedgeContract).
+- Validation: reuse the same `max_length` constraint that `HedgeContractCreate.commodity` already enforces (≈50 at the time of writing — verify by reading `backend/app/schemas/contracts.py`). Do NOT invent a stricter limit.
 
 ### 3.3 Alembic migration — schema + data
 
