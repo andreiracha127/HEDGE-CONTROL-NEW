@@ -76,7 +76,9 @@ The `/exposures/global` and `/exposures/commercial` responses now return per-com
 - Find frontend callsites that consume `/exposures/global` / `/exposures/commercial` (grep `lib/api`)
 - Update frontend rendering to iterate per-commodity (do NOT silently sum across commodities — that's the bug we're fixing)
 
-If the existing UI was Aluminum-only, the rendering can fall through to the first row in MVP; document the limitation in the PR description and open a follow-up issue for proper multi-commodity UI.
+**Frontend rendering is non-negotiable: render every commodity row in the response.** Silently rendering only the first row recreates the exact silent risk-reporting blindness this PR is fixing — operators would see Aluminum exposure but Copper / Zinc / etc. exposures would be invisibly hidden, producing the same downstream decisions the netting bug produced. Constitution §2.1, §2.5, §2.7 forbid this.
+
+If implementing a polished multi-commodity layout is too large for this PR, the **only** acceptable fallback is to render an explicit user-visible notice (`"⚠️ Multiple commodities present — UI rendering of N additional commodities not yet implemented; consult /api/exposures/* for full data"`) **whenever** the response contains more than one commodity row. Never display a partial subset without that notice. Open a follow-up issue for the polished UI; do NOT use the issue as cover to ship silent dropping.
 
 ---
 

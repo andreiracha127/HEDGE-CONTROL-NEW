@@ -66,9 +66,15 @@ For each `commit()` removed:
 ### 3.3 Update the in-scope routes
 
 Files cited (jury §3 J-A1-OPUS-06):
-- `backend/app/api/routes/linkages.py:58-62` — already has audit pattern; refactor to use the new boundary mechanism (dependency / context manager)
-- `backend/app/api/routes/deals.py` — explicitly out of scope for **adding** audit (PR-7); but if you remove `session.commit()` from `DealEngineService`, the routes must commit. Add the commit step (without audit emission yet — that's PR-7 territory; document this explicitly so PR-7 just adds `audit_event` calls and not the commit plumbing)
-- `backend/app/api/routes/exposures.py` — same as deals; commit move only
+- `backend/app/api/routes/linkages.py:58-62` — already has audit pattern; refactor to use the new boundary mechanism (dependency / context manager) defined in §3.1.
+- `backend/app/api/routes/deals.py` — explicitly out of scope for **adding** audit emission (PR-7 territory). However, when service-layer commits are removed from `DealEngineService`, deal routes MUST consume the **same** boundary mechanism defined in §3.1 — they MUST NOT add bare `session.commit()` calls of their own. The boundary is unified across linkage, deal, exposure routes; PR-7 then plugs `audit_event` emission INTO that single boundary, not around per-route commits. If you add per-route bare commits here, you reintroduce the half-managed commit/audit pattern this PR is meant to eliminate.
+- `backend/app/api/routes/exposures.py` — same rule as deals: consume the unified boundary; no bare commits.
+
+Concretely, after this PR every in-scope route should look like one of:
+- (Option A) the route relies on a FastAPI dependency that opens a transaction, calls the service (which only flushes), and commits on dependency exit; OR
+- (Option B / C as defined in §3.1) the equivalent unified boundary chosen.
+
+A route that calls `session.commit()` directly is a regression of this PR.
 
 ### 3.4 Test boundary coverage
 
