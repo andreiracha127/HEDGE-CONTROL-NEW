@@ -1992,10 +1992,10 @@ class TestPostgresServerSideSequence:
         assert seq_a != seq_b, (
             f"two concurrent workers got DUPLICATE sequence values "
             f"({seq_a} == {seq_b}) — the server-side sequence is not "
-            f"being consulted. The Python default likely shadowed the "
-            f"server-side nextval(); verify that "
-            f"_portable_sequence_default returns None on PG and the "
-            f"column has server_default=nextval(...)."
+            f"being consulted. Verify the column has the Sequence(...) "
+            f"declaration with NO Python default= (so SQLAlchemy "
+            f"pre-executes nextval('seq')) and that migration 031 binds "
+            f"server_default=nextval(...) on the column."
         )
 
 
