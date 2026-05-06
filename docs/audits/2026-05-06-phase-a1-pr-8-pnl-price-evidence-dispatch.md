@@ -169,26 +169,52 @@ The exception propagates; `compute_deal_pnl` does NOT persist a `DealPNLSnapshot
 The model at `backend/app/models/deal.py:129-157` (verify line range) gets a single nullable JSONB column `price_references` that holds a dict keyed by commodity:
 
 ```python
+from sqlalchemy import event
+from sqlalchemy.orm import validates
 from sqlalchemy.dialects.postgresql import JSONB
 
 class DealPNLSnapshot(Base):
-    __table_args__ = (
-        # price_references is either NULL (no market price was consulted —
-        # fixed-price-only deal with no active hedges) OR a non-empty JSON
-        # object whose keys are commodities and whose values are the
-        # full {value, source, settlement_date} for that commodity's
-        # consulted price. NULL is the honest representation of "absent";
-        # an empty object {} is rejected (it would be ambiguous with NULL).
-        CheckConstraint(
-            "price_references IS NULL"
-            " OR (jsonb_typeof(price_references) = 'object' AND price_references <> '{}'::jsonb)",
-            name="chk_deal_pnl_snapshot_price_references_shape",
-        ),
-    )
+    # NOTE: NO CheckConstraint on price_references in __table_args__.
+    # The repo's tests use SQLite (`backend/tests/conftest.py` sets
+    # DATABASE_URL=sqlite+pysqlite:///:memory: and recreates schema via
+    # Base.metadata.create_all()). Postgres-specific syntax like
+    # jsonb_typeof(...) and ::jsonb cast in __table_args__ would fail
+    # SQLite create_all() before any test could run. Production gets the
+    # CHECK via a dialect-guarded Alembic migration (§3.4.3); the model-
+    # layer @validates below provides portable enforcement that runs in
+    # both SQLite and Postgres test/prod paths.
     ...
     price_references: Mapped[dict | None] = mapped_column(
         JSONB, nullable=True
     )
+
+    @validates("price_references")
+    def _validate_price_references(self, _key, value):
+        """Portable enforcement of the price_references shape — runs in both
+        SQLite (tests) and Postgres (prod). NULL is acceptable (no market
+        price consulted). Non-NULL must be a non-empty dict (empty {} is
+        ambiguous with NULL and forbidden). Per-entry shape (value, source,
+        settlement_date keys) is enforced by compute_deal_pnl at write time;
+        @validates is a defensive guard against direct ORM misuse.
+        """
+        if value is None:
+            return value
+        if not isinstance(value, dict):
+            raise ValueError("price_references must be None or a dict")
+        if not value:
+            raise ValueError(
+                "price_references must be None or a non-empty dict — "
+                "empty {} is ambiguous with NULL and forbidden"
+            )
+        for commodity, entry in value.items():
+            if not isinstance(entry, dict):
+                raise ValueError(f"price_references[{commodity!r}] must be a dict")
+            for required in ("value", "source", "settlement_date"):
+                if required not in entry:
+                    raise ValueError(
+                        f"price_references[{commodity!r}] missing required key {required!r}"
+                    )
+        return value
     # JSONB shape (when non-NULL):
     #   {
     #       "ALUMINUM": {"value": "5500.123456", "source": "lme_cash_settlement", "settlement_date": "2026-05-05"},
@@ -288,22 +314,36 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 def upgrade():
-    # Add the single nullable JSONB column + CHECK constraint (per §3.4.1) ONLY.
-    # Do NOT touch existing inputs_hash values.
+    # Add the single nullable JSONB column. Do NOT touch existing inputs_hash.
     op.add_column(
         "deal_pnl_snapshots",
         sa.Column("price_references", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     )
-    op.create_check_constraint(
-        "chk_deal_pnl_snapshot_price_references_shape",
-        "deal_pnl_snapshots",
-        "price_references IS NULL"
-        " OR (jsonb_typeof(price_references) = 'object' AND price_references <> '{}'::jsonb)",
-    )
+
+    # Dialect-guarded CHECK: Postgres only. The CHECK predicate uses
+    # jsonb_typeof(...) and ::jsonb cast, which are Postgres-specific.
+    # The repo's test suite runs against SQLite via Base.metadata.create_all();
+    # an unguarded CHECK in the model __table_args__ would break test
+    # schema creation. The model-level @validates (§3.4.1) provides
+    # portable shape enforcement; this CHECK is the production
+    # belt-and-suspenders.
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.create_check_constraint(
+            "chk_deal_pnl_snapshot_price_references_shape",
+            "deal_pnl_snapshots",
+            "price_references IS NULL"
+            " OR (jsonb_typeof(price_references) = 'object' AND price_references <> '{}'::jsonb)",
+        )
 
 
 def downgrade():
-    op.drop_constraint("chk_deal_pnl_snapshot_price_references_shape", "deal_pnl_snapshots")
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        op.drop_constraint(
+            "chk_deal_pnl_snapshot_price_references_shape",
+            "deal_pnl_snapshots",
+        )
     op.drop_column("deal_pnl_snapshots", "price_references")
 ```
 
@@ -356,7 +396,7 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 
 - [ ] **Test:** `POST /deals/{id}/pnl-snapshot` for a deal with a variable-price physical leg + commodity for which no D-1 settlement price exists → returns 422 (or chosen status); no `DealPNLSnapshot` row persisted
 - [ ] **Test:** Same scenario with an active hedge contract → 422; no snapshot persisted
-- [ ] **Test:** Fixed-price-only deal (no variable-price legs, no hedges) → snapshot persists; `price_references` is `NULL` (legitimately absent — no market price was consulted); the `chk_deal_pnl_snapshot_price_references_shape` CHECK accepts this state. (CHECK rejection of malformed `price_references` values is covered in §6.2 against the JSONB design.)
+- [ ] **Test (portable):** Fixed-price-only deal (no variable-price legs, no hedges) → snapshot persists with `price_references = NULL` (legitimately absent — no market price was consulted). The model `@validates("price_references")` accepts `None`; runs in both SQLite (tests) and Postgres (prod).
 - [ ] **Test:** Mixed deal (fixed + variable) where variable-price commodity has no price → 422 (the variable-price leg requires evidence)
 - [ ] **Test:** Happy path (all legs valuable) → snapshot persists with `price_references` populated as a dict keyed by every commodity consumed (one entry per unique commodity per the §3.4.1 algorithm)
 - [ ] **Test:** `_get_market_price` raises `PriceReferenceUnprovable` (or chosen exception) on missing price; no `return None` path exists (verify by inspection)
@@ -364,15 +404,16 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 
 ### 6.2 Provenance
 
-- [ ] **Migration:** schema has the single `price_references` JSONB column (nullable) and the `chk_deal_pnl_snapshot_price_references_shape` CHECK constraint
+- [ ] **Migration:** schema has the single `price_references` JSONB column (nullable). The `chk_deal_pnl_snapshot_price_references_shape` CHECK is added **only on PostgreSQL** (dialect-guarded per §3.4.3). SQLite test schema creates the column without the CHECK; the model `@validates` enforces shape portably.
 - [ ] **Migration:** legacy `inputs_hash` values are **byte-equal** before and after the migration — the migration does not rewrite them (per §3.4.3 — backfilling from current `deal_links` would silently bind legacy snapshots to current link sets and serve stale P&L)
 - [ ] **Test (migration boundary):** create a `DealPNLSnapshot` row at the pre-migration state, run the migration, assert `inputs_hash` byte-equal pre- and post-migration; then call `compute_deal_pnl(...)` for the same deal (fixed-price-only) post-migration and assert it creates a NEW row (different `inputs_hash`), legacy row preserved
 - [ ] **Test:** Single-commodity variable-price snapshot has `price_references = {commodity: {value, source, settlement_date}}` populated from `get_cash_settlement_price_d1_with_provenance`
 - [ ] **Test (multi-commodity):** Snapshot consuming Aluminum + Copper (e.g., fixed Aluminum order + active Copper hedge) has `price_references` with BOTH commodity keys populated; correcting either price (mock different return) yields a different `inputs_hash` and produces a new snapshot row
 - [ ] **Test (weekend lookback):** Snapshot whose `snapshot_date` is a Monday and whose lookup falls back to Friday's price — `price_references[commodity]["settlement_date"]` equals the actual Friday date, NOT `Monday - 1` (Sunday)
 - [ ] **Test (deduplication):** Snapshot with two legs of the same commodity → `price_references` has exactly ONE entry for that commodity (one lookup, deduplicated)
-- [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has `price_references = NULL`; CHECK constraint accepts this state
-- [ ] **Test (CHECK):** Manually inserting a row with `price_references = {}` (empty object) is rejected by CHECK (ambiguous with NULL)
+- [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has `price_references = NULL`; both `@validates` and (Postgres-only) CHECK constraint accept this state
+- [ ] **Test (validator, portable — runs on SQLite):** Constructing or updating a `DealPNLSnapshot` with `price_references = {}` raises `ValueError` from the model `@validates` method before any DB write. Same for `price_references = {"ALUMINUM": {}}` (missing inner keys) and `price_references = {"ALUMINUM": {"value": "1"}}` (incomplete inner dict).
+- [ ] **Test (CHECK, Postgres-only — skip on SQLite):** Direct SQL `INSERT INTO deal_pnl_snapshots (..., price_references) VALUES (..., '{}'::jsonb)` is rejected by `chk_deal_pnl_snapshot_price_references_shape` with IntegrityError. Test should use `pytest.mark.skipif(dialect != "postgresql", reason="CHECK is Postgres-only")` or equivalent.
 - [ ] **Idempotency contract scoped to post-PR-8 snapshots:** test asserts two consecutive post-PR-8 calls for the same `(deal, date, links, price_references)` return the SAME row; legacy snapshots are NOT in scope of this rule
 - [ ] **Test:** Two snapshots for the same `(deal, date, links)` but with a different price for any one commodity (mocked via the new `get_cash_settlement_price_d1_with_provenance`) produce DIFFERENT `inputs_hash` → both rows persist; the latest does NOT silently overwrite the earlier
 - [ ] **Test:** Re-running `compute_deal_pnl` with no input change returns the existing snapshot (idempotency preserved — applies to post-PR-8 snapshots only per §3.4.3)

@@ -381,7 +381,7 @@ J-A1-02.
 
 ## 10. Constraints — what NOT to do
 
-- DO NOT modify `audit_trail_service.py` HMAC signing logic
+- DO NOT modify `audit_trail_service.py` HMAC signing logic, EXCEPT for the scope-local fail-closed guard required by §3.4 (raise `MissingAuditSigningKey` when `_get_signing_key()` returns `None`; add the new exception class). Broader changes — HMAC algorithm, key derivation, rotation strategy — stay forbidden (Phase A5)
 - DO NOT reinvent the audit emission pattern — copy from `routes/linkages.py:48-64`
 - DO NOT call `session.commit()` from any route or service (PR-3 boundary preserved)
 - DO NOT add audit emission to read-only routes
