@@ -14,6 +14,7 @@ describe('AuthStore', () => {
 
 	beforeEach(async () => {
 		vi.useFakeTimers();
+		sessionStorage.clear();
 		vi.resetModules();
 		// Import fresh goto mock (same instance that auth.svelte will use)
 		const navMod = await import('$app/navigation');
@@ -24,6 +25,7 @@ describe('AuthStore', () => {
 	});
 
 	afterEach(() => {
+		sessionStorage.clear();
 		vi.useRealTimers();
 	});
 
@@ -56,6 +58,23 @@ describe('AuthStore', () => {
 
 		it('throws on malformed base64 payload', () => {
 			expect(() => authStore.login('a.!!!.c')).toThrow('Invalid token');
+		});
+
+		it('restores authenticated state from session storage after reload', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			authStore.login(token);
+
+			vi.resetModules();
+			const mod = await import('./auth.svelte');
+
+			expect(mod.authStore.isAuthenticated).toBe(true);
+			expect(mod.authStore.userName).toBe('Test User');
+			expect(mod.authStore.getAuthHeader()).toBe(`Bearer ${token}`);
 		});
 	});
 

@@ -8,7 +8,7 @@ test.describe('Contracts', () => {
 
 	test('contract list page loads', async ({ page }) => {
 		await page.goto('/contracts');
-		await expect(page.locator('text=Contratos')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Contratos' })).toBeVisible();
 	});
 
 	test('contract list shows filter dropdown', async ({ page }) => {

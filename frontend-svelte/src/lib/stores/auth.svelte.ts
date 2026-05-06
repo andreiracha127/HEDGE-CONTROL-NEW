@@ -10,6 +10,8 @@ interface JwtClaims {
 	iat?: number;
 }
 
+const SESSION_TOKEN_KEY = 'hedge-control.auth.token';
+
 function decodeJwtPayload(token: string): JwtClaims {
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('Invalid JWT format');
@@ -32,6 +34,10 @@ class AuthStore {
 	/** Session expiry warning flag — true when <5min remain */
 	showExpiryWarning = $state(false);
 
+	constructor() {
+		this.#restoreSession();
+	}
+
 	login(token: string) {
 		try {
 			const claims = decodeJwtPayload(token);
@@ -39,6 +45,7 @@ class AuthStore {
 			this.#claims = claims;
 			this.showExpiryWarning = false;
 			this.#redirecting = false;
+			this.#persistToken(token);
 			this.#setupExpiryTimers(claims);
 		} catch {
 			this.logout();
@@ -48,6 +55,7 @@ class AuthStore {
 
 	logout() {
 		this.#clearTimers();
+		this.#clearStoredToken();
 		this.#token = null;
 		this.#claims = null;
 		this.showExpiryWarning = false;
@@ -104,6 +112,40 @@ class AuthStore {
 		if (this.#expiryWarningTimer) clearTimeout(this.#expiryWarningTimer);
 		this.#expiryTimer = null;
 		this.#expiryWarningTimer = null;
+	}
+
+	#restoreSession() {
+		const token = this.#getStorage()?.getItem(SESSION_TOKEN_KEY);
+		if (!token) return;
+
+		try {
+			const claims = decodeJwtPayload(token);
+			if (claims.exp && claims.exp * 1000 <= Date.now()) {
+				this.#clearStoredToken();
+				return;
+			}
+
+			this.#token = token;
+			this.#claims = claims;
+			this.showExpiryWarning = false;
+			this.#redirecting = false;
+			this.#setupExpiryTimers(claims);
+		} catch {
+			this.#clearStoredToken();
+		}
+	}
+
+	#persistToken(token: string) {
+		this.#getStorage()?.setItem(SESSION_TOKEN_KEY, token);
+	}
+
+	#clearStoredToken() {
+		this.#getStorage()?.removeItem(SESSION_TOKEN_KEY);
+	}
+
+	#getStorage(): Storage | null {
+		if (typeof sessionStorage === 'undefined') return null;
+		return sessionStorage;
 	}
 }
 

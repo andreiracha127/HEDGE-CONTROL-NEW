@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { createDevToken, loginAsAdmin } from './helpers';
+import { loginAsAdmin } from './helpers';
 
 test.describe('Login → Dashboard flow', () => {
 	test('redirects unauthenticated users to /login', async ({ page }) => {
@@ -25,7 +25,8 @@ test.describe('Login → Dashboard flow', () => {
 	test('authenticates with valid dev token and reaches dashboard', async ({ page }) => {
 		await loginAsAdmin(page);
 		// Dashboard should show key elements
-		await expect(page.locator('text=RFQs Ativos')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('link', { name: /RFQs Gerenciar cotações/ })).toBeVisible();
 	});
 
 	test('navigates between sections after login', async ({ page }) => {
@@ -34,7 +35,7 @@ test.describe('Login → Dashboard flow', () => {
 		// Navigate to contracts
 		await page.locator('a[href="/contracts"]').first().click();
 		await expect(page).toHaveURL(/\/contracts/);
-		await expect(page.locator('text=Contratos')).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Contratos' })).toBeVisible();
 
 		// Navigate to exposures
 		await page.locator('a[href="/exposures"]').first().click();
