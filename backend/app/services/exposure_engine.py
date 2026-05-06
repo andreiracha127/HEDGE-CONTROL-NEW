@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
 from app.models.exposure import (
     Exposure,
     ExposureDirection,
@@ -215,8 +216,6 @@ class ExposureEngineService:
           Convention: positive = Vendido (short), negative = Comprado (long).
           Formula: (SO_open - PO_open) + global_short - global_long
         """
-        from app.models.contracts import HedgeContract, HedgeClassification
-
         # ── 1. Commercial exposures (from Exposure table) ──
         q = session.query(
             Exposure.commodity,
