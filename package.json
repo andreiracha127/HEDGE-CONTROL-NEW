@@ -3,13 +3,10 @@
   "description": "Hedge Control Platform — monorepo root",
   "scripts": {
     "backend:dev": "cd backend && uvicorn app.main:app --reload --port 8000",
-    "backend:test": "cd backend && python -m pytest -x -q",
-    "frontend:dev": "cd frontend && npx @nicolo-ribaudo/chokidar-cli 'webapp/**/*' -c 'echo change detected'"
+    "backend:test": "cd backend && python -m pytest -x -q"
   },
   "engines": {
     "node": ">=18"
   },
-  "dependencies": {
-    "@azure/mcp": "^2.0.0-beta.23"
-  }
+  "dependencies": {}
 }
