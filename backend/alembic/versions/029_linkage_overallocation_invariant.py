@@ -39,6 +39,16 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 _FUNCTION_SQL = """
+-- Locks parent rows (orders, hedge_contracts) BEFORE aggregating linkages so
+-- the SUM(quantity_mt) snapshot is consistent against ALL concurrent writers,
+-- not just service callers. This is the load-bearing institutional invariant:
+-- two concurrent transactions cannot each pass the capacity check against a
+-- snapshot that omits the other's uncommitted linkage row, because the second
+-- transaction blocks on the parent-row lock until the first commits/rolls
+-- back. The aggregate is then re-read with the new linkage visible. Service
+-- callers already hold these row locks via with_for_update(); direct-SQL
+-- paths (admin/import) acquire them here so the DB invariant holds for ANY
+-- writer, not just LinkageService.
 CREATE OR REPLACE FUNCTION assert_no_linkage_over_allocation(
     p_order_id uuid,
     p_contract_id uuid
@@ -50,6 +60,9 @@ DECLARE
     v_contract_linked numeric;
 BEGIN
     IF p_order_id IS NOT NULL THEN
+        -- Serialize concurrent writers against the same parent order row
+        -- BEFORE reading the aggregate. Held until commit/rollback.
+        PERFORM 1 FROM orders WHERE id = p_order_id FOR UPDATE;
         SELECT quantity_mt INTO v_order_qty
         FROM orders WHERE id = p_order_id;
         IF v_order_qty IS NOT NULL THEN
@@ -65,6 +78,9 @@ BEGIN
     END IF;
 
     IF p_contract_id IS NOT NULL THEN
+        -- Serialize concurrent writers against the same parent contract row
+        -- BEFORE reading the aggregate. Held until commit/rollback.
+        PERFORM 1 FROM hedge_contracts WHERE id = p_contract_id FOR UPDATE;
         SELECT quantity_mt INTO v_contract_qty
         FROM hedge_contracts WHERE id = p_contract_id;
         IF v_contract_qty IS NOT NULL THEN
