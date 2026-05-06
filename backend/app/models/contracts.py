@@ -10,7 +10,17 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -65,6 +75,13 @@ class HedgeSourceType(enum.Enum):
 
 class HedgeContract(Base):
     __tablename__ = "hedge_contracts"
+    __table_args__ = (
+        CheckConstraint(
+            "(fixed_leg_side = 'buy' AND classification = 'long') OR "
+            "(fixed_leg_side = 'sell' AND classification = 'short')",
+            name="chk_classification_matches_fixed_leg",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
