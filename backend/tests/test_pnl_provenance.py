@@ -826,7 +826,7 @@ class TestPriceReferencesValidator:
 # ``_assert_price_references_shape(jsonb)`` that iterates jsonb_each and
 # enforces per-entry shape; the CHECK calls that function. These tests
 # are PG-only because the function and the CHECK both live behind the
-# Postgres dialect guard in ``028_pnl_provenance.py``. SQLite test envs
+# Postgres dialect guard in ``030_pnl_provenance.py``. SQLite test envs
 # already exercise the same shapes via the @validates suite above.
 # ──────────────────────────────────────────────────────────────────────
 
@@ -879,7 +879,7 @@ class TestPriceReferencesCheckOnPostgres:
                 Path(__file__).resolve().parents[1]
                 / "alembic"
                 / "versions"
-                / "028_pnl_provenance.py"
+                / "030_pnl_provenance.py"
             )
             spec = importlib.util.spec_from_file_location(
                 "_pr8_pnl_provenance_pgcheck", mig_path
