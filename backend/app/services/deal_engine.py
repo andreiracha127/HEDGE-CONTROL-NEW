@@ -848,10 +848,20 @@ class DealEngineService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found"
             )
+        # Order by snapshot_date DESC (chronological grouping) with
+        # ``sequence`` DESC as a deterministic within-date tie-breaker.
+        # Corrections to ``price_references`` produce a second snapshot
+        # for the same deal/date; without the secondary sort, SQLite
+        # second-precision ``created_at`` ties could surface stale rows
+        # ahead of newer ones. ``sequence`` is monotonic per insertion,
+        # so it canonically resolves ordering within a date.
         return (
             session.query(DealPNLSnapshot)
             .filter(DealPNLSnapshot.deal_id == deal_id)
-            .order_by(DealPNLSnapshot.snapshot_date.desc())
+            .order_by(
+                DealPNLSnapshot.snapshot_date.desc(),
+                DealPNLSnapshot.sequence.desc(),
+            )
             .all()
         )
 
@@ -1195,10 +1205,17 @@ class DealEngineService:
             )
 
         links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
+        # Use the monotonic ``sequence`` column as the canonical ordering
+        # for "newest snapshot for this deal". ``created_at`` has only
+        # second precision on SQLite, which can tie when a price
+        # correction inserts a second snapshot in the same second; the
+        # tie would otherwise surface the stale pre-correction row.
+        # Every later insertion has a strictly higher ``sequence``, so
+        # ``sequence DESC`` alone is sufficient and deterministic.
         latest_pnl = (
             session.query(DealPNLSnapshot)
             .filter(DealPNLSnapshot.deal_id == deal_id)
-            .order_by(DealPNLSnapshot.created_at.desc())
+            .order_by(DealPNLSnapshot.sequence.desc())
             .first()
         )
 

@@ -2243,3 +2243,189 @@ class TestPartialQuoteSuccessFailsClosed:
                 .count()
                 == 1
             )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex P2 (PR #22) — sequence is the canonical tie-breaker for the
+# detail (latest_pnl) and history reads.
+#
+# When a corrected market quote produces a second snapshot for the same
+# (deal_id, snapshot_date), SQLite ``created_at`` second-precision can
+# tie. The detail/history endpoints must surface the NEW row, not the
+# stale pre-correction one. ``DealPNLSnapshot.sequence`` is monotonic
+# per insertion and is the deterministic tie-breaker.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestSequenceOrderingOnReads:
+    @staticmethod
+    def _seed_simple_deal(client, session) -> str:
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+        r = client.post(ENDPOINT, json={"name": "SeqOrd", "commodity": "ALUMINUM"})
+        deal_id = r.json()["id"]
+        so_id = _create_order(session, OrderType.sales)
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+        return deal_id
+
+    def test_detail_endpoint_returns_newest_snapshot_after_correction(
+        self, client, session
+    ):
+        """Detail (``latest_pnl``) must surface the post-correction row.
+
+        Forces ``created_at`` to tie via direct UPDATE so the test
+        exercises the ``sequence`` tie-breaker rather than relying on
+        timestamp progression.
+        """
+        deal_id = self._seed_simple_deal(client, session)
+
+        # Snap 1 at price 2700.
+        r1 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r1.status_code == 201
+        snap_old_id = r1.json()["id"]
+
+        # Correct the underlying price → next snapshot has a different
+        # inputs_hash and is persisted as a new row.
+        with SessionLocal() as s:
+            row = (
+                s.query(CashSettlementPrice)
+                .filter(
+                    CashSettlementPrice.symbol
+                    == "LME_ALU_CASH_SETTLEMENT_DAILY"
+                )
+                .first()
+            )
+            row.price_usd = 2750.0
+            s.commit()
+
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 201
+        snap_new_id = r2.json()["id"]
+        assert snap_new_id != snap_old_id
+
+        # Force ``created_at`` to tie so ``sequence`` is the only thing
+        # disambiguating the two rows.
+        with SessionLocal() as s:
+            tied = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+            s.execute(
+                sa.update(DealPNLSnapshot)
+                .where(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .values(created_at=tied)
+            )
+            s.commit()
+            # Confirm both rows actually share the same created_at.
+            cas = [
+                row.created_at
+                for row in s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .all()
+            ]
+            assert len(cas) == 2
+            assert cas[0] == cas[1]
+
+        # Detail endpoint must return the post-correction row.
+        r_detail = client.get(f"{ENDPOINT}/{deal_id}")
+        assert r_detail.status_code == 200
+        latest = r_detail.json()["latest_pnl"]
+        assert latest is not None
+        assert latest["id"] == snap_new_id
+
+    def test_history_endpoint_orders_by_snapshot_date_then_sequence(
+        self, client, session
+    ):
+        """History endpoint orders by (snapshot_date DESC, sequence DESC).
+
+        Builds 4 snapshots — 2 on date D1 (a correction produces a
+        second row), 2 on date D2 (same). Asserts the returned order
+        is D2-newest, D2-oldest, D1-newest, D1-oldest. Forces tied
+        ``created_at`` so ``sequence`` is the active tie-breaker.
+        """
+        # Two days of prices so we can compute snapshots for D1 and D2.
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 30),
+            price_usd=2700.0,
+        )
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2705.0,
+        )
+        r = client.post(
+            ENDPOINT, json={"name": "SeqHist", "commodity": "ALUMINUM"}
+        )
+        deal_id = r.json()["id"]
+        so_id = _create_order(session, OrderType.sales)
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+
+        def _correct_price(settlement_date_obj: date, new_value: float) -> None:
+            with SessionLocal() as s:
+                row = (
+                    s.query(CashSettlementPrice)
+                    .filter(
+                        CashSettlementPrice.symbol
+                        == "LME_ALU_CASH_SETTLEMENT_DAILY",
+                        CashSettlementPrice.settlement_date
+                        == settlement_date_obj,
+                    )
+                    .first()
+                )
+                row.price_usd = new_value
+                s.commit()
+
+        # D1 = 2026-01-31 (uses settlement 2026-01-30).
+        # D2 = 2026-02-01 (uses settlement 2026-01-31).
+        d1_old = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-01-31"},
+        ).json()["id"]
+        _correct_price(date(2026, 1, 30), 2710.0)
+        d1_new = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-01-31"},
+        ).json()["id"]
+        d2_old = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        ).json()["id"]
+        _correct_price(date(2026, 1, 31), 2715.0)
+        d2_new = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        ).json()["id"]
+
+        assert len({d1_old, d1_new, d2_old, d2_new}) == 4
+
+        # Force all four rows to share the same ``created_at`` so the
+        # within-date tie-breaker is exclusively ``sequence``.
+        with SessionLocal() as s:
+            tied = datetime(2026, 2, 1, 12, 0, 0, tzinfo=timezone.utc)
+            s.execute(
+                sa.update(DealPNLSnapshot)
+                .where(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .values(created_at=tied)
+            )
+            s.commit()
+
+        r_hist = client.get(f"{ENDPOINT}/{deal_id}/pnl-history")
+        assert r_hist.status_code == 200
+        ids = [item["id"] for item in r_hist.json()["items"]]
+        assert ids == [d2_new, d2_old, d1_new, d1_old]
