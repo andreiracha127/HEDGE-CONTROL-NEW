@@ -147,6 +147,7 @@ def list_exposures(
     )
 
     # Enrich exposure items with price_type, order_type, and hedged_tons
+    from app.models.contracts import HedgeContract, HedgeContractStatus
     from app.models.orders import Order
     from app.models.linkages import HedgeOrderLinkage
 
@@ -158,7 +159,12 @@ def list_exposures(
         orders = session.query(Order).filter(Order.id.in_(source_ids)).all()
         order_map = {str(o.id): o for o in orders}
 
-        # Linked hedge quantities per order
+        # Linked hedge quantities per order — mirror §3.5 / §3.9 hedge-side
+        # filter: only linkages whose hedge contract is still live
+        # (active / partially_settled, not soft-deleted) count toward
+        # hedged_tons. Order-side filter is upstream — Exposure rows are
+        # already filtered by §3.8's is_deleted predicate via
+        # ExposureEngineService.list_exposures.
         linkages = (
             session.query(
                 HedgeOrderLinkage.order_id,
@@ -166,7 +172,14 @@ def list_exposures(
                     "linked_qty"
                 ),
             )
-            .filter(HedgeOrderLinkage.order_id.in_(source_ids))
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .filter(
+                HedgeOrderLinkage.order_id.in_(source_ids),
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+            )
             .group_by(HedgeOrderLinkage.order_id)
             .all()
         )
@@ -207,7 +220,7 @@ def get_exposure(
 ):
     from app.models.orders import Order
     from app.models.linkages import HedgeOrderLinkage
-    from app.models.contracts import HedgeContract
+    from app.models.contracts import HedgeContract, HedgeContractStatus
 
     exp = ExposureEngineService.get_exposure(session, exposure_id)
     d = ExposureDetailRead.model_validate(exp).model_dump()
@@ -241,11 +254,19 @@ def get_exposure(
             str(order.delivery_date_end) if order.delivery_date_end else None
         )
 
-    # Enrich with hedge linkages
+    # Enrich with hedge linkages — mirror §3.5 / §3.9 hedge-side filter:
+    # settled / cancelled / soft-deleted hedges no longer enrich the
+    # exposure detail response.
     linkages = (
         session.query(HedgeOrderLinkage, HedgeContract)
         .join(HedgeContract, HedgeOrderLinkage.contract_id == HedgeContract.id)
-        .filter(HedgeOrderLinkage.order_id == exp.source_id)
+        .filter(
+            HedgeOrderLinkage.order_id == exp.source_id,
+            HedgeContract.deleted_at.is_(None),
+            HedgeContract.status.in_(
+                [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+            ),
+        )
         .all()
     )
 

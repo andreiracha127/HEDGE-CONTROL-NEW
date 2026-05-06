@@ -565,3 +565,111 @@ class TestReconcileLifecycleAndRetirement:
         assert len(retired) == 1
         assert len(live) == 1
         assert live[0].open_tons == Decimal("100.000")
+
+
+# ======================================================================
+# Codex P2 follow-up — /exposures enrichment lifecycle (routes)
+# Per §3.5 / §3.9 dual-filter applied to API enrichment:
+#   hedged_tons = SUM(linkage.quantity_mt WHERE hedge is LIVE)
+# After settle / soft-delete: live hedge count = 0, so hedged_tons = 0,
+# and the dead hedge no longer enriches the response.
+# ======================================================================
+
+
+class TestExposureEnrichmentLifecycle:
+    """The /exposures/list and /exposures/{id} routes enrich Exposure rows
+    with linkage data. Without a lifecycle filter on the enrichment
+    queries, settled / soft-deleted hedges still inflate hedged_tons and
+    leak into linked_contracts — diverging from the snapshot endpoints'
+    post-PR-5 semantics. These tests pin the dual-filter pattern at the
+    route layer.
+    """
+
+    @staticmethod
+    def _seed_so_hedge_linkage_reconciled(client, session, link_qty=Decimal("100.000")):
+        so = _seed_so(session, Decimal("100.000"))
+        hedge = _seed_hedge(session, Decimal("100.000"))
+        _link(session, so, hedge, link_qty)
+        session.commit()
+
+        resp = client.post("/exposures/reconcile")
+        assert resp.status_code == 200
+        return so, hedge
+
+    def test_list_exposures_excludes_settled_hedge_from_hedged_tons(
+        self, client, session
+    ):
+        """Per §3.5 / §3.9 hedge-side filter applied to /exposures/list
+        enrichment:
+          hedged_tons = SUM(linkage WHERE hedge is LIVE)
+        Initial:    100 (active hedge counted)
+        After settle: 0 (settled hedge no longer counted)
+        """
+        so, hedge = self._seed_so_hedge_linkage_reconciled(client, session)
+
+        before = client.get("/exposures/list").json()
+        item = next(it for it in before["items"] if it["source_id"] == str(so.id))
+        assert float(item["hedged_tons"]) == 100.0
+
+        hedge.status = HedgeContractStatus.settled
+        session.commit()
+
+        after = client.get("/exposures/list").json()
+        item = next(it for it in after["items"] if it["source_id"] == str(so.id))
+        assert float(item["hedged_tons"]) == 0.0, (
+            "Settled hedge must NOT count toward hedged_tons in /exposures/list "
+            f"per PR-5 codex P2. Got: {item}"
+        )
+
+    def test_list_exposures_excludes_soft_deleted_hedge_from_hedged_tons(
+        self, client, session
+    ):
+        """Same predicate, deleted_at clause."""
+        so, hedge = self._seed_so_hedge_linkage_reconciled(client, session)
+        hedge.deleted_at = datetime.now(timezone.utc)
+        session.commit()
+
+        body = client.get("/exposures/list").json()
+        item = next(it for it in body["items"] if it["source_id"] == str(so.id))
+        assert float(item["hedged_tons"]) == 0.0
+
+    def test_get_exposure_excludes_settled_hedge_from_enrichment(
+        self, client, session
+    ):
+        """Per §3.5 / §3.9 hedge-side filter applied to /exposures/{id}:
+          total_hedged = SUM(live linkages) = 0 after settle
+          linked_contracts = [] (the dead hedge is not enriched)
+        """
+        so, hedge = self._seed_so_hedge_linkage_reconciled(client, session)
+        exposure_id = (
+            session.query(Exposure)
+            .filter(Exposure.source_id == so.id)
+            .one()
+            .id
+        )
+
+        hedge.status = HedgeContractStatus.settled
+        session.commit()
+
+        body = client.get(f"/exposures/{exposure_id}").json()
+        assert body["hedged_tons"] == 0.0
+        assert body["linked_contracts"] == []
+
+    def test_get_exposure_excludes_soft_deleted_hedge_from_enrichment(
+        self, client, session
+    ):
+        """Same predicate, deleted_at clause."""
+        so, hedge = self._seed_so_hedge_linkage_reconciled(client, session)
+        exposure_id = (
+            session.query(Exposure)
+            .filter(Exposure.source_id == so.id)
+            .one()
+            .id
+        )
+
+        hedge.deleted_at = datetime.now(timezone.utc)
+        session.commit()
+
+        body = client.get(f"/exposures/{exposure_id}").json()
+        assert body["hedged_tons"] == 0.0
+        assert body["linked_contracts"] == []
