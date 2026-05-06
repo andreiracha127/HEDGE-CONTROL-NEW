@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 
@@ -154,13 +155,85 @@ FOR EACH ROW EXECUTE FUNCTION trg_order_qty_assert_capacity();
 """
 
 
+_PREFLIGHT_ORDERS_SQL = """
+SELECT
+    l.order_id,
+    SUM(l.quantity_mt) AS linked_qty,
+    o.quantity_mt AS order_qty
+FROM hedge_order_linkages l
+JOIN orders o ON o.id = l.order_id
+GROUP BY l.order_id, o.quantity_mt
+HAVING SUM(l.quantity_mt) > o.quantity_mt
+ORDER BY l.order_id
+"""
+
+_PREFLIGHT_CONTRACTS_SQL = """
+SELECT
+    l.contract_id,
+    SUM(l.quantity_mt) AS linked_qty,
+    c.quantity_mt AS contract_qty
+FROM hedge_order_linkages l
+JOIN hedge_contracts c ON c.id = l.contract_id
+GROUP BY l.contract_id, c.quantity_mt
+HAVING SUM(l.quantity_mt) > c.quantity_mt
+ORDER BY l.contract_id
+"""
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
         # SQLite / other engines: rely on application-layer defense in
         # LinkageService.create + ContractService.update. Skip silently.
+        # No race possible without concurrent SQL writers, and trigger
+        # semantics for cross-row aggregate checks aren't supported anyway.
         return
 
+    # 1) Preflight aggregate — Codex P2.
+    #
+    # Creating the trigger only protects future writes; it never scans
+    # existing aggregates. If production already contains an over-allocated
+    # linkage from the very race this migration is fixing, installing the
+    # trigger silently would leave the DB in a state that violates the new
+    # invariant — and the next ``reconcile`` call (or any UPDATE that
+    # touches an over-allocated parent row) would hard-fail at runtime.
+    # That's exactly the "fail at first surface" pattern the audit forbids.
+    #
+    # Refuse to install the trigger over dirty data. Operator owns the
+    # remediation (we do NOT auto-UPDATE/DELETE linkages — silent
+    # production reshape is forbidden by §2.6).
+    over_allocated_orders = bind.execute(
+        sa.text(_PREFLIGHT_ORDERS_SQL)
+    ).fetchall()
+    over_allocated_contracts = bind.execute(
+        sa.text(_PREFLIGHT_CONTRACTS_SQL)
+    ).fetchall()
+
+    if over_allocated_orders or over_allocated_contracts:
+        details_lines: list[str] = []
+        for row in over_allocated_orders:
+            details_lines.append(
+                f"  order_id={row.order_id} linked={row.linked_qty} "
+                f"order_qty={row.order_qty} "
+                f"over_allocation={row.linked_qty - row.order_qty}"
+            )
+        for row in over_allocated_contracts:
+            details_lines.append(
+                f"  contract_id={row.contract_id} linked={row.linked_qty} "
+                f"contract_qty={row.contract_qty} "
+                f"over_allocation={row.linked_qty - row.contract_qty}"
+            )
+        details = "\n".join(details_lines)
+        raise RuntimeError(
+            "Migration 028 (linkage over-allocation invariant) refuses to "
+            "install: existing data already violates the invariant. "
+            "Resolve the over-allocations below, then retry the migration. "
+            "Reducing a linkage's quantity_mt or splitting an order is the "
+            "typical remediation path; consult the audit-a1 dispatch §3.3.\n\n"
+            f"Over-allocated orders/contracts:\n{details}"
+        )
+
+    # 2) Install the plpgsql function + triggers.
     op.execute(_FUNCTION_SQL)
     op.execute(_LINKAGE_TRIGGER_FN)
     op.execute(_CONTRACT_TRIGGER_FN)
