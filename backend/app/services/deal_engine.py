@@ -140,7 +140,7 @@ class DealEngineService:
         DealEngineService._validate_hedge_direction(session, deal)
 
         DealEngineService._recompute_tons(session, deal)
-        session.commit()
+        session.flush()
         session.refresh(deal)
         return deal
 
@@ -353,7 +353,7 @@ class DealEngineService:
         session.flush()
 
         DealEngineService._recompute_tons(session, deal)
-        session.commit()
+        session.flush()
         session.refresh(link)
         return link
 
@@ -380,7 +380,7 @@ class DealEngineService:
         session.flush()
 
         DealEngineService._recompute_tons(session, deal)
-        session.commit()
+        session.flush()
 
     # ------------------------------------------------------------------
     # P&L SNAPSHOT
@@ -495,7 +495,7 @@ class DealEngineService:
             inputs_hash=inputs_hash,
         )
         session.add(snapshot)
-        session.commit()
+        session.flush()
         session.refresh(snapshot)
         return snapshot
 
@@ -704,7 +704,7 @@ class DealEngineService:
         else:
             deal.status = DealStatus.fully_hedged
 
-        session.commit()
+        session.flush()
         session.refresh(deal)
         return deal
 

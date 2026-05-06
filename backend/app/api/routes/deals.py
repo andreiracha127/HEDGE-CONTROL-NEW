@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_any_role
 from app.core.database import get_session
 from app.core.pagination import paginate
+from app.api.dependencies.uow import unit_of_work
 from app.models.deal import Deal, DealLink, DealLinkedType
 from app.schemas.deal import (
     DealCreate,
@@ -79,7 +80,8 @@ def create_deal(
         for link in data["links"]:
             if hasattr(link.get("linked_type"), "value"):
                 link["linked_type"] = link["linked_type"].value
-    deal = DealEngineService.create_deal(session, data)
+    with unit_of_work(session):
+        deal = DealEngineService.create_deal(session, data)
     return deal
 
 
@@ -139,9 +141,11 @@ def add_link(
     _: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
-    return DealEngineService.add_link(
-        session, deal_id, body.linked_type.value, body.linked_id
-    )
+    with unit_of_work(session):
+        link = DealEngineService.add_link(
+            session, deal_id, body.linked_type.value, body.linked_id
+        )
+    return link
 
 
 @router.delete("/{deal_id}/links/{link_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -151,7 +155,8 @@ def remove_link(
     _: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ):
-    DealEngineService.remove_link(session, deal_id, link_id)
+    with unit_of_work(session):
+        DealEngineService.remove_link(session, deal_id, link_id)
 
 
 @router.post(
@@ -167,7 +172,9 @@ def trigger_pnl_snapshot(
 ):
     if snapshot_date is None:
         snapshot_date = date.today()
-    return DealEngineService.compute_deal_pnl(session, deal_id, snapshot_date)
+    with unit_of_work(session):
+        snapshot = DealEngineService.compute_deal_pnl(session, deal_id, snapshot_date)
+    return snapshot
 
 
 @router.get("/{deal_id}/pnl-history", response_model=DealPNLHistoryResponse)

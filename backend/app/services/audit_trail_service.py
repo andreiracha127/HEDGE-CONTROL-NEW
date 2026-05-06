@@ -68,6 +68,7 @@ class AuditTrailService:
         event_type: str,
         payload_raw: str,
         payload_obj: object,
+        commit: bool = True,
     ) -> AuditEvent:
         existing = db.get(AuditEvent, event_id)
         if existing is not None:
@@ -91,7 +92,9 @@ class AuditTrailService:
             signature=signature,
         )
         db.add(audit_event)
-        db.commit()
+        db.flush()
+        if commit:
+            db.commit()
         db.refresh(audit_event)
         return audit_event
 

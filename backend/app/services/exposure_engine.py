@@ -119,7 +119,7 @@ class ExposureEngineService:
                 session.add(exposure)
                 created += 1
 
-        session.commit()
+        session.flush()
         return {
             "created": created,
             "updated": updated,
@@ -277,7 +277,7 @@ class ExposureEngineService:
             session.add(task)
             count += 1
 
-        session.commit()
+        session.flush()
         return count
 
     # ------------------------------------------------------------------
@@ -307,7 +307,7 @@ class ExposureEngineService:
             task.status = HedgeTaskStatus.cancelled
             count += 1
 
-        session.commit()
+        session.flush()
         return count
 
     # ------------------------------------------------------------------
@@ -354,7 +354,7 @@ class ExposureEngineService:
             )
         task.status = HedgeTaskStatus.executed
         task.executed_at = datetime.now(timezone.utc)
-        session.commit()
+        session.flush()
         session.refresh(task)
         return task
 

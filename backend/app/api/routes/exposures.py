@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user, require_any_role
 from app.core.database import get_session
+from app.api.dependencies.uow import unit_of_work
 from app.schemas.exposure import CommercialExposureRead, GlobalExposureRead
 from app.schemas.exposure_engine import (
     ExposureDetailRead,
@@ -53,7 +54,8 @@ def reconcile_exposures(
     _user: dict = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    result = ExposureEngineService.reconcile_from_orders(session)
+    with unit_of_work(session):
+        result = ExposureEngineService.reconcile_from_orders(session)
     return result
 
 
@@ -86,7 +88,8 @@ def execute_hedge_task(
     _user: dict = Depends(get_current_user),
     session: Session = Depends(get_session),
 ):
-    task = ExposureEngineService.execute_task(session, task_id)
+    with unit_of_work(session):
+        task = ExposureEngineService.execute_task(session, task_id)
     return HedgeTaskRead.model_validate(task)
 
 

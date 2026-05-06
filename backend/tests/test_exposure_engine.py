@@ -161,6 +161,7 @@ class TestHedgeTasks:
         from app.services.exposure_engine import ExposureEngineService
 
         count = ExposureEngineService.create_hedge_tasks(session)
+        session.commit()
         assert count == 2
 
         resp = client.get("/exposures/tasks")
@@ -175,7 +176,9 @@ class TestHedgeTasks:
         from app.services.exposure_engine import ExposureEngineService
 
         c1 = ExposureEngineService.create_hedge_tasks(session)
+        session.commit()
         c2 = ExposureEngineService.create_hedge_tasks(session)
+        session.commit()
         assert c1 == 1
         assert c2 == 0
 
@@ -186,6 +189,7 @@ class TestHedgeTasks:
         from app.services.exposure_engine import ExposureEngineService
 
         ExposureEngineService.create_hedge_tasks(session)
+        session.commit()
 
         tasks = client.get("/exposures/tasks").json()["items"]
         task_id = tasks[0]["id"]
@@ -202,6 +206,7 @@ class TestHedgeTasks:
         from app.services.exposure_engine import ExposureEngineService
 
         ExposureEngineService.create_hedge_tasks(session)
+        session.commit()
 
         tasks = client.get("/exposures/tasks").json()["items"]
         task_id = tasks[0]["id"]

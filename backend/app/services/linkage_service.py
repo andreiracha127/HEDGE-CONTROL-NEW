@@ -66,7 +66,7 @@ class LinkageService:
             quantity_mt=quantity_mt,
         )
         session.add(linkage)
-        session.commit()
+        session.flush()
         session.refresh(linkage)
         return linkage
 
