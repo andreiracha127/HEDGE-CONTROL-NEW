@@ -50,19 +50,34 @@ from app.models.contracts import HedgeClassification, HedgeContract
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
 ```
 
-**`backend/app/services/exposure_engine.py`** — current line 155 (function-scope import inside `compute_net_exposure`):
+**`backend/app/services/exposure_engine.py`** — current line 155 has a function-scope import inside `compute_net_exposure`:
 
 ```python
-# Before
+# Current (function-scope inside compute_net_exposure, ~line 155):
 from app.models.contracts import HedgeContract, HedgeClassification
-
-# After
-from app.models.contracts import HedgeContract, HedgeClassification, HedgeContractStatus
 ```
 
-Note the second import lives at function scope (inside `compute_net_exposure`), not module-top — `_get_linked_qty_map` (§3.9) and the §3.10 rewrite both run inside that scope, so adding `HedgeContractStatus` to the function-scope import is sufficient. If the executor prefers, lifting the import to module-top is acceptable but out of scope for this PR.
+The §3.9 `_get_linked_qty_map` helper is a separate `@staticmethod` on `ExposureEngineService` and references `HedgeContractStatus` (per §3.9). Its name-resolution scope is **not** shared with `compute_net_exposure`'s function-local imports — applying the §3.9 prescription with only a function-scope import inside `compute_net_exposure` would raise `NameError` when `reconcile_from_orders` calls `_get_linked_qty_map`. Both §3.9 (helper) and §3.10 (rewrite of `compute_net_exposure`) reference `HedgeContractStatus`; module-scope import is the only location that satisfies both name-resolution scopes.
 
-**Verify the exact `from app.models.contracts import ...` line in each file before editing** — the import order may have shifted between dispatch authoring and execution. Match the current order verbatim, just append `HedgeContractStatus`. If `HedgeContractStatus` is already present in either file (e.g., a refactor between dispatch authoring and execution adds it), no change is needed there — `grep -n "from app.models.contracts" backend/app/services/exposure_service.py backend/app/services/exposure_engine.py` first to confirm.
+Prescription:
+
+1. **ADD module-scope import** at the top of `backend/app/services/exposure_engine.py`, alongside the existing model imports (e.g., the `from app.models.exposure import (...)` / `from app.models.linkages import HedgeOrderLinkage` / `from app.models.orders import ...` block):
+
+   ```python
+   # New module-scope line:
+   from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
+   ```
+
+2. **REMOVE the now-redundant function-scope import** inside `compute_net_exposure` (current ~line 155):
+
+   ```python
+   # Delete this line — module-scope import in step 1 subsumes it cleanly:
+   from app.models.contracts import HedgeContract, HedgeClassification
+   ```
+
+The module-scope import covers `compute_net_exposure` (§3.10), `_get_linked_qty_map` (§3.9), and any other method on `ExposureEngineService` that references these symbols, with no scope-resolution surprises.
+
+**Verify the exact `from app.models.contracts import ...` line in each file before editing** — the import order may have shifted between dispatch authoring and execution. For `exposure_service.py`, match the current order verbatim and just append `HedgeContractStatus`. For `exposure_engine.py`, add the new module-scope line alongside the existing `app.models.*` imports and delete the function-scope line. If `HedgeContractStatus` is already present at module scope in either file (e.g., a refactor between dispatch authoring and execution adds it), the ADD step is a no-op — `grep -n "from app.models.contracts" backend/app/services/exposure_service.py backend/app/services/exposure_engine.py` first to confirm.
 
 ### 3.1 Filter `Order.deleted_at IS NULL` in commercial snapshot queries
 
@@ -249,7 +264,7 @@ for exposure in stale_exposures:
 
 **File:** `backend/app/services/exposure_engine.py` — `_get_linked_qty_map(session)` (`exposure_engine.py:60`).
 
-> **Import prerequisite:** this snippet uses `HedgeContractStatus`. See §3.0 for the import update required in `exposure_engine.py` (function-scope import inside `compute_net_exposure` covers `_get_linked_qty_map`'s call site) before applying.
+> **Import prerequisite:** this snippet uses `HedgeContractStatus`. See §3.0 for the import update required in `exposure_engine.py` (module-scope import — `_get_linked_qty_map` is a separate `@staticmethod` on `ExposureEngineService` whose scope is not shared with `compute_net_exposure`'s function-locals, so module scope is required) before applying.
 
 The current helper sums `HedgeOrderLinkage.quantity_mt` grouped by `order_id` without joining `HedgeContract` or filtering `Order`. Result: a linkage to a settled or soft-deleted hedge still reduces `Exposure.open_tons` derived in `reconcile_from_orders`, even though `ExposureService` (the snapshot consumer) now shows the order as unhedged after §3.4. Cross-consumer parity is broken — the same data is summarized inconsistently by reconcile vs by snapshot.
 
@@ -505,7 +520,7 @@ This is the reconcile-side mirror of §6.3 / §6.3.5 — the §3.9 dual-filter c
   # Constitutional formula:
   #   open_tons = order_qty - linked_map.get(str(order.id), 0)
   #             = 100 - 40 = 60   (NOT 100, which would mean lookup missed)
-  linked_map = ExposureEngine._get_linked_qty_map(session)
+  linked_map = ExposureEngineService._get_linked_qty_map(session)
   assert all(isinstance(k, str) for k in linked_map.keys())
   reconcile_from_orders(session)
   exposure = session.query(Exposure).filter(Exposure.source_id == so.id).one()
