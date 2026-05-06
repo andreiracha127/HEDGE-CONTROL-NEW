@@ -375,9 +375,9 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 - [ ] **Test:** Fixed-price-only `DealPNLSnapshot` row has `price_references = NULL`; CHECK constraint accepts this state
 - [ ] **Test (CHECK):** Manually inserting a row with `price_references = {}` (empty object) is rejected by CHECK (ambiguous with NULL)
 - [ ] **Idempotency contract scoped to post-PR-8 snapshots:** test asserts two consecutive post-PR-8 calls for the same `(deal, date, links, price_references)` return the SAME row; legacy snapshots are NOT in scope of this rule
-- [ ] **Test:** Two snapshots for the same `(deal, date, links)` but with different `market_price_value` (e.g., simulated by mocking price service) produce DIFFERENT `inputs_hash` → both persist; the latest does NOT silently overwrite the earlier
-- [ ] **Test:** Re-running `compute_deal_pnl` with no input change returns the existing snapshot (idempotency preserved)
-- [ ] **Test:** `inputs_hash` SHA256 includes all provenance fields (verify by inspection of the hash composition)
+- [ ] **Test:** Two snapshots for the same `(deal, date, links)` but with a different price for any one commodity (mocked via the new `get_cash_settlement_price_d1_with_provenance`) produce DIFFERENT `inputs_hash` → both rows persist; the latest does NOT silently overwrite the earlier
+- [ ] **Test:** Re-running `compute_deal_pnl` with no input change returns the existing snapshot (idempotency preserved — applies to post-PR-8 snapshots only per §3.4.3)
+- [ ] **Test:** `inputs_hash` SHA256 derivation includes the entire `price_references` dict via `json.dumps(..., sort_keys=True)` — verify by reconstructing the hash from a known dict and asserting equality
 
 ### 6.3 No regression
 
