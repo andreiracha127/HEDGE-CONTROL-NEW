@@ -68,6 +68,11 @@ class DealPNLSnapshotRead(BaseModel):
     hedge_pnl_mtm: Price
     total_pnl: Price
     inputs_hash: str
+    # Per-commodity provenance: {commodity: {value, source, settlement_date}}.
+    # NULL when no market price was consulted (fixed-price-only deal,
+    # no active hedges) OR for legacy pre-PR-8 rows (column added by
+    # 030_pnl_provenance; never backfilled — see dispatch §3.4.3).
+    price_references: Optional[dict] = None
     created_at: datetime
 
 

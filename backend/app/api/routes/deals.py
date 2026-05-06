@@ -26,8 +26,26 @@ from app.schemas.deal import (
     PnlBreakdownResponse,
 )
 from app.services.deal_engine import DealEngineService
+from app.services.price_lookup_service import PriceReferenceUnprovable
 
 router = APIRouter()
+
+
+# ── PriceReferenceUnprovable → 422 mapping ────────────────────────────
+# PR-8 (J-A1-01): the deal_engine raises PriceReferenceUnprovable when a
+# variable-price physical leg or active hedge cannot be MTM-valued
+# because no D-1 cash settlement price exists within the 5-day lookback.
+# This is a domain hard-fail — the operator must publish a settlement
+# price (or correct the leg) before retrying. 422 (Unprocessable
+# Entity) is the canonical mapping for "request was well-formed but
+# semantically invalid given current data". The route uses an explicit
+# try/except so the service stays HTTP-agnostic and so tests can assert
+# both HTTP status (route) and exception type (service) independently.
+def _raise_price_unprovable(exc: PriceReferenceUnprovable) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=str(exc),
+    )
 
 
 # ------------------------------------------------------------------
@@ -121,9 +139,12 @@ def pnl_breakdown(
     session: Session = Depends(get_session),
 ):
     """Compute P&L breakdown for one, many, or all deals."""
-    result = DealEngineService.compute_pnl_breakdown(
-        session, body.deal_ids, body.snapshot_date
-    )
+    try:
+        result = DealEngineService.compute_pnl_breakdown(
+            session, body.deal_ids, body.snapshot_date
+        )
+    except PriceReferenceUnprovable as exc:
+        _raise_price_unprovable(exc)
     return result
 
 
@@ -207,9 +228,14 @@ def trigger_pnl_snapshot(
 ):
     if snapshot_date is None:
         snapshot_date = date.today()
-    with unit_of_work(session, request=request):
-        snapshot = DealEngineService.compute_deal_pnl(session, deal_id, snapshot_date)
-        mark_audit_success(request, snapshot.id)
+    try:
+        with unit_of_work(session, request=request):
+            snapshot = DealEngineService.compute_deal_pnl(
+                session, deal_id, snapshot_date
+            )
+            mark_audit_success(request, snapshot.id)
+    except PriceReferenceUnprovable as exc:
+        _raise_price_unprovable(exc)
     return snapshot
 
 

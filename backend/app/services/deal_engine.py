@@ -46,38 +46,57 @@ def _compute_inputs_hash(
     deal_id: _uuid.UUID,
     snapshot_date: date,
     link_ids: list[_uuid.UUID],
+    price_references: dict[str, dict[str, str]] | None,
 ) -> str:
-    """SHA-256 hash that changes when the deal's links change."""
+    """SHA-256 hash uniquely identifying P&L compute inputs.
+
+    Includes the full ``price_references`` mapping (one entry per
+    unique commodity actually consumed; ``None`` when no market price
+    was consulted). All inner values are strings (Decimal-as-str,
+    ISO-date-as-str) so JSON serialization is deterministic across
+    Python / library versions. ``sort_keys=True`` ensures both the
+    outer commodity keys AND the inner per-entry keys are sorted —
+    necessary for byte-equal hashes on logically equal inputs.
+
+    Caller-side discipline (PR-8 §3.4.2): build the dict with strings
+    BEFORE hashing and BEFORE persisting; never feed Decimals.
+    """
     data = json.dumps(
         {
             "deal_id": str(deal_id),
             "snapshot_date": str(snapshot_date),
             "links": sorted(str(lid) for lid in link_ids),
+            "price_references": price_references,
         },
         sort_keys=True,
     )
     return hashlib.sha256(data.encode()).hexdigest()
 
 
-def _get_market_price(
-    session: Session, commodity: str, as_of_date: date
-) -> Decimal | None:
-    """Try to fetch the D-1 settlement price; return None on failure."""
-    try:
-        from app.services.price_lookup_service import (
-            get_cash_settlement_price_d1,
-            resolve_symbol,
-        )
+def _get_market_quote(session: Session, commodity: str, as_of_date: date):
+    """Fetch the D-1 settlement price as a PriceQuote (provenance-aware).
 
-        symbol = resolve_symbol(commodity)
-        return quantize_price(
-            get_cash_settlement_price_d1(session, symbol=symbol, as_of_date=as_of_date)
-        )
-    except Exception:
-        logger.debug(
-            "market_price_unavailable commodity=%s date=%s", commodity, as_of_date
-        )
-        return None
+    Hard-fail behavior (PR-8 J-A1-01): on no-data the
+    ``PriceReferenceUnprovable`` exception propagates — callers must
+    NOT swallow it. Infrastructure errors (DB / network) likewise
+    propagate as 5xx; only the domain "not provable" case maps to 422
+    at the route layer.
+
+    Symbol resolution failures (unmapped commodity) raise
+    ``HTTPException(400)`` from ``resolve_symbol`` and propagate too;
+    ``compute_deal_pnl`` should never have been called for a deal
+    whose commodity has no mapping.
+    """
+    from app.services.price_lookup_service import (
+        get_cash_settlement_price_d1_with_provenance,
+        resolve_symbol,
+    )
+
+    symbol = resolve_symbol(commodity)
+    quote = get_cash_settlement_price_d1_with_provenance(
+        session, symbol=symbol, as_of_date=as_of_date
+    )
+    return quote
 
 
 class DealEngineService:
@@ -396,16 +415,31 @@ class DealEngineService:
     ) -> Decimal:
         """Return the monetary value for one order (qty × effective price).
 
-        Fixed-price orders always use ``avg_entry_price``.
-        Variable-price orders prefer the market settlement price;
-        fall back to ``avg_entry_price`` when market data is unavailable.
+        Fixed-price orders always use ``avg_entry_price`` (the contract
+        price — not a fallback). Variable-price orders REQUIRE a
+        proven market price; passing ``market_price=None`` for a
+        variable-price order is a hard-fail (PR-8 J-A1-01) — no
+        silent fallback to ``avg_entry_price``.
+
+        Raises
+        ------
+        PriceReferenceUnprovable
+            When ``order.price_type == PriceType.variable`` and
+            ``market_price`` is None — the contract has no fixed price
+            to fall back on; valuation requires market evidence.
         """
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
         qty = quantize_mt(order.quantity_mt)
         if order.price_type == PriceType.fixed:
             return quantize_money(qty * quantize_price(order.avg_entry_price))
-        if market_price is not None:
-            return quantize_money(qty * quantize_price(market_price))
-        return quantize_money(qty * quantize_price(order.avg_entry_price))
+        if market_price is None:
+            raise PriceReferenceUnprovable(
+                f"variable-price order {order.id} cannot be valued: "
+                f"no market price for {order.commodity} on snapshot date",
+                commodity=order.commodity,
+            )
+        return quantize_money(qty * quantize_price(market_price))
 
     @staticmethod
     def compute_deal_pnl(
@@ -413,10 +447,27 @@ class DealEngineService:
     ) -> DealPNLSnapshot:
         """Compute deal P&L and persist a snapshot.
 
-        Idempotent: if the set of links hasn't changed for the same date the
-        existing snapshot is returned.  When links change a fresh snapshot is
-        created (different ``inputs_hash``).
+        Hard-fail policy (PR-8 J-A1-01): when a variable-price physical
+        leg or an active hedge requires a market price that cannot be
+        proven (no row within the 5-day lookback), this raises
+        :class:`PriceReferenceUnprovable` and persists NO snapshot —
+        the unit_of_work boundary rolls back any partial work. Fixed-
+        price-only deals with no active hedges persist a snapshot
+        with ``price_references = NULL`` (no market price was
+        consulted; NULL is the honest representation).
+
+        Idempotency (post-PR-8 only): identical
+        ``(deal_id, snapshot_date, links, price_references)`` tuples
+        produce the same ``inputs_hash`` and return the existing
+        snapshot. A correction to ANY commodity's price changes the
+        inner dict and therefore the hash, producing a new row;
+        legacy (pre-PR-8) snapshots have an old-format hash and are
+        intentionally not reachable by post-PR-8 lookups (per dispatch
+        §3.4.3 — backfilling them would silently bind to current
+        link sets and serve stale P&L).
         """
+        from app.services.price_lookup_service import PriceQuote
+
         deal = DealEngineService.get_by_id(session, deal_id)
         if not deal:
             raise HTTPException(
@@ -424,8 +475,73 @@ class DealEngineService:
             )
 
         links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
+
+        # ── Step 1-2: walk links once to determine which commodities
+        #             actually require a market lookup (variable-price
+        #             physical legs + non-cancelled hedges). Fixed-
+        #             price legs and orphan-link rows do not.
+        commodities_needing_price: set[str] = set()
+        # We also pre-resolve order/contract objects to avoid double
+        # session.get() calls below.
+        resolved_orders: dict[_uuid.UUID, Order] = {}
+        resolved_contracts: dict[_uuid.UUID, HedgeContract] = {}
+
+        for link in links:
+            if link.linked_type in (
+                DealLinkedType.sales_order,
+                DealLinkedType.purchase_order,
+            ):
+                order = session.get(Order, link.linked_id)
+                if order is None:
+                    continue
+                resolved_orders[link.id] = order
+                if order.price_type == PriceType.variable:
+                    commodities_needing_price.add(order.commodity)
+            elif link.linked_type in (
+                DealLinkedType.hedge,
+                DealLinkedType.contract,
+            ):
+                contract = session.get(HedgeContract, link.linked_id)
+                if contract is None:
+                    continue
+                # Cancelled hedges contribute 0 P&L and need no price.
+                if contract.status == HedgeContractStatus.cancelled:
+                    continue
+                resolved_contracts[link.id] = contract
+                commodities_needing_price.add(contract.commodity)
+
+        # ── Step 3-4: one lookup per unique commodity. Any missing
+        #             price hard-fails the entire snapshot — no
+        #             partial-success path. PriceReferenceUnprovable
+        #             propagates to the route layer (422).
+        quotes_by_commodity: dict[str, PriceQuote] = {}
+        for commodity in sorted(commodities_needing_price):
+            quotes_by_commodity[commodity] = _get_market_quote(
+                session, commodity, snapshot_date
+            )
+
+        # ── Step 5: build the canonical price_references dict with
+        #            string values BEFORE hashing and BEFORE persisting
+        #            (caller-side discipline §3.4.2). NULL when nothing
+        #            consumed a market price.
+        if quotes_by_commodity:
+            price_references: dict[str, dict[str, str]] | None = {
+                commodity: {
+                    "value": str(quote.value),
+                    "source": quote.source,
+                    "settlement_date": quote.settlement_date.isoformat(),
+                }
+                for commodity, quote in sorted(quotes_by_commodity.items())
+            }
+        else:
+            price_references = None
+
+        # Hash AFTER price_references is fully built (§3.4.2).
         inputs_hash = _compute_inputs_hash(
-            deal_id, snapshot_date, [lk.id for lk in links]
+            deal_id,
+            snapshot_date,
+            [lk.id for lk in links],
+            price_references,
         )
 
         existing = (
@@ -436,8 +552,7 @@ class DealEngineService:
         if existing:
             return existing
 
-        market_price = _get_market_price(session, deal.commodity, snapshot_date)
-
+        # ── Step 6: compute MTMs using the per-commodity dict.
         physical_revenue = Decimal("0")
         physical_cost = Decimal("0")
         hedge_pnl_realized = Decimal("0")
@@ -445,38 +560,63 @@ class DealEngineService:
 
         for link in links:
             # ── Physical side (orders) ──
-            if link.linked_type == DealLinkedType.sales_order:
-                order = session.get(Order, link.linked_id)
-                if order:
-                    physical_revenue += DealEngineService._order_value(
-                        order, market_price
+            if link.linked_type in (
+                DealLinkedType.sales_order,
+                DealLinkedType.purchase_order,
+            ):
+                order = resolved_orders.get(link.id)
+                if order is None:
+                    continue
+                if order.price_type == PriceType.variable:
+                    quote = quotes_by_commodity.get(order.commodity)
+                    market_price = (
+                        quantize_price(quote.value) if quote is not None else None
                     )
-
-            elif link.linked_type == DealLinkedType.purchase_order:
-                order = session.get(Order, link.linked_id)
-                if order:
-                    physical_cost += DealEngineService._order_value(order, market_price)
+                else:
+                    market_price = None  # fixed-price ignores market_price
+                value = DealEngineService._order_value(order, market_price)
+                if link.linked_type == DealLinkedType.sales_order:
+                    physical_revenue += value
+                else:
+                    physical_cost += value
 
             # ── Financial side (hedges / contracts) ──
-            # Single MTM formula for all contracts; bucket differs
-            # (settled → realized, active → unrealised).
-            elif link.linked_type in (DealLinkedType.hedge, DealLinkedType.contract):
-                contract = session.get(HedgeContract, link.linked_id)
-                if not contract:
+            # Single MTM formula; settled → realized, active → MTM.
+            elif link.linked_type in (
+                DealLinkedType.hedge,
+                DealLinkedType.contract,
+            ):
+                contract = resolved_contracts.get(link.id)
+                if contract is None:
+                    # Cancelled or missing — neither contributes to P&L.
                     continue
 
                 tons = quantize_mt(contract.quantity_mt)
                 price = quantize_price(contract.fixed_price_value)
                 is_sell = contract.classification == HedgeClassification.short
 
-                if market_price is not None:
-                    mtm = quantize_money(
-                        tons * (price - market_price)
-                        if is_sell
-                        else tons * (market_price - price)
+                quote = quotes_by_commodity.get(contract.commodity)
+                if quote is None:
+                    # Defensive: step 3 should have raised. Re-raise
+                    # here rather than fall back to Decimal("0") —
+                    # never silently zero a hedge MTM.
+                    from app.services.price_lookup_service import (
+                        PriceReferenceUnprovable,
                     )
-                else:
-                    mtm = Decimal("0")
+
+                    raise PriceReferenceUnprovable(
+                        f"hedge contract {contract.id} cannot be MTM-valued: "
+                        f"no market price for {contract.commodity} on "
+                        f"snapshot date",
+                        commodity=contract.commodity,
+                    )
+                market_price = quantize_price(quote.value)
+
+                mtm = quantize_money(
+                    tons * (price - market_price)
+                    if is_sell
+                    else tons * (market_price - price)
+                )
 
                 if contract.status == HedgeContractStatus.settled:
                     hedge_pnl_realized += mtm
@@ -487,6 +627,7 @@ class DealEngineService:
             physical_revenue - physical_cost + hedge_pnl_realized + hedge_pnl_mtm
         )
 
+        # ── Step 7: persist with the canonical dict.
         snapshot = DealPNLSnapshot(
             deal_id=deal_id,
             snapshot_date=snapshot_date,
@@ -496,6 +637,7 @@ class DealEngineService:
             hedge_pnl_mtm=hedge_pnl_mtm,
             total_pnl=total_pnl,
             inputs_hash=inputs_hash,
+            price_references=price_references,
         )
         session.add(snapshot)
         session.flush()
@@ -555,8 +697,41 @@ class DealEngineService:
         result_deals: list[dict] = []
 
         for deal in deals:
-            market_price = _get_market_price(session, deal.commodity, snapshot_date)
+            # Per-deal market price uses the deal-level commodity. Per
+            # PR-8 hard-fail policy, a missing market price for a deal
+            # whose legs/hedges require valuation must surface to the
+            # caller (the breakdown endpoint maps it to 422 via the
+            # PriceReferenceUnprovable exception). Fixed-price-only
+            # deals with no active hedges have no market exposure;
+            # we still attempt the lookup only when at least one leg
+            # / hedge needs it (consistent with compute_deal_pnl).
             links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
+            needs_price = False
+            for link in links:
+                if link.linked_type in (
+                    DealLinkedType.sales_order,
+                    DealLinkedType.purchase_order,
+                ):
+                    order = session.get(Order, link.linked_id)
+                    if order and order.price_type == PriceType.variable:
+                        needs_price = True
+                        break
+                elif link.linked_type in (
+                    DealLinkedType.hedge,
+                    DealLinkedType.contract,
+                ):
+                    contract = session.get(HedgeContract, link.linked_id)
+                    if (
+                        contract
+                        and contract.status != HedgeContractStatus.cancelled
+                    ):
+                        needs_price = True
+                        break
+            if needs_price:
+                quote = _get_market_quote(session, deal.commodity, snapshot_date)
+                market_price = quantize_price(quote.value)
+            else:
+                market_price = None
 
             physical_revenue = Decimal("0")
             physical_cost = Decimal("0")
@@ -613,14 +788,23 @@ class DealEngineService:
                     price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
-                    if market_price is not None:
+                    # Cancelled hedges contribute zero P&L — they were
+                    # excluded from ``needs_price`` above, so reaching
+                    # this branch with no market_price means cancelled.
+                    # All other hedge statuses MUST have a market_price
+                    # (PR-8 hard-fail propagated via _get_market_quote).
+                    if contract.status == HedgeContractStatus.cancelled:
+                        pnl = Decimal("0")
+                    else:
+                        # market_price is guaranteed non-None here:
+                        # needs_price triggered the lookup, which would
+                        # have raised PriceReferenceUnprovable on miss.
+                        assert market_price is not None  # noqa: S101
                         pnl = quantize_money(
                             tons * (price - market_price)
                             if is_sell
                             else tons * (market_price - price)
                         )
-                    else:
-                        pnl = Decimal("0")
 
                     if contract.status == HedgeContractStatus.settled:
                         hedge_pnl_realized += pnl

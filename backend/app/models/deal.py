@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     Date,
     DateTime,
@@ -20,8 +21,23 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, validates
+
+
+# Portable JSON column type for DealPNLSnapshot.price_references.
+# - PostgreSQL: emits JSONB (efficient, indexable, supports ::jsonb cast,
+#   jsonb_typeof, GIN — what production needs).
+# - SQLite (test conftest forces sqlite+pysqlite:///:memory: and runs
+#   Base.metadata.create_all()): falls back to the generic JSON type
+#   (TEXT-backed) so create_all() succeeds and tests can run.
+# Postgres-specific syntax (jsonb_typeof / ::jsonb) is reserved for the
+# Alembic migration's dialect-guarded CHECK; per-row shape enforcement
+# lives on the model via @validates so it runs portably in both dialects.
+PriceReferencesType = JSON().with_variant(
+    JSONB(astext_type=Text()),
+    "postgresql",
+)
 
 from app.models.base import Base
 from app.core.precision import (
@@ -153,6 +169,59 @@ class DealPNLSnapshot(Base):
         Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), default=0
     )
     inputs_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Per-commodity price provenance consumed by this snapshot.
+    # Shape (when non-NULL):
+    #   {
+    #     "ALUMINUM": {"value": "5500.123456", "source": "westmetall",
+    #                  "settlement_date": "2026-05-05"},
+    #     "COPPER":   {"value": "9120.654321", "source": "westmetall",
+    #                  "settlement_date": "2026-05-02"},
+    #   }
+    # NULL means no market price was consulted (fixed-price-only deal,
+    # no active hedges) — the honest representation; never a sentinel.
+    # Decimal values stored as canonical strings (no float roundtrip);
+    # ISO dates as strings; settlement_date may differ from
+    # ``snapshot_date - 1`` because of weekend / holiday lookback.
+    # Postgres-side CHECK is added by the Alembic migration
+    # (dialect-guarded); model-side @validates below provides portable
+    # shape enforcement so SQLite tests catch malformed writes too.
+    price_references: Mapped[dict | None] = mapped_column(
+        PriceReferencesType, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    @validates("price_references")
+    def _validate_price_references(self, _key, value):
+        """Portable shape enforcement for ``price_references``.
+
+        Runs in both SQLite (tests) and Postgres (prod). NULL is
+        acceptable — no market price consulted. Non-NULL must be a
+        non-empty dict; empty {} is ambiguous with NULL and rejected.
+        Each entry must be a dict containing the three required keys
+        (value, source, settlement_date). The compute_deal_pnl
+        algorithm is the canonical producer; this validator is the
+        defensive guard against direct ORM misuse.
+        """
+        if value is None:
+            return value
+        if not isinstance(value, dict):
+            raise ValueError("price_references must be None or a dict")
+        if not value:
+            raise ValueError(
+                "price_references must be None or a non-empty dict — "
+                "empty {} is ambiguous with NULL and forbidden"
+            )
+        for commodity, entry in value.items():
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"price_references[{commodity!r}] must be a dict"
+                )
+            for required in ("value", "source", "settlement_date"):
+                if required not in entry:
+                    raise ValueError(
+                        f"price_references[{commodity!r}] missing required "
+                        f"key {required!r}"
+                    )
+        return value
