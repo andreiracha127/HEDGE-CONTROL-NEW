@@ -4,6 +4,8 @@ import uuid
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.contracts import (
@@ -14,6 +16,7 @@ from app.models.contracts import (
 )
 from app.schemas.contracts import (
     HedgeContractCreate,
+    HedgeContractRead,
     HedgeContractStatusUpdate,
     HedgeContractUpdate,
     HedgeLeg,
@@ -64,6 +67,8 @@ def test_create_contract_long_classification(session: Session) -> None:
     assert contract.variable_leg_side == HedgeLegSide.sell
     assert contract.status == HedgeContractStatus.active
     assert contract.reference.startswith("HC-")
+    read_model = HedgeContractRead.model_validate(contract)
+    assert read_model.classification.value == "long"
 
 
 def test_create_contract_populates_created_by(session: Session) -> None:
@@ -87,6 +92,33 @@ def test_create_contract_short_classification(session: Session) -> None:
     assert contract.classification == HedgeClassification.short
     assert contract.fixed_leg_side == HedgeLegSide.sell
     assert contract.variable_leg_side == HedgeLegSide.buy
+
+
+def test_direct_sql_update_cannot_drift_classification(session: Session) -> None:
+    contract = ContractService.create(session, _make_payload(legs=LONG_LEGS))
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "UPDATE hedge_contracts "
+                "SET classification = 'short' "
+                "WHERE reference = :reference"
+            ),
+            {"reference": contract.reference},
+        )
+        session.commit()
+
+    session.rollback()
+
+
+def test_orm_update_cannot_drift_classification(session: Session) -> None:
+    contract = ContractService.create(session, _make_payload(legs=LONG_LEGS))
+
+    contract.classification = HedgeClassification.short
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+    session.rollback()
 
 
 def test_create_contract_default_source_type(session: Session) -> None:
