@@ -332,7 +332,7 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 
 ## 4. Scope OUT
 
-- **Refactor of `price_lookup_service.py` beyond exception type addition** — Phase A4 (external integrations).
+- **Refactor of `price_lookup_service.py` beyond the scope-local additions required by §3.1** — Phase A4 (external integrations). In scope for THIS PR (per §3.1): adding the `PriceQuote` dataclass, the new `get_cash_settlement_price_d1_with_provenance(...)` function, and (optionally) leaving the original `get_cash_settlement_price_d1` as a thin wrapper. Out of scope: changing data sources, adding caching layers, refactoring `CashSettlementPrice` model, redesigning the symbol resolution logic.
 - **Other Westmetall / LME calendar issues** — Phase A4.
 - **MTM/Cashflow/P&L for non-deal aggregates** — Phase A3 (per-PR-2 catches, scenario_whatif_service already extended; this PR doesn't touch scenario).
 - **Premium pricing** — explicitly excluded by §VALUATION constitution.
@@ -356,10 +356,9 @@ This is the correct trade-off: we lose the ability to "deduplicate against legac
 
 - [ ] **Test:** `POST /deals/{id}/pnl-snapshot` for a deal with a variable-price physical leg + commodity for which no D-1 settlement price exists → returns 422 (or chosen status); no `DealPNLSnapshot` row persisted
 - [ ] **Test:** Same scenario with an active hedge contract → 422; no snapshot persisted
-- [ ] **Test:** Fixed-price-only deal (no variable-price legs, no hedges) → snapshot persists; the three provenance columns are `NULL` (legitimately absent — no market price was consulted); CHECK constraint passes (all three NULL together)
-- [ ] **Test:** CHECK constraint rejects a manually-injected partial-provenance row (e.g., source set, value NULL) → IntegrityError
+- [ ] **Test:** Fixed-price-only deal (no variable-price legs, no hedges) → snapshot persists; `price_references` is `NULL` (legitimately absent — no market price was consulted); the `chk_deal_pnl_snapshot_price_references_shape` CHECK accepts this state. (CHECK rejection of malformed `price_references` values is covered in §6.2 against the JSONB design.)
 - [ ] **Test:** Mixed deal (fixed + variable) where variable-price commodity has no price → 422 (the variable-price leg requires evidence)
-- [ ] **Test:** Happy path (all legs valuable) → snapshot persists with provenance fields populated
+- [ ] **Test:** Happy path (all legs valuable) → snapshot persists with `price_references` populated as a dict keyed by every commodity consumed (one entry per unique commodity per the §3.4.1 algorithm)
 - [ ] **Test:** `_get_market_price` raises `PriceReferenceUnprovable` (or chosen exception) on missing price; no `return None` path exists (verify by inspection)
 - [ ] **Test:** `_order_value` raises on variable + missing market; no fallback to `avg_entry_price` (verify by code grep + dedicated test)
 
@@ -471,7 +470,7 @@ J-A1-01. Subsumes F-A1-OPUS-11 (S-A1-J-01).
 
 - DO NOT silence the new exceptions anywhere — propagate to the route layer
 - DO NOT add a "fallback price source" toggle / config flag — institutional system, not a UX-configurable
-- DO NOT default new provenance columns to `'unknown'` or empty string — that recreates the bug at the persistence layer
+- DO NOT introduce a sentinel default for `price_references` (e.g., `{"unknown": {...}}`, `{}`, or `'pre_provenance'` source string) — NULL is the only honest representation of "no market price consulted"; any sentinel recreates the §2.7 violation at the persistence layer
 - DO NOT regress to float arithmetic (PR-1 substrate preserved)
 - DO NOT call `session.commit()` from any service (PR-3 boundary preserved)
 - DO NOT modify `audit_trail_service.py`
