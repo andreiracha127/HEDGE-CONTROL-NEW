@@ -1466,15 +1466,16 @@ class TestSnapshotReuseUnderPriceSourceRepair:
              ``PriceReferenceUnprovable`` so the outage fallback fires.
           4. Re-request the snapshot. Both ``snap_old`` and ``snap_new``
              still hash-match the current link set against their own
-             stored ``price_references``, so without an explicit
-             ORDER BY clause the DB could return either row first.
-             The fix orders by ``created_at DESC, id DESC`` so the
-             newest reusable snapshot wins.
+             stored ``price_references``, so without a strictly
+             monotonic ORDER BY the DB could return either row first.
+             The fix orders by the monotonic ``sequence DESC`` column
+             so the newest reusable snapshot wins regardless of
+             ``created_at`` precision.
 
         Asserts:
           * Returned snapshot id == ``snap_new.id`` (NOT ``snap_old.id``).
-          * ``created_at(snap_new) > created_at(snap_old)`` so the
-            ordering semantics are observable in the persisted data.
+          * ``sequence(snap_new) > sequence(snap_old)`` so the ordering
+            semantics are observable in the persisted data.
           * No new row is created (count remains 2).
         """
         from app.services import deal_engine as deal_engine_mod
@@ -1509,36 +1510,26 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         assert snap_new["id"] != snap_old["id"]
         assert snap_new["inputs_hash"] != snap_old["inputs_hash"]
 
-        # SQLite stores ``func.now()`` (the ``created_at`` server_default)
-        # at second precision, so two POSTs in the same test run can land
-        # with identical ``created_at`` values. The production query then
-        # falls back to its ``id DESC`` tiebreaker, which is non-
-        # deterministic w.r.t. creation order because ``id`` is a random
-        # UUID. Force ``snap_new.created_at`` strictly after
-        # ``snap_old.created_at`` so the ``ORDER BY created_at DESC``
-        # primary sort is observable in the persisted data.
-        with SessionLocal() as s:
-            snap_old_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_old["id"]))
-            snap_new_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_new["id"]))
-            snap_new_obj.created_at = snap_old_obj.created_at + timedelta(
-                seconds=1
-            )
-            s.commit()
-
-        # Sanity: two distinct snapshots persisted, ``snap_new`` has a
-        # strictly greater ``created_at`` than ``snap_old`` so the
-        # ordering semantics are observable.
+        # Codex P2 (PR #22 follow-up): the production ORDER BY is now
+        # ``sequence DESC`` — a strictly monotonic insertion counter. We
+        # no longer need to fudge ``created_at`` to make the test
+        # deterministic on SQLite's second-precision timestamps; the
+        # ``sequence`` column is monotonic by construction (Postgres
+        # SEQUENCE on prod, process-local Python counter on SQLite test
+        # path). The sanity check below verifies the column was
+        # populated and ``snap_new`` has a strictly greater value than
+        # ``snap_old``.
         with SessionLocal() as s:
             rows = (
                 s.query(DealPNLSnapshot)
                 .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
-                .order_by(DealPNLSnapshot.created_at.asc())
+                .order_by(DealPNLSnapshot.sequence.asc())
                 .all()
             )
             assert len(rows) == 2
             assert str(rows[0].id) == snap_old["id"]
             assert str(rows[1].id) == snap_new["id"]
-            assert rows[1].created_at > rows[0].created_at
+            assert rows[1].sequence > rows[0].sequence
 
         # Step 3: wipe the price-feed row and force any lookup to
         # raise so the total-unavailability outage fallback fires.
@@ -1576,8 +1567,8 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         assert reused_id == snap_new["id"], (
             "outage fallback returned the wrong snapshot — expected "
             "the newest reusable row (snap_new) but got snap_old; the "
-            "ORDER BY ``created_at DESC, id DESC`` clause is missing "
-            "or ineffective."
+            "ORDER BY ``sequence DESC`` clause is missing or "
+            "ineffective."
         )
         assert reused_id != snap_old["id"]
         assert reused_hash == snap_new["inputs_hash"]
@@ -1590,6 +1581,164 @@ class TestSnapshotReuseUnderPriceSourceRepair:
                 .count()
                 == 2
             )
+
+    def test_sequence_is_monotonic_across_inserts(
+        self, client, session
+    ):
+        """Codex P2 (PR #22 follow-up) — verify the new ``sequence``
+        column is strictly monotonic across consecutive inserts on the
+        SQLite test path. This pins the contract that powers the
+        outage-fallback ORDER BY: every newly persisted snapshot has a
+        ``sequence`` value strictly greater than every prior snapshot
+        in the table, regardless of ``created_at`` precision or UUID
+        ordering.
+
+        Three snapshots are created via the same producer that the
+        outage fallback consults (price corrections that change the
+        ``inputs_hash``), then read back ordered by ``sequence`` ASC.
+        The column values must form a strictly increasing sequence.
+        """
+        deal_id, snap_a = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+
+        # Bump the price twice to produce two more distinct snapshots
+        # for the same (deal_id, snapshot_date) — each correction
+        # changes ``price_references["value"]`` and therefore the
+        # ``inputs_hash``, so a new row is persisted.
+        for new_price in (2750.0, 2800.0):
+            with SessionLocal() as s:
+                row = (
+                    s.query(CashSettlementPrice)
+                    .filter(
+                        CashSettlementPrice.symbol
+                        == "LME_ALU_CASH_SETTLEMENT_DAILY"
+                    )
+                    .first()
+                )
+                row.price_usd = new_price
+                s.commit()
+            r = client.post(
+                f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+                params={"snapshot_date": "2026-02-01"},
+            )
+            assert r.status_code == 201
+
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .order_by(DealPNLSnapshot.sequence.asc())
+                .all()
+            )
+            assert len(rows) == 3
+            sequences = [r.sequence for r in rows]
+            # Strictly increasing — sequence[i+1] > sequence[i] for all i.
+            assert all(
+                sequences[i + 1] > sequences[i]
+                for i in range(len(sequences) - 1)
+            ), f"sequence values not strictly monotonic: {sequences}"
+            # And every row got a non-NULL value.
+            assert all(s_val is not None for s_val in sequences)
+
+    def test_outage_fallback_uses_sequence_not_created_at(
+        self, client, session, monkeypatch
+    ):
+        """Codex P2 (PR #22 follow-up) — prove the outage-fallback
+        ORDER BY operates on the monotonic ``sequence`` column rather
+        than ``created_at``. We deliberately make ``snap_new`` carry an
+        EARLIER ``created_at`` than ``snap_old`` (simulating the
+        SQLite second-precision tie / clock skew Codex reproduced) and
+        assert that the fallback STILL returns ``snap_new`` because
+        its ``sequence`` is higher.
+
+        This test would FAIL on the previous ``ORDER BY created_at
+        DESC, id DESC`` implementation (which would prefer ``snap_old``
+        because its ``created_at`` is later) and PASSES on the new
+        ``ORDER BY sequence DESC`` implementation.
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
+        deal_id, snap_old = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+        snapshot_date_obj = date(2026, 2, 1)
+
+        # Create snap_new via a price correction (different inputs_hash
+        # → new row).
+        with SessionLocal() as s:
+            row = (
+                s.query(CashSettlementPrice)
+                .filter(
+                    CashSettlementPrice.symbol
+                    == "LME_ALU_CASH_SETTLEMENT_DAILY"
+                )
+                .first()
+            )
+            row.price_usd = 2750.0
+            s.commit()
+
+        r_new = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r_new.status_code == 201
+        snap_new = r_new.json()
+        assert snap_new["id"] != snap_old["id"]
+
+        # Adversarial case: rewind ``snap_new.created_at`` to BEFORE
+        # ``snap_old.created_at``. The previous ORDER BY would now
+        # prefer ``snap_old``; the new ORDER BY must still prefer
+        # ``snap_new`` because its ``sequence`` is higher.
+        with SessionLocal() as s:
+            snap_old_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_old["id"]))
+            snap_new_obj = s.get(DealPNLSnapshot, uuid.UUID(snap_new["id"]))
+            snap_new_obj.created_at = snap_old_obj.created_at - timedelta(
+                seconds=10
+            )
+            s.commit()
+            # Sanity: snap_new is older by created_at but newer by sequence.
+            assert snap_new_obj.created_at < snap_old_obj.created_at
+            assert snap_new_obj.sequence > snap_old_obj.sequence
+
+        # Wipe the price feed and force the lookup to raise so the
+        # outage fallback fires.
+        with SessionLocal() as s:
+            s.query(CashSettlementPrice).filter(
+                CashSettlementPrice.symbol
+                == "LME_ALU_CASH_SETTLEMENT_DAILY"
+            ).delete()
+            s.commit()
+
+        def _raise_unprovable(*args, **kwargs):
+            raise PriceReferenceUnprovable(
+                "simulated outage: source row deleted",
+                commodity="ALUMINUM",
+            )
+
+        monkeypatch.setattr(
+            deal_engine_mod,
+            "_get_market_quote",
+            _raise_unprovable,
+        )
+
+        with SessionLocal() as s:
+            reused = DealEngineService.compute_deal_pnl(
+                s, uuid.UUID(deal_id), snapshot_date_obj
+            )
+            s.commit()
+            reused_id = str(reused.id)
+
+        # The fix is at the column level (sequence), not the timestamp
+        # level (created_at) — even with snap_new's created_at rewound
+        # behind snap_old's, the monotonic sequence still wins.
+        assert reused_id == snap_new["id"], (
+            "outage fallback ordered by created_at instead of "
+            "sequence — snap_new (newer sequence, older created_at) "
+            "should have won but snap_old was returned. The ORDER BY "
+            "must be on ``sequence DESC``."
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────

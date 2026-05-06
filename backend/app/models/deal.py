@@ -37,8 +37,11 @@ _CANONICAL_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 # (``"2026-13-01"``, ``"2026-02-30"``).
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+from itertools import count
+
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     Date,
     DateTime,
@@ -46,6 +49,7 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     Numeric,
+    Sequence,
     String,
     Text,
     UniqueConstraint,
@@ -68,6 +72,20 @@ PriceReferencesType = JSON().with_variant(
     JSONB(astext_type=Text()),
     "postgresql",
 )
+
+
+# Codex P2 (PR #22 follow-up, 2026-05-06): monotonic-insertion counter for
+# DealPNLSnapshot.sequence. Used as the SQLAlchemy column ``default=`` so
+# the SQLite test path (which has no SEQUENCE objects) gets a strictly
+# monotonic value per Python process. On Postgres the explicit Sequence
+# DDL takes precedence — the server-side nextval() is what actually
+# populates the column, and this counter is never consulted.
+#
+# The counter is process-local; that is sufficient for the SQLite test
+# environment (single writer, in-memory DB, sequential inserts). It is
+# NOT a multi-writer correctness mechanism — Postgres deployments rely
+# on the SEQUENCE for that.
+_SNAPSHOT_SEQUENCE_COUNTER = count(start=1)
 
 from app.models.base import Base
 from app.core.precision import (
@@ -217,6 +235,22 @@ class DealPNLSnapshot(Base):
     # shape enforcement so SQLite tests catch malformed writes too.
     price_references: Mapped[dict | None] = mapped_column(
         PriceReferencesType, nullable=True
+    )
+    # Codex P2 (PR #22 follow-up, 2026-05-06): monotonic insertion counter
+    # used by ``compute_deal_pnl``'s outage fallback to deterministically
+    # identify the newest reusable snapshot for a given (deal_id,
+    # snapshot_date) when timestamps tie. ``id`` is a random UUID and
+    # ``created_at`` is second-precision on SQLite — neither is monotonic
+    # across rows that land in the same second. Postgres uses an explicit
+    # SEQUENCE (``deal_pnl_snapshots_sequence_seq``); SQLite uses the
+    # process-local Python counter as the column ``default=`` — race-free
+    # under SQLite's serialized writes (single writer, in-memory test DB).
+    sequence: Mapped[int] = mapped_column(
+        BigInteger,
+        Sequence("deal_pnl_snapshots_sequence_seq"),
+        default=lambda: next(_SNAPSHOT_SEQUENCE_COUNTER),
+        nullable=False,
+        index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
