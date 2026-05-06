@@ -522,7 +522,7 @@ This is the reconcile-side mirror of §6.3 / §6.3.5 — the §3.9 dual-filter c
   #             = 100 - 40 = 60   (NOT 100, which would mean lookup missed)
   linked_map = ExposureEngineService._get_linked_qty_map(session)
   assert all(isinstance(k, str) for k in linked_map.keys())
-  reconcile_from_orders(session)
+  ExposureEngineService.reconcile_from_orders(session)
   exposure = session.query(Exposure).filter(Exposure.source_id == so.id).one()
   assert exposure.open_tons == Decimal("60")  # not Decimal("100")
   ```
@@ -576,7 +576,7 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
   # the assertion is trivially true regardless of content and would NOT
   # catch the regression. Build a keyed set of commodities present and
   # assert against THAT.
-  result = compute_net_exposure(session)
+  result = ExposureEngineService.compute_net_exposure(session)
   commodities_in_response = {row["commodity"] for row in result}
   assert "aluminum" not in commodities_in_response, (
       f"Aluminum should NOT appear in net-exposure response when its only "
@@ -627,7 +627,7 @@ This is the net-exposure mirror of §6.3.5 — the §3.10 hedge-side linkage fil
   # aluminum is now is_deleted=True, the SUM-grouped query returns no rows
   # for aluminum, and the response shape (per §4 / §10 invariant) drops the
   # commodity entirely — NOT a zero-valued row.
-  result = compute_net_exposure(session, commodity="aluminum")
+  result = ExposureEngineService.compute_net_exposure(session, commodity="aluminum")
   commodities_in_response = {row["commodity"] for row in result}
   assert "aluminum" not in commodities_in_response, (
       f"Retired Exposure row's commodity should NOT appear in net-exposure "
