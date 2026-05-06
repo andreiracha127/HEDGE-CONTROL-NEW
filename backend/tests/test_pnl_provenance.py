@@ -1808,13 +1808,18 @@ class TestPortableSequenceDefault:
 
     def test_returns_max_plus_one_int_on_sqlite(self):
         """On SQLite, the callable executes ``COALESCE(MAX, 0)+1``
-        on the in-flight connection and returns the integer."""
+        on the in-flight connection and returns the integer the SQL
+        query yielded. The ``+1`` is computed inside the SQL — the
+        Python wrapper just casts to ``int``."""
 
         executed_sql: list[str] = []
 
         class _FakeResult:
+            # The SQL ``COALESCE(MAX(sequence), 0) + 1`` already produces
+            # the next-sequence value, so ``scalar()`` returns 43 (not
+            # 42 — Codex P2 caught a previous off-by-one in this fake).
             def scalar(self):
-                return 42
+                return 43
 
         class _FakeConn:
             def execute(self, stmt):
