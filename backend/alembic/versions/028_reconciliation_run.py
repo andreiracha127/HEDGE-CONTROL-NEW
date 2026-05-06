@@ -12,6 +12,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision: str = "028_reconciliation_run"
@@ -23,7 +24,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        uuid_type = sa.dialects.postgresql.UUID(as_uuid=True)
+        uuid_type = postgresql.UUID(as_uuid=True)
     else:
         # SQLite (test) — store UUID as 36-char string.
         uuid_type = sa.String(length=36)

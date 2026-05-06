@@ -17,6 +17,16 @@ class Settings(BaseSettings):
     # ── Core ──────────────────────────────────────────────────────
     database_url: str = Field(..., description="PostgreSQL or SQLite connection string")
     app_version: str = Field("1.0.0")
+    app_env: str = Field(
+        "production",
+        description=(
+            "Deployment environment marker — one of 'production', 'staging', "
+            "'development', 'local', 'test'. The audit-signing fail-closed "
+            "validator only enforces a non-empty AUDIT_SIGNING_KEY in "
+            "production/staging; development/local/test paths may boot with "
+            "an empty key (e.g. for the default docker-compose stack)."
+        ),
+    )
 
     # ── Auth (JWT / JWKS) — all optional; auth disabled when jwt_issuer is empty ──
     jwt_issuer: str = Field("", description="Leave empty to disable JWT auth")
@@ -55,14 +65,29 @@ class Settings(BaseSettings):
         return v
 
     def model_post_init(self, __context) -> None:  # type: ignore[override]
-        """Enforce AUDIT_SIGNING_KEY presence in non-test environments."""
-        # Tests (pytest) set DATABASE_URL to sqlite ":memory:" — they set the
-        # signing key dynamically per test via env-var manipulation. In every
-        # other environment the key MUST be a non-empty string at startup so
-        # the application cannot boot in a state where signed audit emission
-        # would silently fall back to NULL signatures.
+        """Enforce AUDIT_SIGNING_KEY presence in production/staging only.
+
+        Defense-in-depth gate (PR-7 / J-A1-02 §3.4):
+
+        * **production / staging** — Settings boot MUST fail-closed when the
+          key is missing. This is the institutional invariant.
+        * **development / local** — the default ``docker-compose up`` and
+          local PostgreSQL stacks may boot with an empty key; the runtime
+          guard inside ``AuditTrailService.record`` (Layer 1) still raises
+          ``MissingAuditSigningKey`` if a mutation is actually attempted
+          without configuring the key.
+        * **test (sqlite ``:memory:``)** — pytest fixtures set the key
+          dynamically per-test; allow boot without it.
+        """
+        # Test path: sqlite in-memory always exempt (legacy contract).
         is_test_db = "sqlite" in self.database_url and ":memory:" in self.database_url
         if is_test_db:
+            return
+        # Dev/local path: explicit env marker exempts the boot validator.
+        # Layer 1 (AuditTrailService.record) still fails-closed at first
+        # mutation if no key is configured.
+        env_marker = (self.app_env or "").strip().lower()
+        if env_marker in {"development", "dev", "local", "test"}:
             return
         if not self.audit_signing_key or not self.audit_signing_key.strip():
             raise ValueError(
