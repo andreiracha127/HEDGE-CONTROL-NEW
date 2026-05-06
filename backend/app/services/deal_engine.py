@@ -481,20 +481,29 @@ class DealEngineService:
         §3.4.3 — backfilling them would silently bind to current
         link sets and serve stale P&L).
 
-        Idempotency under price-source repair (Codex P2 follow-up):
-        before any market lookup, candidate snapshots for this
-        ``(deal_id, snapshot_date)`` are probed by recomputing their
-        hash from the current link set + their persisted
-        ``price_references``. If a candidate matches, it is returned
-        WITHOUT calling :func:`_get_market_quote` — so a repeated
-        ``POST /pnl-snapshot`` returns the existing row even when the
-        underlying ``CashSettlementPrice`` was later removed or is
-        temporarily unavailable. Without this probe the loop below
-        would raise ``PriceReferenceUnprovable`` (→ 422) before the
-        hash-match lookup could fire, breaking the §6.2 idempotency
-        contract for variable-price / active-hedge deals.
+        Idempotency under price-source repair (Codex P2 follow-up,
+        re-revised — live-first / candidate-fallback-on-unprovable):
+        the live market lookup runs FIRST. If it succeeds, the freshly
+        computed ``price_references`` drives the hash; on a price
+        correction the hash differs from the existing row's hash and a
+        new row is persisted alongside the old (forensic trail
+        preserved). Only if the live lookup raises
+        :class:`PriceReferenceUnprovable` do we probe existing
+        snapshots: each candidate's hash is recomputed from the current
+        link set + its persisted ``price_references``, and the first
+        match is returned without raising. If no candidate matches the
+        original ``PriceReferenceUnprovable`` propagates (→ 422) so the
+        caller gets the honest "no provable evidence" answer. The probe
+        was previously the FIRST step — that variant returned the old
+        snapshot even when the live source had been corrected, so a
+        repeated ``POST /pnl-snapshot`` served stale P&L and never
+        produced the new row that the price-provenance hash is meant
+        to produce after corrections (Codex P2 on PR #22).
         """
-        from app.services.price_lookup_service import PriceQuote
+        from app.services.price_lookup_service import (
+            PriceQuote,
+            PriceReferenceUnprovable,
+        )
 
         deal = DealEngineService.get_by_id(session, deal_id)
         if not deal:
@@ -504,42 +513,6 @@ class DealEngineService:
 
         links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
         link_ids = [lk.id for lk in links]
-
-        # ── Reuse-before-lookup probe (Codex P2 — idempotency under
-        #    price-source repair). The current link set is deterministic
-        #    without any market lookup, so we can probe existing
-        #    snapshots for this (deal, date) and recompute each
-        #    candidate's hash using the persisted price_references.
-        #    If any candidate's hash equals its stored inputs_hash for
-        #    the current link set, the inputs already match and we
-        #    return that row WITHOUT calling _get_market_quote — this
-        #    preserves the §3.4.3 idempotency contract even when the
-        #    underlying CashSettlementPrice row was later removed or
-        #    is temporarily unavailable (e.g. repair scenarios).
-        #
-        #    Legacy (pre-PR-8) snapshots have an old-format
-        #    inputs_hash (computed without the price_references key)
-        #    so the candidate_hash here will not match them — they
-        #    are intentionally not reusable, which is correct per
-        #    §3.4.3 (legacy rows are sealed; never bound to the new
-        #    format retroactively).
-        candidate_snapshots = (
-            session.query(DealPNLSnapshot)
-            .filter(
-                DealPNLSnapshot.deal_id == deal_id,
-                DealPNLSnapshot.snapshot_date == snapshot_date,
-            )
-            .all()
-        )
-        for candidate in candidate_snapshots:
-            candidate_hash = _compute_inputs_hash(
-                deal_id,
-                snapshot_date,
-                link_ids,
-                candidate.price_references,
-            )
-            if candidate_hash == candidate.inputs_hash:
-                return candidate
 
         # ── Step 1-2: walk links once to determine which commodities
         #             actually require a market lookup (variable-price
@@ -588,15 +561,52 @@ class DealEngineService:
                 if contract.status == HedgeContractStatus.active:
                     commodities_needing_price.add(contract.commodity)
 
-        # ── Step 3-4: one lookup per unique commodity. Any missing
-        #             price hard-fails the entire snapshot — no
-        #             partial-success path. PriceReferenceUnprovable
-        #             propagates to the route layer (422).
+        # ── Step 3-4: one lookup per unique commodity. The live
+        #             lookup runs FIRST so price corrections produce a
+        #             fresh hash and a new row (forensic trail). Only
+        #             when the live source is UNPROVABLE do we fall
+        #             back to probing existing snapshots — that is the
+        #             repair scenario (CashSettlementPrice deleted
+        #             after the snapshot was persisted) and is the
+        #             ONLY case where reusing the stored
+        #             price_references is correct.
         quotes_by_commodity: dict[str, PriceQuote] = {}
-        for commodity in sorted(commodities_needing_price):
-            quotes_by_commodity[commodity] = _get_market_quote(
-                session, commodity, snapshot_date
+        try:
+            for commodity in sorted(commodities_needing_price):
+                quotes_by_commodity[commodity] = _get_market_quote(
+                    session, commodity, snapshot_date
+                )
+        except PriceReferenceUnprovable:
+            # Live lookup failed → repair scenario. Probe existing
+            # snapshots: each candidate's hash is recomputed from the
+            # current link set + its persisted price_references; the
+            # first match is returned. Legacy (pre-PR-8) rows have
+            # their hash computed in the old format (no
+            # price_references key) so candidate_hash will not equal
+            # their stored inputs_hash — intentionally not reusable
+            # per §3.4.3 (legacy rows are sealed). If no candidate
+            # matches the ORIGINAL PriceReferenceUnprovable propagates
+            # (→ 422 at the route).
+            candidate_snapshots = (
+                session.query(DealPNLSnapshot)
+                .filter(
+                    DealPNLSnapshot.deal_id == deal_id,
+                    DealPNLSnapshot.snapshot_date == snapshot_date,
+                )
+                .all()
             )
+            for candidate in candidate_snapshots:
+                candidate_hash = _compute_inputs_hash(
+                    deal_id,
+                    snapshot_date,
+                    link_ids,
+                    candidate.price_references,
+                )
+                if candidate_hash == candidate.inputs_hash:
+                    return candidate
+            # No reusable candidate — propagate the original
+            # PriceReferenceUnprovable; the route layer maps it to 422.
+            raise
 
         # ── Step 5: build the canonical price_references dict with
         #            string values BEFORE hashing and BEFORE persisting
@@ -622,12 +632,11 @@ class DealEngineService:
             price_references,
         )
 
-        # Defensive final hash-match lookup. The reuse-before-lookup
-        # probe above already rejects candidates whose stored
-        # price_references reproduce the current hash; this fallback
-        # catches any race / future divergence (e.g. a sibling row
-        # inserted between the probe query and now) and preserves
-        # the global "same inputs → same row" guarantee.
+        # Standard hash-match lookup — preserves the global
+        # "same inputs → same row" idempotency guarantee for repeated
+        # POSTs that produce identical price_references (the live
+        # lookup succeeded and yielded the same value as the prior
+        # call, so the inputs are byte-for-byte identical).
         existing = (
             session.query(DealPNLSnapshot)
             .filter(DealPNLSnapshot.inputs_hash == inputs_hash)
@@ -694,10 +703,6 @@ class DealEngineService:
                         # Defensive: step 3 should have raised. Re-raise
                         # here rather than fall back to Decimal("0") —
                         # never silently zero an ACTIVE hedge MTM.
-                        from app.services.price_lookup_service import (
-                            PriceReferenceUnprovable,
-                        )
-
                         raise PriceReferenceUnprovable(
                             f"hedge contract {contract.id} cannot be MTM-valued: "
                             f"no market price for {contract.commodity} on "

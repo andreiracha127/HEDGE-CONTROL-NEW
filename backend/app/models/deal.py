@@ -23,6 +23,20 @@ from decimal import Decimal
 # ``$`` anchors are enforced.
 _CANONICAL_DECIMAL_RE = re.compile(r"^-?\d+(\.\d+)?$")
 
+# Codex P2 (2026-05-06, follow-up): the portable @validates defender for
+# ``settlement_date`` MUST mirror the Postgres CHECK regex byte-for-byte.
+# The CHECK in alembic/versions/030_pnl_provenance.py uses
+# ``^\d{4}-\d{2}-\d{2}$`` — a strict ``YYYY-MM-DD`` shape. Without this
+# regex, ``date.fromisoformat()`` (Python 3.11+) ALSO accepts compact
+# (``"20260505"``), ISO week (``"2026-W19-2"``), and ordinal
+# (``"2026-125"``) forms that the PG CHECK rejects, so a SQLite ORM write
+# could pass the validator and only fail later at Postgres commit time.
+# Pre-compile once at module load. Use ``fullmatch`` so both anchors are
+# enforced. The ``date.fromisoformat`` call below remains as
+# defense-in-depth — it catches calendar-invalid dates the regex permits
+# (``"2026-13-01"``, ``"2026-02-30"``).
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -315,6 +329,25 @@ class DealPNLSnapshot(Base):
                     f"price_references[{commodity!r}].settlement_date "
                     f"must be a string"
                 )
+            # Codex P2 follow-up (2026-05-06): mirror the Postgres CHECK
+            # regex byte-for-byte. ``date.fromisoformat`` (Python 3.11+)
+            # ALSO accepts compact (``"20260505"``), ISO week
+            # (``"2026-W19-2"``), and ordinal (``"2026-125"``) forms
+            # which the PG CHECK rejects. Anchored ``fullmatch`` here
+            # restores parity so SQLite tests / repair tools cannot
+            # persist provenance shapes that later violate the CHECK
+            # in production.
+            if not _ISO_DATE_RE.fullmatch(raw_settlement):
+                raise ValueError(
+                    f"price_references[{commodity!r}].settlement_date "
+                    f"must be in strict YYYY-MM-DD format (got "
+                    f"{raw_settlement!r}); compact `20260505` and "
+                    f"ISO week `2026-W19-2` formats are forbidden — "
+                    f"must match the Postgres CHECK regex "
+                    f"^\\d{{4}}-\\d{{2}}-\\d{{2}}$."
+                )
+            # Defense in depth: catches calendar-invalid dates the
+            # regex permits (e.g. ``"2026-13-01"``, ``"2026-02-30"``).
             try:
                 date.fromisoformat(raw_settlement)
             except ValueError as exc:

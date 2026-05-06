@@ -749,6 +749,69 @@ class TestPriceReferencesValidator:
                 },
             )
 
+    # Codex P2 follow-up (2026-05-06): regex-parity guards. Python's
+    # ``date.fromisoformat`` accepts compact / ISO-week / ordinal forms
+    # that the PG-side ``^\d{4}-\d{2}-\d{2}$`` CHECK rejects. The
+    # portable @validates must use the same anchored regex BEFORE
+    # falling through to ``fromisoformat`` so SQLite tests catch what
+    # would otherwise only fail at Postgres commit time.
+    def test_inner_settlement_date_compact_format_rejected(self):
+        """``"20260505"`` (compact ISO 8601) accepted by
+        ``fromisoformat`` but rejected by the PG CHECK regex; the
+        portable validator must reject it.
+        """
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": "lme",
+                        "settlement_date": "20260505",
+                    }
+                },
+            )
+
+    def test_inner_settlement_date_iso_week_rejected(self):
+        """``"2026-W19-2"`` (ISO week date) accepted by
+        ``fromisoformat`` but rejected by the PG CHECK regex; the
+        portable validator must reject it.
+        """
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": "lme",
+                        "settlement_date": "2026-W19-2",
+                    }
+                },
+            )
+
+    def test_inner_settlement_date_ordinal_rejected(self):
+        """``"2026-125"`` (ordinal date) accepted by
+        ``fromisoformat`` but rejected by the PG CHECK regex; the
+        portable validator must reject it.
+        """
+        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": "lme",
+                        "settlement_date": "2026-125",
+                    }
+                },
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Postgres-only — direct-SQL writes are rejected by the per-entry CHECK
@@ -1139,9 +1202,15 @@ class TestSnapshotReuseUnderPriceSourceRepair:
                 s, uuid.UUID(deal_id), snapshot_date_obj
             )
             s.commit()
+            # Capture attributes WHILE the session is still open —
+            # accessing them after the ``with`` block exits would
+            # raise ``DetachedInstanceError`` because SQLAlchemy
+            # cannot refresh from a closed session.
+            snap2_id = str(snap2.id)
+            snap2_hash = snap2.inputs_hash
 
-        assert str(snap2.id) == snap1["id"]
-        assert snap2.inputs_hash == snap1["inputs_hash"]
+        assert snap2_id == snap1["id"]
+        assert snap2_hash == snap1["inputs_hash"]
         # Exactly one row — no duplicate persisted by the second call.
         with SessionLocal() as s:
             assert (
