@@ -335,14 +335,16 @@ class RFQService:
         The caller must ``session.commit()`` afterwards.
         """
         snapshot_rows = ExposureService.compute_commercial_snapshot(session)
+        snapshot_by_commodity = {
+            canonical_commodity(row["commodity"]): row for row in snapshot_rows
+        }
 
         def snapshot_for(commodity: str | None) -> dict:
-            if commodity is not None:
-                for row in snapshot_rows:
-                    if row["commodity"] == commodity:
-                        return row
+            canonical = canonical_commodity(commodity)
+            if canonical is not None and canonical in snapshot_by_commodity:
+                return snapshot_by_commodity[canonical]
             return {
-                "commodity": commodity or payload.commodity,
+                "commodity": canonical or commodity or payload.commodity,
                 "pre_reduction_commercial_active_mt": 0,
                 "pre_reduction_commercial_passive_mt": 0,
                 "commercial_active_mt": 0,
