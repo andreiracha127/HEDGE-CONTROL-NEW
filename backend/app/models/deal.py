@@ -240,6 +240,21 @@ class DealPNLSnapshot(Base):
                         f"price_references[{commodity!r}] missing required "
                         f"key {required!r}"
                     )
+            # Codex P2 follow-up (2026-05-06): mirror the Postgres CHECK
+            # ``jsonb_typeof(entry->'source') = 'string'`` clause. The
+            # required-keys check above only verifies the key exists; a
+            # direct ORM write could smuggle a non-string ``source``
+            # (int, bool, list, dict, None) that would pass the portable
+            # validator on SQLite and only fail later at Postgres commit
+            # time. The producer always emits a string identifier
+            # (e.g. "lme_cash_settlement", "westmetall_cash_settlement"),
+            # and ``value`` / ``settlement_date`` already have explicit
+            # isinstance(str) guards — this restores parity for ``source``.
+            if not isinstance(entry["source"], str):
+                raise ValueError(
+                    f"price_references[{commodity!r}].source must be a string "
+                    f"(got {type(entry['source']).__name__})"
+                )
             # Codex P2 (2026-05-06): the producer pipeline is
             # quantize_price() -> str(Decimal); a direct ORM write that
             # smuggles a non-decimal string ("not-a-number", "5500.0e-2",

@@ -603,6 +603,40 @@ class TestPriceReferencesValidator:
             )
 
     @pytest.mark.parametrize(
+        "bad_source",
+        [
+            123,             # int — Codex's exact example
+            1.5,             # float
+            True,            # bool
+            ["lme"],         # list
+            {"name": "lme"}, # dict
+            None,            # key present, value is None
+        ],
+    )
+    def test_inner_source_non_string_rejected(self, bad_source):
+        """Codex P2 (2026-05-06): SQLite-portable defender must mirror
+        the Postgres CHECK clause ``jsonb_typeof(entry->'source') =
+        'string'``. The required-keys check passes when ``source`` is
+        present but any non-string type, so without this guard a direct
+        ORM write could persist malformed audit evidence on SQLite that
+        only fails at Postgres commit time. Mirrors the existing
+        ``test_inner_value_non_string_rejected`` parity guard.
+        """
+        with pytest.raises(ValueError, match="source must be a string"):
+            DealPNLSnapshot(
+                deal_id=uuid.uuid4(),
+                snapshot_date=date(2026, 2, 1),
+                inputs_hash="x" * 64,
+                price_references={
+                    "ALUMINUM": {
+                        "value": "2700.0",
+                        "source": bad_source,
+                        "settlement_date": "2026-05-05",
+                    }
+                },
+            )
+
+    @pytest.mark.parametrize(
         "non_canonical_value",
         [
             "5500.0e-2",   # scientific notation — Decimal accepts, CHECK rejects
