@@ -1742,106 +1742,139 @@ class TestSnapshotReuseUnderPriceSourceRepair:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Codex P2 (PR #22 follow-up #2, 2026-05-06) — server-side sequence is
-# the single source of truth for ``DealPNLSnapshot.sequence``. The
-# previous iteration used a process-local ``itertools.count`` as the
-# Python ``default=`` callable, which silently broke multi-worker
-# production: each gunicorn worker started its own counter at 1, so two
-# workers inserting concurrently would persist duplicate sequence
-# values, defeating the outage-fallback ``ORDER BY sequence DESC``.
+# Codex P1 (PR #22 follow-up, 2026-05-06) — ``DealPNLSnapshot.sequence``
+# is populated via a split-by-dialect architecture. The previous design
+# wired a Python ``default=`` callable that returned ``func.nextval(...)``
+# on PostgreSQL; SQLAlchemy only inlines a SQL expression when it is
+# configured directly as the column default, so the return value was
+# instead bound as a DBAPI parameter, failing PG inserts at runtime.
 #
-# The fix splits paths cleanly per dialect:
-#   * PostgreSQL — column has ``server_default = nextval(seq)``; the
-#     Python callable returns ``None`` so SQLAlchemy lets the server-side
-#     default fire. Multi-worker safe by construction.
-#   * SQLite (tests only) — Python callable issues ``MAX(sequence)+1`` in
-#     the same flush transaction. Race-free under SQLite's serialized
-#     writes.
+# The current architecture:
+#   * PostgreSQL — ``Sequence("deal_pnl_snapshots_sequence_seq")`` is
+#     declared on the column; SQLAlchemy auto-fires ``nextval(...)``
+#     server-side. Migration 031 ALSO binds
+#     ``server_default = nextval(...)`` so raw-SQL inserts converge on
+#     the same sequence. Multi-worker safe.
+#   * SQLite — ``Sequence`` is a no-op; a ``before_insert`` event
+#     listener (``_set_sqlite_sequence``) computes
+#     ``COALESCE(MAX(sequence), 0) + 1`` inline. Race-free under
+#     SQLite's serialized writes.
 # ──────────────────────────────────────────────────────────────────────
 
 
 from app.core.database import engine as _pnl_engine
-from app.models.deal import _portable_sequence_default
+from app.models.deal import _set_sqlite_sequence
 
 _IS_POSTGRES = _pnl_engine.dialect.name == "postgresql"
 
 
-class TestPortableSequenceDefault:
-    """Unit tests for the dialect-aware ``_portable_sequence_default``
-    callable used as ``DealPNLSnapshot.sequence``'s ``default=``.
+class TestSqliteSequenceEventListener:
+    """Unit tests for ``_set_sqlite_sequence`` — the ``before_insert``
+    event listener that backs ``DealPNLSnapshot.sequence`` on SQLite.
 
-    These exercise the dialect-branching logic directly with fake
-    contexts so the contract is pinned regardless of the test DB.
-    The callable must:
-      * On PG, return a SQLAlchemy ``ClauseElement`` referencing
-        ``nextval('deal_pnl_snapshots_sequence_seq')`` so SQLAlchemy
-        inlines the expression in INSERT VALUES (the database, not
-        Python, owns the counter — multi-worker safe).
-      * On SQLite, return an ``int`` from
-        ``COALESCE(MAX(sequence), 0) + 1`` so the next row's sequence
-        is monotonic relative to the current table contents.
+    The listener MUST:
+      * Early-return on PostgreSQL (server-side ``Sequence`` /
+        ``server_default`` own that path; the listener must never
+        interfere with it).
+      * Early-return when ``target.sequence`` is already set (caller-
+        supplied values pass through unchanged).
+      * On SQLite with ``target.sequence is None``, query
+        ``COALESCE(MAX(sequence), 0) + 1`` against the in-flight
+        connection and assign the integer to ``target.sequence``.
     """
 
-    def test_returns_nextval_sql_expression_on_postgresql(self):
-        """On PG the callable MUST return a SQL clause that compiles
-        to ``nextval('deal_pnl_snapshots_sequence_seq')``. Returning
-        ``None`` (Codex P1) would bind NULL and fail the NOT NULL
-        constraint; returning a Python int would shadow the DB
-        sequence and re-introduce the multi-worker duplicate bug."""
-        from sqlalchemy.sql.elements import ClauseElement
+    def test_listener_early_returns_on_postgresql(self):
+        """On PG the listener MUST early-return so SQLAlchemy's
+        ``Sequence`` / ``server_default`` populate the column
+        server-side. Touching ``target.sequence`` here would shadow
+        the DB sequence and re-introduce the multi-worker duplicate
+        bug Codex P2 flagged earlier."""
 
         class _FakeDialect:
             name = "postgresql"
 
-        class _FakeContext:
+        class _FakeConn:
             dialect = _FakeDialect()
-            connection = None  # MUST not be touched on the PG branch
 
-        result = _portable_sequence_default(_FakeContext())
-        assert isinstance(result, ClauseElement), (
-            "default must return a SQL expression on PG so SQLAlchemy "
-            f"inlines it in INSERT VALUES; got {type(result).__name__}"
+            def execute(self, _stmt):  # pragma: no cover - must not run
+                raise AssertionError(
+                    "listener executed SQL on PostgreSQL — it must "
+                    "early-return so server-side nextval() fires."
+                )
+
+        class _FakeTarget:
+            sequence = None
+
+        target = _FakeTarget()
+        _set_sqlite_sequence(mapper=None, connection=_FakeConn(), target=target)
+        assert target.sequence is None, (
+            "listener mutated target.sequence on PostgreSQL; the "
+            "server-side Sequence / server_default must own that path."
         )
-        compiled = str(result.compile(compile_kwargs={"literal_binds": True}))
-        assert "nextval" in compiled.lower()
-        assert "deal_pnl_snapshots_sequence_seq" in compiled
 
-    def test_returns_max_plus_one_int_on_sqlite(self):
-        """On SQLite, the callable executes ``COALESCE(MAX, 0)+1``
-        on the in-flight connection and returns the integer the SQL
-        query yielded. The ``+1`` is computed inside the SQL — the
-        Python wrapper just casts to ``int``."""
+    def test_listener_assigns_max_plus_one_on_sqlite(self):
+        """On SQLite with ``target.sequence is None``, the listener
+        executes ``COALESCE(MAX(sequence), 0) + 1`` and assigns the
+        scalar result to ``target.sequence``. The ``+1`` is computed
+        inside the SQL — the listener just casts to ``int``."""
 
         executed_sql: list[str] = []
 
         class _FakeResult:
-            # The SQL ``COALESCE(MAX(sequence), 0) + 1`` already produces
-            # the next-sequence value, so ``scalar()`` returns 43 (not
-            # 42 — Codex P2 caught a previous off-by-one in this fake).
             def scalar(self):
-                return 43
-
-        class _FakeConn:
-            def execute(self, stmt):
-                # ``stmt`` is a TextClause; capture its text for assertion.
-                executed_sql.append(str(stmt))
-                return _FakeResult()
+                return 42
 
         class _FakeDialect:
             name = "sqlite"
 
-        class _FakeContext:
+        class _FakeConn:
             dialect = _FakeDialect()
-            connection = _FakeConn()
 
-        result = _portable_sequence_default(_FakeContext())
-        assert result == 43
-        assert isinstance(result, int)
+            def execute(self, stmt):
+                executed_sql.append(str(stmt))
+                return _FakeResult()
+
+        class _FakeTarget:
+            sequence = None
+
+        target = _FakeTarget()
+        _set_sqlite_sequence(mapper=None, connection=_FakeConn(), target=target)
+        assert target.sequence == 42
+        assert isinstance(target.sequence, int)
         assert len(executed_sql) == 1
         sql_text = executed_sql[0].lower()
         assert "max(sequence)" in sql_text
         assert "deal_pnl_snapshots" in sql_text
         assert "coalesce" in sql_text
+
+    def test_listener_preserves_caller_supplied_sequence_on_sqlite(self):
+        """When the caller has already populated ``target.sequence``,
+        the listener MUST early-return and leave the value untouched —
+        even on SQLite. This protects deliberate writes (e.g. tests
+        that pre-set sequence to exercise edge cases)."""
+
+        class _FakeDialect:
+            name = "sqlite"
+
+        class _FakeConn:
+            dialect = _FakeDialect()
+
+            def execute(self, _stmt):  # pragma: no cover - must not run
+                raise AssertionError(
+                    "listener queried SQL despite target.sequence "
+                    "being pre-set; it must early-return when the "
+                    "caller has supplied a value."
+                )
+
+        class _FakeTarget:
+            sequence = 99
+
+        target = _FakeTarget()
+        _set_sqlite_sequence(mapper=None, connection=_FakeConn(), target=target)
+        assert target.sequence == 99, (
+            "listener overwrote caller-supplied target.sequence; it "
+            "must preserve a non-None value and skip the SQL probe."
+        )
 
 
 @pytest.mark.skipif(
