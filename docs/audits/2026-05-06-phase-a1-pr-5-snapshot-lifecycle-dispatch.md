@@ -110,13 +110,15 @@ def _linked_by_order_subquery(session: Session):
 
 Note: this changes the subquery's residual semantics. An order that was previously "fully hedged" via a linkage to a hedge that has since been settled will now show a positive commercial residual — correct, because the hedge is no longer hedging anything live. This is a **behavior change visible to operators** — flag in PR description as `[BEHAVIOR_SHIFT]`.
 
-### 3.5 Apply same lifecycle predicate to `linked_by_contract` subquery
+**On the symmetric `Order.deleted_at IS NULL` filter inside `_linked_by_order_subquery`:** the subquery aggregates by `order_id`, and its sole consumer (`compute_commercial_snapshot`) joins back to `Order` and already filters `Order.deleted_at IS NULL` upstream per §3.1. The order-side filter is therefore upstream of every consumer of this subquery's `linked_qty` aggregate, so adding `Order.deleted_at IS NULL` here would be belt-and-suspenders, not load-bearing. **Decision: do NOT add the symmetric `Order` filter to `_linked_by_order_subquery` in this PR** — keep the subquery focused on the hedge-side lifecycle (which has no upstream filter). The §3.5 sibling subquery (`linked_by_contract`) is in the opposite situation (see §3.5) and DOES require the dual filter.
+
+### 3.5 Apply same lifecycle predicate to `linked_by_contract` subquery — with dual hedge AND order filter
 
 **File:** `backend/app/services/exposure_service.py` — the inline `linked_by_contract` subquery inside `compute_global_snapshot` (~257-265 in current main).
 
-Even though the outer query filters dead hedges out (per §3.3), this subquery is constructed BEFORE the outer filter is applied; the residual computation joins it with `HedgeContract` outerjoin, then the outer filter excludes the dead rows. So technically dead hedges' linkages are computed in the subquery but excluded later. This is fragile — a future refactor that changes the join order could re-introduce the bug.
+The bug this subquery hides is more acute than §3.4's. Consider: a live Hedge Short Aluminum 100 linked to a Sales Order Aluminum 100 that is then **soft-deleted**. If the subquery only filters `HedgeContract`, the linkage from the dead order still subtracts from the hedge's residual, zeroing `residual_contract_qty`. Then `compute_global_snapshot` filters out the dead order on the commercial side AND the residual-zero hedge on the global hedge-short-unlinked side, so `/exposures/global` omits **both** the deleted commercial order and the still-live hedge — the operator loses sight of the hedge entirely. This is a worse failure mode than §3.4: the hedge isn't dead, but it disappears from the snapshot.
 
-**Defensive fix (recommended):** apply the live-hedge filter at the subquery level too, mirroring §3.4:
+**Required fix:** the `linked_by_contract` subquery MUST join `Order` AND filter `Order.deleted_at IS NULL` in addition to the `HedgeContract` lifecycle filter. Symmetric to §3.4's hedge-side filter, but applied in the opposite direction — and load-bearing here, not belt-and-suspenders, because no upstream consumer of `linked_by_contract` filters `Order` on this path:
 
 ```python
 linked_by_contract = (
@@ -127,18 +129,20 @@ linked_by_contract = (
         ),
     )
     .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+    .join(Order, Order.id == HedgeOrderLinkage.order_id)
     .filter(
         HedgeContract.deleted_at.is_(None),
         HedgeContract.status.in_(
             [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
         ),
+        Order.deleted_at.is_(None),
     )
     .group_by(HedgeOrderLinkage.contract_id)
     .subquery()
 )
 ```
 
-Belt-and-suspenders: outer filter (§3.3) is the institutional invariant; subquery filter is defense-in-depth.
+**Dual-filter rationale (institutional invariant):** a linkage that reduces hedge residual must couple a live hedge AND a live order. If either side is dead, the linkage does not count toward residual; both the hedge's `linked_qty` and the order's `linked_qty` revert to zero, so both sides reappear in the snapshot with their full pre-linkage exposure. This is the same invariant as §3.4 in mirror image: §3.4 filters out linkages from dead hedges (so commercial doesn't keep getting reduced by a dead hedge); §3.5 filters out linkages from dead orders (so a live hedge doesn't keep getting reduced by a dead order's linkage).
 
 ### 3.6 Filter `Order.deleted_at IS NULL` in `_validate_residuals_non_negative`
 
@@ -150,7 +154,7 @@ This helper validates that no order has negative residual after linkages. If it 
 
 **File:** `backend/app/services/exposure_engine.py` — `reconcile_from_orders` queries `Order` to derive `Exposure` rows.
 
-PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on negative residuals. **Do NOT re-implement that fix here.** But the same `Order.deleted_at IS NULL` filter is needed in `reconcile_from_orders` so soft-deleted orders don't generate `Exposure` rows.
+PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on negative residuals. **Do NOT re-implement that fix here.** But the same `Order.deleted_at IS NULL` filter prevents NEW `Exposure` rows from being created for soft-deleted orders. **Additionally, per §3.8, `reconcile_from_orders` MUST retire existing `Exposure` rows whose source order has been soft-deleted, matching the lifecycle semantics required by J-A1-OPUS-02.** Filtering alone is insufficient: pre-existing `Exposure` rows derived from now-deleted orders persist in the table and are still counted by `compute_net_exposure`, so the lifecycle invariant is broken on the reconcile side until §3.8 retirement runs.
 
 **Coordination plan:**
 - If PR-4 lands first: rebase this PR on top of PR-4's reconcile changes; add the `Order.deleted_at IS NULL` filter to the order query in `reconcile_from_orders`. Verify PR-4's residual hard-fail still works on the filtered query (it should — the filter narrows the input set, doesn't change the assertion).
@@ -158,6 +162,54 @@ PR-4 (linkage hardening, J-A1-OPUS-01) modifies this function to hard-fail on ne
 - Either order works; the filter and the assertion are orthogonal.
 
 Document the coordination in PR description; the orchestrator will sequence the merges to minimize rebase work.
+
+### 3.8 Retire derived `Exposure` rows for deleted source orders (Option A — preferred)
+
+**File:** `backend/app/services/exposure_engine.py` — `reconcile_from_orders`.
+
+**Why this is required, not optional.** §3.7's filter only stops NEW `Exposure` rows from being created for soft-deleted orders. But pre-existing `Exposure` rows whose source order was reconciled BEFORE soft-delete are never re-visited by a filter-only fix; they remain `is_deleted = False` with positive `open_tons`, and `compute_net_exposure` (a separate consumer of the `Exposure` table) keeps counting them. The J-A1-OPUS-02 invariant — "dead source rows cannot inflate live KPIs" — is violated on the reconcile/net-exposure path until those derived rows are retired.
+
+**Exposure model inspection (verified by reading `backend/app/models/exposure.py`):**
+
+- FK to source order: **`Exposure.source_id: UUID`** (polymorphic — discriminated by `source_type: ExposureSourceType` enum: `sales_order` / `purchase_order`). There is no FK constraint to `orders.id`; the join must be `Order.id == Exposure.source_id` AND `Exposure.source_type IN (sales_order, purchase_order)`.
+- Lifecycle fields available on `Exposure`: **BOTH** `is_deleted: Boolean` (default False) **AND** `deleted_at: DateTime | None`. There is no `retired` status on `ExposureStatus` (which has only `open` / `partially_hedged` / `fully_hedged` / `cancelled`).
+- `Exposure.open_tons` (Numeric) — the quantity field that `compute_net_exposure` aggregates.
+
+**Retirement strategy — Option A preferred order, with fallbacks.** Pick (a); fall back to (b) only if (a) breaks an existing consumer; (c) is last resort.
+
+- **(a) PREFERRED — Soft-delete symmetric to upstream:** set `Exposure.is_deleted = True` AND `Exposure.deleted_at = func.now()`, leaving `open_tons` and `status` untouched for audit. `compute_net_exposure` (and any other consumer of the `Exposure` table) MUST be inspected and updated to filter `Exposure.is_deleted.is_(False)` (or equivalently `Exposure.deleted_at.is_(None)`); without that downstream filter, retirement is invisible. Verify both filter idioms during implementation — the codebase already mixes `is_deleted` and `deleted_at`; pick whichever is consistent with surrounding code on a per-consumer basis but always set both fields here.
+- **(b) Fallback if (a) breaks an unfilterable consumer:** set `Exposure.open_tons = 0` AND `Exposure.status = ExposureStatus.cancelled` (the closest semantic match to "retired" in the existing enum — `cancelled` is the lifecycle terminal state). This zeroes the quantity that `compute_net_exposure` aggregates without requiring a downstream filter change. Lossier for audit (the original `open_tons` is lost) — only use if (a) is impractical.
+- **(c) Last resort — hard `DELETE`:** only if (a) and (b) are both blocked. Loses audit trail entirely; document the reason in PR description.
+
+**Where the retirement runs.** Inside `reconcile_from_orders`, AFTER the new-creation pass, in the same UoW (per PR-13 boundary — no `session.commit()` from the service). The function's contract becomes "make `Exposure` rows reflect current `Order` lifecycle state — both create live, AND retire dead". Sketch:
+
+```python
+# After the existing creation/update pass, sweep stale rows:
+stale_exposures = (
+    session.query(Exposure)
+    .join(
+        Order,
+        Order.id == Exposure.source_id,
+    )
+    .filter(
+        Exposure.source_type.in_(
+            [ExposureSourceType.sales_order, ExposureSourceType.purchase_order]
+        ),
+        Exposure.is_deleted.is_(False),
+        Order.deleted_at.is_(None) == False,  # i.e., Order is soft-deleted
+    )
+    .all()
+)
+for exposure in stale_exposures:
+    exposure.is_deleted = True
+    exposure.deleted_at = func.now()
+```
+
+(Use `Order.deleted_at.isnot(None)` in the actual SQLAlchemy idiom — `isnot(None)` is the proper inverse of `is_(None)`. Do NOT use `Order.deleted_at != None` or `not Order.deleted_at.is_(None)`.)
+
+**Reversibility — soft-delete-on-source reversed.** If an operator clears `Order.deleted_at` (un-deletes the order), the next `reconcile_from_orders` MUST either un-retire the `Exposure` row (clear `is_deleted` / `deleted_at`) OR create a fresh `Exposure` row. Pick whichever is easier to reason about; document the choice in the PR description. Acceptance §6.6 covers this case.
+
+**Option B (documented fallback only — DO NOT default here).** If the retirement path proves infeasible (e.g., `compute_net_exposure` has consumers that cannot tolerate the `is_deleted` filter without a coordinated change exceeding PR-5's scope), defer to a follow-up PR. Add to §4 Scope OUT and open a GitHub issue at PR-5 merge time covering the retirement sweep + `compute_net_exposure` lifecycle alignment. Update §6.6 to document the deferred case with a reproducing fixture (Exposure row count remains positive after Order soft-delete) so the follow-up has a starting point. **Option A is the default — choose B only on a documented scope blocker, surfaced in the PR body per §9.**
 
 ---
 
@@ -169,7 +221,7 @@ Document the coordination in PR description; the orchestrator will sequence the 
 - **UoW boundary** — PR-3 in main; preserve.
 - **Classification invariant** — PR-6/#14 in main; preserve.
 - **Per-commodity grouping** — PR-2/#16 in main; preserve.
-- **`Exposure.is_deleted` reconcile semantics (J-A1-OPUS-08)** — Tier 3 deferred; tracked as GitHub issue #12. This PR does NOT touch the `Exposure` model's own soft-delete fields; only the upstream `Order` and `HedgeContract` lifecycle filters.
+- **`Exposure.is_deleted` reconcile semantics (J-A1-OPUS-08)** — Tier 3 deferred; tracked as GitHub issue #12. This PR does NOT touch the `Exposure` model schema or duplicate-source-snapshot semantics from J-A1-OPUS-08. **However, per §3.8, this PR DOES set `Exposure.is_deleted` / `Exposure.deleted_at` on derived `Exposure` rows whose source `Order` has been soft-deleted** — that retirement is required to close J-A1-OPUS-02's lifecycle invariant on the reconcile/net-exposure path. The §3.8 retirement is a write to existing `Exposure` lifecycle fields; it does NOT change the model schema and does NOT pre-empt issue #12's separate concerns.
 - **`DealLink` lifecycle on soft-deleted Deal (J-A1-OPUS-07)** — Tier 3 deferred; tracked as GitHub issue #11.
 - **Commodity alias normalization** — already in main (per #16 Codex catches); do not re-implement.
 - **P&L price evidence** — PR-8 territory.
@@ -215,6 +267,25 @@ For every test fixture below, **the constitutional formula derivation MUST be in
   - This is the explicit behavior change vs pre-PR. Operators will see commercial exposure increase when a hedge settles. This is correct: the order is no longer hedged.
 - [ ] **Test:** Same with deleted_at instead of status=settled → same outcome.
 
+### 6.3.5 Linkage from soft-deleted order does not reduce live hedge's residual
+
+This is the symmetric mirror of §6.3 — the §3.5 `linked_by_contract` dual-filter case. A live hedge linked to a soft-deleted order must reappear in the snapshot with FULL residual; the linkage from the dead order does not count.
+
+- [ ] **Test (P1, Codex catch):** SO Aluminum 100 (live) + Hedge Short Aluminum 100 (status=active) + linkage 100 between them.
+  - Initial snapshot: commercial Aluminum.active = 0 (linkage absorbs commercial residual); global Aluminum.hedge_short_unlinked = 0 (linkage absorbs hedge residual).
+  - Soft-delete the order (`Order.deleted_at = now()`).
+  - Re-snapshot:
+    - commercial Aluminum.active = 0 (the SO is dead and filtered out per §3.1 — does not appear at all).
+    - global Aluminum.hedge_short_unlinked = 100 (the live hedge is back to FULL residual because the linkage no longer counts — its order is dead).
+  ```python
+  # Per §2.5: Hedge Short live unlinked = total_live_hedge_short - linked_to_live_orders.
+  # After SO soft-delete: total_live_hedge_short = 100, linked_to_live_orders = 0
+  # (linkage's order is dead per §3.5 dual filter), so:
+  #   global Aluminum.hedge_short_unlinked = 100 - 0 = 100
+  expected_aluminum_hedge_short_unlinked = Decimal("100")
+  ```
+  - **Failure mode prevented:** without the §3.5 dual filter, the linkage from the dead order still reduces the hedge's `residual_contract_qty` to zero, then `compute_global_snapshot`'s outer filter excludes the residual-zero hedge as well — so `/exposures/global` would omit BOTH the dead order AND the live hedge, silently hiding 100 MT of live risk.
+
 ### 6.4 Multi-commodity isolation preserved (post-#16)
 
 - [ ] **Test:** SO Aluminum 100 + SO Copper 50 + Hedge Short Aluminum 80 (live, unlinked) + Hedge Short Copper 30 (settled) → global.Aluminum.active = 180, global.Copper.active = 50 (NOT 80; the settled Cu hedge is excluded).
@@ -224,10 +295,28 @@ For every test fixture below, **the constitutional formula derivation MUST be in
 
 - [ ] **Test:** Soft-delete an order whose residual would be negative (e.g., over-linked from before lifecycle filtering). `compute_commercial_snapshot()` does NOT raise 409 — the dead order is filtered out before validation.
 
-### 6.6 Reconcile (coordinate with PR-4)
+### 6.6 Reconcile (coordinate with PR-4) — filter AND retirement (§3.7 + §3.8)
+
+**Filter path (prevents new dead-source `Exposure` rows — §3.7):**
 
 - [ ] **Test:** Soft-deleted variable-price order does NOT cause `reconcile_from_orders` to create or update an `Exposure` row.
 - [ ] **Test:** Live order produces `Exposure` row as before; lifecycle filter does not affect non-deleted path.
+
+**Retirement path (closes the J-A1-OPUS-02 lifecycle invariant — §3.8 Option A, P2 Codex catch):**
+
+- [ ] **Test (P2, Codex catch):** Live order reconciled → `Exposure` row exists with `open_tons > 0` and `is_deleted = False`. Soft-delete the order (`Order.deleted_at = now()`). Re-run `reconcile_from_orders`. The pre-existing `Exposure` row is now retired per Option A: `is_deleted = True` AND `deleted_at` is set. `compute_net_exposure` no longer counts it.
+  ```python
+  # Per §2.1 (Exposure is state, never event):
+  # state must reflect current Order lifecycle. After Order.deleted_at is set,
+  # the derived Exposure row's open_tons must NOT count toward net exposure.
+  assert exposure.is_deleted is True
+  assert exposure.deleted_at is not None
+  # compute_net_exposure aggregates over Exposure.is_deleted.is_(False), so:
+  assert compute_net_exposure(session, commodity="aluminum") == Decimal("0")
+  ```
+- [ ] **Test:** A retired `Exposure` row from a soft-deleted order is NOT re-created or un-retired by a subsequent `reconcile_from_orders` while the source order is still soft-deleted (idempotent retirement).
+- [ ] **Test (reversibility):** If `Order.deleted_at` is cleared (un-deleted), the next `reconcile_from_orders` produces a live `Exposure` row for that order again — either by un-retiring (clearing `is_deleted` / `deleted_at`) or by creating a fresh row, depending on the implementation choice documented in §9.
+- [ ] **Test (deferred fallback — only emit if Option B was selected per §3.8):** Pre-existing `Exposure` row whose source `Order` is soft-deleted — NOT covered in this PR; reproducing fixture documented (Exposure row count remains positive after Order soft-delete) so the follow-up issue has a starting point. Skip this test entirely if Option A was implemented.
 
 ### 6.7 Query plan inspection (Postgres-only, optional)
 
@@ -289,16 +378,38 @@ the hedge is settled. Operators may need a release note.
 ## Files changed
 - Services: exposure_service.py (lifecycle filters in
   compute_commercial_snapshot, compute_global_snapshot,
-  _linked_by_order_subquery, linked_by_contract subquery,
+  _linked_by_order_subquery, linked_by_contract subquery
+  [now with dual HedgeContract + Order filter per §3.5],
   _validate_residuals_non_negative)
 - Services: exposure_engine.py (lifecycle filter in
-  reconcile_from_orders' Order query — coordinated with PR-4)
+  reconcile_from_orders' Order query — coordinated with PR-4 — AND
+  retirement sweep for pre-existing Exposure rows whose source Order
+  was soft-deleted, per §3.8 Option A)
 - Tests: test_exposures_commercial.py, test_exposures_global.py,
   test_exposure_engine.py, test_soft_delete.py, test_validate_residuals.py
+
+## §3.8 Exposure retirement strategy
+- Strategy chosen: **Option A** (preferred — soft-delete symmetric to
+  upstream: `Exposure.is_deleted = True`, `Exposure.deleted_at = now()`).
+  Fallbacks (b) zeroing + status=cancelled and (c) hard delete were NOT
+  required.
+- `compute_net_exposure` consumer audited and updated to filter
+  `Exposure.is_deleted.is_(False)` on the retirement path.
+- Reversibility behavior on `Order.deleted_at` clear: <un-retire OR
+  fresh-row — fill in at execution time>.
+- If Option B (deferral) was unavoidable, document the scope blocker
+  here and link the follow-up issue covering the retirement sweep +
+  `compute_net_exposure` lifecycle alignment.
 
 ## Acceptance evidence
 - All §6 test cases pass with constitutional formulas in fixture
   comments
+- §6.3.5 dual-filter test demonstrates a live hedge linked to a
+  soft-deleted order reappears in /exposures/global with FULL residual
+  (Codex P1 catch closed)
+- §6.6 retirement tests demonstrate pre-existing Exposure rows are
+  retired when their source Order is soft-deleted, and
+  compute_net_exposure no longer counts them (Codex P2 catch closed)
 - Multi-commodity isolation (post-#16) preserved
 - No regression in PR-15/-13/-14/-16 test suites
 - Optional EXPLAIN plan test on Postgres confirms filters appear in
@@ -322,7 +433,7 @@ J-A1-OPUS-02.
 - DO NOT change snapshot return shape — frontend consumes it (per #16 contract)
 - DO NOT change Decimal substrate (PR-15 preserved)
 - DO NOT call `session.commit()` from any service (PR-13 boundary preserved)
-- DO NOT touch `Exposure.is_deleted` filtering — that's J-A1-OPUS-08 issue #12 territory, latent and out of scope
+- DO NOT touch `Exposure.is_deleted` filtering for the J-A1-OPUS-08 duplicate-source-snapshot semantics — that remains issue #12 territory, latent and out of scope. **The §3.8 retirement is a separate, narrowly-scoped write to `Exposure.is_deleted` / `deleted_at` for rows whose source `Order` was soft-deleted** — that IS in scope per §3.8 because it closes J-A1-OPUS-02 on the reconcile path. Keep the two concerns separate: §3.8 only touches rows whose `Order.deleted_at IS NOT NULL`; do not generalize to other deletion paths in this PR.
 - DO NOT touch `DealLink` lifecycle — issue #11 territory
 - DO NOT touch hedge classification invariant — PR-14 in main, preserved by FK and CHECK
 - DO NOT add audit emission — PR-7 territory
@@ -357,11 +468,15 @@ J-A1-OPUS-02.
 When complete, report:
 - Branch + PR URL + final SHA
 - Files touched
-- Behavior shift evidence: a test that demonstrates the increased commercial after settling a linked hedge
+- Behavior shift evidence: a test that demonstrates the increased commercial after settling a linked hedge (§6.3)
+- §6.3.5 evidence: the live-hedge-with-soft-deleted-order-linkage test passes (Codex P1 closed)
+- §3.8 retirement strategy chosen (Option A / B / fallback (b) / (c)) with one-line justification, plus the `compute_net_exposure` consumer audit outcome
+- §6.6 retirement test evidence: the pre-existing `Exposure` row for a soft-deleted order is retired and `compute_net_exposure` no longer counts it (Codex P2 closed)
+- Reversibility behavior chosen for §3.8 (un-retire vs fresh row) when `Order.deleted_at` is cleared
 - Test counts (new, total, vs pre-PR baseline)
 - Coordination outcome with PR-4 if its merge happened mid-implementation
 - Codex verdict
-- Any `[BEHAVIOR_SHIFT]` notes beyond §6.3 the executor surfaces during implementation
+- Any `[BEHAVIOR_SHIFT]` notes beyond §6.3 / §6.3.5 the executor surfaces during implementation
 
 Under 600 words.
 
