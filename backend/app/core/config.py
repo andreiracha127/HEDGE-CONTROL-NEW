@@ -45,10 +45,9 @@ class Settings(BaseSettings):
     rfq_timeout_hours: int = Field(24)
     rfq_reminder_threshold: float = Field(0.5)
 
-    # ── Azure OpenAI ──────────────────────────────────────────────
-    azure_openai_endpoint: str = Field("")
-    azure_openai_api_key: str = Field("")
-    azure_openai_deployment: str = Field("gpt-4o-mini")
+    # ── OpenAI ───────────────────────────────────────────────────
+    openai_api_key: str = Field("")
+    openai_model: str = Field("gpt-4o-mini")
 
     # ── WhatsApp (Meta) ───────────────────────────────────────────
     whatsapp_api_url: str = Field("https://graph.facebook.com/v21.0")

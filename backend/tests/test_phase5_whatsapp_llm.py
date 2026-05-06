@@ -1,6 +1,6 @@
 """Phase 5 tests — WhatsApp Service, Webhook Processor, LLM Agent, RFQ Orchestrator.
 
-These tests mock external services (WhatsApp Cloud API, Azure OpenAI) so that
+These tests mock external services (WhatsApp Cloud API, OpenAI) so that
 the full automated RFQ lifecycle can be validated end-to-end without network
 calls.
 """
@@ -13,6 +13,7 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -613,12 +614,58 @@ class TestLLMAgent:
         )
         assert parsed.intent.value == "OTHER"
 
+    @patch("app.services.llm_agent.OpenAI")
+    def test_call_openai_uses_openai_client_and_model(
+        self, mock_openai: MagicMock
+    ) -> None:
+        from app.services import llm_agent
+
+        completion = MagicMock()
+        completion.choices[0].message.content = json.dumps(
+            {
+                "intent": "OTHER",
+                "confidence": 0.10,
+                "reasoning": "test",
+            }
+        )
+        mock_openai.return_value.chat.completions.create.return_value = completion
+
+        with patch(
+            "app.services.llm_agent.get_settings",
+            return_value=SimpleNamespace(
+                openai_api_key="sk-test",
+                openai_model="gpt-test-model",
+            ),
+        ):
+            result = llm_agent._call_openai("system prompt", "user prompt")
+
+        mock_openai.assert_called_once_with(
+            api_key="sk-test",
+            timeout=30.0,
+            max_retries=0,
+        )
+        mock_openai.return_value.chat.completions.create.assert_called_once_with(
+            model="gpt-test-model",
+            messages=[
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "user prompt"},
+            ],
+            temperature=0.1,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+        )
+        assert result["intent"] == "OTHER"
+
     def test_llm_unavailable_error(self) -> None:
         from app.services.llm_agent import LLMAgent, LLMUnavailableError
 
-        # Without AZURE_OPENAI_ENDPOINT the call should raise
-        with patch.dict(
-            os.environ, {"AZURE_OPENAI_ENDPOINT": "", "AZURE_OPENAI_API_KEY": ""}
+        # Without OPENAI_API_KEY the call should raise
+        with patch(
+            "app.services.llm_agent.get_settings",
+            return_value=SimpleNamespace(
+                openai_api_key="",
+                openai_model="gpt-4o-mini",
+            ),
         ):
             with pytest.raises(LLMUnavailableError):
                 LLMAgent.classify_intent("test")

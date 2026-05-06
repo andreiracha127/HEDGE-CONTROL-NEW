@@ -63,10 +63,10 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 class _StripApiPrefixMiddleware:
     """Raw ASGI middleware that strips the ``/api`` prefix from the request
-    path.  Azure Static Web Apps Linked Backend forwards ``/api/*`` to the
-    App Service *with the prefix intact*.  This middleware normalises the path
-    so that existing routes (``/orders``, ``/contracts``, …) continue to work
-    whether the request arrives via the SWA proxy or directly."""
+    path.  Some reverse proxies forward ``/api/*`` to the app with the prefix
+    intact.  This middleware normalises the path so that existing routes
+    (``/orders``, ``/contracts``, …) continue to work whether the request
+    arrives via a proxy or directly."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app

@@ -15,6 +15,11 @@ logger = get_logger()
 _scheduler: BackgroundScheduler | None = None
 
 
+def is_scheduler_disabled() -> bool:
+    """Return whether scheduler startup is disabled by environment."""
+    return os.getenv("SCHEDULER_DISABLED", "").strip().lower() in ("1", "true", "yes")
+
+
 def start_scheduler() -> None:
     """Create and start the background scheduler.
 
@@ -25,7 +30,7 @@ def start_scheduler() -> None:
     """
     global _scheduler  # noqa: PLW0603
 
-    if os.getenv("SCHEDULER_DISABLED", "").strip() in ("1", "true", "yes"):
+    if is_scheduler_disabled():
         logger.info("scheduler_disabled")
         return
 
