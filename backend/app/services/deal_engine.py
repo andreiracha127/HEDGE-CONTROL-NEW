@@ -480,6 +480,19 @@ class DealEngineService:
         intentionally not reachable by post-PR-8 lookups (per dispatch
         §3.4.3 — backfilling them would silently bind to current
         link sets and serve stale P&L).
+
+        Idempotency under price-source repair (Codex P2 follow-up):
+        before any market lookup, candidate snapshots for this
+        ``(deal_id, snapshot_date)`` are probed by recomputing their
+        hash from the current link set + their persisted
+        ``price_references``. If a candidate matches, it is returned
+        WITHOUT calling :func:`_get_market_quote` — so a repeated
+        ``POST /pnl-snapshot`` returns the existing row even when the
+        underlying ``CashSettlementPrice`` was later removed or is
+        temporarily unavailable. Without this probe the loop below
+        would raise ``PriceReferenceUnprovable`` (→ 422) before the
+        hash-match lookup could fire, breaking the §6.2 idempotency
+        contract for variable-price / active-hedge deals.
         """
         from app.services.price_lookup_service import PriceQuote
 
@@ -490,6 +503,43 @@ class DealEngineService:
             )
 
         links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
+        link_ids = [lk.id for lk in links]
+
+        # ── Reuse-before-lookup probe (Codex P2 — idempotency under
+        #    price-source repair). The current link set is deterministic
+        #    without any market lookup, so we can probe existing
+        #    snapshots for this (deal, date) and recompute each
+        #    candidate's hash using the persisted price_references.
+        #    If any candidate's hash equals its stored inputs_hash for
+        #    the current link set, the inputs already match and we
+        #    return that row WITHOUT calling _get_market_quote — this
+        #    preserves the §3.4.3 idempotency contract even when the
+        #    underlying CashSettlementPrice row was later removed or
+        #    is temporarily unavailable (e.g. repair scenarios).
+        #
+        #    Legacy (pre-PR-8) snapshots have an old-format
+        #    inputs_hash (computed without the price_references key)
+        #    so the candidate_hash here will not match them — they
+        #    are intentionally not reusable, which is correct per
+        #    §3.4.3 (legacy rows are sealed; never bound to the new
+        #    format retroactively).
+        candidate_snapshots = (
+            session.query(DealPNLSnapshot)
+            .filter(
+                DealPNLSnapshot.deal_id == deal_id,
+                DealPNLSnapshot.snapshot_date == snapshot_date,
+            )
+            .all()
+        )
+        for candidate in candidate_snapshots:
+            candidate_hash = _compute_inputs_hash(
+                deal_id,
+                snapshot_date,
+                link_ids,
+                candidate.price_references,
+            )
+            if candidate_hash == candidate.inputs_hash:
+                return candidate
 
         # ── Step 1-2: walk links once to determine which commodities
         #             actually require a market lookup (variable-price
@@ -568,10 +618,16 @@ class DealEngineService:
         inputs_hash = _compute_inputs_hash(
             deal_id,
             snapshot_date,
-            [lk.id for lk in links],
+            link_ids,
             price_references,
         )
 
+        # Defensive final hash-match lookup. The reuse-before-lookup
+        # probe above already rejects candidates whose stored
+        # price_references reproduce the current hash; this fallback
+        # catches any race / future divergence (e.g. a sibling row
+        # inserted between the probe query and now) and preserves
+        # the global "same inputs → same row" guarantee.
         existing = (
             session.query(DealPNLSnapshot)
             .filter(DealPNLSnapshot.inputs_hash == inputs_hash)

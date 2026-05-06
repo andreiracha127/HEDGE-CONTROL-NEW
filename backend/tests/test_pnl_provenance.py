@@ -29,7 +29,7 @@ from app.models.contracts import (
     HedgeLegSide,
 )
 from app.models.counterparty import Counterparty
-from app.models.deal import DealPNLSnapshot
+from app.models.deal import DealLink, DealPNLSnapshot
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
 from app.services.deal_engine import DealEngineService, _compute_inputs_hash
@@ -1051,3 +1051,326 @@ class TestPriceReferencesCheckOnPostgres:
             self._try_insert(engine, _with("2026-05-05"))
         finally:
             self._teardown(engine)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex P2 (2026-05-06) — idempotency under price-source repair.
+#
+# When a post-PR-8 snapshot already exists but the underlying
+# CashSettlementPrice row is later removed or unavailable during a
+# repair, ``compute_deal_pnl`` MUST still return the existing snapshot
+# rather than raise ``PriceReferenceUnprovable``. The fix probes
+# existing snapshots for this (deal, date) BEFORE the market lookup
+# loop and reuses any whose persisted ``price_references`` still
+# reproduce the current ``inputs_hash``.
+#
+# These tests exercise the service directly (DealEngineService) rather
+# than the HTTP route so we can both:
+#   * mock the price-lookup helper to simulate the source disappearing,
+#   * inspect the persisted DealPNLSnapshot rows to assert no new
+#     duplicate row was created.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestSnapshotReuseUnderPriceSourceRepair:
+    def _create_variable_price_deal_with_snapshot(
+        self, client, session, *, snapshot_date_str: str = "2026-02-01"
+    ):
+        """Helper: variable-price ALU SO deal with one persisted snapshot."""
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+        r = client.post(
+            ENDPOINT, json={"name": "Repair", "commodity": "ALUMINUM"}
+        )
+        deal_id = r.json()["id"]
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price_type=PriceType.variable,
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+        r1 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": snapshot_date_str},
+        )
+        assert r1.status_code == 201, r1.text
+        return deal_id, r1.json()
+
+    def test_compute_deal_pnl_reuses_snapshot_when_market_price_unavailable(
+        self, client, session, monkeypatch
+    ):
+        """Codex P2 — repair: ``CashSettlementPrice`` row deleted after
+        snapshot creation. A repeated call MUST return the persisted
+        snapshot, not raise ``PriceReferenceUnprovable`` (→ 422).
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
+        deal_id, snap1 = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+        snapshot_date_obj = date(2026, 2, 1)
+
+        # Simulate the price-source row vanishing post-snapshot. Any
+        # call into the lookup helper now hard-fails. The probe must
+        # short-circuit BEFORE this is reached.
+        def _raise_unprovable(*args, **kwargs):
+            raise PriceReferenceUnprovable(
+                "simulated repair: source row deleted",
+                commodity="ALUMINUM",
+            )
+
+        monkeypatch.setattr(
+            deal_engine_mod,
+            "_get_market_quote",
+            _raise_unprovable,
+        )
+
+        with SessionLocal() as s:
+            snap2 = DealEngineService.compute_deal_pnl(
+                s, uuid.UUID(deal_id), snapshot_date_obj
+            )
+            s.commit()
+
+        assert str(snap2.id) == snap1["id"]
+        assert snap2.inputs_hash == snap1["inputs_hash"]
+        # Exactly one row — no duplicate persisted by the second call.
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 1
+            )
+
+    def test_compute_deal_pnl_reuses_snapshot_for_fixed_price_only_deal_unchanged(
+        self, client, session
+    ):
+        """Regression: fixed-price-only deal already had
+        ``price_references = NULL`` and reused via the existing
+        post-build hash-match. The new probe must still locate it
+        when the market-lookup stage would not run anyway.
+        """
+        r = client.post(
+            ENDPOINT, json={"name": "Fixed", "commodity": "ALUMINUM"}
+        )
+        deal_id = r.json()["id"]
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price=Decimal("2500"),
+            price_type=PriceType.fixed,
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+
+        r1 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r1.status_code == 201
+        assert r2.status_code == 201
+        assert r1.json()["id"] == r2.json()["id"]
+        # Persisted price_references must remain NULL (no market lookup).
+        assert r1.json()["price_references"] is None
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 1
+            )
+
+    def test_compute_deal_pnl_creates_new_row_when_price_changes(
+        self, client, session
+    ):
+        """Forensic correctness: when the price IS available but
+        differs from what produced the existing snapshot, the probe
+        must miss (different recomputed hash) and a new row persists
+        alongside the old. Two rows = old + new.
+        """
+        deal_id, snap1 = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+
+        # Update the underlying price (LME republishes a corrected value).
+        with SessionLocal() as s:
+            row = (
+                s.query(CashSettlementPrice)
+                .filter(
+                    CashSettlementPrice.symbol
+                    == "LME_ALU_CASH_SETTLEMENT_DAILY"
+                )
+                .first()
+            )
+            row.price_usd = 2750.0
+            s.commit()
+
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 201
+        snap2 = r2.json()
+        assert snap2["id"] != snap1["id"]
+        assert snap2["inputs_hash"] != snap1["inputs_hash"]
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .order_by(DealPNLSnapshot.created_at.asc())
+                .all()
+            )
+            assert len(rows) == 2
+            # First row's hash unchanged; second differs.
+            assert str(rows[0].id) == snap1["id"]
+            assert rows[0].inputs_hash == snap1["inputs_hash"]
+            assert rows[1].inputs_hash == snap2["inputs_hash"]
+
+    def test_compute_deal_pnl_creates_new_row_when_link_set_changes(
+        self, client, session
+    ):
+        """Different link set → different ``link_ids`` → different
+        recomputed hash for the existing snapshot's ``price_references``,
+        so the probe correctly misses and a fresh snapshot is created.
+        """
+        deal_id, snap1 = self._create_variable_price_deal_with_snapshot(
+            client, session
+        )
+
+        # Add a second link (a fixed-price PO — no extra commodity needed).
+        po_id = _create_order(
+            session,
+            OrderType.purchase,
+            qty=Decimal("80"),
+            price=Decimal("2400"),
+            price_type=PriceType.fixed,
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "purchase_order", "linked_id": str(po_id)},
+        )
+
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 201
+        snap2 = r2.json()
+        assert snap2["id"] != snap1["id"]
+        assert snap2["inputs_hash"] != snap1["inputs_hash"]
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 2
+            )
+
+    def test_compute_deal_pnl_legacy_snapshot_not_reused(
+        self, client, session
+    ):
+        """Legacy (pre-PR-8) rows have an ``inputs_hash`` computed in
+        the OLD format (no ``price_references`` key) and stored
+        ``price_references = NULL``. Recomputing the hash with the new
+        format produces a different value → the probe must NOT reuse
+        the legacy row → a fresh post-PR-8 row is inserted alongside.
+        Mirrors §3.4.3: legacy rows are sealed, never bound to current
+        link sets retroactively.
+        """
+        _insert_price(
+            session,
+            symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+            settlement_date=date(2026, 1, 31),
+            price_usd=2700.0,
+        )
+        r = client.post(
+            ENDPOINT, json={"name": "Legacy", "commodity": "ALUMINUM"}
+        )
+        deal_id_str = r.json()["id"]
+        deal_id = uuid.UUID(deal_id_str)
+        so_id = _create_order(
+            session,
+            OrderType.sales,
+            qty=Decimal("100"),
+            price_type=PriceType.variable,
+        )
+        client.post(
+            f"{ENDPOINT}/{deal_id_str}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
+
+        # Insert a legacy snapshot directly with an OLD-format hash and
+        # NULL price_references (the pre-PR-8 producer signature).
+        snapshot_date_obj = date(2026, 2, 1)
+        with SessionLocal() as s:
+            link_ids = sorted(
+                str(lk.id)
+                for lk in s.query(DealLink)
+                .filter(DealLink.deal_id == deal_id)
+                .all()
+            )
+            legacy_hash = hashlib.sha256(
+                json.dumps(
+                    {
+                        "deal_id": str(deal_id),
+                        "snapshot_date": str(snapshot_date_obj),
+                        "links": link_ids,
+                    },
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+            legacy_row = DealPNLSnapshot(
+                deal_id=deal_id,
+                snapshot_date=snapshot_date_obj,
+                physical_revenue=Decimal("100000"),
+                physical_cost=Decimal("0"),
+                hedge_pnl_realized=Decimal("0"),
+                hedge_pnl_mtm=Decimal("0"),
+                total_pnl=Decimal("100000"),
+                inputs_hash=legacy_hash,
+                price_references=None,
+            )
+            s.add(legacy_row)
+            s.commit()
+            legacy_id = legacy_row.id
+
+        # Now request a snapshot via the post-PR-8 path.
+        r2 = client.post(
+            f"{ENDPOINT}/{deal_id_str}/pnl-snapshot",
+            params={"snapshot_date": "2026-02-01"},
+        )
+        assert r2.status_code == 201
+        new = r2.json()
+        # The new row is NOT the legacy row — legacy is sealed.
+        assert new["id"] != str(legacy_id)
+        assert new["inputs_hash"] != legacy_hash
+        # The new (post-PR-8) row must carry populated price_references.
+        assert new["price_references"] is not None
+        assert "ALUMINUM" in new["price_references"]
+        # Both rows persist — legacy is preserved, new row inserted.
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == deal_id)
+                .all()
+            )
+            assert len(rows) == 2
+            ids = {str(r.id) for r in rows}
+            assert str(legacy_id) in ids
+            assert new["id"] in ids
