@@ -129,18 +129,22 @@ Use service-specific redeploys when the blast radius is narrow. Redeploy all dep
 
 Runtime application traffic should use the private Railway database reference exposed through `DATABASE_URL`.
 
-External operator access has two approved paths:
+External operator access requires a public database path. The current production Postgres service is recorded with no public endpoint, so incident responders must first confirm that a TCP Proxy is enabled before relying on Railway CLI database access.
 
-1. Use `railway connect Postgres` from an authenticated CLI session.
-2. Use `DATABASE_PUBLIC_URL` for external SQL clients when Railway exposes it for the environment.
+Approved external access paths:
+
+1. If the Railway TCP Proxy is enabled for Postgres, use `railway connect Postgres` from an authenticated CLI session. This command depends on Railway's public database URL/proxy path and will fail when no TCP Proxy is available.
+2. If Railway exposes `DATABASE_PUBLIC_URL`, use it from an approved external SQL client.
+3. If no TCP Proxy or `DATABASE_PUBLIC_URL` is enabled, use the Railway dashboard to enable an approved temporary TCP Proxy or perform access from an environment that can reach the private Railway network. Record the access method in the incident or execution report.
 
 Example external connection pattern:
 
 ```bash
-# Option 1: Railway-managed interactive connection
+# Option 1: Railway-managed interactive connection.
+# Requires TCP Proxy/public database URL.
 railway connect Postgres
 
-# Option 2: psql through the public database URL, when enabled
+# Option 2: psql through the public database URL, when enabled.
 psql "$DATABASE_PUBLIC_URL"
 ```
 
@@ -148,6 +152,7 @@ Access rules:
 
 - Do not commit connection strings.
 - Do not store production database URLs in local `.env` files that can be shared.
+- Do not assume `railway connect Postgres` will work for a private-only database. Confirm TCP Proxy status first.
 - Prefer read-only inspection during incidents unless a documented corrective action requires mutation.
 - Record manual data changes in the incident or execution report with timestamp, operator, command intent, and affected records.
 
