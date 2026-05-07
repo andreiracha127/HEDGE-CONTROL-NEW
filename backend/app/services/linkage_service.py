@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
 from app.core.precision import quantize_mt
-from app.models.contracts import HedgeClassification, HedgeContract
+from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
 from app.services.price_lookup_service import canonical_commodity
@@ -115,6 +115,36 @@ class LinkageService:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Hedge contract not found",
+            )
+
+        # ── Codex P2 lifecycle gate ───────────────────────────────────────
+        # Mirror the §3.5 / §3.9 dual-filter on the WRITE path. The read
+        # path now ignores any linkage whose order is soft-deleted or whose
+        # hedge contract is settled / cancelled / soft-deleted; without
+        # this gate clients can still 201 a linkage that every downstream
+        # consumer (snapshots, reconcile, net exposure) treats as
+        # invisible. Reject up-front so the API contract is consistent.
+        if order.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cannot link to an archived order",
+            )
+        if contract.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cannot link to an archived hedge contract",
+            )
+        if contract.status not in (
+            HedgeContractStatus.active,
+            HedgeContractStatus.partially_settled,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Cannot link to a hedge contract whose status is "
+                    f"{contract.status.value} — only active or "
+                    f"partially_settled hedges accept new linkages"
+                ),
             )
 
         if canonical_commodity(order.commodity) != canonical_commodity(

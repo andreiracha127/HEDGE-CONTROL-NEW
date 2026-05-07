@@ -271,3 +271,119 @@ def test_insert_order_does_not_change_linkage_validity(client) -> None:
     second = _create_linkage(client, order_id, contract_id, 7.0)
     assert second.status_code == 201
 
+
+# ======================================================================
+# PR-5 codex P2 — write-side lifecycle gate on LinkageService.create
+# Per §3.5 / §3.9 read-side dual-filter: linkages whose order is soft-
+# deleted or whose hedge contract is settled / cancelled / soft-deleted
+# are invisible to all downstream consumers (snapshots, reconcile, net
+# exposure). Reject the linkage on the write path so a 201 cannot create
+# a phantom linkage that every read silently ignores.
+# ======================================================================
+
+
+def test_linkage_to_archived_order_rejected(client) -> None:
+    """Per Codex P2: archived (soft-deleted) order cannot accept new
+    linkages — the read path filters them out, so a 201 here would
+    create a phantom linkage. Expect 422.
+    """
+    order_id = _create_sales_order(client, 10.0)
+    contract_id = _create_hedge_contract(client, 10.0)
+
+    # Archive the order first.
+    archive = client.patch(f"/orders/{order_id}/archive")
+    assert archive.status_code == 200
+
+    resp = _create_linkage(client, order_id, contract_id, 5.0)
+    assert resp.status_code == 422
+    assert "archived order" in resp.json()["detail"].lower()
+
+
+def test_linkage_to_archived_hedge_contract_rejected(client) -> None:
+    """Per Codex P2: archived (soft-deleted) hedge contract cannot accept
+    new linkages — same downstream-invisibility rationale. Expect 422.
+    """
+    order_id = _create_sales_order(client, 10.0)
+    contract_id = _create_hedge_contract(client, 10.0)
+
+    archive = client.patch(f"/contracts/hedge/{contract_id}/archive")
+    assert archive.status_code == 200
+
+    resp = _create_linkage(client, order_id, contract_id, 5.0)
+    assert resp.status_code == 422
+    assert "archived hedge contract" in resp.json()["detail"].lower()
+
+
+def test_linkage_to_settled_hedge_rejected(client, session) -> None:
+    """Per Codex P2: settled hedge contract cannot accept new linkages.
+    Read path: §3.5 / §3.9 filter HedgeContract.status in (active,
+    partially_settled). A linkage to a settled hedge is invisible to
+    every downstream consumer — reject 422.
+    """
+    from app.models.contracts import HedgeContract, HedgeContractStatus
+
+    order_id = _create_sales_order(client, 10.0)
+    contract_id = _create_hedge_contract(client, 10.0)
+
+    from uuid import UUID
+
+    contract = (
+        session.query(HedgeContract)
+        .filter(HedgeContract.id == UUID(contract_id))
+        .one()
+    )
+    contract.status = HedgeContractStatus.settled
+    session.commit()
+
+    resp = _create_linkage(client, order_id, contract_id, 5.0)
+    assert resp.status_code == 422
+    assert "settled" in resp.json()["detail"].lower()
+
+
+def test_linkage_to_cancelled_hedge_rejected(client, session) -> None:
+    """Per Codex P2: cancelled hedge contract cannot accept new linkages.
+    Same read-side filter rationale as settled — both are excluded from
+    HedgeContract.status.in_(active, partially_settled). Expect 422.
+    """
+    from app.models.contracts import HedgeContract, HedgeContractStatus
+
+    order_id = _create_sales_order(client, 10.0)
+    contract_id = _create_hedge_contract(client, 10.0)
+
+    from uuid import UUID
+
+    contract = (
+        session.query(HedgeContract)
+        .filter(HedgeContract.id == UUID(contract_id))
+        .one()
+    )
+    contract.status = HedgeContractStatus.cancelled
+    session.commit()
+
+    resp = _create_linkage(client, order_id, contract_id, 5.0)
+    assert resp.status_code == 422
+    assert "cancelled" in resp.json()["detail"].lower()
+
+
+def test_linkage_to_partially_settled_hedge_accepted(client, session) -> None:
+    """Per Codex P2 + §3.5 / §3.9 dual-filter: partially_settled is a
+    LIVE status (it still has open quantity). Linkage must be accepted.
+    """
+    from app.models.contracts import HedgeContract, HedgeContractStatus
+
+    order_id = _create_sales_order(client, 10.0)
+    contract_id = _create_hedge_contract(client, 10.0)
+
+    from uuid import UUID
+
+    contract = (
+        session.query(HedgeContract)
+        .filter(HedgeContract.id == UUID(contract_id))
+        .one()
+    )
+    contract.status = HedgeContractStatus.partially_settled
+    session.commit()
+
+    resp = _create_linkage(client, order_id, contract_id, 5.0)
+    assert resp.status_code == 201
+
