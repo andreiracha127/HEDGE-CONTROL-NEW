@@ -176,6 +176,53 @@ def test_net_exposure_zero_residual_group_omits_commodity_row(session):
     )
 
 
+def test_net_exposure_no_double_count_when_order_archived_before_reconcile(
+    session,
+):
+    """Codex P2: when an Order is archived without an immediate reconcile,
+    the §3.10 inner subquery already drops linkages from the dead order
+    (so the live hedge contributes full residual). Without a matching
+    read-side filter on the commercial side, the stale Exposure row
+    (still is_deleted=False until next reconcile) would also be counted —
+    double-counting the same physical order.
+
+    Per Codex case (verbatim):
+      100 MT order with a 40 MT hedge linkage, then archived without
+      reconcile. Pre-fix: commercial open_tons = 60 + hedge residual = 100
+      → reported 160 instead of 100. Post-fix: commercial side filtered
+      by Order.deleted_at.is_(None), so only hedge contribution survives.
+
+    Per §3.10 + Codex P2:
+      Hedge contribution = 100 - 0 = 100  (linkage's order is dead)
+      Commercial contribution = 0  (Exposure's source Order is archived)
+      net_tons = (0 - 0) + 100 - 0 = 100
+    """
+    so = _seed_so(session, Decimal("100.000"))
+    hedge = _seed_short_hedge(session, Decimal("100.000"))
+    _link(session, so, hedge, Decimal("40.000"))
+
+    # Reconcile produces a live Exposure row (open_tons = 60).
+    ExposureEngineService.reconcile_from_orders(session)
+
+    # Archive the order WITHOUT re-running reconcile — simulates the
+    # window between archive_order and the next reconcile sweep.
+    so.deleted_at = datetime.now(timezone.utc)
+    session.flush()
+
+    result = ExposureEngineService.compute_net_exposure(
+        session, commodity="aluminum"
+    )
+    aluminum = _row_for(result, "ALUMINUM")
+    assert aluminum is not None
+    # Commercial side filtered out (stale Exposure has dead source Order).
+    assert aluminum["short_original"] == Decimal("0.000")
+    assert aluminum["short_hedged"] == Decimal("0.000")
+    # Hedge contributes its full residual (linkage's order is dead per §3.10).
+    assert aluminum["short_tons"] == Decimal("100.000")
+    # Net = 100 (only the live hedge), NOT 160 (double-counted).
+    assert aluminum["net_tons"] == Decimal("100.000")
+
+
 def test_net_exposure_cross_endpoint_parity_with_global_snapshot(session):
     """§6.3.7 (institutional invariant): for any hedge fixture, the hedge's
     contribution to compute_net_exposure equals compute_global_snapshot's

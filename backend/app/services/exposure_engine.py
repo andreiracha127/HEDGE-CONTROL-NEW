@@ -291,14 +291,38 @@ class ExposureEngineService:
           Formula: (SO_open - PO_open) + global_short - global_long
         """
         # ── 1. Commercial exposures (from Exposure table) ──
-        q = session.query(
-            Exposure.commodity,
-            Exposure.direction,
-            func.coalesce(func.sum(Exposure.open_tons), 0).label("total_open"),
-            func.coalesce(func.sum(Exposure.original_tons), 0).label("total_original"),
-        ).filter(
-            Exposure.is_deleted == False,  # noqa: E712
-            Exposure.status.in_([ExposureStatus.open, ExposureStatus.partially_hedged]),
+        # Codex P2: also require the source Order to be live. archive_order
+        # only soft-deletes the Order; the derived Exposure remains
+        # is_deleted=False until the next reconcile sweep (§3.8) runs. In
+        # the meantime the §3.10 inner subquery already drops linkages
+        # from the dead order, so without this join the commercial side
+        # would still count the stale Exposure AND the hedge would
+        # contribute its full residual — double-counting the order.
+        # Joining Exposure → Order and filtering Order.deleted_at.is_(None)
+        # closes that window regardless of reconcile timing.
+        q = (
+            session.query(
+                Exposure.commodity,
+                Exposure.direction,
+                func.coalesce(func.sum(Exposure.open_tons), 0).label("total_open"),
+                func.coalesce(func.sum(Exposure.original_tons), 0).label(
+                    "total_original"
+                ),
+            )
+            .join(Order, Order.id == Exposure.source_id)
+            .filter(
+                Exposure.is_deleted == False,  # noqa: E712
+                Exposure.status.in_(
+                    [ExposureStatus.open, ExposureStatus.partially_hedged]
+                ),
+                Exposure.source_type.in_(
+                    [
+                        ExposureSourceType.sales_order,
+                        ExposureSourceType.purchase_order,
+                    ]
+                ),
+                Order.deleted_at.is_(None),
+            )
         )
 
         if commodity:
