@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
 from app.core.precision import quantize_mt
-from app.models.contracts import HedgeClassification, HedgeContract
+from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
 from app.services.price_lookup_service import canonical_commodity
@@ -117,6 +117,36 @@ class LinkageService:
                 detail="Hedge contract not found",
             )
 
+        # ── Codex P2 lifecycle gate ───────────────────────────────────────
+        # Mirror the §3.5 / §3.9 dual-filter on the WRITE path. The read
+        # path now ignores any linkage whose order is soft-deleted or whose
+        # hedge contract is settled / cancelled / soft-deleted; without
+        # this gate clients can still 201 a linkage that every downstream
+        # consumer (snapshots, reconcile, net exposure) treats as
+        # invisible. Reject up-front so the API contract is consistent.
+        if order.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cannot link to an archived order",
+            )
+        if contract.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Cannot link to an archived hedge contract",
+            )
+        if contract.status not in (
+            HedgeContractStatus.active,
+            HedgeContractStatus.partially_settled,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"Cannot link to a hedge contract whose status is "
+                    f"{contract.status.value} — only active or "
+                    f"partially_settled hedges accept new linkages"
+                ),
+            )
+
         if canonical_commodity(order.commodity) != canonical_commodity(
             contract.commodity
         ):
@@ -128,15 +158,44 @@ class LinkageService:
         # ── Direction validation (J-A1-OPUS-03) ───────────────────────────
         _validate_linkage_direction(order, contract)
 
-        # ── Capacity checks (existing, preserved) ─────────────────────────
+        # ── Capacity checks ───────────────────────────────────────────────
+        # Codex P2: mirror the §3.5 / §3.9 dual-filter on the capacity
+        # aggregation. The read path (snapshots, reconcile, net exposure)
+        # ignores any linkage whose other-side parent is dead, so the
+        # corresponding capacity is freed conceptually. Sum only LIVE
+        # linkages here so a user can re-link the freed quantity to a
+        # new live hedge/order — without this filter, archiving the
+        # other side leaks capacity that no read path counts but the
+        # writer still treats as consumed.
+        #
+        # For order_linked_qty: count linkages whose HEDGE side is live
+        # (mirror of §3.4's hedge-side filter). For contract_linked_qty:
+        # count linkages whose ORDER side is live.
+        #
+        # The PostgreSQL DB-side invariant (migration 029, function
+        # ``assert_no_linkage_over_allocation``) is updated by migration
+        # 032 to apply the same live-side filter byte-for-byte, so the
+        # service-layer check and the trigger agree on "which linkages
+        # count toward capacity".
         order_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
-            .filter(HedgeOrderLinkage.order_id == order_id)
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .filter(
+                HedgeOrderLinkage.order_id == order_id,
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+            )
             .scalar()
         )
         contract_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
-            .filter(HedgeOrderLinkage.contract_id == contract_id)
+            .join(Order, Order.id == HedgeOrderLinkage.order_id)
+            .filter(
+                HedgeOrderLinkage.contract_id == contract_id,
+                Order.deleted_at.is_(None),
+            )
             .scalar()
         )
 

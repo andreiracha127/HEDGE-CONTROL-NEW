@@ -15,7 +15,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models.contracts import HedgeClassification, HedgeContract
+from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order, OrderType, PriceType
 from app.core.precision import quantize_mt
@@ -31,12 +31,26 @@ class ExposureService:
 
     @staticmethod
     def _linked_by_order_subquery(session: Session):
-        """Subquery: total linked qty per order."""
+        """Subquery: total linked qty per order, counting only linkages whose
+        hedge contract is still live (active / partially_settled, not deleted).
+
+        Hedge-side filter only — the order-side filter is upstream of every
+        consumer (compute_commercial_snapshot already filters
+        Order.deleted_at IS NULL per §3.1), so this stays focused on the
+        hedge-side lifecycle which has no upstream filter (§3.4).
+        """
         return (
             session.query(
                 HedgeOrderLinkage.order_id.label("order_id"),
                 func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0).label(
                     "linked_qty"
+                ),
+            )
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
                 ),
             )
             .group_by(HedgeOrderLinkage.order_id)
@@ -102,6 +116,7 @@ class ExposureService:
             Order.id,
             linked.c.order_id,
             Order.price_type == PriceType.variable,
+            Order.deleted_at.is_(None),
         )
 
         pre_rows = (
@@ -111,7 +126,10 @@ class ExposureService:
                 func.coalesce(func.sum(Order.quantity_mt), 0.0).label("quantity"),
                 func.count(Order.id).label("order_count"),
             )
-            .filter(Order.price_type == PriceType.variable)
+            .filter(
+                Order.price_type == PriceType.variable,
+                Order.deleted_at.is_(None),
+            )
             .group_by(Order.commodity, Order.order_type)
             .all()
         )
@@ -132,7 +150,10 @@ class ExposureService:
                 func.coalesce(func.sum(residual_qty), 0.0).label("quantity"),
             )
             .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(Order.price_type == PriceType.variable)
+            .filter(
+                Order.price_type == PriceType.variable,
+                Order.deleted_at.is_(None),
+            )
             .group_by(Order.commodity, Order.order_type)
             .all()
         )
@@ -151,7 +172,10 @@ class ExposureService:
             )
             .select_from(Order)
             .outerjoin(linked, Order.id == linked.c.order_id)
-            .filter(Order.price_type == PriceType.variable)
+            .filter(
+                Order.price_type == PriceType.variable,
+                Order.deleted_at.is_(None),
+            )
             .group_by(Order.commodity, Order.order_type)
             .all()
         )
@@ -216,6 +240,7 @@ class ExposureService:
             Order.id,
             linked_by_order.c.order_id,
             Order.price_type == PriceType.variable,
+            Order.deleted_at.is_(None),
         )
 
         pre_order_rows = (
@@ -225,7 +250,10 @@ class ExposureService:
                 func.coalesce(func.sum(Order.quantity_mt), 0.0).label("quantity"),
                 func.count(Order.id).label("order_count"),
             )
-            .filter(Order.price_type == PriceType.variable)
+            .filter(
+                Order.price_type == PriceType.variable,
+                Order.deleted_at.is_(None),
+            )
             .group_by(Order.commodity, Order.order_type)
             .all()
         )
@@ -244,7 +272,10 @@ class ExposureService:
                 func.coalesce(func.sum(residual_order_qty), 0.0).label("quantity"),
             )
             .outerjoin(linked_by_order, Order.id == linked_by_order.c.order_id)
-            .filter(Order.price_type == PriceType.variable)
+            .filter(
+                Order.price_type == PriceType.variable,
+                Order.deleted_at.is_(None),
+            )
             .group_by(Order.commodity, Order.order_type)
             .all()
         )
@@ -256,12 +287,26 @@ class ExposureService:
                 item["commercial_passive_mt"] += quantize_mt(row.quantity)
 
         # --- Hedge contracts ---
+        # §3.5 dual-filter: linkages count toward residual only when BOTH the
+        # hedge contract AND the source order are live. A linkage from a dead
+        # order must not keep absorbing the live hedge's residual (which would
+        # make the live hedge silently disappear from the snapshot when its
+        # residual zeros out).
         linked_by_contract = (
             session.query(
                 HedgeOrderLinkage.contract_id.label("contract_id"),
                 func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0).label(
                     "linked_qty"
                 ),
+            )
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .join(Order, Order.id == HedgeOrderLinkage.order_id)
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+                Order.deleted_at.is_(None),
             )
             .group_by(HedgeOrderLinkage.contract_id)
             .subquery()
@@ -275,6 +320,12 @@ class ExposureService:
             session.query(func.min(residual_contract_qty))
             .outerjoin(
                 linked_by_contract, HedgeContract.id == linked_by_contract.c.contract_id
+            )
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
             )
             .scalar()
         )
@@ -296,6 +347,12 @@ class ExposureService:
             .outerjoin(
                 linked_by_contract, HedgeContract.id == linked_by_contract.c.contract_id
             )
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+            )
             .group_by(HedgeContract.commodity, HedgeContract.classification)
             .all()
         )
@@ -314,6 +371,12 @@ class ExposureService:
                     "quantity"
                 ),
                 func.count(HedgeContract.id).label("hedge_count"),
+            )
+            .filter(
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
             )
             .group_by(HedgeContract.commodity, HedgeContract.classification)
             .all()

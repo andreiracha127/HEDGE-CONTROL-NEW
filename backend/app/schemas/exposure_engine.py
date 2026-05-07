@@ -137,4 +137,6 @@ class HedgeTaskListResponse(BaseModel):
 class ReconcileResponse(BaseModel):
     created: int = 0
     updated: int = 0
+    retired: int = 0
+    tasks_cancelled: int = 0
     message: str = "Reconciliation completed"

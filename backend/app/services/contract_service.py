@@ -26,6 +26,7 @@ from app.models.contracts import (
     VALID_STATUS_TRANSITIONS,
 )
 from app.models.linkages import HedgeOrderLinkage
+from app.models.orders import Order
 from app.schemas.contracts import (
     HedgeContractCreate,
     HedgeContractListResponse,
@@ -202,13 +203,23 @@ class ContractService:
         # check at the application layer for a clean 422 with a helpful
         # message before the trigger fires. Also covers SQLite test paths
         # where the trigger is not installed.
+        #
+        # PR-5 codex P2: count only linkages whose ORDER side is live
+        # (Order.deleted_at IS NULL). Mirrors the §3.5 / §3.9 read-side
+        # dual-filter and migration 032's trigger update — without this
+        # filter the precheck rejects 422 for a quantity reduction that
+        # the DB invariant (post-032) would accept.
         if "quantity_mt" in update_data and update_data["quantity_mt"] is not None:
             new_qty = quantize_mt(update_data["quantity_mt"])
             linked_total = (
                 session.query(
                     func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0)
                 )
-                .filter(HedgeOrderLinkage.contract_id == contract_id)
+                .join(Order, Order.id == HedgeOrderLinkage.order_id)
+                .filter(
+                    HedgeOrderLinkage.contract_id == contract_id,
+                    Order.deleted_at.is_(None),
+                )
                 .scalar()
             )
             linked_total = quantize_mt(linked_total)

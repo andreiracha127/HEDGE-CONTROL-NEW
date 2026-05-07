@@ -142,7 +142,19 @@ class TestReconcileOverAllocationHardFail:
         We bypass ``LinkageService.create`` (which now blocks this) by using
         the ORM directly; this simulates a stale row that drifted past the
         invariant before PR-4 landed (the very over-allocation §2.6 forbids).
+
+        Per PR-5 §3.9, ``_get_linked_qty_map`` now joins ``HedgeContract``
+        and filters live (deleted_at IS NULL, status active/partially_settled).
+        The fixture must therefore back the linkages with real, live hedge
+        contracts; otherwise the join drops them and no over-allocation is
+        detected — masking the §2.6 hard-fail this test exercises.
         """
+        from app.models.contracts import (
+            HedgeClassification,
+            HedgeContract,
+            HedgeContractStatus,
+            HedgeLegSide,
+        )
         from app.models.linkages import HedgeOrderLinkage
         from app.models.orders import Order, OrderType, PriceType
 
@@ -155,13 +167,29 @@ class TestReconcileOverAllocationHardFail:
         session.add(order)
         session.flush()
 
+        # Two live hedge contracts so the §3.9 join survives — the test's
+        # subject is the over-allocation hard-fail, not the lifecycle filter.
+        contracts = []
+        for qty in (Decimal("7.000"), Decimal("5.000")):
+            contract = HedgeContract(
+                commodity="ALUMINUM",
+                classification=HedgeClassification.short,
+                quantity_mt=qty,
+                status=HedgeContractStatus.active,
+                fixed_leg_side=HedgeLegSide.sell,
+                variable_leg_side=HedgeLegSide.buy,
+            )
+            session.add(contract)
+            contracts.append(contract)
+        session.flush()
+
         # Two linkages summing to 12 against an order quantity of 10
         # (constitutional violation: linked = 12 > order = 10, residual = -2)
-        for qty in (Decimal("7.000"), Decimal("5.000")):
+        for contract, qty in zip(contracts, (Decimal("7.000"), Decimal("5.000"))):
             session.add(
                 HedgeOrderLinkage(
                     order_id=order.id,
-                    contract_id=uuid4(),  # FK exists but we don't need a real contract for reconcile aggregation
+                    contract_id=contract.id,
                     quantity_mt=qty,
                 )
             )
