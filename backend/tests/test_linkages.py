@@ -252,6 +252,39 @@ def test_contract_quantity_cannot_be_lowered_below_linked_total(client) -> None:
     assert "linkage" in response.json()["detail"].lower() or "allocate" in response.json()["detail"].lower()
 
 
+def test_contract_quantity_can_be_lowered_when_only_archived_order_linkages(
+    client,
+) -> None:
+    """Per Codex P2 + migration 032: ContractService.update's precheck must
+    sum only linkages whose order is live. A 100 MT contract linked 80 MT
+    only to an archived order has 0 MT live capacity consumed — reducing
+    the contract to 50 MT is valid under the live-side invariant and
+    must NOT 422.
+
+    Pre-fix: precheck sums all 80 MT, returns 422 even though the trigger
+    (post-032) would accept the change.
+    Post-fix: precheck filters Order.deleted_at IS NULL → live total = 0,
+    so 50 MT ≥ 0 MT passes.
+    """
+    order_id = _create_sales_order(client, 100.0)
+    contract_id = _create_hedge_contract(client, 100.0)
+    linked = _create_linkage(client, order_id, contract_id, 80.0)
+    assert linked.status_code == 201
+
+    # Archive the order — linkage's live-order side becomes dead.
+    archive = client.patch(f"/orders/{order_id}/archive")
+    assert archive.status_code == 200
+
+    # Reduce contract qty: now valid because no LIVE linkages exist.
+    response = client.patch(
+        f"/contracts/hedge/{contract_id}", json={"quantity_mt": 50.0}
+    )
+    assert response.status_code == 200, (
+        f"Expected 200, got {response.status_code}. Body: {response.json()}"
+    )
+    assert response.json()["quantity_mt"] == "50.000"
+
+
 def test_insert_order_does_not_change_linkage_validity(client) -> None:
     from app.core.database import engine
     from app.models.base import Base
