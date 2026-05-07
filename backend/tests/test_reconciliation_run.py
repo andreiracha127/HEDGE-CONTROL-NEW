@@ -43,11 +43,15 @@ class TestReconcileServicePersistsRun:
         assert persisted.status == ReconciliationRunStatus.succeeded
         # PR-5 §3.8: reconcile_from_orders now also retires Exposure rows
         # whose source Order has been soft-deleted, surfaced as "retired"
-        # in the summary. With no orders / no stale exposures the count is 0.
+        # in the summary. PR-5 codex P2 follow-up: pending HedgeTasks
+        # attached to retired exposures are cancelled in the same sweep,
+        # surfaced as "tasks_cancelled". With no orders / no stale
+        # exposures both counts are 0.
         assert persisted.summary == {
             "created": 0,
             "updated": 0,
             "retired": 0,
+            "tasks_cancelled": 0,
             "message": "Reconciliation completed",
         }
 

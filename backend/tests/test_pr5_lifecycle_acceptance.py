@@ -673,3 +673,107 @@ class TestExposureEnrichmentLifecycle:
         body = client.get(f"/exposures/{exposure_id}").json()
         assert body["hedged_tons"] == 0.0
         assert body["linked_contracts"] == []
+
+
+# ======================================================================
+# Codex P2 follow-up — HedgeTask cancellation when source order is retired
+# Per §3.8 retirement: a retired Exposure must NOT leave behind an
+# executable HedgeTask. cancel_stale_tasks only catches fully_hedged /
+# cancelled exposures, and list_pending_tasks filters solely on
+# HedgeTask.status, so without this fix /exposures/tasks would keep
+# returning a recommendation for an exposure whose source order has
+# been deleted. Three layers, defense in depth:
+#   (a) the retirement sweep cancels pending tasks proactively
+#   (b) list_pending_tasks excludes tasks whose Exposure.is_deleted
+#   (c) execute_task rejects execution against a retired exposure
+# ======================================================================
+
+
+class TestRetirementCancelsPendingTasks:
+    @staticmethod
+    def _seed_so_then_create_pending_task(session):
+        from app.models.exposure import HedgeTask, HedgeTaskStatus
+
+        so = _seed_so(session, Decimal("100.000"))
+        ExposureEngineService.reconcile_from_orders(session)
+        exposure = (
+            session.query(Exposure).filter(Exposure.source_id == so.id).one()
+        )
+        ExposureEngineService.create_hedge_tasks(session)
+        task = (
+            session.query(HedgeTask)
+            .filter(
+                HedgeTask.exposure_id == exposure.id,
+                HedgeTask.status == HedgeTaskStatus.pending,
+            )
+            .one()
+        )
+        return so, exposure, task
+
+    def test_retirement_sweep_cancels_pending_task(self, session):
+        """Per Codex P2: the §3.8 retirement sweep MUST cancel any
+        pending HedgeTask attached to the retired Exposure, otherwise
+        /exposures/tasks would keep recommending action on a dead
+        source order.
+
+        Formula:
+          tasks_cancelled = count(HedgeTask WHERE
+                              status == pending
+                              AND exposure.is_deleted_after_sweep == True)
+        Fixture: 1 SO → reconcile → 1 Exposure → create_hedge_tasks →
+        1 pending task. Soft-delete the SO and re-run reconcile.
+        Expected: task.status == cancelled,
+        summary["tasks_cancelled"] == 1.
+        """
+        from app.models.exposure import HedgeTaskStatus
+
+        so, _, task = self._seed_so_then_create_pending_task(session)
+        assert task.status == HedgeTaskStatus.pending
+
+        so.deleted_at = datetime.now(timezone.utc)
+        session.flush()
+        _, summary = ExposureEngineService.reconcile_from_orders(session)
+
+        session.refresh(task)
+        assert task.status == HedgeTaskStatus.cancelled
+        assert summary["tasks_cancelled"] == 1
+        assert summary["retired"] == 1
+
+    def test_list_pending_tasks_excludes_retired_exposure_tasks(
+        self, client, session
+    ):
+        """Per Codex P2 belt-and-suspenders (b): list_pending_tasks must
+        filter Exposure.is_deleted.is_(False) on the join, so even if a
+        pending task slips past the cancellation sweep, the listing
+        endpoint never surfaces it.
+
+        Fixture exercises the JOIN+filter directly: bypass the sweep by
+        manually setting Exposure.is_deleted=True without going through
+        the cancellation path. The task remains pending in the DB but
+        must NOT appear in /exposures/tasks.
+        """
+        so, exposure, task = self._seed_so_then_create_pending_task(session)
+        exposure.is_deleted = True
+        exposure.deleted_at = datetime.now(timezone.utc)
+        session.commit()
+
+        body = client.get("/exposures/tasks").json()
+        task_ids = [t["id"] for t in body["items"]]
+        assert str(task.id) not in task_ids, (
+            "list_pending_tasks must exclude tasks whose Exposure has "
+            f"been retired. Task id {task.id} surfaced. Got: {body}"
+        )
+
+    def test_execute_task_rejects_when_exposure_retired(self, client, session):
+        """Per Codex P2 belt-and-suspenders (c): execute_task must reject
+        execution against a retired exposure (409). Same direct-retire
+        bypass as above to exercise the execute-side guard in isolation.
+        """
+        so, exposure, task = self._seed_so_then_create_pending_task(session)
+        exposure.is_deleted = True
+        exposure.deleted_at = datetime.now(timezone.utc)
+        session.commit()
+
+        resp = client.post(f"/exposures/tasks/{task.id}/execute")
+        assert resp.status_code == 409
+        assert "retired" in resp.json()["detail"].lower()

@@ -214,6 +214,7 @@ class ExposureEngineService:
         # above filters is_deleted == False, so the retired row is left as
         # audit history — not un-retired).
         retired = 0
+        tasks_cancelled = 0
         stale_exposures = (
             session.query(Exposure)
             .join(Order, Order.id == Exposure.source_id)
@@ -234,12 +235,31 @@ class ExposureEngineService:
             exposure.deleted_at = func.now()
             retired += 1
 
+            # Codex P2: a retired Exposure must not leave behind an
+            # executable HedgeTask. cancel_stale_tasks only catches
+            # fully_hedged / cancelled exposures, and list_pending_tasks
+            # filters solely on HedgeTask.status — without this sweep,
+            # /exposures/tasks would keep returning a recommendation for
+            # an exposure whose source order has been deleted.
+            pending_tasks = (
+                session.query(HedgeTask)
+                .filter(
+                    HedgeTask.exposure_id == exposure.id,
+                    HedgeTask.status == HedgeTaskStatus.pending,
+                )
+                .all()
+            )
+            for task in pending_tasks:
+                task.status = HedgeTaskStatus.cancelled
+                tasks_cancelled += 1
+
         session.flush()
 
         summary = {
             "created": created,
             "updated": updated,
             "retired": retired,
+            "tasks_cancelled": tasks_cancelled,
             "message": "Reconciliation completed",
         }
         run.status = ReconciliationRunStatus.succeeded
@@ -492,9 +512,18 @@ class ExposureEngineService:
     ) -> tuple[list, str | None]:
         from app.core.pagination import paginate
 
+        # Codex P2 belt-and-suspenders: exclude tasks whose parent Exposure
+        # has been retired (§3.8). The retirement sweep cancels these
+        # tasks proactively, but a join+filter on Exposure.is_deleted
+        # closes the read path even if a task slips through (e.g., a
+        # task created mid-reconcile, or external mutation paths).
         q = (
             session.query(HedgeTask)
-            .filter(HedgeTask.status == HedgeTaskStatus.pending)
+            .join(Exposure, HedgeTask.exposure_id == Exposure.id)
+            .filter(
+                HedgeTask.status == HedgeTaskStatus.pending,
+                Exposure.is_deleted.is_(False),
+            )
             .order_by(HedgeTask.created_at.desc())
         )
         return paginate(
@@ -520,6 +549,19 @@ class ExposureEngineService:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Task is already {task.status.value}",
+            )
+        # Codex P2: reject execution if the parent Exposure has been
+        # retired (§3.8). Belt-and-suspenders alongside the retirement
+        # sweep's task cancellation and list_pending_tasks's filter —
+        # ensures an executable recommendation cannot escape the
+        # is_deleted predicate even via a stale URL.
+        exposure = (
+            session.query(Exposure).filter(Exposure.id == task.exposure_id).first()
+        )
+        if exposure is not None and exposure.is_deleted:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Task's exposure has been retired (source order deleted)",
             )
         task.status = HedgeTaskStatus.executed
         task.executed_at = datetime.now(timezone.utc)
