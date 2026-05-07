@@ -43,7 +43,9 @@ def _create_trade_rfq(client, direction: str, cp_id: str | None = None) -> str:
     return response.json()["id"]
 
 
-def _create_spread_rfq(client, buy_trade_id: str, sell_trade_id: str) -> str:
+def _create_spread_rfq(
+    client, buy_trade_id: str, sell_trade_id: str, direction: str = "BUY"
+) -> str:
     response = client.post(
         "/rfqs",
         json={
@@ -52,7 +54,7 @@ def _create_spread_rfq(client, buy_trade_id: str, sell_trade_id: str) -> str:
             "quantity_mt": "5.000",
             "delivery_window_start": "2026-03-01",
             "delivery_window_end": "2026-03-31",
-            "direction": "BUY",
+            "direction": direction,
             "order_id": None,
             "buy_trade_id": buy_trade_id,
             "sell_trade_id": sell_trade_id,
@@ -167,14 +169,15 @@ def test_quote_payload_rejects_unknown_counterparty_uuid(client) -> None:
     assert _get_rfq(client, trade_rfq_id)["state"] == "SENT"
 
 
-def test_spread_ranking_descending_and_ignores_missing_counterparty(client) -> None:
+def test_spread_ranking_buy_direction_picks_min_spread(client) -> None:
     cp1 = _create_counterparty(client, "CP1")
     cp2 = _create_counterparty(client, "CP2")
-    cp3 = _create_counterparty(client, "CP3")
 
     buy_trade_id = _create_trade_rfq(client, "BUY", cp_id=cp1)
     sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp1)
-    spread_rfq_id = _create_spread_rfq(client, buy_trade_id, sell_trade_id)
+    spread_rfq_id = _create_spread_rfq(
+        client, buy_trade_id, sell_trade_id, direction="BUY"
+    )
 
     # CP1 spread = 110 - 100 = 10
     _create_quote(client, buy_trade_id, _quote_payload(buy_trade_id, cp1, "100.000000"))
@@ -192,16 +195,43 @@ def test_spread_ranking_descending_and_ignores_missing_counterparty(client) -> N
         _quote_payload(sell_trade_id, cp2, "115.000000", unit="USDMT"),
     )
 
-    # CP3 only quotes one side -> ignored
-    _create_quote(
-        client, sell_trade_id, _quote_payload(sell_trade_id, cp3, "150.000000")
+    ranking = _get_ranking(client, spread_rfq_id)
+    assert ranking.status_code == 200
+    payload = ranking.json()
+    assert payload["status"] == "SUCCESS"
+    assert payload["failure_code"] is None
+    assert payload["direction"] == "BUY"
+    assert payload["sort_order"] == "min_spread"
+
+    data = payload["ranking"]
+    assert data[0]["counterparty_id"] == cp1
+    assert Decimal(data[0]["spread_value"]) == Decimal("10.000000")
+    assert data[1]["counterparty_id"] == cp2
+    assert Decimal(data[1]["spread_value"]) == Decimal("13.000000")
+
+
+def test_spread_ranking_sell_direction_picks_max_spread(client) -> None:
+    cp1 = _create_counterparty(client, "CP1")
+    cp2 = _create_counterparty(client, "CP2")
+
+    buy_trade_id = _create_trade_rfq(client, "BUY", cp_id=cp1)
+    sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp1)
+    spread_rfq_id = _create_spread_rfq(
+        client, buy_trade_id, sell_trade_id, direction="SELL"
     )
+
+    _create_quote(client, buy_trade_id, _quote_payload(buy_trade_id, cp1, "100.000000"))
+    _create_quote(client, sell_trade_id, _quote_payload(sell_trade_id, cp1, "110.000000"))
+    _create_quote(client, buy_trade_id, _quote_payload(buy_trade_id, cp2, "102.000000"))
+    _create_quote(client, sell_trade_id, _quote_payload(sell_trade_id, cp2, "115.000000"))
 
     ranking = _get_ranking(client, spread_rfq_id)
     assert ranking.status_code == 200
     payload = ranking.json()
     assert payload["status"] == "SUCCESS"
     assert payload["failure_code"] is None
+    assert payload["direction"] == "SELL"
+    assert payload["sort_order"] == "max_spread"
 
     data = payload["ranking"]
     assert data[0]["counterparty_id"] == cp2
@@ -210,13 +240,53 @@ def test_spread_ranking_descending_and_ignores_missing_counterparty(client) -> N
     assert Decimal(data[1]["spread_value"]) == Decimal("10.000000")
 
 
-def test_spread_ranking_zero_eligible_quotes_returns_failure_payload(client) -> None:
+def test_spread_ranking_returns_incomplete_quotes_when_one_leg_missing(
+    client,
+) -> None:
     cp1 = _create_counterparty(client, "CP1")
+    cp2 = _create_counterparty(client, "CP2")
+
     buy_trade_id = _create_trade_rfq(client, "BUY", cp_id=cp1)
     sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp1)
     spread_rfq_id = _create_spread_rfq(client, buy_trade_id, sell_trade_id)
 
     _create_quote(client, buy_trade_id, _quote_payload(buy_trade_id, cp1, "100.000000"))
+    _create_quote(client, sell_trade_id, _quote_payload(sell_trade_id, cp1, "110.000000"))
+    _create_quote(
+        client, sell_trade_id, _quote_payload(sell_trade_id, cp2, "150.000000")
+    )
+
+    ranking = _get_ranking(client, spread_rfq_id)
+    assert ranking.status_code == 200
+    payload = ranking.json()
+    assert payload["status"] == "FAILURE"
+    assert payload["failure_code"] == "INCOMPLETE_QUOTES"
+    assert cp2 in payload["failure_reason"]
+    assert payload["ranking"] == []
+
+
+def test_spread_ranking_snapshot_records_direction_and_sort_order(client) -> None:
+    cp = _create_counterparty(client, "CP-Snapshot")
+    buy_trade_id = _create_trade_rfq(client, "BUY", cp_id=cp)
+    sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp)
+    spread_rfq_id = _create_spread_rfq(
+        client, buy_trade_id, sell_trade_id, direction="SELL"
+    )
+
+    _create_quote(client, buy_trade_id, _quote_payload(buy_trade_id, cp, "100.000000"))
+    _create_quote(client, sell_trade_id, _quote_payload(sell_trade_id, cp, "110.000000"))
+
+    payload = _get_ranking(client, spread_rfq_id).json()
+    assert payload["status"] == "SUCCESS"
+    assert payload["direction"] == "SELL"
+    assert payload["sort_order"] == "max_spread"
+
+
+def test_spread_ranking_zero_eligible_quotes_returns_failure_payload(client) -> None:
+    cp1 = _create_counterparty(client, "CP1")
+    buy_trade_id = _create_trade_rfq(client, "BUY", cp_id=cp1)
+    sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp1)
+    spread_rfq_id = _create_spread_rfq(client, buy_trade_id, sell_trade_id)
 
     ranking = _get_ranking(client, spread_rfq_id)
     assert ranking.status_code == 200

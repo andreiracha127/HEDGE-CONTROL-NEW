@@ -134,6 +134,7 @@ class RFQQuoteRead(BaseModel):
 class SpreadRankingFailureCode(str, Enum):
     no_eligible_quotes = "NO_ELIGIBLE_QUOTES"
     non_comparable = "NON_COMPARABLE"
+    incomplete_quotes = "INCOMPLETE_QUOTES"
     tie = "TIE"
     not_spread_intent = "NOT_SPREAD_INTENT"
 
@@ -151,6 +152,8 @@ class SpreadRankingRead(BaseModel):
     status: str = Field(..., max_length=32)
     failure_code: SpreadRankingFailureCode | None = None
     failure_reason: str | None = Field(None, max_length=500)
+    direction: RFQDirection | None = None
+    sort_order: str | None = None
     ranking: list[SpreadRankingEntry] = Field(default_factory=list)
 
 

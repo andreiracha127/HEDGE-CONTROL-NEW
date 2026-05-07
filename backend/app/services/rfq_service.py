@@ -248,9 +248,32 @@ class RFQService:
         buy_latest = RFQService.select_latest_quotes_by_counterparty(buy_quotes)
         sell_latest = RFQService.select_latest_quotes_by_counterparty(sell_quotes)
 
-        eligible_counterparties = sorted(
-            set(buy_latest.keys()) & set(sell_latest.keys())
+        buy_keys = set(buy_latest.keys())
+        sell_keys = set(sell_latest.keys())
+        all_counterparties = buy_keys | sell_keys
+        incomplete = sorted(
+            (
+                cp
+                for cp in all_counterparties
+                if cp not in buy_keys or cp not in sell_keys
+            ),
+            key=str,
         )
+        if incomplete:
+            incomplete_display = [str(cp) for cp in incomplete[:5]]
+            suffix = "..." if len(incomplete) > 5 else ""
+            return SpreadRankingRead(
+                rfq_id=rfq.id,
+                status="FAILURE",
+                failure_code=SpreadRankingFailureCode.incomplete_quotes,
+                failure_reason=(
+                    f"{len(incomplete)} counterpart(ies) quoted only one leg: "
+                    f"{', '.join(incomplete_display)}{suffix}"
+                ),
+                ranking=[],
+            )
+
+        eligible_counterparties = sorted(buy_keys & sell_keys, key=str)
         if not eligible_counterparties:
             return SpreadRankingRead(
                 rfq_id=rfq.id,
@@ -307,7 +330,8 @@ class RFQService:
                 ranking=[],
             )
 
-        ordered = sorted(spreads, key=lambda s: s[1], reverse=True)
+        reverse = rfq.direction == RFQDirection.sell
+        ordered = sorted(spreads, key=lambda s: s[1], reverse=reverse)
         ranking: list[SpreadRankingEntry] = []
         for idx, (cp, spread_value, buy_quote, sell_quote) in enumerate(
             ordered, start=1
@@ -322,7 +346,13 @@ class RFQService:
                 )
             )
 
-        return SpreadRankingRead(rfq_id=rfq.id, status="SUCCESS", ranking=ranking)
+        return SpreadRankingRead(
+            rfq_id=rfq.id,
+            status="SUCCESS",
+            direction=rfq.direction,
+            sort_order="max_spread" if reverse else "min_spread",
+            ranking=ranking,
+        )
 
     # ------------------------------------------------------------------
     # CRUD + lifecycle
