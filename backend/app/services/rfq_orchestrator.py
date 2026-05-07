@@ -22,9 +22,11 @@ import re
 from decimal import Decimal
 from uuid import UUID
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct, or_
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.logging import get_logger
 from app.core.pricing import CANONICAL_PRICE_UNITS
@@ -617,21 +619,8 @@ class RFQOrchestrator:
         try:
             quote = RFQService.submit_quote(session, rfq.id, quote_payload)
             session.commit()
-            logger.info(
-                "orchestrator_auto_quote_created",
-                rfq_id=str(rfq.id),
-                quote_id=str(quote.id),
-                counterparty=str(invitation.counterparty_id),
-                price=float(price_value),
-            )
-            return {
-                "message_id": msg.message_id,
-                "status": "auto_quote_created",
-                "rfq_id": str(rfq.id),
-                "quote_id": str(quote.id),
-                "confidence": parsed.confidence,
-            }
-        except Exception as exc:
+        except (HTTPException, IntegrityError, OperationalError) as exc:
+            session.rollback()
             logger.error(
                 "orchestrator_auto_quote_failed",
                 rfq_id=str(rfq.id),
@@ -643,6 +632,28 @@ class RFQOrchestrator:
                 "rfq_id": str(rfq.id),
                 "error": str(exc),
             }
+
+        try:
+            logger.info(
+                "orchestrator_auto_quote_created",
+                rfq_id=str(rfq.id),
+                quote_id=str(quote.id),
+                counterparty=str(invitation.counterparty_id),
+                price=str(quote.fixed_price_value),
+            )
+        except Exception:
+            logger.warning(
+                "orchestrator_auto_quote_post_commit_log_failed",
+                quote_id=str(quote.id),
+            )
+
+        return {
+            "message_id": msg.message_id,
+            "status": "auto_quote_created",
+            "rfq_id": str(rfq.id),
+            "quote_id": str(quote.id),
+            "confidence": parsed.confidence,
+        }
 
     # ------------------------------------------------------------------
     # 3. Notify counterparties of award/reject via WhatsApp

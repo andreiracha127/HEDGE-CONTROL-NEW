@@ -8,10 +8,12 @@ from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
+from app.models.quotes import RFQQuote
 from app.models.rfqs import (
     RFQ,
     RFQDirection,
@@ -339,7 +341,7 @@ def test_process_auto_quote_fails_gracefully(
     parsed = _parsed_quote(intent=MessageIntent.quote, confidence=0.95, price=2550.0)
     mock_parse.return_value = parsed
     mock_auto.return_value = True
-    mock_submit.side_effect = RuntimeError("DB conflict")
+    mock_submit.side_effect = HTTPException(status_code=409, detail="DB conflict")
 
     with SessionLocal() as session:
         rfq = _create_rfq(session, state=RFQState.sent)
@@ -449,6 +451,47 @@ def test_auto_quote_proceeds_when_all_fields_present_and_canonical(mock_submit):
     assert quote_payload.fixed_price_value == Decimal("2550.0")
     assert quote_payload.fixed_price_unit == "USD/MT"
     assert quote_payload.float_pricing_convention.value == "avg"
+
+
+def test_auto_quote_post_commit_log_failure_still_reports_success():
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 USD/MT avg")
+        with patch("app.services.rfq_orchestrator.logger.info") as mock_info:
+            mock_info.side_effect = RuntimeError("logger serializer failed")
+            result = RFQOrchestrator._auto_create_quote(
+                session,
+                rfq,
+                invitation,
+                msg,
+                _parsed_quote(price=Decimal("2550.0"), unit="USD/MT", convention="avg"),
+            )
+            quote_id = uuid.UUID(result["quote_id"])
+
+    assert result["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        assert session.get(RFQQuote, quote_id) is not None
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_pre_commit_failure_rolls_back_and_reports_failed(mock_submit):
+    mock_submit.side_effect = HTTPException(status_code=409, detail="DB conflict")
+
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 USD/MT avg")
+        with patch.object(session, "rollback", wraps=session.rollback) as rollback:
+            result = RFQOrchestrator._auto_create_quote(
+                session,
+                rfq,
+                invitation,
+                msg,
+                _parsed_quote(price=Decimal("2550.0"), unit="USD/MT", convention="avg"),
+            )
+
+    assert result["status"] == "auto_quote_failed"
+    assert "DB conflict" in result["error"] or "409" in result["error"]
+    rollback.assert_called_once()
 
 
 # ── process_inbound_queue ────────────────────────────────────────────────

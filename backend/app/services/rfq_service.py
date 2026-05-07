@@ -16,7 +16,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.precision import DECIMAL_ZERO, quantize_mt
+from app.core.precision import DECIMAL_ZERO, quantize_mt, quantize_price
+from app.core.pricing import CANONICAL_PRICE_UNITS
 
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeLegSide
 from app.models.counterparty import Counterparty, CounterpartyType
@@ -708,6 +709,18 @@ class RFQService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="RFQ must be SENT before receiving quotes",
             )
+        if payload.fixed_price_value is None or payload.fixed_price_value <= Decimal(
+            "0"
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="fixed_price_value must be > 0",
+            )
+        if payload.fixed_price_unit not in CANONICAL_PRICE_UNITS:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"fixed_price_unit {payload.fixed_price_unit!r} is not canonical",
+            )
 
         cp = session.get(Counterparty, payload.counterparty_id)
         if not cp:
@@ -719,7 +732,7 @@ class RFQService:
         quote = RFQQuote(
             rfq_id=rfq_id,
             counterparty_id=payload.counterparty_id,
-            fixed_price_value=payload.fixed_price_value,
+            fixed_price_value=quantize_price(payload.fixed_price_value),
             fixed_price_unit=payload.fixed_price_unit,
             float_pricing_convention=payload.float_pricing_convention.value,
             received_at=payload.received_at,
