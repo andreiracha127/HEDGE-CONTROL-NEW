@@ -171,6 +171,12 @@ class LinkageService:
         # For order_linked_qty: count linkages whose HEDGE side is live
         # (mirror of §3.4's hedge-side filter). For contract_linked_qty:
         # count linkages whose ORDER side is live.
+        #
+        # The PostgreSQL DB-side invariant (migration 029, function
+        # ``assert_no_linkage_over_allocation``) is updated by migration
+        # 032 to apply the same live-side filter byte-for-byte, so the
+        # service-layer check and the trigger agree on "which linkages
+        # count toward capacity".
         order_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
             .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
