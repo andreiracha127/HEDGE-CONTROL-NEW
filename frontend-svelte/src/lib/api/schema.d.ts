@@ -1007,26 +1007,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/rfqs/{rfq_id}/actions/award-quote": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Award Quote
-         * @description Award a specific quote — creates a contract from this counterparty's quote.
-         */
-        post: operations["award_quote_rfqs__rfq_id__actions_award_quote_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/rfqs/{rfq_id}/actions/cancel": {
         parameters: {
             query?: never;
@@ -3191,19 +3171,6 @@ export interface components {
              * @description Reference month yyyy-MM — required for AVG convention
              */
             reference_month?: string | null;
-        };
-        /**
-         * RFQAwardQuoteRequest
-         * @description Award a specific quote (per-counterparty contract creation).
-         */
-        RFQAwardQuoteRequest: {
-            /**
-             * Quote Id
-             * Format: uuid
-             */
-            quote_id: string;
-            /** User Id */
-            user_id: string;
         };
         /** RFQAwardRequest */
         RFQAwardRequest: {
@@ -6169,41 +6136,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RFQAwardRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RFQRead"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    award_quote_rfqs__rfq_id__actions_award_quote_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                rfq_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RFQAwardQuoteRequest"];
             };
         };
         responses: {

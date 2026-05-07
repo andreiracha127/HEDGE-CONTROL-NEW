@@ -15,7 +15,6 @@ from app.models.rfqs import RFQ, RFQDirection, RFQIntent, RFQState, RFQStateEven
 from app.schemas.rfq import (
     RFQCreate,
     RFQAwardRequest,
-    RFQAwardQuoteRequest,
     RFQCancelRequest,
     RFQListResponse,
     RFQQuoteCreate,
@@ -400,29 +399,6 @@ def refresh_counterparty(
     RFQService.refresh_counterparty(
         session, rfq_id, payload.counterparty_id, payload.user_id
     )
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
-    return _build_rfq_read(session, rfq_id)
-
-
-@router.post("/{rfq_id}/actions/award-quote", response_model=RFQRead)
-@limiter.limit(RATE_LIMIT_MUTATION)
-def award_quote(
-    rfq_id: UUID,
-    payload: RFQAwardQuoteRequest,
-    request: Request,
-    _: None = Depends(
-        audit_event(
-            entity_type="rfq",
-            event_type="quote_awarded",
-        )
-    ),
-    __: None = Depends(require_role("trader")),
-    session: Session = Depends(get_session),
-) -> RFQRead:
-    """Award a specific quote — creates a contract from this counterparty's quote."""
-    RFQService.award_quote(session, rfq_id, payload.quote_id, payload.user_id)
     session.commit()
     mark_audit_success(request, rfq_id)
     request.state.audit_commit()
