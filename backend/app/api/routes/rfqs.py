@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -30,6 +29,7 @@ from app.schemas.rfq import (
     RFQStateEventRead,
     RFQTextPreviewRequest,
     RFQTextPreviewResponse,
+    RFQUserActionBase,
     SpreadRankingRead,
     TradeRankingFailureCode,
     TradeRankingRead,
@@ -475,6 +475,7 @@ def award_rfq(
 @limiter.limit(RATE_LIMIT_MUTATION)
 def archive_rfq(
     rfq_id: UUID,
+    payload: RFQUserActionBase,
     request: Request,
     _: None = Depends(
         audit_event(
@@ -485,16 +486,7 @@ def archive_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    rfq = session.get(RFQ, rfq_id)
-    if not rfq:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found"
-        )
-    if rfq.deleted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="RFQ already archived"
-        )
-    rfq.deleted_at = datetime.now(timezone.utc)
+    rfq = RFQService.archive(session, rfq_id, user_id=payload.user_id)
     session.commit()
     session.refresh(rfq)
     mark_audit_success(request, rfq.id)

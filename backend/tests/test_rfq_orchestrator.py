@@ -661,3 +661,30 @@ def test_classify_first_blocks_greeting_with_digits(mock_classify):
 
     assert result["status"] == "needs_human_review"
     mock_classify.assert_called_once()
+
+
+# ── Archived RFQ skip (Phase A2 PR-3, J-A2-11) ──────────────────────────
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+def test_inbound_message_skips_archived_rfq(mock_parse, mock_auto):
+    """A reply that arrives for an archived RFQ must not match it.
+
+    The phone-correlation query in ``_process_single_message`` filters
+    ``RFQ.deleted_at IS NULL``, so an archived row is invisible even
+    when its state is still ``SENT`` / ``QUOTED``. The orchestrator must
+    return ``no_matching_rfq`` and never invoke the LLM.
+    """
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        rfq.deleted_at = now_utc()
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        session.commit()
+
+        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
+        result = RFQOrchestrator._process_single_message(session, msg)
+
+    assert result["status"] == "no_matching_rfq"
+    mock_parse.assert_not_called()
+    mock_auto.assert_not_called()

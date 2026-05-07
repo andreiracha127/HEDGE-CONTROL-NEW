@@ -269,6 +269,7 @@ class RFQOrchestrator:
                 RFQInvitation.recipient_phone.in_(phone_variants),
                 RFQInvitation.channel == RFQInvitationChannel.whatsapp,
                 RFQ.state.in_([RFQState.sent, RFQState.quoted]),
+                RFQ.deleted_at.is_(None),
             )
             .order_by(RFQ.created_at.desc(), RFQInvitation.created_at.desc())
             .first()
@@ -294,6 +295,7 @@ class RFQOrchestrator:
                 RFQInvitation.recipient_phone.in_(phone_variants),
                 RFQInvitation.channel == RFQInvitationChannel.whatsapp,
                 RFQ.state.in_([RFQState.sent, RFQState.quoted]),
+                RFQ.deleted_at.is_(None),
             )
             .scalar()
         )

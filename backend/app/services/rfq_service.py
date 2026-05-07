@@ -539,6 +539,7 @@ class RFQService:
                     rfq_id=rfq.id,
                     from_state=RFQState.created,
                     to_state=RFQState.sent,
+                    event_timestamp=now_utc(),
                 )
             )
 
@@ -546,13 +547,79 @@ class RFQService:
 
     @staticmethod
     def get(session: Session, rfq_id: UUID) -> RFQ:
-        """Fetch an RFQ or raise 404."""
+        """Fetch an RFQ or raise 404. Audit-history loader; does NOT filter archived."""
         rfq = session.get(RFQ, rfq_id)
         if not rfq:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="RFQ not found",
             )
+        return rfq
+
+    @staticmethod
+    def get_live(session: Session, rfq_id: UUID) -> RFQ:
+        """Fetch an active RFQ; reject archived rows.
+
+        Mutation paths must use this loader. Returns 404 if missing,
+        409 if archived (``deleted_at`` set). Constitution §2.1 —
+        archived RFQs are outside the active lifecycle.
+        """
+        rfq = session.get(RFQ, rfq_id)
+        if not rfq:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="RFQ not found",
+            )
+        if rfq.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="RFQ is archived",
+            )
+        return rfq
+
+    @staticmethod
+    def archive(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+        """Archive an RFQ. Allowed only from the terminal ``CLOSED`` state.
+
+        ``RFQState.closed`` is the unique terminal state — both
+        ``cancel`` and ``reject`` route through it, and ``award`` exits
+        ``AWARDED → CLOSED`` automatically. Active states (``created``,
+        ``sent``, ``quoted``, ``awarded``) are not archivable; the RFQ
+        is still in flight.
+
+        Emits a ``RFQStateEvent`` with ``trigger='archive'`` so the
+        archive action is auditable like every other lifecycle event.
+        ``deleted_at`` is the lifecycle marker; ``RFQState`` itself
+        does not change (the row is already CLOSED).
+        """
+        rfq = session.get(RFQ, rfq_id)
+        if not rfq:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="RFQ not found",
+            )
+        if rfq.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="RFQ already archived",
+            )
+        if rfq.state != RFQState.closed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="RFQ must be in CLOSED state before archiving",
+            )
+        archive_time = now_utc()
+        rfq.deleted_at = archive_time
+        session.add(
+            RFQStateEvent(
+                rfq_id=rfq.id,
+                from_state=rfq.state,
+                to_state=rfq.state,
+                trigger="archive",
+                user_id=user_id,
+                event_timestamp=archive_time,
+            )
+        )
         return rfq
 
     @staticmethod
@@ -572,7 +639,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
 
         if rfq.intent == RFQIntent.spread:
             raise HTTPException(
@@ -656,7 +723,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state != RFQState.quoted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -682,7 +749,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.created, RFQState.sent):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -709,7 +776,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.sent, RFQState.quoted):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -815,7 +882,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.quoted, RFQState.sent):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -885,7 +952,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.sent, RFQState.quoted):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -989,7 +1056,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state != RFQState.quoted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1098,7 +1165,7 @@ class RFQService:
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get(session, rfq_id)
+        rfq = RFQService.get_live(session, rfq_id)
         if rfq.state != RFQState.quoted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

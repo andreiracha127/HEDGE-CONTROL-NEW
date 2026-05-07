@@ -155,8 +155,8 @@ class RFQStateEvent(Base):
     triggering_counterparty_id: Mapped[str | None] = mapped_column(
         String(length=64), nullable=True
     )
-    event_timestamp: Mapped[DateTime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    event_timestamp: Mapped[DateTime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     user_id: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
     reason: Mapped[str | None] = mapped_column(String(length=128), nullable=True)
