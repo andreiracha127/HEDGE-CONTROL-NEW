@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import uuid as _uuid
-from datetime import date
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -1022,8 +1021,8 @@ class RFQService:
             fixed_leg_side=fixed_side,
             variable_leg_side=variable_side,
             classification=classification,
-            reference=f"HC-{_uuid.uuid4().hex[:8].upper()}",
-            trade_date=date.today(),
+            reference=f"HC-{_uuid.uuid4().hex.upper()}",
+            trade_date=award_time.date(),
             source_type="rfq_award",
             source_id=rfq.id,
         )
@@ -1157,8 +1156,8 @@ class RFQService:
                     fixed_leg_side=fixed_side,
                     variable_leg_side=variable_side,
                     classification=classification,
-                    reference=f"HC-{_uuid.uuid4().hex[:8].upper()}",
-                    trade_date=date.today(),
+                    reference=f"HC-{_uuid.uuid4().hex.upper()}",
+                    trade_date=award_time.date(),
                     source_type="rfq_award",
                     source_id=trade_rfq.id,
                 )
@@ -1208,8 +1207,8 @@ class RFQService:
                 fixed_leg_side=fixed_side,
                 variable_leg_side=variable_side,
                 classification=classification,
-                reference=f"HC-{_uuid.uuid4().hex[:8].upper()}",
-                trade_date=date.today(),
+                reference=f"HC-{_uuid.uuid4().hex.upper()}",
+                trade_date=award_time.date(),
                 source_type="rfq_award",
                 source_id=rfq.id,
             )

@@ -1,4 +1,7 @@
-from datetime import datetime, timezone
+import re
+import uuid
+from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
@@ -260,3 +263,152 @@ def test_award_spread_creates_two_contracts(client) -> None:
     with SessionLocal() as session:
         contracts = session.query(HedgeContract).all()
         assert len(contracts) == 2
+
+
+_HC_REFERENCE_RE = re.compile(r"^HC-[0-9A-F]{32}$")
+
+
+def _frozen_award_time() -> datetime:
+    return datetime(2026, 1, 15, 12, 30, 0, tzinfo=timezone.utc)
+
+
+def test_award_trade_date_uses_utc(client) -> None:
+    order_id = _create_sales_order(client, 10.0)
+    cp_id = _create_counterparty(client)
+
+    rfq = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "ALUMINUM",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    _create_quote(
+        client,
+        rfq["id"],
+        {
+            "rfq_id": rfq["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+
+    frozen = _frozen_award_time()
+    with patch("app.services.rfq_service.now_utc", return_value=frozen):
+        award = client.post(
+            f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"}
+        )
+    assert award.status_code == 200
+
+    with SessionLocal() as session:
+        contracts = session.query(HedgeContract).all()
+        assert len(contracts) == 1
+        assert contracts[0].trade_date == frozen.date()
+        assert contracts[0].trade_date == date(2026, 1, 15)
+        assert _HC_REFERENCE_RE.match(contracts[0].reference)
+
+
+def test_spread_award_three_contracts_consistent_trade_date(client) -> None:
+    cp_id = _create_counterparty(client)
+
+    buy_trade = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    sell_trade = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    spread = _create_rfq(
+        client,
+        {
+            "intent": "SPREAD",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "buy_trade_id": buy_trade["id"],
+            "sell_trade_id": sell_trade["id"],
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    _create_quote(
+        client,
+        buy_trade["id"],
+        {
+            "rfq_id": buy_trade["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    _create_quote(
+        client,
+        sell_trade["id"],
+        {
+            "rfq_id": sell_trade["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 110.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+
+    frozen = _frozen_award_time()
+    with patch("app.services.rfq_service.now_utc", return_value=frozen):
+        award = client.post(
+            f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"}
+        )
+    assert award.status_code == 200
+
+    with SessionLocal() as session:
+        contracts = session.query(HedgeContract).all()
+        assert len(contracts) == 2
+        for c in contracts:
+            assert c.trade_date == frozen.date()
+            assert _HC_REFERENCE_RE.match(c.reference)
+        # All contracts produced by one award call share one trade_date.
+        assert len({c.trade_date for c in contracts}) == 1
+        # And distinct references — collision-safe identity.
+        assert len({c.reference for c in contracts}) == len(contracts)
+
+
+def test_award_reference_collision_safe() -> None:
+    """Full-UUID reference format must remain collision-free at scale."""
+    refs = {f"HC-{uuid.uuid4().hex.upper()}" for _ in range(10_000)}
+    assert len(refs) == 10_000
+    for ref in refs:
+        assert _HC_REFERENCE_RE.match(ref)
+        assert len(ref) <= 50
