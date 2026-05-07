@@ -158,15 +158,38 @@ class LinkageService:
         # ── Direction validation (J-A1-OPUS-03) ───────────────────────────
         _validate_linkage_direction(order, contract)
 
-        # ── Capacity checks (existing, preserved) ─────────────────────────
+        # ── Capacity checks ───────────────────────────────────────────────
+        # Codex P2: mirror the §3.5 / §3.9 dual-filter on the capacity
+        # aggregation. The read path (snapshots, reconcile, net exposure)
+        # ignores any linkage whose other-side parent is dead, so the
+        # corresponding capacity is freed conceptually. Sum only LIVE
+        # linkages here so a user can re-link the freed quantity to a
+        # new live hedge/order — without this filter, archiving the
+        # other side leaks capacity that no read path counts but the
+        # writer still treats as consumed.
+        #
+        # For order_linked_qty: count linkages whose HEDGE side is live
+        # (mirror of §3.4's hedge-side filter). For contract_linked_qty:
+        # count linkages whose ORDER side is live.
         order_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
-            .filter(HedgeOrderLinkage.order_id == order_id)
+            .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+            .filter(
+                HedgeOrderLinkage.order_id == order_id,
+                HedgeContract.deleted_at.is_(None),
+                HedgeContract.status.in_(
+                    [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+                ),
+            )
             .scalar()
         )
         contract_linked_qty = (
             session.query(func.coalesce(func.sum(HedgeOrderLinkage.quantity_mt), 0.0))
-            .filter(HedgeOrderLinkage.contract_id == contract_id)
+            .join(Order, Order.id == HedgeOrderLinkage.order_id)
+            .filter(
+                HedgeOrderLinkage.contract_id == contract_id,
+                Order.deleted_at.is_(None),
+            )
             .scalar()
         )
 

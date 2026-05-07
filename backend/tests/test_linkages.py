@@ -365,6 +365,76 @@ def test_linkage_to_cancelled_hedge_rejected(client, session) -> None:
     assert "cancelled" in resp.json()["detail"].lower()
 
 
+def test_linkage_capacity_freed_when_other_hedge_settled(client, session) -> None:
+    """Per Codex P2: capacity sums must mirror the §3.5 / §3.9 read-side
+    filter. A 100 MT order linked 100 MT to a hedge that is later
+    settled has its capacity logically freed — the read path drops the
+    dead linkage and shows the order with full residual exposure. The
+    writer must accept a re-link of that freed capacity to a NEW live
+    hedge.
+
+    Pre-fix: order_linked_qty sums every historical linkage → the
+    re-link is rejected with "Linkage exceeds order quantity" even
+    though the read path has freed the capacity.
+    Post-fix: capacity sum filters dead-side linkages, allowing
+    re-link of the recovered residual.
+    """
+    from uuid import UUID
+
+    from app.models.contracts import HedgeContract, HedgeContractStatus
+
+    order_id = _create_sales_order(client, 100.0)
+    dead_hedge_id = _create_hedge_contract(client, 100.0)
+    live_hedge_id = _create_hedge_contract(client, 100.0)
+
+    # Initial: order fully linked to dead_hedge.
+    first = _create_linkage(client, order_id, dead_hedge_id, 100.0)
+    assert first.status_code == 201
+
+    # Settle dead_hedge — read path now treats the linkage as invisible.
+    contract = (
+        session.query(HedgeContract)
+        .filter(HedgeContract.id == UUID(dead_hedge_id))
+        .one()
+    )
+    contract.status = HedgeContractStatus.settled
+    session.commit()
+
+    # Re-link the now-freed 100 MT to a live hedge: must succeed.
+    second = _create_linkage(client, order_id, live_hedge_id, 100.0)
+    assert second.status_code == 201, (
+        "After settle of the previous hedge, the order's 100 MT "
+        f"capacity is freed per §3.5 / §3.9. Got: {second.json()}"
+    )
+
+
+def test_linkage_capacity_freed_when_other_order_archived(client, session) -> None:
+    """Per Codex P2: contract-side mirror of the order-side test. A
+    100 MT contract linked 100 MT to an order that is later archived
+    has its capacity logically freed — the read path drops the linkage
+    and shows the contract with full residual. The writer must accept
+    a re-link of the freed capacity to a NEW live order.
+    """
+    order_a_id = _create_sales_order(client, 100.0)
+    order_b_id = _create_sales_order(client, 100.0)
+    contract_id = _create_hedge_contract(client, 100.0)
+
+    # Initial: contract fully linked to order_a.
+    first = _create_linkage(client, order_a_id, contract_id, 100.0)
+    assert first.status_code == 201
+
+    # Archive order_a — read path drops the linkage.
+    archive = client.patch(f"/orders/{order_a_id}/archive")
+    assert archive.status_code == 200
+
+    # Re-link the freed 100 MT to a new live order: must succeed.
+    second = _create_linkage(client, order_b_id, contract_id, 100.0)
+    assert second.status_code == 201, (
+        "After archive of the previous order, the contract's 100 MT "
+        f"capacity is freed per §3.5 / §3.9. Got: {second.json()}"
+    )
+
+
 def test_linkage_to_partially_settled_hedge_accepted(client, session) -> None:
     """Per Codex P2 + §3.5 / §3.9 dual-filter: partially_settled is a
     LIVE status (it still has open quantity). Linkage must be accepted.
