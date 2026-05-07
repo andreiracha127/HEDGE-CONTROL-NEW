@@ -150,7 +150,9 @@ def preview_rfq_text(
         return Leg(
             side=Side(inp.side.value),
             price_type=PriceType(inp.price_type.value),
-            quantity_mt=inp.quantity_mt,
+            # rfq_engine.Leg/build_rfq_message operate in float for preview
+            # text formatting only (non-economic path); coerce at the boundary.
+            quantity_mt=float(inp.quantity_mt),
             month_name=inp.month_name,
             year=inp.year,
             start_date=inp.start_date,

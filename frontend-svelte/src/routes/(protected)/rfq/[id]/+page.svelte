@@ -5,7 +5,7 @@
 	import { wsStore } from '$lib/stores/ws.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { apiFetch } from '$lib/api/fetch';
-	import {
+	import { formatNumber,
 		formatDate,
 		formatCurrency,
 		stateLabel,
@@ -312,7 +312,7 @@
 			<div class="text-sm text-surface-400">
 				<span class="font-medium {directionColor(rfq.direction)}">{directionLabel(rfq.direction)}</span>
 				<span class="ml-1">{rfq.commodity}</span>
-				<span class="ml-1 tabular-nums">{rfq.quantity_mt?.toLocaleString('pt-BR')} MT</span>
+				<span class="ml-1 tabular-nums">{formatNumber(rfq.quantity_mt)} MT</span>
 			</div>
 			<div class="text-xs text-surface-500">{intentLabel(rfq.intent)}</div>
 			<div class="ml-auto text-xs text-surface-500">{formatDate(rfq.created_at)}</div>

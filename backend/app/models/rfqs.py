@@ -1,11 +1,13 @@
 import enum
 import uuid
+from decimal import Decimal
 
-from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String, Text
+from sqlalchemy import Date, DateTime, Enum, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.precision import MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE
 from app.models.base import Base
 
 
@@ -41,7 +43,9 @@ class RFQ(Base):
         Enum(RFQIntent, name="rfq_intent"), nullable=False
     )
     commodity: Mapped[str] = mapped_column(String(length=64), nullable=False)
-    quantity_mt: Mapped[float] = mapped_column(Float, nullable=False)
+    quantity_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
     delivery_window_start: Mapped[Date] = mapped_column(Date, nullable=False)
     delivery_window_end: Mapped[Date] = mapped_column(Date, nullable=False)
     direction: Mapped[RFQDirection] = mapped_column(
@@ -57,11 +61,17 @@ class RFQ(Base):
         UUID(as_uuid=True), ForeignKey("rfqs.id", ondelete="RESTRICT"), nullable=True
     )
 
-    commercial_active_mt: Mapped[float] = mapped_column(Float, nullable=False)
-    commercial_passive_mt: Mapped[float] = mapped_column(Float, nullable=False)
-    commercial_net_mt: Mapped[float] = mapped_column(Float, nullable=False)
-    commercial_reduction_applied_mt: Mapped[float] = mapped_column(
-        Float, nullable=False
+    commercial_active_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
+    commercial_passive_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
+    commercial_net_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
+    )
+    commercial_reduction_applied_mt: Mapped[Decimal] = mapped_column(
+        Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
     )
     exposure_snapshot_timestamp: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), nullable=False

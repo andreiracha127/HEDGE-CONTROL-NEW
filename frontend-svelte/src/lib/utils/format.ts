@@ -13,14 +13,24 @@ export function formatDate(iso: string | null | undefined): string {
 	return dateFormatter.format(new Date(iso));
 }
 
-export function formatNumber(value: number | null | undefined): string {
+// Decimal-typed economic columns serialize as strings over the API
+// (e.g. RFQ.quantity_mt, RFQQuote.fixed_price_value, HedgeContract.fixed_price_value).
+// Coerce-on-read at this single boundary helper rather than at every call site.
+export function formatNumber(value: number | string | null | undefined): string {
 	if (value == null) return '—';
-	return numberFormatter.format(value);
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	return numberFormatter.format(n);
 }
 
-export function formatCurrency(value: number | null | undefined, unit?: string): string {
+export function formatCurrency(
+	value: number | string | null | undefined,
+	unit?: string,
+): string {
 	if (value == null) return '—';
-	const formatted = numberFormatter.format(value);
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	const formatted = numberFormatter.format(n);
 	return unit ? `${formatted} ${unit}` : formatted;
 }
 
