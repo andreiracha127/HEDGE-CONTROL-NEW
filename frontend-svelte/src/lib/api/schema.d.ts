@@ -3624,6 +3624,16 @@ export interface components {
              */
             message: string;
             /**
+             * Retired
+             * @default 0
+             */
+            retired: number;
+            /**
+             * Tasks Cancelled
+             * @default 0
+             */
+            tasks_cancelled: number;
+            /**
              * Updated
              * @default 0
              */
