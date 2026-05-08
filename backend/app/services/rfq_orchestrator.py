@@ -538,10 +538,19 @@ class RFQOrchestrator:
         if parsed.fixed_price_value is None and parsed.premium_discount is None:
             missing.append("price")
 
+        # Canonicalize the parsed unit so accepted variants like ``USDMT``
+        # (returned by the LLM for a broker message) resolve to ``USD/MT``
+        # before the membership check. Otherwise valid rankable variants
+        # would be silently dropped by exact-string set membership.
+        canonical_unit: str | None = None
         if parsed.fixed_price_unit is None:
             missing.append("unit")
-        elif parsed.fixed_price_unit not in CANONICAL_PRICE_UNITS:
-            missing.append(f"unit (non-canonical: {parsed.fixed_price_unit!r})")
+        else:
+            canonical_unit = RFQService.canonicalize_fixed_price_unit(
+                parsed.fixed_price_unit
+            )
+            if canonical_unit is None or canonical_unit not in CANONICAL_PRICE_UNITS:
+                missing.append(f"unit (non-canonical: {parsed.fixed_price_unit!r})")
 
         float_conv: FloatPricingConvention | None = None
         if parsed.float_pricing_convention is None:
@@ -573,7 +582,7 @@ class RFQOrchestrator:
             if parsed.fixed_price_value is not None
             else parsed.premium_discount
         )
-        if price_value is None or float_conv is None or parsed.fixed_price_unit is None:
+        if price_value is None or float_conv is None or canonical_unit is None:
             raise AssertionError("auto quote validation failed to establish fields")
 
         # PR-6 (J-A2-OPUS-03): canonical fields are pre-validated above; no
@@ -587,7 +596,7 @@ class RFQOrchestrator:
                 rfq_id=rfq.id,
                 counterparty_id=invitation.counterparty_id,
                 fixed_price_value=Decimal(str(price_value)),
-                fixed_price_unit=parsed.fixed_price_unit,
+                fixed_price_unit=canonical_unit,
                 float_pricing_convention=float_conv,
                 received_at=msg.timestamp,
             )
