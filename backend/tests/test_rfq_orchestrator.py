@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
+from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.quotes import RFQQuote
 from app.models.rfqs import (
     RFQ,
@@ -71,11 +72,23 @@ def _create_invitation(
     status: RFQInvitationStatus = RFQInvitationStatus.queued,
     counterparty_id: uuid.UUID | None = None,
 ) -> RFQInvitation:
+    # Persist a real Counterparty row so RFQService.submit_quote's FK
+    # validation (Codex P2 from PR-1 #28) succeeds when this fixture
+    # feeds an auto-quote test path.
+    if counterparty_id is None:
+        cp = Counterparty(
+            type=CounterpartyType.broker,
+            name=f"{name}-{uuid.uuid4().hex[:6]}",
+            country="BRA",
+        )
+        session.add(cp)
+        session.flush()
+        counterparty_id = cp.id
     inv = RFQInvitation(
         id=uuid.uuid4(),
         rfq_id=rfq.id,
         rfq_number=rfq.rfq_number,
-        counterparty_id=counterparty_id or uuid.uuid4(),
+        counterparty_id=counterparty_id,
         recipient_name=name,
         recipient_phone=phone,
         channel=channel,
