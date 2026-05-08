@@ -171,7 +171,7 @@ class TradeRankingRead(BaseModel):
 
 
 class RFQUserActionBase(BaseModel):
-    user_id: str = Field(..., max_length=100)
+    user_id: str = Field(..., max_length=64)
 
 
 class RFQRejectRequest(RFQUserActionBase):

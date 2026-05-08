@@ -157,7 +157,7 @@ class TestRFQQuoteMaxLength:
 class TestRFQUserActionMaxLength:
     def test_user_id_too_long(self):
         with pytest.raises(ValidationError, match=_ERR):
-            RFQUserActionBase(user_id=_too_long(100))
+            RFQUserActionBase(user_id=_too_long(64))
 
 
 class TestRFQCreateMaxLength:
