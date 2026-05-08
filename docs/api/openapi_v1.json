@@ -4953,27 +4953,6 @@
         "title": "PurchaseOrderCreate",
         "type": "object"
       },
-      "RFQAwardQuoteRequest": {
-        "description": "Award a specific quote (per-counterparty contract creation).",
-        "properties": {
-          "quote_id": {
-            "format": "uuid",
-            "title": "Quote Id",
-            "type": "string"
-          },
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id",
-          "quote_id"
-        ],
-        "title": "RFQAwardQuoteRequest",
-        "type": "object"
-      },
       "RFQAwardRequest": {
         "properties": {
           "user_id": {
@@ -10589,60 +10568,6 @@
           }
         },
         "summary": "Award Rfq",
-        "tags": [
-          "RFQs"
-        ]
-      }
-    },
-    "/rfqs/{rfq_id}/actions/award-quote": {
-      "post": {
-        "description": "Award a specific quote \u2014 creates a contract from this counterparty's quote.",
-        "operationId": "award_quote_rfqs__rfq_id__actions_award_quote_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "rfq_id",
-            "required": true,
-            "schema": {
-              "format": "uuid",
-              "title": "Rfq Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RFQAwardQuoteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQRead"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Award Quote",
         "tags": [
           "RFQs"
         ]
