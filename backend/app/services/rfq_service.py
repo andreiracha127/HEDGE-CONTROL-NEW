@@ -1142,11 +1142,30 @@ class RFQService:
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Referenced trade RFQ ID is None",
                     )
-                trade_rfq = session.get(RFQ, trade_rfq_id)
+                # Lock + verify child state BEFORE creating the contract —
+                # Codex P1 fix on PR-7. Without this pre-flight check, a
+                # child RFQ that was already awarded/closed (pre-existing
+                # or via concurrent award race) still receives a duplicate
+                # contract for the same trade, doubling the position. The
+                # downstream child-closure block at the end of `award`
+                # would only skip with a warning, not roll back — so the
+                # validation has to happen here, before `session.add`.
+                trade_rfq_stmt = (
+                    select(RFQ).where(RFQ.id == trade_rfq_id).with_for_update()
+                )
+                trade_rfq = session.execute(trade_rfq_stmt).scalar_one_or_none()
                 if not trade_rfq:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Referenced trade RFQ missing",
+                    )
+                if trade_rfq.state == RFQState.closed:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"Spread child RFQ {trade_rfq_id} is already "
+                            "closed; cannot award parent spread"
+                        ),
                     )
 
                 fixed_side, variable_side, classification = (
