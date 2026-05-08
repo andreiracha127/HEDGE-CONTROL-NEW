@@ -134,32 +134,6 @@
 		}
 	}
 
-	async function awardQuote(quoteId: string) {
-		if (!confirm('Confirma award desta cotação específica?')) return;
-		operationInFlight = true;
-		boardMode = 'AWARDING';
-		try {
-			const res = await apiFetch(`/rfqs/${rfqId}/actions/award-quote`, {
-				method: 'POST',
-				body: JSON.stringify({ quote_id: quoteId, user_id: authStore.userName || 'trader' }),
-			});
-			if (!res.ok) {
-				const err = await res.json().catch(() => ({ detail: 'Erro' }));
-				if (res.status === 409) {
-					notifications.warning('RFQ já foi premiada por outro usuário');
-				} else {
-					notifications.error(typeof err.detail === 'string' ? err.detail : 'Erro ao premiar');
-				}
-				return;
-			}
-			notifications.success('Cotação premiada com sucesso');
-			await loadAll();
-		} finally {
-			operationInFlight = false;
-			boardMode = 'IDLE';
-		}
-	}
-
 	async function rejectRfq() {
 		if (!confirm('Rejeitar esta RFQ?')) return;
 		operationInFlight = true;
@@ -378,9 +352,6 @@
 									<th class="pb-2 pr-4">Preço Fixo</th>
 									<th class="pb-2 pr-4">Convenção</th>
 									<th class="pb-2 pr-4">Recebido</th>
-									{#if canAward}
-										<th class="pb-2"></th>
-									{/if}
 								</tr>
 							</thead>
 							<tbody>
@@ -392,17 +363,6 @@
 										</td>
 										<td class="py-2 pr-4 text-xs text-surface-400">{quote.float_pricing_convention ?? '—'}</td>
 										<td class="py-2 pr-4 text-xs text-surface-500">{formatDate(quote.received_at || quote.created_at)}</td>
-										{#if canAward}
-											<td class="py-2">
-												<button
-													onclick={() => awardQuote(quote.id)}
-													disabled={boardMode !== 'IDLE' || isRankingStale}
-													class="rounded bg-success/10 px-2 py-0.5 text-xs text-success hover:bg-success/20 disabled:opacity-30"
-												>
-													Award
-												</button>
-											</td>
-										{/if}
 									</tr>
 								{/each}
 							</tbody>

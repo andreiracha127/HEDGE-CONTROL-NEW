@@ -193,12 +193,6 @@ class RFQAwardRequest(RFQUserActionBase):
     pass
 
 
-class RFQAwardQuoteRequest(RFQUserActionBase):
-    """Award a specific quote (per-counterparty contract creation)."""
-
-    quote_id: UUID
-
-
 class RFQRejectQuoteRequest(RFQUserActionBase):
     """Reject a specific counterparty quote without closing the RFQ."""
 

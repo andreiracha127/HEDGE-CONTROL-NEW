@@ -3,9 +3,13 @@ import uuid
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
+import pytest
+
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
 from app.models.linkages import HedgeOrderLinkage
+from app.models.rfqs import RFQStateEvent
+from app.services.rfq_service import RFQService
 
 
 def _create_counterparty(
@@ -56,6 +60,77 @@ def _get_commercial_exposure(client) -> dict:
     assert response.status_code == 200
     rows = response.json()
     return next(row for row in rows if row["commodity"] == "ALUMINUM")
+
+
+def _create_spread_with_quotes(client) -> tuple[dict, dict, dict]:
+    cp_id = _create_counterparty(client)
+
+    buy_trade = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    sell_trade = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    spread = _create_rfq(
+        client,
+        {
+            "intent": "SPREAD",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "buy_trade_id": buy_trade["id"],
+            "sell_trade_id": sell_trade["id"],
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    _create_quote(
+        client,
+        buy_trade["id"],
+        {
+            "rfq_id": buy_trade["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    _create_quote(
+        client,
+        sell_trade["id"],
+        {
+            "rfq_id": sell_trade["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 110.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    return buy_trade, sell_trade, spread
 
 
 def test_refresh_keeps_state_and_persists_refresh_invitations(client) -> None:
@@ -263,6 +338,192 @@ def test_award_spread_creates_two_contracts(client) -> None:
     with SessionLocal() as session:
         contracts = session.query(HedgeContract).all()
         assert len(contracts) == 2
+
+
+def test_award_acquires_row_lock_postgres(client) -> None:
+    with SessionLocal() as session:
+        if session.bind.dialect.name != "postgresql":
+            pytest.skip("row-level lock assertion is PostgreSQL-only")
+
+    cp_id = _create_counterparty(client)
+    rfq = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    _create_quote(
+        client,
+        rfq["id"],
+        {
+            "rfq_id": rfq["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+
+    with patch.object(
+        RFQService, "get_live_for_update", wraps=RFQService.get_live_for_update
+    ) as locked_get:
+        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"})
+
+    assert award.status_code == 200
+    locked_get.assert_called_once()
+
+
+def test_award_uses_locked_live_loader(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    _create_quote(
+        client,
+        rfq["id"],
+        {
+            "rfq_id": rfq["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+
+    with patch.object(
+        RFQService, "get_live_for_update", wraps=RFQService.get_live_for_update
+    ) as locked_get:
+        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"})
+
+    assert award.status_code == 200
+    locked_get.assert_called_once()
+
+
+def test_concurrent_award_rfq_only_one_succeeds(client) -> None:
+    with SessionLocal() as session:
+        if session.bind.dialect.name != "postgresql":
+            pytest.skip("concurrent row-lock assertion is PostgreSQL-only")
+
+
+def test_spread_award_closes_both_child_rfqs(client) -> None:
+    buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
+
+    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"})
+    assert award.status_code == 200
+
+    assert _get_rfq(client, buy_trade["id"])["state"] == "CLOSED"
+    assert _get_rfq(client, sell_trade["id"])["state"] == "CLOSED"
+
+    with SessionLocal() as session:
+        events = (
+            session.query(RFQStateEvent)
+            .filter(
+                RFQStateEvent.rfq_id.in_(
+                    [uuid.UUID(buy_trade["id"]), uuid.UUID(sell_trade["id"])]
+                ),
+                RFQStateEvent.trigger == "closed_by_parent_spread",
+            )
+            .all()
+        )
+    assert len(events) == 2
+    assert {event.reason for event in events} == {
+        f"PARENT_SPREAD_AWARDED:{spread['rfq_number']}"
+    }
+
+
+def test_spread_child_award_blocked_after_parent_award(client) -> None:
+    buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
+
+    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"})
+    assert award.status_code == 200
+
+    buy_award = client.post(
+        f"/rfqs/{buy_trade['id']}/actions/award", json={"user_id": "U2"}
+    )
+    sell_award = client.post(
+        f"/rfqs/{sell_trade['id']}/actions/award", json={"user_id": "U2"}
+    )
+
+    assert buy_award.status_code == 409
+    assert sell_award.status_code == 409
+
+
+def test_spread_award_blocked_when_child_already_closed(client) -> None:
+    """Codex P1 fix on PR-7: when a spread child has already been awarded
+    individually (or closed via another path), parent spread award must
+    hard-fail with 409. The previous "skip with warning" semantics from
+    PR-7 dispatch §2.2 was incorrect — it would still create a duplicate
+    contract for the closed child quote, doubling the position.
+    """
+    buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
+
+    child_award = client.post(
+        f"/rfqs/{buy_trade['id']}/actions/award", json={"user_id": "U0"}
+    )
+    assert child_award.status_code == 200
+    assert _get_rfq(client, buy_trade["id"])["state"] == "CLOSED"
+
+    parent_award = client.post(
+        f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"}
+    )
+    assert parent_award.status_code == 409
+    assert "already" in parent_award.json()["detail"].lower()
+    # Sell child remains untouched (parent transaction rolled back).
+    assert _get_rfq(client, sell_trade["id"])["state"] == "QUOTED"
+
+
+def test_award_quote_endpoint_deleted_returns_404(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": 5.0,
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    quote = _create_quote(
+        client,
+        rfq["id"],
+        {
+            "rfq_id": rfq["id"],
+            "counterparty_id": cp_id,
+            "fixed_price_value": 100.0,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+
+    response = client.post(
+        f"/rfqs/{rfq['id']}/actions/award-quote",
+        json={"quote_id": quote["id"], "user_id": "U1"},
+    )
+    assert response.status_code == 404
 
 
 _HC_REFERENCE_RE = re.compile(r"^HC-[0-9A-F]{32}$")

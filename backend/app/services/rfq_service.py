@@ -13,6 +13,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.precision import DECIMAL_ZERO, quantize_mt
@@ -612,6 +613,23 @@ class RFQService:
         return rfq
 
     @staticmethod
+    def get_live_for_update(session: Session, rfq_id: UUID) -> RFQ:
+        """Fetch an active RFQ under a row-level lock."""
+        stmt = select(RFQ).where(RFQ.id == rfq_id).with_for_update()
+        rfq = session.execute(stmt).scalar_one_or_none()
+        if not rfq:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="RFQ not found",
+            )
+        if rfq.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="RFQ is archived",
+            )
+        return rfq
+
+    @staticmethod
     def archive(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
         """Archive an RFQ. Allowed only from the terminal ``CLOSED`` state.
 
@@ -1084,129 +1102,12 @@ class RFQService:
         return rfq
 
     @staticmethod
-    def award_quote(
-        session: Session, rfq_id: UUID, quote_id: UUID, user_id: str
-    ) -> RFQ:
-        """Award a specific quote: create contract from it and close the RFQ.
-
-        Unlike ``award()`` which auto-selects the top-ranked quote, this method
-        creates a contract from the specific quote chosen by the trader.
-
-        Sends a standardised "contract" confirmation message to the winning
-        counterparty via WhatsApp.
-
-        The caller must ``session.commit()`` afterwards.
-        """
-        rfq = RFQService.get_live(session, rfq_id)
-        if rfq.state != RFQState.quoted:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="RFQ must be in QUOTED state",
-            )
-
-        quote = session.get(RFQQuote, quote_id)
-        if not quote or str(quote.rfq_id) != str(rfq_id):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Quote not found for this RFQ",
-            )
-
-        award_time = now_utc()
-
-        fixed_side, variable_side, classification = RFQService.determine_contract_legs(
-            rfq.direction
-        )
-        contract = HedgeContract(
-            commodity=rfq.commodity,
-            quantity_mt=rfq.quantity_mt,
-            rfq_id=rfq.id,
-            rfq_quote_id=quote.id,
-            counterparty_id=str(quote.counterparty_id),
-            fixed_price_value=quote.fixed_price_value,
-            fixed_price_unit=quote.fixed_price_unit,
-            float_pricing_convention=RFQService._convention_value(
-                quote.float_pricing_convention
-            ),
-            fixed_leg_side=fixed_side,
-            variable_leg_side=variable_side,
-            classification=classification,
-            reference=f"HC-{_uuid.uuid4().hex.upper()}",
-            trade_date=award_time.date(),
-            source_type="rfq_award",
-            source_id=rfq.id,
-        )
-        session.add(contract)
-        session.flush()
-
-        # Send contract confirmation message to the winning counterparty
-        cp = None
-        if quote.counterparty_id:
-            cp = session.get(
-                Counterparty,
-                UUID(quote.counterparty_id)
-                if isinstance(quote.counterparty_id, str)
-                else quote.counterparty_id,
-            )
-        if cp and cp.whatsapp_phone:
-            msg = _pick_action_message(cp, "contract")
-            result = WhatsAppService.send_text_message(
-                phone=cp.whatsapp_phone, text=msg
-            )
-            if result.success:
-                _logger.info(
-                    "rfq_contract_whatsapp_sent",
-                    rfq_number=rfq.rfq_number,
-                    recipient=cp.whatsapp_phone,
-                )
-            else:
-                _logger.error(
-                    "rfq_contract_whatsapp_failed",
-                    rfq_number=rfq.rfq_number,
-                    recipient=cp.whatsapp_phone,
-                    error_code=result.error_code,
-                    error_message=result.error_message,
-                )
-
-        if rfq.intent == RFQIntent.commercial_hedge and rfq.order_id is not None:
-            LinkageService.create(session, rfq.order_id, contract.id, rfq.quantity_mt)
-
-        # State transitions: QUOTED → AWARDED → CLOSED
-        rfq.state = RFQState.awarded
-        session.add(
-            RFQStateEvent(
-                rfq_id=rfq.id,
-                from_state=RFQState.quoted,
-                to_state=RFQState.awarded,
-                user_id=user_id,
-                winning_quote_ids=json.dumps([str(quote.id)], sort_keys=True),
-                winning_counterparty_ids=json.dumps(
-                    [str(quote.counterparty_id)], sort_keys=True
-                ),
-                award_timestamp=award_time,
-                event_timestamp=award_time,
-            )
-        )
-
-        rfq.state = RFQState.closed
-        session.add(
-            RFQStateEvent(
-                rfq_id=rfq.id,
-                from_state=RFQState.awarded,
-                to_state=RFQState.closed,
-                created_contract_ids=json.dumps([str(contract.id)], sort_keys=True),
-                event_timestamp=now_utc(),
-            )
-        )
-
-        return rfq
-
-    @staticmethod
     def award(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
         """Award an RFQ: create contracts, linkages and close.
 
         The caller must ``session.commit()`` afterwards.
         """
-        rfq = RFQService.get_live(session, rfq_id)
+        rfq = RFQService.get_live_for_update(session, rfq_id)
         if rfq.state != RFQState.quoted:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1232,6 +1133,15 @@ class RFQService:
             winning_quote_ids = [str(top.buy_quote.id), str(top.sell_quote.id)]
             ranking_snapshot = ranking_payload.model_dump(mode="json")
 
+            # Codex P2 (PR-7 round 4): map each spread child RFQ to the
+            # contract created for it, so the downstream child-closure
+            # state event can record `created_contract_ids` (the
+            # frontend RFQ detail page renders contract links from each
+            # RFQ's own state events; without this mapping the child
+            # appears CLOSED with no path to the contract just booked
+            # for it).
+            spread_child_contract_ids: dict[UUID, str] = {}
+
             for trade_rfq_id, quote in (
                 (rfq.buy_trade_id, top.buy_quote),
                 (rfq.sell_trade_id, top.sell_quote),
@@ -1241,11 +1151,40 @@ class RFQService:
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Referenced trade RFQ ID is None",
                     )
-                trade_rfq = session.get(RFQ, trade_rfq_id)
+                # Lock + verify child state BEFORE creating the contract —
+                # Codex P1 fixes on PR-7 (rounds 1+2). Without this
+                # pre-flight check, a child RFQ that was already
+                # awarded/closed (pre-existing or via concurrent award
+                # race) still receives a duplicate contract for the same
+                # trade, doubling the position. The downstream
+                # child-closure block at the end of `award` would only
+                # skip with a warning, not roll back.
+                #
+                # `populate_existing()` is required: `compute_spread_ranking`
+                # above already loaded `trade_rfq` via `session.get(...)`,
+                # so SQLAlchemy's identity map would return the cached
+                # instance with stale `state` after we wait on the row
+                # lock. `populate_existing` forces the query result to
+                # refresh attributes from the row we just locked.
+                trade_rfq_stmt = (
+                    select(RFQ)
+                    .where(RFQ.id == trade_rfq_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+                trade_rfq = session.execute(trade_rfq_stmt).scalar_one_or_none()
                 if not trade_rfq:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail="Referenced trade RFQ missing",
+                    )
+                if trade_rfq.state == RFQState.closed:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            f"Spread child RFQ {trade_rfq_id} is already "
+                            "closed; cannot award parent spread"
+                        ),
                     )
 
                 fixed_side, variable_side, classification = (
@@ -1273,6 +1212,7 @@ class RFQService:
                 session.add(contract)
                 session.flush()
                 created_contract_ids.append(str(contract.id))
+                spread_child_contract_ids[trade_rfq_id] = str(contract.id)
 
                 if (
                     trade_rfq.intent == RFQIntent.commercial_hedge
@@ -1358,5 +1298,42 @@ class RFQService:
                 event_timestamp=now_utc(),
             )
         )
+
+        if rfq.intent == RFQIntent.spread:
+            # Pre-flight upstream (in the contract-creation loop) already
+            # locked these children with FOR UPDATE + populate_existing,
+            # validated their state != CLOSED, and created the contracts.
+            # This block emits the lifecycle close transition. The
+            # children are still locked by the same transaction, so no
+            # new lock or refresh is required here.
+            for child_id in (rfq.buy_trade_id, rfq.sell_trade_id):
+                if child_id is None:
+                    continue
+                child = session.get(RFQ, child_id)
+                if child is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Spread child RFQ {child_id} missing during award",
+                    )
+                previous_state = child.state
+                child.state = RFQState.closed
+                child_contract_id = spread_child_contract_ids.get(child_id)
+                session.add(
+                    RFQStateEvent(
+                        rfq_id=child.id,
+                        from_state=previous_state,
+                        to_state=RFQState.closed,
+                        trigger="closed_by_parent_spread",
+                        user_id=user_id,
+                        event_timestamp=now_utc(),
+                        reason=f"PARENT_SPREAD_AWARDED:{rfq.rfq_number}",
+                        # Codex P2 fix: record the child's own contract id
+                        # so the RFQ detail page can navigate to it.
+                        created_contract_ids=json.dumps(
+                            [child_contract_id] if child_contract_id else [],
+                            sort_keys=True,
+                        ),
+                    )
+                )
 
         return rfq
