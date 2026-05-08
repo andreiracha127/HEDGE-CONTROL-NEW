@@ -3,7 +3,7 @@ import {
 	formatDate,
 	formatNumber,
 	formatQuantityMT,
-	formatCurrency,
+	formatPrice,
 	stateLabel,
 	stateColor,
 	intentLabel,
@@ -60,19 +60,33 @@ describe('formatQuantityMT', () => {
 	});
 });
 
-describe('formatCurrency', () => {
+describe('formatPrice', () => {
+	it('preserves six fractional digits for backend NUMERIC(18, 6) values', () => {
+		// 100.000001 vs 100.000002 must render distinctly — the backend
+		// ranks/awards on these and the UI must not collapse them.
+		expect(formatPrice('100.000001')).toMatch(/,000001$/);
+		expect(formatPrice('100.000002')).toMatch(/,000002$/);
+		expect(formatPrice(100.000001)).not.toBe(formatPrice(100.000002));
+	});
+
+	it('pads integer values to six decimals', () => {
+		expect(formatPrice(1000)).toMatch(/,000000$/);
+	});
+
 	it('appends unit when provided', () => {
-		const result = formatCurrency(1000, 'USD/MT');
+		const result = formatPrice(1000, 'USD/MT');
 		expect(result).toContain('USD/MT');
 	});
 
 	it('omits unit when not provided', () => {
-		const result = formatCurrency(1000);
+		const result = formatPrice(1000);
 		expect(result).not.toContain('USD');
 	});
 
-	it('returns dash for null', () => {
-		expect(formatCurrency(null)).toBe('—');
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatPrice(null)).toBe('—');
+		expect(formatPrice(undefined)).toBe('—');
+		expect(formatPrice('not-a-number')).toBe('—');
 	});
 });
 

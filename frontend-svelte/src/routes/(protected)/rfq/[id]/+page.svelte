@@ -7,7 +7,7 @@
 	import { apiFetch } from '$lib/api/fetch';
 	import { formatQuantityMT,
 		formatDate,
-		formatCurrency,
+		formatPrice,
 		stateLabel,
 		stateColor,
 		intentLabel,
@@ -388,7 +388,7 @@
 									<tr class="border-t border-surface-800/50 {quote._isNew ? 'bg-accent/5' : ''}">
 										<td class="py-2 pr-4 text-surface-300">{quote.counterparty_id}</td>
 										<td class="py-2 pr-4 tabular-nums font-medium text-surface-200">
-											{formatCurrency(quote.fixed_price_value, quote.fixed_price_unit)}
+											{formatPrice(quote.fixed_price_value, quote.fixed_price_unit)}
 										</td>
 										<td class="py-2 pr-4 text-xs text-surface-400">{quote.float_pricing_convention ?? '—'}</td>
 										<td class="py-2 pr-4 text-xs text-surface-500">{formatDate(quote.received_at || quote.created_at)}</td>
@@ -434,7 +434,7 @@
 									<div class="text-xs text-surface-500">Score: {entry.score?.toFixed(2) ?? '—'}</div>
 								</div>
 								<div class="text-sm font-medium tabular-nums text-surface-200">
-									{formatCurrency(entry.fixed_price_value, entry.fixed_price_unit)}
+									{formatPrice(entry.fixed_price_value, entry.fixed_price_unit)}
 								</div>
 							</div>
 						{/each}
