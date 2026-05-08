@@ -261,6 +261,14 @@ class RFQOrchestrator:
         # ORDER BY RFQ.created_at DESC (not invitation.created_at) so the
         # NEWEST RFQ wins — refresh actions create many invitation rows and
         # would otherwise cause the wrong RFQ to be selected.
+        # NOTE: ``deleted_at`` is intentionally NOT filtered here. If the
+        # newest matching RFQ is archived, we want the post-fetch check
+        # below to short-circuit with ``rfq_archived``. Filtering archived
+        # rows in the WHERE clause would silently fall through to an older
+        # still-live RFQ on the same phone and mis-attribute the reply
+        # (e.g. auto-create a quote on the wrong RFQ). This matters in
+        # particular for RFQs archived before the archive route
+        # transitioned them out of SENT / QUOTED.
         phone_variants = RFQOrchestrator._phone_variants(msg.from_phone)
         invitation = (
             session.query(RFQInvitation)
@@ -294,6 +302,7 @@ class RFQOrchestrator:
                 RFQInvitation.recipient_phone.in_(phone_variants),
                 RFQInvitation.channel == RFQInvitationChannel.whatsapp,
                 RFQ.state.in_([RFQState.sent, RFQState.quoted]),
+                RFQ.deleted_at.is_(None),
             )
             .scalar()
         )
@@ -307,6 +316,19 @@ class RFQOrchestrator:
             )
 
         rfq = session.get(RFQ, invitation.rfq_id)
+        if rfq is not None and rfq.deleted_at is not None:
+            logger.info(
+                "orchestrator_rfq_archived",
+                rfq_id=str(rfq.id),
+                from_phone=msg.from_phone,
+                message_id=msg.message_id,
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "rfq_archived",
+                "rfq_id": str(rfq.id),
+            }
+
         if not rfq or rfq.state not in (RFQState.sent, RFQState.quoted):
             logger.info(
                 "orchestrator_rfq_not_quotable",

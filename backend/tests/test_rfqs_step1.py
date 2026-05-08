@@ -269,3 +269,99 @@ def test_rfq_creation_does_not_change_exposure(client) -> None:
     before.pop("calculation_timestamp")
     after.pop("calculation_timestamp")
     assert before == after
+
+
+# ── Archive lifecycle (Phase A2 PR-3, J-A2-OPUS-06) ─────────────────────
+
+
+class TestRFQArchiveLifecycle:
+    """``RFQService.archive`` requires ``RFQState.closed`` and emits a
+    ``RFQStateEvent`` with ``trigger='archive'`` plus an explicit
+    ``event_timestamp`` and ``user_id`` (J-A2-OPUS-06, J-A2-OPUS-07).
+    """
+
+    @staticmethod
+    def _create_archivable_rfq(client) -> str:
+        """Create + cancel an RFQ so it sits in ``CLOSED``."""
+        cp_id = _create_counterparty(client)
+        order_id = _create_sales_order(client, 50.0, commodity="ALUMINUM")
+        rfq_resp = _create_rfq(
+            client,
+            {
+                "intent": "COMMERCIAL_HEDGE",
+                "commodity": "ALUMINUM",
+                "quantity_mt": 5.0,
+                "delivery_window_start": "2026-03-01",
+                "delivery_window_end": "2026-03-31",
+                "direction": "SELL",
+                "order_id": order_id,
+                "invitations": [{"counterparty_id": cp_id}],
+            },
+        )
+        assert rfq_resp.status_code == 201
+        rfq_id = rfq_resp.json()["id"]
+        cancel_resp = client.post(
+            f"/rfqs/{rfq_id}/actions/cancel",
+            json={"user_id": "test-user"},
+        )
+        assert cancel_resp.status_code == 200
+        return rfq_id
+
+    def test_archive_rejects_active_rfq(self, client) -> None:
+        """An RFQ in ``SENT`` (or any non-CLOSED state) must not archive."""
+        cp_id = _create_counterparty(client)
+        order_id = _create_sales_order(client, 50.0, commodity="ALUMINUM")
+        rfq_resp = _create_rfq(
+            client,
+            {
+                "intent": "COMMERCIAL_HEDGE",
+                "commodity": "ALUMINUM",
+                "quantity_mt": 5.0,
+                "delivery_window_start": "2026-03-01",
+                "delivery_window_end": "2026-03-31",
+                "direction": "SELL",
+                "order_id": order_id,
+                "invitations": [{"counterparty_id": cp_id}],
+            },
+        )
+        assert rfq_resp.status_code == 201
+        rfq_id = rfq_resp.json()["id"]
+        # RFQ is in SENT (mocked WhatsApp succeeds in conftest)
+        resp = client.patch(
+            f"/rfqs/{rfq_id}/archive",
+            json={"user_id": "test-user"},
+        )
+        assert resp.status_code == 409
+        assert "CLOSED" in resp.json()["detail"]
+
+    def test_archive_emits_state_event_with_timestamp_and_user(self, client) -> None:
+        rfq_id = self._create_archivable_rfq(client)
+        resp = client.patch(
+            f"/rfqs/{rfq_id}/archive",
+            json={"user_id": "alice"},
+        )
+        assert resp.status_code == 200, resp.text
+
+        events = client.get(f"/rfqs/{rfq_id}/state-events").json()
+        archive_events = [e for e in events if e.get("trigger") == "archive"]
+        assert len(archive_events) == 1
+        evt = archive_events[0]
+        assert evt["user_id"] == "alice"
+        assert evt["event_timestamp"] is not None
+        # Lifecycle marker is ``deleted_at``; ``RFQState`` itself does not
+        # change on archive (the row is already CLOSED).
+        assert evt["from_state"] == evt["to_state"]
+
+    def test_archive_idempotent_409_on_already_archived(self, client) -> None:
+        rfq_id = self._create_archivable_rfq(client)
+        first = client.patch(
+            f"/rfqs/{rfq_id}/archive",
+            json={"user_id": "test-user"},
+        )
+        assert first.status_code == 200
+        second = client.patch(
+            f"/rfqs/{rfq_id}/archive",
+            json={"user_id": "test-user"},
+        )
+        assert second.status_code == 409
+        assert "already archived" in second.json()["detail"].lower()

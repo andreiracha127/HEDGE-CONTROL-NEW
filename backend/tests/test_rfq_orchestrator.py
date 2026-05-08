@@ -661,3 +661,72 @@ def test_classify_first_blocks_greeting_with_digits(mock_classify):
 
     assert result["status"] == "needs_human_review"
     mock_classify.assert_called_once()
+
+
+# ── Archived RFQ skip (Phase A2 PR-3, J-A2-11) ──────────────────────────
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+def test_inbound_message_skips_archived_rfq(mock_parse, mock_auto):
+    """A reply that arrives for an archived RFQ must not be processed.
+
+    The orchestrator selects the newest matching invitation first and
+    then short-circuits with ``rfq_archived`` when its RFQ is archived,
+    rather than falling through to older RFQs on the same phone. The
+    LLM must not be invoked.
+    """
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        rfq.deleted_at = now_utc()
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        session.commit()
+
+        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
+        result = RFQOrchestrator._process_single_message(session, msg)
+
+    assert result["status"] == "rfq_archived"
+    assert result["rfq_id"] == str(rfq.id)
+    mock_parse.assert_not_called()
+    mock_auto.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+def test_archived_rfq_does_not_fall_through_to_older_live_rfq(mock_parse, mock_auto):
+    """A late reply for a newer archived RFQ must not auto-attribute to
+    an older still-live RFQ on the same phone.
+
+    Pre-fix behaviour: filtering ``deleted_at IS NULL`` in the WHERE
+    clause skipped the newer archived row, the ``ORDER BY`` then selected
+    the older live RFQ, and the orchestrator could auto-create a quote on
+    the wrong RFQ. Post-fix: the newest matching invitation wins, and
+    because its RFQ is archived the orchestrator returns ``rfq_archived``
+    without touching the older live RFQ.
+    """
+    with SessionLocal() as session:
+        older_live = _create_rfq(
+            session,
+            state=RFQState.sent,
+            rfq_number="RFQ-TST-OLDER",
+            created_at=now_utc() - timedelta(days=2),
+        )
+        _create_invitation(session, older_live, status=RFQInvitationStatus.sent)
+
+        newer_archived = _create_rfq(
+            session,
+            state=RFQState.sent,
+            rfq_number="RFQ-TST-NEWER",
+            created_at=now_utc(),
+        )
+        newer_archived.deleted_at = now_utc()
+        _create_invitation(session, newer_archived, status=RFQInvitationStatus.sent)
+        session.commit()
+
+        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
+        result = RFQOrchestrator._process_single_message(session, msg)
+
+    assert result["status"] == "rfq_archived"
+    assert result["rfq_id"] == str(newer_archived.id)
+    mock_parse.assert_not_called()
+    mock_auto.assert_not_called()
