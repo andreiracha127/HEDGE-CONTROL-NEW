@@ -8,24 +8,50 @@ const numberFormatter = new Intl.NumberFormat('pt-BR', {
 	maximumFractionDigits: 2,
 });
 
-// MT quantities are persisted as NUMERIC(_, 3) on the backend (migrations
-// 025/033). Rendering them through ``numberFormatter`` would silently round
-// values like 1.234 to 1,23, misrepresenting RFQ/contract size — use this
-// formatter instead for any *_mt quantity field.
-const mtFormatter = new Intl.NumberFormat('pt-BR', {
-	minimumFractionDigits: 3,
-	maximumFractionDigits: 3,
-});
+// Decimal-safe formatter for backend NUMERIC(_, scale) values that arrive as
+// strings over the API. Routing through ``Number()`` would lose precision
+// for values whose total significant digits exceed IEEE-754's ~15-17
+// (e.g. 100000000000.000001 vs 100000000000.000002 collapse to the same
+// JS number even though the backend NUMERIC(18, 6) ranks/awards them
+// differently). Format the integer part via Intl.NumberFormat on a BigInt
+// (loss-free) and concatenate the fractional digits as a string.
+//
+// Currently used for:
+//   - MT quantities (NUMERIC(_, 3), see migrations 025/033)
+//   - prices       (NUMERIC(18, 6), see migrations 025/033)
+const intGroupingFormatter = new Intl.NumberFormat('pt-BR');
 
-// Quote/contract prices are persisted as NUMERIC(18, 6) on the backend
-// (migrations 025/033). Rendering them through ``numberFormatter`` would
-// collapse e.g. 100.000001 and 100.000002 to the same 100,00, even though
-// the backend ranks and awards them differently. Use this formatter
-// instead for any fixed_price_value / quote price field.
-const priceFormatter = new Intl.NumberFormat('pt-BR', {
-	minimumFractionDigits: 6,
-	maximumFractionDigits: 6,
-});
+function formatDecimalString(
+	input: number | string,
+	scale: number,
+): string | null {
+	let s: string;
+	if (typeof input === 'number') {
+		if (!Number.isFinite(input)) return null;
+		s = input.toFixed(scale);
+	} else {
+		s = input.trim();
+		// If it isn't a plain decimal string, fall back to a Number parse
+		// (covers scientific notation, but also caps at IEEE-754 precision —
+		// the backend serializes NUMERIC values in plain form so this branch
+		// is only a defensive fallback).
+		if (!/^-?\d+(?:\.\d+)?$/.test(s)) {
+			const n = Number(s);
+			if (!Number.isFinite(n)) return null;
+			s = n.toFixed(scale);
+		}
+	}
+
+	const negative = s.startsWith('-');
+	const abs = negative ? s.slice(1) : s;
+	const dot = abs.indexOf('.');
+	const intPart = dot === -1 ? abs : abs.slice(0, dot);
+	const fracRaw = dot === -1 ? '' : abs.slice(dot + 1);
+	const fracPart = fracRaw.padEnd(scale, '0').slice(0, scale);
+
+	const intFormatted = intGroupingFormatter.format(BigInt(intPart || '0'));
+	return (negative ? '-' : '') + intFormatted + ',' + fracPart;
+}
 
 export function formatDate(iso: string | null | undefined): string {
 	if (!iso) return '—';
@@ -47,9 +73,7 @@ export function formatNumber(value: number | string | null | undefined): string 
 
 export function formatQuantityMT(value: number | string | null | undefined): string {
 	if (value == null) return '—';
-	const n = typeof value === 'string' ? Number(value) : value;
-	if (!Number.isFinite(n)) return '—';
-	return mtFormatter.format(n);
+	return formatDecimalString(value, 3) ?? '—';
 }
 
 export function formatPrice(
@@ -57,9 +81,8 @@ export function formatPrice(
 	unit?: string,
 ): string {
 	if (value == null) return '—';
-	const n = typeof value === 'string' ? Number(value) : value;
-	if (!Number.isFinite(n)) return '—';
-	const formatted = priceFormatter.format(n);
+	const formatted = formatDecimalString(value, 6);
+	if (formatted == null) return '—';
 	return unit ? `${formatted} ${unit}` : formatted;
 }
 
