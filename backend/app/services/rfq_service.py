@@ -1143,15 +1143,25 @@ class RFQService:
                         detail="Referenced trade RFQ ID is None",
                     )
                 # Lock + verify child state BEFORE creating the contract —
-                # Codex P1 fix on PR-7. Without this pre-flight check, a
-                # child RFQ that was already awarded/closed (pre-existing
-                # or via concurrent award race) still receives a duplicate
-                # contract for the same trade, doubling the position. The
-                # downstream child-closure block at the end of `award`
-                # would only skip with a warning, not roll back — so the
-                # validation has to happen here, before `session.add`.
+                # Codex P1 fixes on PR-7 (rounds 1+2). Without this
+                # pre-flight check, a child RFQ that was already
+                # awarded/closed (pre-existing or via concurrent award
+                # race) still receives a duplicate contract for the same
+                # trade, doubling the position. The downstream
+                # child-closure block at the end of `award` would only
+                # skip with a warning, not roll back.
+                #
+                # `populate_existing()` is required: `compute_spread_ranking`
+                # above already loaded `trade_rfq` via `session.get(...)`,
+                # so SQLAlchemy's identity map would return the cached
+                # instance with stale `state` after we wait on the row
+                # lock. `populate_existing` forces the query result to
+                # refresh attributes from the row we just locked.
                 trade_rfq_stmt = (
-                    select(RFQ).where(RFQ.id == trade_rfq_id).with_for_update()
+                    select(RFQ)
+                    .where(RFQ.id == trade_rfq_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
                 )
                 trade_rfq = session.execute(trade_rfq_stmt).scalar_one_or_none()
                 if not trade_rfq:
@@ -1280,24 +1290,21 @@ class RFQService:
         )
 
         if rfq.intent == RFQIntent.spread:
+            # Pre-flight upstream (in the contract-creation loop) already
+            # locked these children with FOR UPDATE + populate_existing,
+            # validated their state != CLOSED, and created the contracts.
+            # This block emits the lifecycle close transition. The
+            # children are still locked by the same transaction, so no
+            # new lock or refresh is required here.
             for child_id in (rfq.buy_trade_id, rfq.sell_trade_id):
                 if child_id is None:
                     continue
-                child_stmt = select(RFQ).where(RFQ.id == child_id).with_for_update()
-                child = session.execute(child_stmt).scalar_one_or_none()
+                child = session.get(RFQ, child_id)
                 if child is None:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
                         detail=f"Spread child RFQ {child_id} missing during award",
                     )
-                if child.state == RFQState.closed:
-                    _logger.warning(
-                        "award_spread_child_already_closed",
-                        rfq_id=str(child_id),
-                        parent_rfq_id=str(rfq.id),
-                    )
-                    continue
-
                 previous_state = child.state
                 child.state = RFQState.closed
                 session.add(
