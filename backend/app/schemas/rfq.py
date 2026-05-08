@@ -141,7 +141,7 @@ class SpreadRankingFailureCode(str, Enum):
 class SpreadRankingEntry(BaseModel):
     rank: int
     counterparty_id: UUID
-    spread_value: Price
+    spread_value: Spread
     buy_quote: RFQQuoteRead
     sell_quote: RFQQuoteRead
 
