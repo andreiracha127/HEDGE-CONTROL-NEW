@@ -143,6 +143,30 @@ def test_quote_payload_rejects_non_uuid_counterparty(client) -> None:
     assert _get_rfq(client, trade_rfq_id)["state"] == "SENT"
 
 
+def test_quote_payload_rejects_unknown_counterparty_uuid(client) -> None:
+    """A syntactically valid UUID for a counterparty that doesn't exist must
+    be rejected at the application layer with a controlled 404, rather than
+    propagating to the database and surfacing as an unhandled
+    ``IntegrityError`` (HTTP 500) from the FK added in migration 033.
+
+    SQLite does not enforce the FK in tests, so without the application
+    check this insert would silently succeed locally and only blow up in
+    production Postgres.
+    """
+    cp_id = _create_counterparty(client)
+    trade_rfq_id = _create_trade_rfq(client, "BUY", cp_id=cp_id)
+
+    unknown_cp = "00000000-0000-0000-0000-000000000000"
+    response = _create_quote(
+        client,
+        trade_rfq_id,
+        _quote_payload(trade_rfq_id, unknown_cp, "100.000000"),
+    )
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+    assert _get_rfq(client, trade_rfq_id)["state"] == "SENT"
+
+
 def test_spread_ranking_descending_and_ignores_missing_counterparty(client) -> None:
     cp1 = _create_counterparty(client, "CP1")
     cp2 = _create_counterparty(client, "CP2")

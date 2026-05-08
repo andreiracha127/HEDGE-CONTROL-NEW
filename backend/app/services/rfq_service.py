@@ -661,6 +661,13 @@ class RFQService:
                 detail="RFQ must be SENT before receiving quotes",
             )
 
+        cp = session.get(Counterparty, payload.counterparty_id)
+        if not cp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Counterparty {payload.counterparty_id} not found",
+            )
+
         quote = RFQQuote(
             rfq_id=rfq_id,
             counterparty_id=payload.counterparty_id,
