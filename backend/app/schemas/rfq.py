@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas._types import MTQuantity, Price
+from app.schemas._types import MTQuantity, Price, Spread
 
 
 class RFQIntent(str, Enum):
