@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	formatDate,
 	formatNumber,
+	formatQuantityMT,
 	formatCurrency,
 	stateLabel,
 	stateColor,
@@ -34,6 +35,28 @@ describe('formatNumber', () => {
 	it('returns dash for null/undefined', () => {
 		expect(formatNumber(null)).toBe('—');
 		expect(formatNumber(undefined)).toBe('—');
+	});
+});
+
+describe('formatQuantityMT', () => {
+	it('preserves three fractional digits for backend NUMERIC(_, 3) values', () => {
+		// "1.234" must NOT be truncated to "1,23" — it represents 1.234 MT.
+		expect(formatQuantityMT('1.234')).toMatch(/,234$/);
+		expect(formatQuantityMT(1.234)).toMatch(/,234$/);
+	});
+
+	it('pads integer values to three decimals', () => {
+		expect(formatQuantityMT(100)).toMatch(/,000$/);
+	});
+
+	it('rounds half-up beyond three decimals (Intl default)', () => {
+		expect(formatQuantityMT('1.2345')).toMatch(/,23[45]$/);
+	});
+
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatQuantityMT(null)).toBe('—');
+		expect(formatQuantityMT(undefined)).toBe('—');
+		expect(formatQuantityMT('not-a-number')).toBe('—');
 	});
 });
 

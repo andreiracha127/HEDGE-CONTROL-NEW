@@ -8,19 +8,37 @@ const numberFormatter = new Intl.NumberFormat('pt-BR', {
 	maximumFractionDigits: 2,
 });
 
+// MT quantities are persisted as NUMERIC(_, 3) on the backend (migrations
+// 025/033). Rendering them through ``numberFormatter`` would silently round
+// values like 1.234 to 1,23, misrepresenting RFQ/contract size — use this
+// formatter instead for any *_mt quantity field.
+const mtFormatter = new Intl.NumberFormat('pt-BR', {
+	minimumFractionDigits: 3,
+	maximumFractionDigits: 3,
+});
+
 export function formatDate(iso: string | null | undefined): string {
 	if (!iso) return '—';
 	return dateFormatter.format(new Date(iso));
 }
 
 // Decimal-typed economic columns serialize as strings over the API
-// (e.g. RFQ.quantity_mt, RFQQuote.fixed_price_value, HedgeContract.fixed_price_value).
+// (e.g. RFQQuote.fixed_price_value, HedgeContract.fixed_price_value).
 // Coerce-on-read at this single boundary helper rather than at every call site.
+// NOTE: do NOT use this for *_mt quantity fields — they have scale 3 on the
+// backend and would be silently truncated. Use ``formatQuantityMT`` instead.
 export function formatNumber(value: number | string | null | undefined): string {
 	if (value == null) return '—';
 	const n = typeof value === 'string' ? Number(value) : value;
 	if (!Number.isFinite(n)) return '—';
 	return numberFormatter.format(n);
+}
+
+export function formatQuantityMT(value: number | string | null | undefined): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	return mtFormatter.format(n);
 }
 
 export function formatCurrency(

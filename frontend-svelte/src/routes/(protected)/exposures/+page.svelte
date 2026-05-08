@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber } from '$lib/utils/format';
+	import { formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import { type ColumnDef } from '@tanstack/table-core';
 	import DataTable from '$lib/components/table/DataTable.svelte';
@@ -75,7 +75,7 @@
 			accessorFn: (row) => row.quantity_mt,
 			id: 'quantity_mt',
 			header: 'Qty (MT)',
-			cell: (info) => formatNumber(info.getValue() as number),
+			cell: (info) => formatQuantityMT(info.getValue() as number),
 		},
 		{
 			accessorFn: (row) => row.direction,
@@ -95,7 +95,7 @@
 			accessorFn: (row) => row.net_exposure_mt,
 			id: 'net_exposure_mt',
 			header: 'Exposição Líquida',
-			cell: (info) => formatNumber(info.getValue() as number),
+			cell: (info) => formatQuantityMT(info.getValue() as number),
 		},
 	];
 
@@ -126,13 +126,13 @@
 			<div class="rounded border border-surface-800 bg-surface-900 p-3">
 				<div class="text-xs text-surface-500">Exposição Bruta</div>
 				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatNumber(netExposure.gross_exposure_mt)} MT
+					{formatQuantityMT(netExposure.gross_exposure_mt)} MT
 				</div>
 			</div>
 			<div class="rounded border border-surface-800 bg-surface-900 p-3">
 				<div class="text-xs text-surface-500">Exposição Líquida</div>
 				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatNumber(netExposure.net_exposure_mt)} MT
+					{formatQuantityMT(netExposure.net_exposure_mt)} MT
 				</div>
 			</div>
 			<div class="rounded border border-surface-800 bg-surface-900 p-3">
@@ -209,7 +209,7 @@
 						{/if}
 					</div>
 					<div class="mt-1 text-xs text-surface-500">
-						{formatNumber(task.quantity_mt)} MT · {task.settlement_month ?? '—'}
+						{formatQuantityMT(task.quantity_mt)} MT · {task.settlement_month ?? '—'}
 					</div>
 				</div>
 			{:else}

@@ -4,7 +4,7 @@
 	import { goto } from '$app/navigation';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, formatNumber } from '$lib/utils/format';
+	import { formatDate, formatNumber, formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import type { Contract } from '$lib/api/types/entities';
 	const contractId = $derived(page.params.id ?? '');
@@ -168,7 +168,7 @@
 			<div class="rounded border border-surface-800 bg-surface-900 p-4 space-y-2">
 				<h2 class="text-xs font-semibold uppercase text-surface-500">Detalhes</h2>
 				<div class="text-sm"><span class="text-surface-500">Commodity:</span> <span class="text-surface-200">{contract.commodity}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Quantidade:</span> <span class="text-surface-200 tabular-nums">{formatNumber(contract.quantity_mt)} MT</span></div>
+				<div class="text-sm"><span class="text-surface-500">Quantidade:</span> <span class="text-surface-200 tabular-nums">{formatQuantityMT(contract.quantity_mt)} MT</span></div>
 				<div class="text-sm"><span class="text-surface-500">Preço Fixo:</span> <span class="text-surface-200 tabular-nums">{formatNumber(contract.fixed_price_value)} {contract.fixed_price_unit ?? ''}</span></div>
 				<div class="text-sm"><span class="text-surface-500">Classificação:</span> <span class="text-surface-200">{contract.classification ?? '—'}</span></div>
 				<div class="text-sm"><span class="text-surface-500">Trade Date:</span> <span class="text-surface-200">{formatDate(contract.trade_date)}</span></div>
