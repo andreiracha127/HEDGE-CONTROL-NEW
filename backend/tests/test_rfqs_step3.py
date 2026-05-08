@@ -467,7 +467,13 @@ def test_spread_child_award_blocked_after_parent_award(client) -> None:
     assert sell_award.status_code == 409
 
 
-def test_spread_award_idempotent_when_child_already_closed(client) -> None:
+def test_spread_award_blocked_when_child_already_closed(client) -> None:
+    """Codex P1 fix on PR-7: when a spread child has already been awarded
+    individually (or closed via another path), parent spread award must
+    hard-fail with 409. The previous "skip with warning" semantics from
+    PR-7 dispatch §2.2 was incorrect — it would still create a duplicate
+    contract for the closed child quote, doubling the position.
+    """
     buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
 
     child_award = client.post(
@@ -479,9 +485,10 @@ def test_spread_award_idempotent_when_child_already_closed(client) -> None:
     parent_award = client.post(
         f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"}
     )
-    assert parent_award.status_code == 200
-    assert _get_rfq(client, buy_trade["id"])["state"] == "CLOSED"
-    assert _get_rfq(client, sell_trade["id"])["state"] == "CLOSED"
+    assert parent_award.status_code == 409
+    assert "already" in parent_award.json()["detail"].lower()
+    # Sell child remains untouched (parent transaction rolled back).
+    assert _get_rfq(client, sell_trade["id"])["state"] == "QUOTED"
 
 
 def test_award_quote_endpoint_deleted_returns_404(client) -> None:
