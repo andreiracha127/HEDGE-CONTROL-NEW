@@ -3617,6 +3617,11 @@ export interface components {
          * @enum {string}
          */
         RFQTradeTypeEnum: "Swap" | "Forward";
+        /** RFQUserActionBase */
+        RFQUserActionBase: {
+            /** User Id */
+            user_id: string;
+        };
         /** ReconcileResponse */
         ReconcileResponse: {
             /**
@@ -6405,7 +6410,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RFQUserActionBase"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {
