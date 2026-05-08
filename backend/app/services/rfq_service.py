@@ -1133,6 +1133,15 @@ class RFQService:
             winning_quote_ids = [str(top.buy_quote.id), str(top.sell_quote.id)]
             ranking_snapshot = ranking_payload.model_dump(mode="json")
 
+            # Codex P2 (PR-7 round 4): map each spread child RFQ to the
+            # contract created for it, so the downstream child-closure
+            # state event can record `created_contract_ids` (the
+            # frontend RFQ detail page renders contract links from each
+            # RFQ's own state events; without this mapping the child
+            # appears CLOSED with no path to the contract just booked
+            # for it).
+            spread_child_contract_ids: dict[UUID, str] = {}
+
             for trade_rfq_id, quote in (
                 (rfq.buy_trade_id, top.buy_quote),
                 (rfq.sell_trade_id, top.sell_quote),
@@ -1203,6 +1212,7 @@ class RFQService:
                 session.add(contract)
                 session.flush()
                 created_contract_ids.append(str(contract.id))
+                spread_child_contract_ids[trade_rfq_id] = str(contract.id)
 
                 if (
                     trade_rfq.intent == RFQIntent.commercial_hedge
@@ -1307,6 +1317,7 @@ class RFQService:
                     )
                 previous_state = child.state
                 child.state = RFQState.closed
+                child_contract_id = spread_child_contract_ids.get(child_id)
                 session.add(
                     RFQStateEvent(
                         rfq_id=child.id,
@@ -1316,6 +1327,12 @@ class RFQService:
                         user_id=user_id,
                         event_timestamp=now_utc(),
                         reason=f"PARENT_SPREAD_AWARDED:{rfq.rfq_number}",
+                        # Codex P2 fix: record the child's own contract id
+                        # so the RFQ detail page can navigate to it.
+                        created_contract_ids=json.dumps(
+                            [child_contract_id] if child_contract_id else [],
+                            sort_keys=True,
+                        ),
                     )
                 )
 
