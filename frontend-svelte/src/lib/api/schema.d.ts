@@ -3874,9 +3874,10 @@ export interface components {
          * SpreadRankingFailureCode
          * @enum {string}
          */
-        SpreadRankingFailureCode: "NO_ELIGIBLE_QUOTES" | "NON_COMPARABLE" | "TIE" | "NOT_SPREAD_INTENT";
+        SpreadRankingFailureCode: "NO_ELIGIBLE_QUOTES" | "NON_COMPARABLE" | "INCOMPLETE_QUOTES" | "TIE" | "NOT_SPREAD_INTENT";
         /** SpreadRankingRead */
         SpreadRankingRead: {
+            direction?: components["schemas"]["RFQDirection"] | null;
             failure_code?: components["schemas"]["SpreadRankingFailureCode"] | null;
             /** Failure Reason */
             failure_reason?: string | null;
@@ -3887,6 +3888,8 @@ export interface components {
              * Format: uuid
              */
             rfq_id: string;
+            /** Sort Order */
+            sort_order?: string | null;
             /** Status */
             status: string;
         };

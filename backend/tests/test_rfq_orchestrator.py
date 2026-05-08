@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone, date
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -113,18 +114,27 @@ def _send_result(success: bool = True) -> WhatsAppSendResult:
 def _parsed_quote(
     intent: MessageIntent = MessageIntent.quote,
     confidence: float = 0.92,
-    price: float | None = 2550.0,
+    price: Decimal | str | None = Decimal("2550.0"),
+    unit: str | None = "USD/MT",
+    convention: str | None = "avg",
 ) -> ParsedQuote:
     return ParsedQuote(
         intent=intent,
         confidence=confidence,
         fixed_price_value=price,
-        fixed_price_unit="USD/MT",
-        float_pricing_convention="avg",
+        fixed_price_unit=unit,
+        float_pricing_convention=convention,
         premium_discount=None,
         counterparty_name="Test Counterparty",
         notes=None,
     )
+
+
+def _auto_quote_context(session: Session) -> tuple[RFQ, RFQInvitation]:
+    rfq = _create_rfq(session, state=RFQState.sent)
+    invitation = _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+    session.commit()
+    return rfq, invitation
 
 
 # ── dispatch_whatsapp_invitations ────────────────────────────────────────
@@ -341,6 +351,104 @@ def test_process_auto_quote_fails_gracefully(
 
     assert result["status"] == "auto_quote_failed"
     assert "DB conflict" in result["error"]
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_skipped_when_unit_missing(mock_submit):
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 avg")
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            msg,
+            _parsed_quote(price=Decimal("2550.0"), unit=None, convention="avg"),
+        )
+
+    assert result["status"] == "auto_quote_skipped_incomplete"
+    assert result["missing"] == ["unit"]
+    mock_submit.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_skipped_when_convention_missing(mock_submit):
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 USD/MT")
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            msg,
+            _parsed_quote(price=Decimal("2550.0"), unit="USD/MT", convention=None),
+        )
+
+    assert result["status"] == "auto_quote_skipped_incomplete"
+    assert result["missing"] == ["convention"]
+    mock_submit.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_skipped_when_price_missing(mock_submit):
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="USD/MT avg")
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            msg,
+            _parsed_quote(price=None, unit="USD/MT", convention="avg"),
+        )
+
+    assert result["status"] == "auto_quote_skipped_incomplete"
+    assert result["missing"] == ["price"]
+    mock_submit.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_skipped_when_unit_non_canonical(mock_submit):
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 USD/KG avg")
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            msg,
+            _parsed_quote(price=Decimal("2550.0"), unit="USD/KG", convention="avg"),
+        )
+
+    assert result["status"] == "auto_quote_skipped_incomplete"
+    assert result["missing"] == ["unit (non-canonical: 'USD/KG')"]
+    mock_submit.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+def test_auto_quote_proceeds_when_all_fields_present_and_canonical(mock_submit):
+    mock_quote = MagicMock()
+    mock_quote.id = uuid.uuid4()
+    mock_submit.return_value = mock_quote
+
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        msg = _make_inbound(text="2550 USD/MT avg")
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            msg,
+            _parsed_quote(price=Decimal("2550.0"), unit="USD/MT", convention="avg"),
+        )
+
+    assert result["status"] == "auto_quote_created"
+    mock_submit.assert_called_once()
+    quote_payload = mock_submit.call_args.args[2]
+    assert quote_payload.counterparty_id == invitation.counterparty_id
+    assert quote_payload.fixed_price_value == Decimal("2550.0")
+    assert quote_payload.fixed_price_unit == "USD/MT"
+    assert quote_payload.float_pricing_convention.value == "avg"
 
 
 # ── process_inbound_queue ────────────────────────────────────────────────

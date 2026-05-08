@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct, or_
 
 from app.core.logging import get_logger
+from app.core.pricing import CANONICAL_PRICE_UNITS
 from app.core.utils import now_utc
 from app.models.rfqs import (
     RFQ,
@@ -532,19 +533,60 @@ class RFQOrchestrator:
         parsed: ParsedQuote,
     ) -> dict:
         """Create a quote automatically from a high-confidence LLM parse."""
-        convention = parsed.float_pricing_convention or "avg"
-        try:
-            float_conv = FloatPricingConvention(convention)
-        except ValueError:
-            float_conv = FloatPricingConvention.avg
+        missing: list[str] = []
 
-        price_value = parsed.fixed_price_value
-        if price_value is None and parsed.premium_discount is not None:
-            price_value = parsed.premium_discount
+        if parsed.fixed_price_value is None and parsed.premium_discount is None:
+            missing.append("price")
 
-        # PR-1: pass-through Decimal preserves precision; the "or 0" default
-        # is intentionally retained here. PR-6 (J-A2-OPUS-03) will replace it
-        # with a hard-fail when the LLM omits a price.
+        # Canonicalize the parsed unit so accepted variants like ``USDMT``
+        # (returned by the LLM for a broker message) resolve to ``USD/MT``
+        # before the membership check. Otherwise valid rankable variants
+        # would be silently dropped by exact-string set membership.
+        canonical_unit: str | None = None
+        if parsed.fixed_price_unit is None:
+            missing.append("unit")
+        else:
+            canonical_unit = RFQService.canonicalize_fixed_price_unit(
+                parsed.fixed_price_unit
+            )
+            if canonical_unit is None or canonical_unit not in CANONICAL_PRICE_UNITS:
+                missing.append(f"unit (non-canonical: {parsed.fixed_price_unit!r})")
+
+        float_conv: FloatPricingConvention | None = None
+        if parsed.float_pricing_convention is None:
+            missing.append("convention")
+        else:
+            try:
+                float_conv = FloatPricingConvention(parsed.float_pricing_convention)
+            except ValueError:
+                missing.append(
+                    f"convention (invalid: {parsed.float_pricing_convention!r})"
+                )
+
+        if missing:
+            logger.warning(
+                "orchestrator_auto_quote_skipped_incomplete",
+                rfq_id=str(rfq.id),
+                counterparty=str(invitation.counterparty_id),
+                missing=missing,
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "auto_quote_skipped_incomplete",
+                "rfq_id": str(rfq.id),
+                "missing": missing,
+            }
+
+        price_value = (
+            parsed.fixed_price_value
+            if parsed.fixed_price_value is not None
+            else parsed.premium_discount
+        )
+        if price_value is None or float_conv is None or canonical_unit is None:
+            raise AssertionError("auto quote validation failed to establish fields")
+
+        # PR-6 (J-A2-OPUS-03): canonical fields are pre-validated above; no
+        # `or "USD/MT"` / `or Decimal("0")` fallbacks here.
         # Codex P2 (post-rebase): wrap the schema constructor in
         # try/ValidationError so an LLM parse with >PRICE_NUMERIC_SCALE
         # fractional digits (or any other Pydantic constraint failure)
@@ -553,10 +595,8 @@ class RFQOrchestrator:
             quote_payload = RFQQuoteCreate(
                 rfq_id=rfq.id,
                 counterparty_id=invitation.counterparty_id,
-                fixed_price_value=(
-                    Decimal(str(price_value)) if price_value is not None else Decimal("0")
-                ),
-                fixed_price_unit=parsed.fixed_price_unit or "USD/MT",
+                fixed_price_value=Decimal(str(price_value)),
+                fixed_price_unit=canonical_unit,
                 float_pricing_convention=float_conv,
                 received_at=msg.timestamp,
             )
@@ -582,7 +622,7 @@ class RFQOrchestrator:
                 rfq_id=str(rfq.id),
                 quote_id=str(quote.id),
                 counterparty=str(invitation.counterparty_id),
-                price=float(parsed.fixed_price_value or 0),
+                price=float(price_value),
             )
             return {
                 "message_id": msg.message_id,
