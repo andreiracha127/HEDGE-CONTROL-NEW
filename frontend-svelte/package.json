@@ -13,8 +13,8 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
-		"api:types": "openapi-typescript http://localhost:8000/openapi.json -o src/lib/api/schema.d.ts",
-		"api:types:check": "openapi-typescript http://localhost:8000/openapi.json --output /tmp/schema-check.d.ts && diff -q src/lib/api/schema.d.ts /tmp/schema-check.d.ts",
+		"api:types": "node scripts/regen-schema.mjs",
+		"api:types:check": "node scripts/regen-schema.mjs /tmp/schema-check.d.ts && diff -q src/lib/api/schema.d.ts /tmp/schema-check.d.ts",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui"
 	},
