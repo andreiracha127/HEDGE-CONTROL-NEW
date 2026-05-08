@@ -32,17 +32,36 @@ PRICE_COLUMNS = (("rfq_quotes", "price_value"),)
 
 
 def _assert_no_loss(table: str, col: str, scale: int) -> None:
+    # Detect rows whose value would round under NUMERIC(_, scale).
+    #
+    # Earlier this used ``length(split_part((col)::text, '.', 2))``, but
+    # Postgres renders ``double precision`` values such as ``1e-05`` in
+    # exponential form — there is no decimal point, so split_part returns
+    # an empty string and the row passes the preflight even though the
+    # subsequent cast to NUMERIC(_, 3/6) silently rounds it to 0.
+    #
+    # Round-tripping through ``::text::numeric`` lets numeric equality
+    # (which ignores trailing zeros) decide losslessness: if rounding to
+    # ``scale`` changes the value, casting will too. The
+    # ``::text::numeric`` chain (rather than the direct ``::numeric``
+    # cast) yields Postgres' shortest-round-trip text form first, which
+    # avoids the spurious low-order digits a binary float carries when
+    # cast straight to numeric.
     result = op.get_bind().execute(
         sa.text(
             f"""
-            SELECT COUNT(*) AS n,
-                   COALESCE(MAX(scale_decimals), 0) AS max_scale
-            FROM (
-                SELECT length(split_part(({col})::text, '.', 2)) AS scale_decimals
+            WITH cleaned AS (
+                SELECT (({col})::text)::numeric AS v
                 FROM {table}
                 WHERE {col} IS NOT NULL
-            ) AS sub
-            WHERE scale_decimals > :scale
+            )
+            SELECT COUNT(*) AS n,
+                   COALESCE(
+                       MAX(length(split_part(v::text, '.', 2))),
+                       0
+                   ) AS max_scale
+            FROM cleaned
+            WHERE v <> round(v, :scale)
             """
         ),
         {"scale": scale},
