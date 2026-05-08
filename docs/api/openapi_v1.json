@@ -1766,6 +1766,18 @@
             "title": "Physical Revenue",
             "type": "string"
           },
+          "price_references": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price References"
+          },
           "snapshot_date": {
             "format": "date",
             "title": "Snapshot Date",
@@ -4950,7 +4962,7 @@
             "type": "string"
           },
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -4965,7 +4977,7 @@
       "RFQAwardRequest": {
         "properties": {
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -4980,7 +4992,7 @@
         "description": "Cancel an RFQ in CREATED or SENT state.",
         "properties": {
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -5048,9 +5060,17 @@
             "title": "Order Id"
           },
           "quantity_mt": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+                "type": "string"
+              }
+            ],
             "description": "Quantity in metric tons (MT)",
-            "title": "Quantity Mt",
-            "type": "number"
+            "title": "Quantity Mt"
           },
           "sell_trade_id": {
             "anyOf": [
@@ -5308,9 +5328,17 @@
             "$ref": "#/components/schemas/RFQPriceTypeEnum"
           },
           "quantity_mt": {
-            "exclusiveMinimum": 0.0,
-            "title": "Quantity Mt",
-            "type": "number"
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Quantity Mt"
           },
           "side": {
             "$ref": "#/components/schemas/RFQSideEnum"
@@ -5398,7 +5426,7 @@
       "RFQQuoteCreate": {
         "properties": {
           "counterparty_id": {
-            "maxLength": 100,
+            "format": "uuid",
             "title": "Counterparty Id",
             "type": "string"
           },
@@ -5408,8 +5436,16 @@
             "type": "string"
           },
           "fixed_price_value": {
-            "title": "Fixed Price Value",
-            "type": "number"
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
+                "type": "string"
+              }
+            ],
+            "title": "Fixed Price Value"
           },
           "float_pricing_convention": {
             "$ref": "#/components/schemas/FloatPricingConvention"
@@ -5439,7 +5475,7 @@
       "RFQQuoteRead": {
         "properties": {
           "counterparty_id": {
-            "maxLength": 100,
+            "format": "uuid",
             "title": "Counterparty Id",
             "type": "string"
           },
@@ -5454,8 +5490,9 @@
             "type": "string"
           },
           "fixed_price_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,19}0*$)\\d{0,12}\\.\\d{0,6}0*$)",
             "title": "Fixed Price Value",
-            "type": "number"
+            "type": "string"
           },
           "float_pricing_convention": {
             "$ref": "#/components/schemas/FloatPricingConvention"
@@ -5504,20 +5541,24 @@
             "title": "Buy Trade Id"
           },
           "commercial_active_mt": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Active Mt",
-            "type": "number"
+            "type": "string"
           },
           "commercial_net_mt": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Net Mt",
-            "type": "number"
+            "type": "string"
           },
           "commercial_passive_mt": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Passive Mt",
-            "type": "number"
+            "type": "string"
           },
           "commercial_reduction_applied_mt": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Commercial Reduction Applied Mt",
-            "type": "number"
+            "type": "string"
           },
           "commodity": {
             "maxLength": 50,
@@ -5587,8 +5628,9 @@
             "title": "Order Id"
           },
           "quantity_mt": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,12}|(?=[\\d.]{1,16}0*$)\\d{0,12}\\.\\d{0,3}0*$)",
             "title": "Quantity Mt",
-            "type": "number"
+            "type": "string"
           },
           "rfq_number": {
             "maxLength": 32,
@@ -5643,7 +5685,7 @@
             "type": "string"
           },
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -5658,7 +5700,7 @@
       "RFQRefreshRequest": {
         "properties": {
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -5673,7 +5715,7 @@
         "description": "Reject a specific counterparty quote without closing the RFQ.",
         "properties": {
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -5687,7 +5729,7 @@
       "RFQRejectRequest": {
         "properties": {
           "user_id": {
-            "maxLength": 100,
+            "maxLength": 64,
             "title": "User Id",
             "type": "string"
           }
@@ -6018,6 +6060,20 @@
         "title": "RFQTradeTypeEnum",
         "type": "string"
       },
+      "RFQUserActionBase": {
+        "properties": {
+          "user_id": {
+            "maxLength": 64,
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id"
+        ],
+        "title": "RFQUserActionBase",
+        "type": "object"
+      },
       "ReconcileResponse": {
         "properties": {
           "created": {
@@ -6029,6 +6085,16 @@
             "default": "Reconciliation completed",
             "title": "Message",
             "type": "string"
+          },
+          "retired": {
+            "default": 0,
+            "title": "Retired",
+            "type": "integer"
+          },
+          "tasks_cancelled": {
+            "default": 0,
+            "title": "Tasks Cancelled",
+            "type": "integer"
           },
           "updated": {
             "default": 0,
@@ -6538,7 +6604,7 @@
             "$ref": "#/components/schemas/RFQQuoteRead"
           },
           "counterparty_id": {
-            "maxLength": 100,
+            "format": "uuid",
             "title": "Counterparty Id",
             "type": "string"
           },
@@ -6550,8 +6616,9 @@
             "$ref": "#/components/schemas/RFQQuoteRead"
           },
           "spread_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*(?:\\d{0,14}|(?=[\\d.]{1,21}0*$)\\d{0,14}\\.\\d{0,6}0*$)",
             "title": "Spread Value",
-            "type": "number"
+            "type": "string"
           }
         },
         "required": [
@@ -6568,6 +6635,7 @@
         "enum": [
           "NO_ELIGIBLE_QUOTES",
           "NON_COMPARABLE",
+          "INCOMPLETE_QUOTES",
           "TIE",
           "NOT_SPREAD_INTENT"
         ],
@@ -6576,6 +6644,16 @@
       },
       "SpreadRankingRead": {
         "properties": {
+          "direction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RFQDirection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "failure_code": {
             "anyOf": [
               {
@@ -6609,6 +6687,17 @@
             "format": "uuid",
             "title": "Rfq Id",
             "type": "string"
+          },
+          "sort_order": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sort Order"
           },
           "status": {
             "maxLength": 32,
@@ -10852,6 +10941,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQUserActionBase"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "content": {
