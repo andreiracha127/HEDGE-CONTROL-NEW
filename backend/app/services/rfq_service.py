@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import uuid as _uuid
+from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
+
+from app.core.precision import DECIMAL_ZERO, quantize_mt
 
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeLegSide
 from app.models.counterparty import Counterparty, CounterpartyType
@@ -94,14 +97,19 @@ class RFQService:
     @staticmethod
     def select_latest_quotes_by_counterparty(
         quotes: list[RFQQuote],
-    ) -> dict[str, RFQQuote]:
+    ) -> dict[UUID, RFQQuote]:
         """Given an unordered list of quotes, return the latest per counterparty."""
         ordered = sorted(
             quotes,
-            key=lambda q: (q.counterparty_id, q.received_at, q.created_at, str(q.id)),
+            key=lambda q: (
+                str(q.counterparty_id),
+                q.received_at,
+                q.created_at,
+                str(q.id),
+            ),
         )
-        latest: dict[str, RFQQuote] = {}
-        current_cp: str | None = None
+        latest: dict[UUID, RFQQuote] = {}
+        current_cp: UUID | None = None
         best: RFQQuote | None = None
 
         for quote in ordered:
@@ -131,7 +139,7 @@ class RFQService:
         return latest
 
     @staticmethod
-    def get_latest_trade_quotes(session: Session, rfq_id: UUID) -> dict[str, RFQQuote]:
+    def get_latest_trade_quotes(session: Session, rfq_id: UUID) -> dict[UUID, RFQQuote]:
         quotes = session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).all()
         return RFQService.select_latest_quotes_by_counterparty(quotes)
 
@@ -149,7 +157,7 @@ class RFQService:
 
     @staticmethod
     def compute_trade_ranking(
-        rfq: RFQ, latest_quotes: dict[str, RFQQuote]
+        rfq: RFQ, latest_quotes: dict[UUID, RFQQuote]
     ) -> TradeRankingRead:
         if not latest_quotes:
             return TradeRankingRead(
@@ -184,10 +192,8 @@ class RFQService:
             )
 
         reverse = rfq.direction == RFQDirection.sell
-        ordered = sorted(
-            quotes, key=lambda q: float(q.fixed_price_value), reverse=reverse
-        )
-        values = [float(q.fixed_price_value) for q in ordered]
+        ordered = sorted(quotes, key=lambda q: q.fixed_price_value, reverse=reverse)
+        values = [q.fixed_price_value for q in ordered]
         if len(set(values)) != len(values):
             return TradeRankingRead(
                 rfq_id=rfq.id,
@@ -254,7 +260,7 @@ class RFQService:
                 ranking=[],
             )
 
-        spreads: list[tuple[str, float, RFQQuote, RFQQuote]] = []
+        spreads: list[tuple[UUID, Decimal, RFQQuote, RFQQuote]] = []
         for cp in eligible_counterparties:
             buy_quote = buy_latest[cp]
             sell_quote = sell_latest[cp]
@@ -285,8 +291,7 @@ class RFQService:
             spreads.append(
                 (
                     cp,
-                    float(sell_quote.fixed_price_value)
-                    - float(buy_quote.fixed_price_value),
+                    sell_quote.fixed_price_value - buy_quote.fixed_price_value,
                     buy_quote,
                     sell_quote,
                 )
@@ -344,10 +349,10 @@ class RFQService:
                 return snapshot_by_commodity[canonical]
             return {
                 "commodity": canonical or commodity or payload.commodity,
-                "pre_reduction_commercial_active_mt": 0,
-                "pre_reduction_commercial_passive_mt": 0,
-                "commercial_active_mt": 0,
-                "commercial_passive_mt": 0,
+                "pre_reduction_commercial_active_mt": DECIMAL_ZERO,
+                "pre_reduction_commercial_passive_mt": DECIMAL_ZERO,
+                "commercial_active_mt": DECIMAL_ZERO,
+                "commercial_passive_mt": DECIMAL_ZERO,
                 "calculation_timestamp": now_utc(),
             }
 
@@ -384,20 +389,20 @@ class RFQService:
                     ),
                 )
             snapshot = snapshot_for(order.commodity)
-            post_active = float(snapshot["commercial_active_mt"])
-            post_passive = float(snapshot["commercial_passive_mt"])
+            post_active = quantize_mt(snapshot["commercial_active_mt"])
+            post_passive = quantize_mt(snapshot["commercial_passive_mt"])
             residual_side = (
                 post_active if order.order_type == OrderType.sales else post_passive
             )
-            if payload.quantity_mt > float(residual_side):
+            if quantize_mt(payload.quantity_mt) > residual_side:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ quantity exceeds residual exposure",
                 )
         else:
-            post_active = float(snapshot["commercial_active_mt"])
-            post_passive = float(snapshot["commercial_passive_mt"])
-        pre_active = float(snapshot["pre_reduction_commercial_active_mt"])
+            post_active = quantize_mt(snapshot["commercial_active_mt"])
+            post_passive = quantize_mt(snapshot["commercial_passive_mt"])
+        pre_active = quantize_mt(snapshot["pre_reduction_commercial_active_mt"])
 
         if payload.intent.value == RFQIntent.spread.value:
             buy_trade_rfq = session.get(RFQ, payload.buy_trade_id)
@@ -656,6 +661,13 @@ class RFQService:
                 detail="RFQ must be SENT before receiving quotes",
             )
 
+        cp = session.get(Counterparty, payload.counterparty_id)
+        if not cp:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Counterparty {payload.counterparty_id} not found",
+            )
+
         quote = RFQQuote(
             rfq_id=rfq_id,
             counterparty_id=payload.counterparty_id,
@@ -676,7 +688,7 @@ class RFQService:
                     to_state=RFQState.quoted,
                     trigger="FIRST_ELIGIBLE_QUOTE_PERSISTED",
                     triggering_quote_id=quote.id,
-                    triggering_counterparty_id=quote.counterparty_id,
+                    triggering_counterparty_id=str(quote.counterparty_id),
                     event_timestamp=now_utc(),
                 )
             )
@@ -709,7 +721,7 @@ class RFQService:
                         to_state=RFQState.quoted,
                         trigger="FIRST_ELIGIBLE_QUOTE_PERSISTED",
                         triggering_quote_id=quote.id,
-                        triggering_counterparty_id=quote.counterparty_id,
+                        triggering_counterparty_id=str(quote.counterparty_id),
                         event_timestamp=now_utc(),
                     )
                 )
@@ -1079,7 +1091,7 @@ class RFQService:
             quantity_mt=rfq.quantity_mt,
             rfq_id=rfq.id,
             rfq_quote_id=quote.id,
-            counterparty_id=quote.counterparty_id,
+            counterparty_id=str(quote.counterparty_id),
             fixed_price_value=quote.fixed_price_value,
             fixed_price_unit=quote.fixed_price_unit,
             float_pricing_convention=RFQService._convention_value(
@@ -1138,7 +1150,7 @@ class RFQService:
                 user_id=user_id,
                 winning_quote_ids=json.dumps([str(quote.id)], sort_keys=True),
                 winning_counterparty_ids=json.dumps(
-                    [quote.counterparty_id], sort_keys=True
+                    [str(quote.counterparty_id)], sort_keys=True
                 ),
                 award_timestamp=award_time,
                 event_timestamp=award_time,
@@ -1186,7 +1198,7 @@ class RFQService:
                 )
 
             top = ranking_payload.ranking[0]
-            winning_counterparty_ids = [top.counterparty_id]
+            winning_counterparty_ids = [str(top.counterparty_id)]
             winning_quote_ids = [str(top.buy_quote.id), str(top.sell_quote.id)]
             ranking_snapshot = ranking_payload.model_dump(mode="json")
 
@@ -1214,7 +1226,7 @@ class RFQService:
                     quantity_mt=trade_rfq.quantity_mt,
                     rfq_id=trade_rfq.id,
                     rfq_quote_id=quote.id,
-                    counterparty_id=top.counterparty_id,
+                    counterparty_id=str(top.counterparty_id),
                     fixed_price_value=quote.fixed_price_value,
                     fixed_price_unit=quote.fixed_price_unit,
                     float_pricing_convention=RFQService._convention_value(
@@ -1253,7 +1265,7 @@ class RFQService:
                 )
 
             top_quote = trade_ranking.ranking[0].quote
-            winning_counterparty_ids = [top_quote.counterparty_id]
+            winning_counterparty_ids = [str(top_quote.counterparty_id)]
             winning_quote_ids = [str(top_quote.id)]
             ranking_snapshot = trade_ranking.model_dump(mode="json")
 
@@ -1265,7 +1277,7 @@ class RFQService:
                 quantity_mt=rfq.quantity_mt,
                 rfq_id=rfq.id,
                 rfq_quote_id=top_quote.id,
-                counterparty_id=top_quote.counterparty_id,
+                counterparty_id=str(top_quote.counterparty_id),
                 fixed_price_value=top_quote.fixed_price_value,
                 fixed_price_unit=top_quote.fixed_price_unit,
                 float_pricing_convention=RFQService._convention_value(

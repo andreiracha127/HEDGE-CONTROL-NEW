@@ -3250,7 +3250,7 @@ export interface components {
              * Quantity Mt
              * @description Quantity in metric tons (MT)
              */
-            quantity_mt: number;
+            quantity_mt: number | string;
             /**
              * Sell Trade Id
              * @description Referenced sell trade (RFQ id) for SPREAD
@@ -3350,7 +3350,7 @@ export interface components {
             order_validity?: string | null;
             price_type: components["schemas"]["RFQPriceTypeEnum"];
             /** Quantity Mt */
-            quantity_mt: number;
+            quantity_mt: number | string;
             side: components["schemas"]["RFQSideEnum"];
             /** Start Date */
             start_date?: string | null;
@@ -3376,12 +3376,15 @@ export interface components {
         RFQPriceTypeEnum: "AVG" | "AVGInter" | "Fix" | "C2R";
         /** RFQQuoteCreate */
         RFQQuoteCreate: {
-            /** Counterparty Id */
+            /**
+             * Counterparty Id
+             * Format: uuid
+             */
             counterparty_id: string;
             /** Fixed Price Unit */
             fixed_price_unit: string;
             /** Fixed Price Value */
-            fixed_price_value: number;
+            fixed_price_value: number | string;
             float_pricing_convention: components["schemas"]["FloatPricingConvention"];
             /**
              * Received At
@@ -3396,7 +3399,10 @@ export interface components {
         };
         /** RFQQuoteRead */
         RFQQuoteRead: {
-            /** Counterparty Id */
+            /**
+             * Counterparty Id
+             * Format: uuid
+             */
             counterparty_id: string;
             /**
              * Created At
@@ -3406,7 +3412,7 @@ export interface components {
             /** Fixed Price Unit */
             fixed_price_unit: string;
             /** Fixed Price Value */
-            fixed_price_value: number;
+            fixed_price_value: string;
             float_pricing_convention: components["schemas"]["FloatPricingConvention"];
             /**
              * Id
@@ -3429,13 +3435,13 @@ export interface components {
             /** Buy Trade Id */
             buy_trade_id: string | null;
             /** Commercial Active Mt */
-            commercial_active_mt: number;
+            commercial_active_mt: string;
             /** Commercial Net Mt */
-            commercial_net_mt: number;
+            commercial_net_mt: string;
             /** Commercial Passive Mt */
-            commercial_passive_mt: number;
+            commercial_passive_mt: string;
             /** Commercial Reduction Applied Mt */
-            commercial_reduction_applied_mt: number;
+            commercial_reduction_applied_mt: string;
             /** Commodity */
             commodity: string;
             /**
@@ -3472,7 +3478,7 @@ export interface components {
             /** Order Id */
             order_id: string | null;
             /** Quantity Mt */
-            quantity_mt: number;
+            quantity_mt: string;
             /** Rfq Number */
             rfq_number: string;
             /** Sell Trade Id */
@@ -3853,13 +3859,16 @@ export interface components {
         /** SpreadRankingEntry */
         SpreadRankingEntry: {
             buy_quote: components["schemas"]["RFQQuoteRead"];
-            /** Counterparty Id */
+            /**
+             * Counterparty Id
+             * Format: uuid
+             */
             counterparty_id: string;
             /** Rank */
             rank: number;
             sell_quote: components["schemas"]["RFQQuoteRead"];
             /** Spread Value */
-            spread_value: number;
+            spread_value: string;
         };
         /**
          * SpreadRankingFailureCode

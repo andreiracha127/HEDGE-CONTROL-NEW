@@ -5,7 +5,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { wsStore } from '$lib/stores/ws.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, stateLabel, stateColor, intentLabel, directionLabel, directionColor } from '$lib/utils/format';
+	import { formatQuantityMT, formatDate, stateLabel, stateColor, intentLabel, directionLabel, directionColor } from '$lib/utils/format';
 	import type { Rfq } from '$lib/api/types/entities';
 
 	// ─── State ──────────────────────────────────────────────────────────
@@ -188,7 +188,7 @@
 						<td class="px-3 py-2 font-medium {directionColor(rfq.direction)}">
 							{directionLabel(rfq.direction)}
 						</td>
-						<td class="px-3 py-2 text-surface-300 tabular-nums">{rfq.quantity_mt?.toLocaleString('pt-BR')}</td>
+						<td class="px-3 py-2 text-surface-300 tabular-nums">{formatQuantityMT(rfq.quantity_mt)}</td>
 						<td class="px-3 py-2 text-surface-400 text-xs">{intentLabel(rfq.intent)}</td>
 						<td class="px-3 py-2 text-surface-400 text-center">{rfq.invitations?.length ?? 0}</td>
 						<td class="px-3 py-2 text-center">

@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, formatNumber } from '$lib/utils/format';
+	import { formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import type { Contract } from '$lib/api/types/entities';
 
@@ -74,8 +74,8 @@
 					>
 						<td class="px-3 py-2 font-mono text-xs text-surface-400">{contract.reference}</td>
 						<td class="px-3 py-2 text-surface-300">{contract.commodity}</td>
-						<td class="px-3 py-2 tabular-nums text-surface-300">{formatNumber(contract.quantity_mt)}</td>
-						<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(contract.fixed_price_value)} {contract.fixed_price_unit ?? ''}</td>
+						<td class="px-3 py-2 tabular-nums text-surface-300">{formatQuantityMT(contract.quantity_mt)}</td>
+						<td class="px-3 py-2 tabular-nums text-surface-200">{formatPrice(contract.fixed_price_value, contract.fixed_price_unit ?? undefined)}</td>
 						<td class="px-3 py-2 text-surface-400">{contract.counterparty_name ?? contract.counterparty_id ?? '—'}</td>
 						<td class="px-3 py-2">
 							<span class="rounded px-1.5 py-0.5 text-xs {contract.status === 'active' ? 'bg-success/20 text-success' : contract.status === 'settled' ? 'bg-surface-700 text-surface-400' : 'bg-danger/20 text-danger'}">

@@ -142,12 +142,13 @@ class TestRFQInvitationMaxLength:
 
 
 class TestRFQQuoteMaxLength:
-    def test_counterparty_id_too_long(self):
-        with pytest.raises(ValidationError, match=_ERR):
+    def test_counterparty_id_must_be_uuid(self):
+        # Phase A2 PR-1: counterparty_id is a UUID FK, no longer a free-form string.
+        with pytest.raises(ValidationError, match="uuid"):
             RFQQuoteCreate(
                 rfq_id=_UID,
-                counterparty_id=_too_long(100),
-                fixed_price_value=100.0,
+                counterparty_id="not-a-uuid",
+                fixed_price_value="100.000000",
                 fixed_price_unit="USD/MT",
                 float_pricing_convention=FloatPricingConvention.avg,
                 received_at=_NOW,

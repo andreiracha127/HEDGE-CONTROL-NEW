@@ -156,7 +156,7 @@ def test_commercial_hedge_uses_canonical_snapshot_for_order_alias(client) -> Non
     )
 
     assert response.status_code == 201
-    assert response.json()["commercial_active_mt"] == 10.0
+    assert response.json()["commercial_active_mt"] == "10.000"
 
 
 def test_global_rfq_uses_canonical_snapshot_for_payload_alias(client) -> None:
@@ -177,7 +177,7 @@ def test_global_rfq_uses_canonical_snapshot_for_payload_alias(client) -> None:
     )
 
     assert response.status_code == 201
-    assert response.json()["commercial_active_mt"] == 10.0
+    assert response.json()["commercial_active_mt"] == "10.000"
 
 
 def test_rfq_number_is_deterministic_and_server_generated(client) -> None:
@@ -244,6 +244,53 @@ def test_rfq_state_transitions_valid(client) -> None:
     )
     assert response.status_code == 201
     assert response.json()["state"] == "CREATED"
+
+
+def test_rfq_residual_exposure_check_at_exact_boundary(client) -> None:
+    """Boundary: ``quantity_mt == residual_side`` must NOT off-by-epsilon.
+
+    Decimal equality at the boundary should accept; only strictly above
+    residual should hard-fail. Pre-PR-1 the comparison ran in float64 which
+    could spuriously reject at the boundary depending on representation.
+    """
+    order_id = _create_sales_order(client, "10.000", commodity="LME_AL")
+    contract_id = _create_hedge_contract(client, "4.000")
+    _create_linkage(client, order_id, contract_id, "4.000")
+
+    # Residual on sales side = post_active = 10 - 4 = 6 (after linkage applied).
+    # Exact boundary RFQ qty == residual → must succeed.
+    response = _create_rfq(
+        client,
+        {
+            "intent": "COMMERCIAL_HEDGE",
+            "commodity": "LME_AL",
+            "quantity_mt": "6.000",
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "SELL",
+            "order_id": order_id,
+            "invitations": [],
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
+def test_rfq_creation_accepts_string_decimal_quantity(client) -> None:
+    response = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": "1.234",
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [],
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["quantity_mt"] == "1.234"
 
 
 def test_rfq_creation_does_not_change_exposure(client) -> None:

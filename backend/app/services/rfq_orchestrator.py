@@ -19,8 +19,10 @@ It does NOT replace the RFQ Service — it delegates to it.
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy import func, distinct, or_
 
@@ -431,23 +433,25 @@ class RFQOrchestrator:
 
         # ── Guard 3: price-in-text validation ──
         if LLMAgent.should_auto_create_quote(parsed):
-            price_val = float(
+            price_decimal = (
                 parsed.fixed_price_value
                 if parsed.fixed_price_value is not None
-                else (parsed.premium_discount or 0)
+                else (parsed.premium_discount or Decimal("0"))
             )
-            if not RFQOrchestrator._price_appears_in_text(price_val, msg.text):
+            if not RFQOrchestrator._price_appears_in_text(
+                float(price_decimal), msg.text
+            ):
                 logger.warning(
                     "orchestrator_hallucinated_price_blocked",
                     rfq_id=str(rfq.id),
-                    hallucinated_price=price_val,
+                    hallucinated_price=float(price_decimal),
                     raw_text=msg.text[:200],
                 )
                 return {
                     "message_id": msg.message_id,
                     "status": "hallucinated_price_blocked",
                     "rfq_id": str(rfq.id),
-                    "hallucinated_price": price_val,
+                    "hallucinated_price": float(price_decimal),
                     "text": msg.text,
                 }
 
@@ -456,8 +460,8 @@ class RFQOrchestrator:
                 session.query(RFQQuote)
                 .filter(
                     RFQQuote.rfq_id == rfq.id,
-                    RFQQuote.counterparty_id == str(invitation.counterparty_id),
-                    RFQQuote.fixed_price_value == price_val,
+                    RFQQuote.counterparty_id == invitation.counterparty_id,
+                    RFQQuote.fixed_price_value == price_decimal,
                 )
                 .first()
             )
@@ -466,7 +470,7 @@ class RFQOrchestrator:
                     "orchestrator_duplicate_quote_skipped",
                     rfq_id=str(rfq.id),
                     counterparty=str(invitation.counterparty_id),
-                    price=price_val,
+                    price=float(price_decimal),
                     existing_quote_id=str(existing_quote.id),
                 )
                 return {
@@ -538,14 +542,37 @@ class RFQOrchestrator:
         if price_value is None and parsed.premium_discount is not None:
             price_value = parsed.premium_discount
 
-        quote_payload = RFQQuoteCreate(
-            rfq_id=rfq.id,
-            counterparty_id=str(invitation.counterparty_id),
-            fixed_price_value=float(price_value or 0),
-            fixed_price_unit=parsed.fixed_price_unit or "USD/MT",
-            float_pricing_convention=float_conv,
-            received_at=msg.timestamp,
-        )
+        # PR-1: pass-through Decimal preserves precision; the "or 0" default
+        # is intentionally retained here. PR-6 (J-A2-OPUS-03) will replace it
+        # with a hard-fail when the LLM omits a price.
+        # Codex P2 (post-rebase): wrap the schema constructor in
+        # try/ValidationError so an LLM parse with >PRICE_NUMERIC_SCALE
+        # fractional digits (or any other Pydantic constraint failure)
+        # routes to a structured skip status instead of an unhandled raise.
+        try:
+            quote_payload = RFQQuoteCreate(
+                rfq_id=rfq.id,
+                counterparty_id=invitation.counterparty_id,
+                fixed_price_value=(
+                    Decimal(str(price_value)) if price_value is not None else Decimal("0")
+                ),
+                fixed_price_unit=parsed.fixed_price_unit or "USD/MT",
+                float_pricing_convention=float_conv,
+                received_at=msg.timestamp,
+            )
+        except ValidationError as exc:
+            logger.warning(
+                "orchestrator_auto_quote_skipped_invalid_payload",
+                rfq_id=str(rfq.id),
+                error=str(exc),
+                price_value=str(price_value),
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "auto_quote_skipped_invalid_payload",
+                "rfq_id": str(rfq.id),
+                "error": str(exc),
+            }
 
         try:
             quote = RFQService.submit_quote(session, rfq.id, quote_payload)

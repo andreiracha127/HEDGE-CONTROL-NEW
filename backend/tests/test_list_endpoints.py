@@ -225,14 +225,15 @@ class TestListRFQQuotes:
         create_resp = _create_rfq(client, with_invitation=True)
         assert create_resp.status_code == 201, create_resp.json()
         rfq_id = create_resp.json()["id"]
+        cp_id = create_resp.json()["invitations"][0]["counterparty_id"]
 
         # Submit a quote
         quote_resp = client.post(
             f"/rfqs/{rfq_id}/quotes",
             json={
                 "rfq_id": rfq_id,
-                "counterparty_id": "bank-001",
-                "fixed_price_value": 2550.0,
+                "counterparty_id": cp_id,
+                "fixed_price_value": "2550.000000",
                 "fixed_price_unit": "USD/MT",
                 "float_pricing_convention": "avg",
                 "received_at": "2025-01-15T10:00:00Z",

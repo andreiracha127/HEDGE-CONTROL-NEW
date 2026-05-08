@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas._types import MTQuantity, Price, Spread
+
 
 class RFQIntent(str, Enum):
     commercial_hedge = "COMMERCIAL_HEDGE"
@@ -61,7 +63,9 @@ class RFQInvitationRead(BaseModel):
 class RFQCreate(BaseModel):
     intent: RFQIntent
     commodity: str = Field(..., max_length=50)
-    quantity_mt: float = Field(..., description="Quantity in metric tons (MT)")
+    quantity_mt: MTQuantity = Field(  # type: ignore[assignment]
+        ..., description="Quantity in metric tons (MT)"
+    )
     delivery_window_start: date
     delivery_window_end: date
     direction: RFQDirection
@@ -107,8 +111,8 @@ class FloatPricingConvention(str, Enum):
 
 class RFQQuoteCreate(BaseModel):
     rfq_id: UUID
-    counterparty_id: str = Field(..., max_length=100)
-    fixed_price_value: float
+    counterparty_id: UUID
+    fixed_price_value: Price
     fixed_price_unit: str = Field(..., max_length=32)
     float_pricing_convention: FloatPricingConvention
     received_at: datetime
@@ -119,8 +123,8 @@ class RFQQuoteRead(BaseModel):
 
     id: UUID
     rfq_id: UUID
-    counterparty_id: str = Field(..., max_length=100)
-    fixed_price_value: float
+    counterparty_id: UUID
+    fixed_price_value: Price
     fixed_price_unit: str = Field(..., max_length=32)
     float_pricing_convention: FloatPricingConvention
     received_at: datetime
@@ -136,8 +140,8 @@ class SpreadRankingFailureCode(str, Enum):
 
 class SpreadRankingEntry(BaseModel):
     rank: int
-    counterparty_id: str = Field(..., max_length=100)
-    spread_value: float
+    counterparty_id: UUID
+    spread_value: Spread
     buy_quote: RFQQuoteRead
     sell_quote: RFQQuoteRead
 
@@ -217,17 +221,17 @@ class RFQRead(BaseModel):
     rfq_number: str = Field(..., max_length=32)
     intent: RFQIntent
     commodity: str = Field(..., max_length=50)
-    quantity_mt: float
+    quantity_mt: MTQuantity
     delivery_window_start: date
     delivery_window_end: date
     direction: RFQDirection
     order_id: UUID | None
     buy_trade_id: UUID | None
     sell_trade_id: UUID | None
-    commercial_active_mt: float
-    commercial_passive_mt: float
-    commercial_net_mt: float
-    commercial_reduction_applied_mt: float
+    commercial_active_mt: MTQuantity
+    commercial_passive_mt: MTQuantity
+    commercial_net_mt: MTQuantity
+    commercial_reduction_applied_mt: MTQuantity
     exposure_snapshot_timestamp: datetime
     state: RFQState
     created_at: datetime
@@ -295,7 +299,7 @@ class RFQOrderTypeEnum(str, Enum):
 class RFQLegInput(BaseModel):
     side: RFQSideEnum
     price_type: RFQPriceTypeEnum
-    quantity_mt: float = Field(..., gt=0)
+    quantity_mt: MTQuantity = Field(..., gt=0)  # type: ignore[assignment]
 
     # AVG
     month_name: str | None = Field(None, max_length=20)
