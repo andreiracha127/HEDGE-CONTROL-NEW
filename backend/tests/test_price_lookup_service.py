@@ -101,6 +101,18 @@ def test_lookup_at_start_of_year_uses_prior_business_day_in_adjacent_covered_yea
         assert quote.value == Decimal("444.0")
 
 
+def test_lookup_after_2026_uses_prior_business_day_in_extended_lme_calendar() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2026, 12, 31), price_usd=555.0)
+
+    with SessionLocal() as session:
+        quote = get_cash_settlement_price_d1_with_provenance(
+            session, symbol=symbol, as_of_date=date(2027, 1, 4)
+        )
+        assert quote.settlement_date == date(2026, 12, 31)
+        assert quote.value == Decimal("555.0")
+
+
 def test_missing_prior_business_day_raises_even_when_older_business_day_exists() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
     _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=333.0)
@@ -150,12 +162,13 @@ def test_canonical_source_for_symbol_raises_for_unknown_symbol() -> None:
 def test_market_calendar_is_in_repo_year_keyed_not_holidays_dependency() -> None:
     assert isinstance(_LME_HOLIDAYS_BY_YEAR, dict)
     assert 2026 in _LME_HOLIDAYS_BY_YEAR
+    assert set(range(2025, 2036)).issubset(_LME_HOLIDAYS_BY_YEAR)
     assert all(isinstance(holidays, frozenset) for holidays in _LME_HOLIDAYS_BY_YEAR.values())
 
 
 def test_market_calendar_fails_closed_on_year_outside_coverage() -> None:
     with pytest.raises(PriceReferenceUnprovable) as exc:
-        _market_calendar_for_symbol("LME_ALU_CASH_SETTLEMENT_DAILY", 2027)
+        _market_calendar_for_symbol("LME_ALU_CASH_SETTLEMENT_DAILY", 2036)
     assert "covered years" in str(exc.value)
 
 
@@ -166,4 +179,4 @@ def test_prior_business_day_fails_closed_when_walk_crosses_into_uncovered_year()
         return frozenset()
 
     with pytest.raises(PriceReferenceUnprovable):
-        _prior_business_day(date(2027, 1, 4), calendar_for_year)
+        _prior_business_day(date(2036, 1, 2), calendar_for_year)
