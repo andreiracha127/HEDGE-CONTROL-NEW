@@ -11,6 +11,14 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex P1 absorbed against commit `2df6bcb23`:**
+
+1. **Derive ledger entries PER LEG, not twice from net (P1, doubling).** Round-5 §3.7 sketch derived `gross = qty × (settlement − fixed)` and applied it once. Codex caught: `HedgeContractSettlementCreate` validates exactly 2 legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Round-5's formula, applied to BOTH legs, persists two IN rows with the SAME net amount; `compute_pl` adds both → realized_pl is DOUBLED (qty=10/fixed=100/settlement=110 yields `+200` instead of correct `+100`). **Fix:** §3.7 fully redesigned with per-leg derivation. FIXED leg: `amount = qty × contract.fixed_price_value`; provenance NULL (no lookup). FLOAT leg: `amount = qty × settlement_quote.value`; provenance quadruple populated. Direction per leg from `contract.fixed_leg_side` (buy → FIXED OUT, FLOAT IN; sell → opposite). Per-leg payload-vs-derived verification with two distinct 422 paths (direction + amount). §6 gains four matching acceptance criteria + the long/short net P&L verification. §7 adds five tests including `test_settlement_compute_pl_realized_long_side` regressing the doubling bug. §10 new DO NOT codifies "do NOT derive both legs from a single net formula".
+
+2. **Persist baseline `price_value` with row provenance (P1, parity with ledger).** Round-4's §3.4 expansion added three provenance fields to `CashFlowItem` (source, symbol, settlement_date) but NOT `price_value`. Codex caught: a canonical `cash_settlement_prices` row corrected in-place under the same `(source, symbol, date)` key cannot be detected as drift in baseline (the JSON shape and hash inputs both miss the value). Round-7 already added `price_value` to ledger rows for exactly this scenario; baseline must reach parity. **Fix:** `CashFlowItem` extended to FOUR optional provenance fields (full quadruple). `compute_cashflow_analytic` populates all four directly from `PriceQuote`. Snapshot JSON shape gains `price_value`. §6 acceptance updated to "FOUR fields"; §7 adds `test_cashflow_baseline_inputs_hash_drifts_when_canonical_price_corrected_in_place` regression.
+
+**Self-blame (round 7 catch 2)**: same disciplinary class as the comparator-sweep-miss pattern. Round 5 added `price_value` to ledger rows; the parallel baseline path (§3.4) was NOT updated. Round-by-round propagation discipline must include: **when a quadruple is established as the canonical provenance shape on ONE persistence surface (ledger), every parallel persistence surface (baseline rows, future cashflow projection rows, future MTM-snapshot extensions) must immediately mirror it — institutional symmetry across persistence layers.**
+
 **Codex P1 absorbed against commit `0f82d24ca` — `price_value` in idempotency.** Round-5 added `price_value` to the ledger entry schema (full quadruple per row) AND to `_build_expected_entry`'s constructed dict, but the `_ledger_entry_matches` equality sketch still compared only `source/symbol/date`. Codex caught: when a canonical settlement row is corrected in-place (same `(source, symbol, settlement_date)` but a new `value` — e.g., westmetall republishes with a corrected price), re-ingest of the same `source_event_id` would silently no-op because the comparator missed the divergent `value`. Realized P&L evidence stays tied to the OLD value; the snapshot becomes ambiguous. **Fix:** `_ledger_entry_matches` extended to include `_normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])`. §6 acceptance enumerates all four provenance fields explicitly and adds the in-place-correction scenario as a criterion. §7 adds `test_ledger_entry_matches_detects_price_value_only_divergence`.
 
 **Self-blame:** this is the SAME 4-offense cross-section sweep miss pattern from PR-5 cycle, now hitting PR-A3-1 round 6. Round-5 expanded the schema (added `price_value` column) and the dict construction (`_build_expected_entry`'s returned dict) but did NOT update the comparator. Mechanically identical to round-3's "missing `price_symbol` in `_ledger_entry_matches` after schema added it". Two consecutive sweep misses on the SAME function `_ledger_entry_matches` proves the discipline must include: **every time a column is added to a model that has an idempotency / equality / conflict comparator function, the comparator MUST be edited in the same commit. Comparators are not optional cross-section targets — they are load-bearing institutional defense against silent-drift no-ops.**
@@ -253,7 +261,7 @@ inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True
 
 **Per-row provenance flow** (per Codex P1 absorbed in §0 round 4): the only existing path that builds the rows persisted into `CashFlowBaselineSnapshot.snapshot_data` is `compute_cashflow_analytic` returning `CashFlowAnalyticResponse[items: list[CashFlowItem]]`. The current `CashFlowItem` schema at `backend/app/schemas/cashflow.py:33-38` carries only `(object_type, object_id, settlement_date, amount_usd, mtm_value)` — **no price provenance**. Without extending this schema AND populating it from `compute_cashflow_analytic`, baseline `snapshot_data` rows cannot carry provenance and the J-A3-OPUS-05 finding remains open. PR-A3-1's scope therefore **expands narrowly** to include:
 
-1. **Extend `CashFlowItem` schema** with three optional provenance fields:
+1. **Extend `CashFlowItem` schema** with FOUR optional provenance fields (full quadruple — per Codex P1 absorbed in §0 round 7, parity with the ledger row's quadruple is required so the same in-place-correction scenario surfaces in baseline as it does in the ledger):
    ```python
    class CashFlowItem(BaseModel):
        object_type: str = Field(..., max_length=64)
@@ -263,12 +271,15 @@ inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True
        mtm_value: Decimal
        # PR-A3-1: per-row price provenance (optional — items derived from
        # sources that do not consult price_lookup leave these as None,
-       # which is honest absent-data, not silent fallback).
+       # which is honest absent-data, not silent fallback). Full quadruple
+       # mirrors the ledger row shape so a canonical-price in-place
+       # correction surfaces as snapshot drift on inputs_hash recompute.
        price_source: str | None = None
        price_symbol: str | None = None
        price_settlement_date: date | None = None
+       price_value: Decimal | None = None
    ```
-2. **Extend `compute_cashflow_analytic`** so every item that consumes a `_with_provenance` lookup (per §3.1 migration) populates the three provenance fields on the corresponding `CashFlowItem`.
+2. **Extend `compute_cashflow_analytic`** so every item that consumes a `_with_provenance` lookup (per §3.1 migration) populates ALL FOUR provenance fields (`price_source`, `price_symbol`, `price_settlement_date`, `price_value`) on the corresponding `CashFlowItem` directly from the returned `PriceQuote`.
 3. **Update `cashflow_baseline_service` snapshot persistence**: serialize via `response.model_dump(mode="json")` so every item's `price_*` fields land as ISO-string / regular fields in `snapshot_data`. Compute `inputs_hash` over the SAME `mode="json"` shape (per round-3 P1).
 
 This is **scope-local** to provenance plumbing inside `cashflow_analytic_service.py`. Wave 3 (cashflow projection hardening — OPUS-02/06/07) and Wave 4 (Baseline-reads-Analytic boundary fix — J-A3-04) remain out of scope; §10 codifies the boundary explicitly.
@@ -284,7 +295,8 @@ The resulting `snapshot_data` row shape (post-PR-A3-1):
     "mtm_value": "550.00",
     "price_source": "westmetall",
     "price_symbol": "LME_AL",
-    "price_settlement_date": "2026-05-08"
+    "price_settlement_date": "2026-05-08",
+    "price_value": "2585.50"
 }
 ```
 
@@ -402,28 +414,89 @@ def _build_expected_entry(
         symbol=resolve_symbol(contract.commodity),
         as_of_date=payload.cashflow_date,
     )
-    quantity = _leg_quantity(contract, leg.leg_id)  # canonical helper
-    fixed_price = contract.fixed_price_value
-    # `compute_pl` (pl_calculation_service.py:16-83) reads CashFlowLedgerEntry
-    # rows and applies the SIGN from `direction`: IN adds to realized_pl,
-    # OUT subtracts. The existing convention is therefore "amount is the
-    # NON-NEGATIVE MAGNITUDE; direction carries the sign." Copying a
-    # signed `amount` here would flip realized P&L for OUT legs with
-    # positive `(settlement - fixed)` gross — institutional P1.
+    # ── Settlement legs are PER-LEG, not net (per Codex P1 absorbed in §0
+    # round 7). HedgeContractSettlementCreate validates exactly 2 legs
+    # {FIXED, FLOAT}; _build_expected_entry is invoked ONCE PER LEG. Each
+    # leg's amount is derived independently from its own price source:
+    #   FIXED leg: amount = quantity × contract.fixed_price_value
+    #              (no market lookup — provenance fields stay NULL)
+    #   FLOAT leg: amount = quantity × settlement_quote.value
+    #              (lookup made — provenance quadruple populated)
     #
-    # LedgerDirection enum at schemas/cashflow.py:68-70 has members `in_`
-    # ("IN" — credit / money received) and `out` ("OUT" — debit / money
-    # paid). There is NO `.credit` / `.debit` member.
+    # Direction derives from contract.fixed_leg_side (HedgeLegSide.buy or
+    # .sell at models/contracts.py:138-141):
+    #   fixed_leg_side == buy  → FIXED is OUT (customer pays fixed),
+    #                            FLOAT is IN  (customer receives float)
+    #   fixed_leg_side == sell → FIXED is IN  (customer receives fixed),
+    #                            FLOAT is OUT (customer pays float)
     #
-    # Derive economic direction server-side from the gross sign, then
-    # persist the ABSOLUTE magnitude:
-    gross = quantity * (settlement_quote.value - fixed_price)
-    if gross >= 0:
-        derived_direction = LedgerDirection.in_
-        derived_amount = gross
+    # `compute_pl` (pl_calculation_service.py:16-83) iterates both rows
+    # and applies sign by direction:
+    #   realized_pl = (FIXED with sign) + (FLOAT with sign)
+    # For fixed_leg_side=buy: realized = -qty*fixed + qty*settlement
+    #                                  = qty*(settlement - fixed)  [long P&L]
+    # For fixed_leg_side=sell: realized = +qty*fixed - qty*settlement
+    #                                   = qty*(fixed - settlement) [short P&L]
+    #
+    # The institutional convention is therefore "amount is NON-NEGATIVE
+    # MAGNITUDE; direction carries the sign." Copying a single net
+    # formula across both legs (the round-4 sketch) would have produced
+    # `realized = 2 × net` (catastrophic doubling).
+    quantity = contract.quantity_mt
+    if contract.fixed_price_value is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Cannot derive settlement: contract {contract.id} has no fixed_price_value",
+        )
+
+    if leg.leg_id == LedgerLegId.fixed:
+        derived_amount = quantity * contract.fixed_price_value
+        derived_direction = (
+            LedgerDirection.out if contract.fixed_leg_side == HedgeLegSide.buy
+            else LedgerDirection.in_
+        )
+        # FIXED leg has NO price lookup — provenance fields stay NULL
+        # (admissible per the all-or-four-NULL CHECK constraint).
+        provenance = {
+            "price_source": None,
+            "price_symbol": None,
+            "price_settlement_date": None,
+            "price_value": None,
+        }
+    elif leg.leg_id == LedgerLegId.float:
+        derived_amount = quantity * settlement_quote.value
+        derived_direction = (
+            LedgerDirection.in_ if contract.fixed_leg_side == HedgeLegSide.buy
+            else LedgerDirection.out
+        )
+        # FLOAT leg consumed _with_provenance — full quadruple populated.
+        provenance = {
+            "price_source": settlement_quote.source,
+            "price_symbol": settlement_quote.symbol,
+            "price_settlement_date": settlement_quote.settlement_date,
+            "price_value": settlement_quote.value,
+        }
     else:
-        derived_direction = LedgerDirection.out
-        derived_amount = -gross  # absolute magnitude
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            f"Unexpected leg_id {leg.leg_id} after payload validation",
+        )
+
+    # Verify operator-supplied direction+amount match server-derived; 422 on
+    # mismatch (same fail-closed shape as `_validate_currency`).
+    if leg.direction != derived_direction:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Leg {leg.leg_id.value} direction mismatch: "
+            f"derived={derived_direction.value}, payload={leg.direction.value}",
+        )
+    if leg.amount != derived_amount:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Leg {leg.leg_id.value} amount mismatch: "
+            f"derived={derived_amount}, payload={leg.amount}",
+        )
+
     return {
         "hedge_contract_id": contract.id,
         "source_event_type": SOURCE_EVENT_TYPE,
@@ -433,14 +506,15 @@ def _build_expected_entry(
         "currency": "USD",
         "direction": derived_direction.value,
         "amount": derived_amount,  # always non-negative
-        "price_source": settlement_quote.source,
-        "price_symbol": settlement_quote.symbol,
-        "price_settlement_date": settlement_quote.settlement_date,
-        "price_value": settlement_quote.value,  # see §3.7 four-field provenance
+        **provenance,  # FIXED → all NULL; FLOAT → full quadruple
     }
 ```
 
-**Direction verification against payload**: if the operator-supplied `payload.legs[*].direction` differs from the derived direction, that is a mismatch — raise `HTTPException(422, "Settlement direction does not match derived sign")`. Same shape as the existing `_validate_currency`. This preserves operator intent verification while making the server's economic derivation authoritative.
+**Provenance shape per leg** (per Codex P1 absorbed in §0 round 7):
+- **FIXED leg**: `(price_source, price_symbol, price_settlement_date, price_value)` are ALL NULL — the fixed leg's economics come from `contract.fixed_price_value` (contract attribute, not a market lookup). The all-four-or-none CHECK constraint is satisfied with all NULL.
+- **FLOAT leg**: full quadruple populated from `settlement_quote`.
+
+`compute_pl` (per §3.3 step 2) iterates ledger entries for the period; for entries where `price_source IS NOT NULL` (FLOAT legs), construct a `PriceReferenceEntry` and append. FIXED legs contribute amount but no provenance entry — that is honest representation, since FIXED amounts have no market-data dependency.
 
 **Add `price_value` column to ledger entries** (per Codex P1 absorbed in §0 round 5 — P&L references must include ledger-row provenance for settled periods). With only `(price_source, price_symbol, price_settlement_date)` on the ledger row, `compute_pl` reading ledger entries can construct partial `PriceReferenceEntry` records but cannot populate `value` without a re-lookup. Adding `price_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)` makes the ledger row self-contained provenance evidence — full quadruple `(value, source, symbol, settlement_date)` per row, queryable without a join back to the canonical price table. CHECK constraint becomes all-four-or-none.
 
@@ -631,8 +705,13 @@ def downgrade() -> None:
 - [ ] `PLSnapshot.price_references` (JSON/JSONB) + `inputs_hash` columns exist with all-or-none CHECK.
 - [ ] `CashFlowBaselineSnapshot.inputs_hash` column exists.
 - [ ] `cashflow_ledger_entries.price_source` + `price_symbol` + `price_settlement_date` + `price_value` columns exist with all-or-none CHECK across all four.
-- [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `direction` server-side from the gross sign (gross >= 0 → IN; gross < 0 → OUT); persists `amount` as the ABSOLUTE magnitude (non-negative); `compute_pl`'s existing IN/OUT sign-application reads correctly.
-- [ ] If `payload.legs[*].direction` differs from the derived direction, `ingest_hedge_contract_settlement` raises `HTTPException(422, "Settlement direction does not match derived sign")`.
+- [ ] `cashflow_ledger_service._build_expected_entry` derives EACH LEG independently:
+    - FIXED leg: amount = `quantity × contract.fixed_price_value`; provenance fields all NULL (no lookup made).
+    - FLOAT leg: amount = `quantity × settlement_quote.value`; provenance quadruple populated from the lookup.
+    - Direction per leg derived from `contract.fixed_leg_side` (buy → FIXED is OUT, FLOAT is IN; sell → FIXED is IN, FLOAT is OUT).
+- [ ] `compute_pl` reading both ledger rows produces the correct net: `qty × (settlement − fixed)` for `fixed_leg_side=buy`; `qty × (fixed − settlement)` for `fixed_leg_side=sell`. Verified end-to-end in tests with both sides.
+- [ ] All `amount` values persisted on `cashflow_ledger_entries` are NON-NEGATIVE (institutional magnitude convention). `compute_pl`'s direction-driven sign application reads correctly.
+- [ ] Per-leg derivation mismatch (`leg.direction != derived_direction` OR `leg.amount != derived_amount`) raises `HTTPException(422, "Leg <fixed|float> <direction|amount> mismatch: ...")`.
 - [ ] `compute_pl` reads ledger-row provenance (post-§3.7) into `PriceReferenceEntry` records and appends them to `result.price_references` for the realized path; the unrealized lookup's quote is appended last; duplicates are deduped on `(symbol, source, settlement_date, value)`.
 - [ ] A settled-period P&L snapshot has at least one `PriceReferenceEntry` per ledger entry consumed in `realized_pl` (no settled period emits an empty `price_references` list).
 - [ ] `cash_settlement_prices.price_usd` is `Numeric(18, 6)` post-migration on Postgres; SQLite `create_all` produces the new shape.
@@ -642,8 +721,8 @@ def downgrade() -> None:
 - [ ] `pl_calculation_service.compute_pl` populates `result.price_references` with every `PriceQuote` consumed during the period (one entry per distinct `(symbol, source, settlement_date)`).
 - [ ] `pl_snapshot_service.create_pl_snapshot` reads `result.price_references`, persists as JSON on `PLSnapshot.price_references` using `entry.model_dump(mode="json")` for each entry, computes `inputs_hash` over the SAME `mode="json"` shape, and persists both on the row. Hash is reproducible by re-running the same compute against the same inputs (no `mode` mismatch between persistence and hash).
 - [ ] `pl_snapshot_service.create_pl_snapshot` idempotency / conflict logic compares `price_references` and `inputs_hash` on the existing row; divergence raises `HTTPException(409, ...)` matching the existing conflict shape — NOT a silent no-op return of the legacy row.
-- [ ] `CashFlowItem` schema (`backend/app/schemas/cashflow.py:33-38`) carries three new optional fields: `price_source`, `price_symbol`, `price_settlement_date`.
-- [ ] `compute_cashflow_analytic` populates those three fields on every item whose value derives from a `_with_provenance` price lookup; items derived from non-lookup sources leave them None.
+- [ ] `CashFlowItem` schema (`backend/app/schemas/cashflow.py:33-38`) carries FOUR new optional fields: `price_source`, `price_symbol`, `price_settlement_date`, `price_value`.
+- [ ] `compute_cashflow_analytic` populates ALL FOUR fields on every item whose value derives from a `_with_provenance` price lookup (directly from the returned `PriceQuote`); items derived from non-lookup sources leave them None.
 - [ ] `cashflow_baseline_service` serializes the analytic response via `response.model_dump(mode="json")` so each item's `price_*` fields land in `snapshot_data`; the hash is computed over the SAME `mode="json"` shape.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
@@ -687,8 +766,9 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
 
 - `backend/tests/test_cashflow_baseline_service.py`:
   - `test_cashflow_baseline_inputs_hash_is_deterministic`
-  - `test_cashflow_baseline_per_row_provenance_inside_snapshot_data` — fixture has Analytic emit a `CashFlowItem` with `price_source="westmetall"`, `price_symbol="LME_AL"`, `price_settlement_date=<...>`; assert the persisted `snapshot_data` row carries those three fields as ISO/regular strings (mode="json")
-  - `test_cashflow_baseline_items_without_price_lookup_have_null_provenance` — fixture has Analytic emit a fixed-cashflow item that never consulted `_with_provenance`; assert provenance fields are None in `snapshot_data` (honest absent-data, not silent fallback)
+  - `test_cashflow_baseline_per_row_provenance_quadruple_inside_snapshot_data` — fixture has Analytic emit a `CashFlowItem` with all four provenance fields populated; assert persisted `snapshot_data` row carries the full quadruple as ISO/string-decimal (mode="json").
+  - `test_cashflow_baseline_inputs_hash_drifts_when_canonical_price_corrected_in_place` — fixture: persist baseline snapshot with `price_value="2585.50"`; in-place-correct the canonical settlement row to `2590.00` and recompute `compute_cashflow_analytic`; assert recomputed `inputs_hash` differs from persisted (snapshot drift surfaces — same shape as the ledger `_ledger_entry_matches` round-7 invariant).
+  - `test_cashflow_baseline_items_without_price_lookup_have_null_provenance` — fixture has Analytic emit a fixed-cashflow item that never consulted `_with_provenance`; assert all four provenance fields are None in `snapshot_data` (honest absent-data, not silent fallback)
 
 - `backend/tests/test_cashflow_analytic_service.py`:
   - `test_compute_cashflow_analytic_populates_provenance_on_priced_items`
@@ -697,8 +777,12 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
 - `backend/tests/test_cashflow_ledger_service.py`:
   - `test_settlement_amount_derived_server_side_not_from_payload`
   - `test_settlement_payload_amount_mismatch_raises_422`
-  - `test_settlement_amount_is_non_negative_magnitude_with_direction_derived` — fixture: `gross < 0` produces `direction=OUT, amount=abs(gross)`; assert `amount >= 0` and `direction == "OUT"`. Second fixture: `gross >= 0` → `direction=IN, amount=gross`. Compute_pl on a downstream P&L period that consumes the OUT row gives a NEGATIVE realized contribution (existing convention).
-  - `test_settlement_payload_direction_mismatch_raises_422` — payload says `direction=IN` but derived gross is negative → `HTTPException(422, ...)`.
+  - `test_settlement_per_leg_derivation_fixed_leg_uses_contract_fixed_price` — fixture: `quantity=10, fixed_price=100`; FIXED leg amount = 1000; provenance NULL.
+  - `test_settlement_per_leg_derivation_float_leg_uses_settlement_quote` — fixture: `quantity=10, settlement_value=110`; FLOAT leg amount = 1100; provenance quadruple populated.
+  - `test_settlement_compute_pl_realized_long_side` — fixture `fixed_leg_side=buy`, `qty=10, fixed=100, settlement=110`; both legs persisted; `compute_pl` returns `realized_pl = +100` (long P&L: `qty*(settlement - fixed) = 10*10`). Regression for the round-4 doubling bug (`+100` not `+200`).
+  - `test_settlement_compute_pl_realized_short_side` — fixture `fixed_leg_side=sell`, `qty=10, fixed=100, settlement=110`; `compute_pl` returns `realized_pl = -100` (short P&L: `qty*(fixed - settlement) = 10*-10`).
+  - `test_settlement_payload_leg_direction_mismatch_raises_422` — payload's FIXED leg direction differs from `fixed_leg_side`-derived direction → 422.
+  - `test_settlement_payload_leg_amount_mismatch_raises_422` — payload's FLOAT leg amount differs from `qty × settlement_value` → 422.
   - `test_settlement_persists_price_source_and_symbol_and_settlement_date_and_value` — quadruple persistence
   - `test_settlement_partial_provenance_violates_check_constraint` — three of four populated, one NULL → `IntegrityError`
   - `test_ledger_entry_matches_includes_provenance_in_equality` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; second `ingest` with derived `(source=A, symbol=LME_CU, date=D, value=9300)` raises 409, NOT silent no-op
@@ -829,7 +913,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT use plain `entry.model_dump()` (Pydantic v2 default mode) when persisting `price_references` to JSON or constructing `inputs_hash`. ALWAYS `model_dump(mode="json")` so `date` becomes ISO string and `Decimal` becomes JSON-string-compatible. Plain mode keeps Python objects → SQLAlchemy serializer rejects on insert; mismatched modes between persistence and hash → non-replayable hash. The mode must match for hash+shape determinism (per Codex P1 absorbed in §0 round 3).
 - DO NOT use plain `op.create_check_constraint(...)` for new CHECK constraints in this migration. Wrap every `add_column` + `create_check_constraint` pair in `op.batch_alter_table(...)` so the SQLite roundtrip succeeds (per Codex P2 absorbed in §0 round 3). Postgres passthrough is transparent.
 - DO NOT reference `contract.commodity_symbol` in any service or migration code. `HedgeContract` exposes `commodity` (str) — pricing services resolve to a symbol via `resolve_symbol(contract.commodity)`. Copying `commodity_symbol` raises `AttributeError` at runtime (per Codex P2 absorbed in §0 round 3).
-- DO NOT persist `CashFlowLedgerEntry.amount` as a SIGNED value. The existing `compute_pl` (`pl_calculation_service.py:16-83`) applies the sign from `direction` (IN adds, OUT subtracts) when reading ledger entries. The institutional convention is: `amount` is the NON-NEGATIVE MAGNITUDE; `direction` carries the sign. Server-side derivation MUST: (a) compute gross = quantity × (settlement_price − fixed_price); (b) set `direction = LedgerDirection.in_` if gross ≥ 0 else `LedgerDirection.out`; (c) persist `amount = abs(gross)`. Storing a signed amount and copying the operator-supplied direction would flip the realized P&L contribution for OUT legs with positive gross — institutional P1 (per Codex P1 absorbed in §0 round 5).
+- DO NOT persist `CashFlowLedgerEntry.amount` as a SIGNED value. The existing `compute_pl` (`pl_calculation_service.py:16-83`) applies the sign from `direction` (IN adds, OUT subtracts) when reading ledger entries. The institutional convention is: `amount` is the NON-NEGATIVE MAGNITUDE; `direction` carries the sign (per Codex P1 absorbed in §0 round 5).
+- DO NOT derive both ledger legs from a single net formula `(settlement − fixed) × qty`. The settlement payload carries TWO legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Each leg's amount derives independently: FIXED uses `contract.fixed_price_value`, FLOAT uses `settlement_quote.value`; direction per leg comes from `contract.fixed_leg_side`. Copying one net formula across both legs produces `compute_pl` doubling — qty=10/fixed=100/settlement=110 yields `+200` instead of `+100`. Institutional P1 (per Codex P1 absorbed in §0 round 7).
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
 - DO NOT limit `PLResultResponse.price_references` to the unrealized-MTM lookup. `compute_pl` reads `CashFlowLedgerEntry` rows for the realized path; after §3.7 those rows carry provenance. Settled-period P&L snapshots MUST collect ledger-row provenance into `price_references` — otherwise a fully-settled period emits an empty references list and J-A3-05 stays open at the snapshot layer (per Codex P1 absorbed in §0 round 5).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
