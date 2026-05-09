@@ -101,6 +101,18 @@ def test_lookup_at_start_of_year_uses_prior_business_day_in_adjacent_covered_yea
         assert quote.value == Decimal("444.0")
 
 
+def test_lookup_at_lower_boundary_uses_prior_business_day_in_seed_year() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2024, 12, 31), price_usd=333.0)
+
+    with SessionLocal() as session:
+        quote = get_cash_settlement_price_d1_with_provenance(
+            session, symbol=symbol, as_of_date=date(2025, 1, 2)
+        )
+        assert quote.settlement_date == date(2024, 12, 31)
+        assert quote.value == Decimal("333.0")
+
+
 def test_lookup_after_2026_uses_prior_business_day_in_extended_lme_calendar() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
     _insert_price(symbol=symbol, settlement_date=date(2026, 12, 31), price_usd=555.0)
@@ -162,6 +174,7 @@ def test_canonical_source_for_symbol_raises_for_unknown_symbol() -> None:
 def test_market_calendar_is_in_repo_year_keyed_not_holidays_dependency() -> None:
     assert isinstance(_LME_HOLIDAYS_BY_YEAR, dict)
     assert 2026 in _LME_HOLIDAYS_BY_YEAR
+    assert 2024 in _LME_HOLIDAYS_BY_YEAR
     assert set(range(2025, 2036)).issubset(_LME_HOLIDAYS_BY_YEAR)
     assert all(isinstance(holidays, frozenset) for holidays in _LME_HOLIDAYS_BY_YEAR.values())
 

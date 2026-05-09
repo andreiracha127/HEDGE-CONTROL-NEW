@@ -10,6 +10,18 @@ from app.utils.price_reference import PriceReferenceUnprovable
 # Source: lme.com/Trading/Holiday-calendar. Calendar is year-keyed so coverage
 # gaps fail closed instead of silently degrading to weekends-only logic.
 _LME_HOLIDAYS_BY_YEAR: dict[int, frozenset[date]] = {
+    2024: frozenset(
+        {
+            date(2024, 1, 1),
+            date(2024, 3, 29),
+            date(2024, 4, 1),
+            date(2024, 5, 6),
+            date(2024, 5, 27),
+            date(2024, 8, 26),
+            date(2024, 12, 25),
+            date(2024, 12, 26),
+        }
+    ),
     2025: frozenset(
         {
             date(2025, 1, 1),
