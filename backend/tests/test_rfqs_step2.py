@@ -402,7 +402,7 @@ def test_trade_ranking_unit_disambiguates_pair_that_collides_in_float64() -> Non
     Postgres ``Numeric(18, 6)`` storage preserves the distinction in prod.
     """
     from datetime import datetime as _dt, timezone as _tz
-    from app.models.quotes import RFQQuote
+    from app.models.quotes import QuoteState, RFQQuote
     from app.models.rfqs import RFQ, RFQDirection, RFQIntent, RFQState
     from app.services.rfq_service import RFQService
 
@@ -439,6 +439,10 @@ def test_trade_ranking_unit_disambiguates_pair_that_collides_in_float64() -> Non
         float_pricing_convention="avg",
         received_at=received,
         created_at=received,
+        # In-memory fixture: SQLAlchemy server_default fires only on
+        # INSERT; this row never reaches the DB, so set state explicitly
+        # so RFQQuoteRead validation succeeds (Phase A2 PR-4 §3.4).
+        state=QuoteState.active,
     )
     quote_b = RFQQuote(
         id=uuid.uuid4(),
@@ -449,6 +453,7 @@ def test_trade_ranking_unit_disambiguates_pair_that_collides_in_float64() -> Non
         float_pricing_convention="avg",
         received_at=received,
         created_at=received,
+        state=QuoteState.active,
     )
 
     ranking = RFQService.compute_trade_ranking(rfq, {cp_a: quote_a, cp_b: quote_b})

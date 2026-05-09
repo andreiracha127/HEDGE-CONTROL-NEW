@@ -36,6 +36,23 @@ class RFQInvitationStatus(str, Enum):
     failed = "failed"
 
 
+class RFQInvitationPurpose(str, Enum):
+    """Discriminator for invitation kinds. See `app.models.rfqs`."""
+
+    rfq_invite = "rfq_invite"
+    refresh = "refresh"
+    reject_quote = "reject_quote"
+    award_notify = "award_notify"
+    reject_notify = "reject_notify"
+
+
+class QuoteState(str, Enum):
+    """Lifecycle marker for `RFQQuote`. See `app.models.quotes`."""
+
+    active = "active"
+    rejected = "rejected"
+
+
 class RFQInvitationCreate(BaseModel):
     counterparty_id: UUID = Field(
         ..., description="Counterparty UUID — phone is looked up from DB"
@@ -53,9 +70,14 @@ class RFQInvitationRead(BaseModel):
     recipient_phone: str
     channel: RFQInvitationChannel
     message_body: str
-    provider_message_id: str
+    # NULL while a queued/failed row has not yet reached the WhatsApp
+    # provider. Per Phase A2 PR-4 (J-A2-07), outbox rows are persisted
+    # before send, so the column relaxed to nullable.
+    provider_message_id: str | None = None
     send_status: RFQInvitationStatus
+    purpose: RFQInvitationPurpose = RFQInvitationPurpose.rfq_invite
     sent_at: datetime | None = None
+    failure_reason: str | None = None
     idempotency_key: str
     created_at: datetime
 
@@ -129,6 +151,15 @@ class RFQQuoteRead(BaseModel):
     float_pricing_convention: FloatPricingConvention
     received_at: datetime
     created_at: datetime
+    # Per J-A2-08, rejected quotes are preserved as evidence; the read
+    # route at /rfqs/{id}/quotes returns both `active` and `rejected`
+    # rows so operators can audit the population a trader saw at award
+    # time. Rankers and latest-quote selection filter rejected quotes at
+    # the upstream query (not in this schema).
+    state: QuoteState = QuoteState.active
+    rejected_at: datetime | None = None
+    rejected_reason: str | None = None
+    rejected_by: str | None = None
 
 
 class SpreadRankingFailureCode(str, Enum):

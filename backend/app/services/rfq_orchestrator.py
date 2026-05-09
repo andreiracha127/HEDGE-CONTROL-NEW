@@ -35,15 +35,20 @@ from app.models.rfqs import (
     RFQ,
     RFQInvitation,
     RFQInvitationChannel,
+    RFQInvitationPurpose,
     RFQInvitationStatus,
     RFQState,
 )
-from app.models.quotes import RFQQuote
+from app.models.quotes import QuoteState, RFQQuote
 from app.schemas.llm import MessageIntent, ParsedQuote
 from app.schemas.rfq import RFQQuoteCreate, FloatPricingConvention
 from app.schemas.whatsapp import WhatsAppInboundMessage
 from app.services.llm_agent import LLMAgent, LLMUnavailableError
-from app.services.rfq_service import RFQService
+from app.services.rfq_service import (
+    RFQService,
+    _persist_outbox_queued,
+    prefix_with_canonical_id,
+)
 from app.services.whatsapp_service import WhatsAppService
 from app.services.webhook_processor import dequeue_message
 
@@ -465,6 +470,10 @@ class RFQOrchestrator:
                     RFQQuote.rfq_id == rfq.id,
                     RFQQuote.counterparty_id == invitation.counterparty_id,
                     RFQQuote.fixed_price_value == price_decimal,
+                    # J-A2-08: rejected quotes must not block a fresh
+                    # quote at the same price; only ACTIVE rows count
+                    # as duplicates.
+                    RFQQuote.state == QuoteState.active,
                 )
                 .first()
             )
@@ -681,7 +690,16 @@ class RFQOrchestrator:
         unit: str = "USD/MT",
         language: str = "pt_BR",
     ) -> None:
-        """Send WhatsApp award notification to the winning counterparty."""
+        """Send WhatsApp award notification to the winning counterparty.
+
+        Per Phase A2 PR-4 (J-A2-OPUS-02 + J-A2-05 + J-A2-07), the outbound
+        message is persisted as an ``RFQInvitation`` row with
+        ``purpose=award_notify`` BEFORE the WhatsApp send. The orchestrator
+        path has no enclosing route transaction guarantee, so the queued row
+        is written via a separate ``SessionLocal()`` (§3.2 strategy a) — the
+        row remains durable even if this method's caller subsequently
+        rolls back.
+        """
         from uuid import UUID as _UUID
 
         try:
@@ -714,10 +732,47 @@ class RFQOrchestrator:
             price=price,
             unit=unit,
         )
-        WhatsAppService.send_text_message(
+        message = prefix_with_canonical_id(message, rfq.rfq_number)
+
+        idem_key = f"award-notify:{rfq.rfq_number}:{cp_uuid}"
+        # Strategy (a): durable outbox row in its own session BEFORE send.
+        row_id = _persist_outbox_queued(
+            rfq_id=rfq.id,
+            rfq_number=rfq.rfq_number,
+            counterparty_id=cp_uuid,
+            recipient_name=invitation.recipient_name,
+            recipient_phone=invitation.recipient_phone,
+            channel=RFQInvitationChannel.whatsapp,
+            message_body=message,
+            purpose=RFQInvitationPurpose.award_notify,
+            idempotency_key=idem_key,
+        )
+
+        result = WhatsAppService.send_text_message(
             phone=invitation.recipient_phone,
             text=message,
         )
+
+        # Status update lands in the orchestrator's session.
+        outbox_row = session.get(RFQInvitation, row_id)
+        if outbox_row is None:
+            logger.warning(
+                "orchestrator_outbox_row_missing_after_persist",
+                rfq_number=rfq.rfq_number,
+                row_id=str(row_id),
+            )
+            return
+        if result.success:
+            outbox_row.send_status = RFQInvitationStatus.sent
+            outbox_row.sent_at = now_utc()
+            outbox_row.provider_message_id = result.provider_message_id or ""
+        else:
+            outbox_row.send_status = RFQInvitationStatus.failed
+            outbox_row.failure_reason = (
+                f"{result.error_code}: {result.error_message}"
+                if (result.error_code or result.error_message)
+                else "send_failed"
+            )
 
     @staticmethod
     def notify_reject(
@@ -725,7 +780,13 @@ class RFQOrchestrator:
         rfq: RFQ,
         language: str = "pt_BR",
     ) -> None:
-        """Send WhatsApp rejection notification to all counterparties."""
+        """Send WhatsApp rejection notification to all counterparties.
+
+        Per Phase A2 PR-4 (J-A2-OPUS-02 + J-A2-05 + J-A2-07), each outbound
+        is persisted as a ``purpose=reject_notify`` ``RFQInvitation`` row in
+        its own session BEFORE the WhatsApp send (§3.2 strategy a) so a
+        downstream rollback in the caller cannot lose evidence.
+        """
         invitations = (
             session.query(RFQInvitation)
             .filter(
@@ -747,7 +808,44 @@ class RFQOrchestrator:
                 recipient_name=inv.recipient_name,
                 rfq_number=rfq.rfq_number,
             )
-            WhatsAppService.send_text_message(phone=inv.recipient_phone, text=message)
+            message = prefix_with_canonical_id(message, rfq.rfq_number)
+
+            idem_key = f"reject-notify:{rfq.rfq_number}:{inv.counterparty_id}"
+            row_id = _persist_outbox_queued(
+                rfq_id=rfq.id,
+                rfq_number=rfq.rfq_number,
+                counterparty_id=inv.counterparty_id,
+                recipient_name=inv.recipient_name,
+                recipient_phone=inv.recipient_phone,
+                channel=RFQInvitationChannel.whatsapp,
+                message_body=message,
+                purpose=RFQInvitationPurpose.reject_notify,
+                idempotency_key=idem_key,
+            )
+
+            result = WhatsAppService.send_text_message(
+                phone=inv.recipient_phone, text=message
+            )
+
+            outbox_row = session.get(RFQInvitation, row_id)
+            if outbox_row is None:
+                logger.warning(
+                    "orchestrator_outbox_row_missing_after_persist",
+                    rfq_number=rfq.rfq_number,
+                    row_id=str(row_id),
+                )
+                continue
+            if result.success:
+                outbox_row.send_status = RFQInvitationStatus.sent
+                outbox_row.sent_at = now_utc()
+                outbox_row.provider_message_id = result.provider_message_id or ""
+            else:
+                outbox_row.send_status = RFQInvitationStatus.failed
+                outbox_row.failure_reason = (
+                    f"{result.error_code}: {result.error_message}"
+                    if (result.error_code or result.error_message)
+                    else "send_failed"
+                )
 
     # ------------------------------------------------------------------
     # 4. Check timeouts — called by the scheduled task

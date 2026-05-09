@@ -564,9 +564,10 @@ def test_notify_award_sends_message(mock_gen, mock_send):
         )
 
     mock_gen.assert_called_once()
+    # Phase A2 PR-4 (J-A2-05): every outbound carries the canonical id.
     mock_send.assert_called_once_with(
         phone="+5511999990001",
-        text="Congratulations! You won the RFQ.",
+        text="RFQ#RFQ-TST-001 — Congratulations! You won the RFQ.",
     )
 
 

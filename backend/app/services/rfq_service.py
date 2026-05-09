@@ -22,13 +22,15 @@ from app.core.pricing import CANONICAL_PRICE_UNITS
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeLegSide
 from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.orders import Order, OrderType, PriceType
-from app.models.quotes import RFQQuote
+from app.core.database import SessionLocal
+from app.models.quotes import QuoteState, RFQQuote
 from app.models.rfqs import (
     RFQ,
     RFQDirection,
     RFQIntent,
     RFQInvitation,
     RFQInvitationChannel,
+    RFQInvitationPurpose,
     RFQInvitationStatus,
     RFQSequence,
     RFQState,
@@ -77,6 +79,68 @@ def _pick_action_message(cp: Counterparty | None, action: str) -> str:
     if cp and cp.type == CounterpartyType.bank_br:
         return msgs["pt"]
     return msgs["en"]
+
+
+def prefix_with_canonical_id(body: str, rfq_number: str) -> str:
+    """Ensure the outbound message starts with ``RFQ#<rfq_number>``.
+
+    Per Phase A2 J-A2-05 + governance §RFQ Correlation: every RFQ outbound
+    must carry the canonical identifier so inbound replies can be correlated
+    deterministically (PR-5). Idempotent — bodies that already begin with
+    the canonical prefix (after optional leading whitespace) are returned
+    unchanged. Pure function; performs no I/O.
+    """
+    canonical = f"RFQ#{rfq_number}"
+    stripped = body.lstrip()
+    if stripped.startswith(canonical):
+        return body
+    return f"{canonical} — {body}"
+
+
+def _persist_outbox_queued(
+    *,
+    rfq_id,
+    rfq_number: str,
+    counterparty_id,
+    recipient_name: str,
+    recipient_phone: str,
+    channel: RFQInvitationChannel,
+    message_body: str,
+    purpose: RFQInvitationPurpose,
+    idempotency_key: str,
+):
+    """Persist a queued ``RFQInvitation`` row in its OWN session and commit.
+
+    Used by orchestrator paths (``notify_award`` / ``notify_reject``) which
+    have no enclosing route transaction guaranteed (§3.2 strategy a). The
+    row is durably committed before the WhatsApp send returns, so a
+    subsequent crash or rollback in the caller's session cannot lose
+    evidence.
+
+    Returns the new row's ``id``.
+    """
+    outbox_session = SessionLocal()
+    try:
+        row = RFQInvitation(
+            rfq_id=rfq_id,
+            rfq_number=rfq_number,
+            counterparty_id=counterparty_id,
+            recipient_name=recipient_name,
+            recipient_phone=recipient_phone,
+            channel=channel,
+            message_body=message_body,
+            provider_message_id=None,
+            send_status=RFQInvitationStatus.queued,
+            purpose=purpose,
+            sent_at=None,
+            failure_reason=None,
+            idempotency_key=idempotency_key,
+        )
+        outbox_session.add(row)
+        outbox_session.commit()
+        return row.id
+    finally:
+        outbox_session.close()
 
 
 class RFQService:
@@ -142,7 +206,16 @@ class RFQService:
 
     @staticmethod
     def get_latest_trade_quotes(session: Session, rfq_id: UUID) -> dict[UUID, RFQQuote]:
-        quotes = session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).all()
+        # Filter rejected quotes upstream (J-A2-08); rankers consume an
+        # already-active set so the in-memory selector remains pure.
+        quotes = (
+            session.query(RFQQuote)
+            .filter(
+                RFQQuote.rfq_id == rfq_id,
+                RFQQuote.state == QuoteState.active,
+            )
+            .all()
+        )
         return RFQService.select_latest_quotes_by_counterparty(quotes)
 
     @staticmethod
@@ -242,9 +315,24 @@ class RFQService:
                 ranking=[],
             )
 
-        buy_quotes = session.query(RFQQuote).filter(RFQQuote.rfq_id == buy_rfq.id).all()
+        # Filter rejected quotes upstream (J-A2-08): the ranker contract
+        # is "given quotes, rank them"; soft-rejected rows must not enter
+        # the ranking population.
+        buy_quotes = (
+            session.query(RFQQuote)
+            .filter(
+                RFQQuote.rfq_id == buy_rfq.id,
+                RFQQuote.state == QuoteState.active,
+            )
+            .all()
+        )
         sell_quotes = (
-            session.query(RFQQuote).filter(RFQQuote.rfq_id == sell_rfq.id).all()
+            session.query(RFQQuote)
+            .filter(
+                RFQQuote.rfq_id == sell_rfq.id,
+                RFQQuote.state == QuoteState.active,
+            )
+            .all()
         )
 
         buy_latest = RFQService.select_latest_quotes_by_counterparty(buy_quotes)
@@ -368,7 +456,17 @@ class RFQService:
     def create(session: Session, payload: RFQCreate) -> RFQ:
         """Create an RFQ, its invitations and initial state events.
 
-        The caller must ``session.commit()`` afterwards.
+        Implements the **durable outbox pattern** (Phase A2 PR-4 §3.2 strategy
+        b): the RFQ + queued invitation rows are checkpoint-committed BEFORE
+        any WhatsApp send is attempted, so a crash, network failure, or
+        downstream rollback after the send cannot lose evidence (J-A2-07).
+        Each invitation body is prefixed with the canonical id so the
+        persisted body equals the wire body (J-A2-05 + governance §RFQ
+        Correlation).
+
+        The caller's later ``session.commit()`` flushes the per-row status
+        updates produced by the send loop (sent / failed / sent_at /
+        provider_message_id / failure_reason).
         """
         snapshot_rows = ExposureService.compute_commercial_snapshot(session)
         snapshot_by_commodity = {
@@ -484,8 +582,12 @@ class RFQService:
         session.add(rfq)
         session.flush()
 
+        # ── PHASE 1: build the prefixed message body and persist queued
+        # outbox rows in the enclosing session, then checkpoint-commit so
+        # every queued invitation is durable BEFORE any WhatsApp send is
+        # attempted (J-A2-07, §3.2 strategy b).
+        invitation_dispatch: list[tuple[Counterparty, RFQInvitation, str]] = []
         for invitation in payload.invitations:
-            # Look up counterparty from DB to get whatsapp_phone
             cp = session.get(Counterparty, invitation.counterparty_id)
             if not cp:
                 raise HTTPException(
@@ -500,37 +602,73 @@ class RFQService:
 
             phone = cp.whatsapp_phone
             idem_key = f"{rfq.rfq_number}:{cp.id}"
-            send_status = RFQInvitationStatus.queued
-            provider_message_id = ""
 
-            # --- Send WhatsApp message ---
             # Use the preview text matching the counterparty language:
-            # bank_br → Portuguese, all others → English LME
+            # bank_br → Portuguese, all others → English LME. Fallback only
+            # when no preview text was supplied by the trader.
             fallback_body = (
-                f"RFQ {rfq.rfq_number} — {rfq.commodity} "
-                f"{rfq.quantity_mt}MT {rfq.direction.value}"
+                f"{rfq.commodity} {rfq.quantity_mt}MT {rfq.direction.value}"
             )
             if cp.type == CounterpartyType.bank_br and payload.text_pt:
-                message_body = payload.text_pt
+                raw_body = payload.text_pt
             elif payload.text_en:
-                message_body = payload.text_en
+                raw_body = payload.text_en
             else:
-                message_body = fallback_body
+                raw_body = fallback_body
 
+            # CRITICAL: prefix with canonical id BEFORE persistence so the
+            # persisted body equals the wire body (governance: terms sent =
+            # terms stored).
+            message_body = prefix_with_canonical_id(raw_body, rfq.rfq_number)
+
+            row = RFQInvitation(
+                rfq_id=rfq.id,
+                rfq_number=rfq.rfq_number,
+                counterparty_id=cp.id,
+                recipient_name=cp.short_name or cp.name,
+                recipient_phone=phone,
+                channel=RFQInvitationChannel.whatsapp,
+                message_body=message_body,
+                provider_message_id=None,
+                send_status=RFQInvitationStatus.queued,
+                purpose=RFQInvitationPurpose.rfq_invite,
+                sent_at=None,
+                failure_reason=None,
+                idempotency_key=idem_key,
+            )
+            session.add(row)
+            invitation_dispatch.append((cp, row, phone))
+
+        # Durable checkpoint: RFQ + queued invitations are now in the WAL
+        # before any WhatsApp call is made. A crash between here and the
+        # caller's commit cannot erase the evidence rows.
+        session.commit()
+
+        # ── PHASE 2: send each invitation, then update its row status.
+        # Status updates land in the caller's later session.commit().
+        # A single failed send must NOT roll back the RFQ — the row is
+        # already durable as `failed` once we update it.
+        for cp, row, phone in invitation_dispatch:
             result = WhatsAppService.send_text_message(
                 phone=phone,
-                text=message_body,
+                text=row.message_body,
             )
             if result.success:
-                send_status = RFQInvitationStatus.sent
-                provider_message_id = result.provider_message_id or ""
+                row.send_status = RFQInvitationStatus.sent
+                row.sent_at = now_utc()
+                row.provider_message_id = result.provider_message_id or ""
                 _logger.info(
                     "rfq_whatsapp_sent",
                     rfq_number=rfq.rfq_number,
                     recipient=phone,
                 )
             else:
-                send_status = RFQInvitationStatus.failed
+                row.send_status = RFQInvitationStatus.failed
+                row.failure_reason = (
+                    f"{result.error_code}: {result.error_message}"
+                    if (result.error_code or result.error_message)
+                    else "send_failed"
+                )
                 _logger.error(
                     "rfq_whatsapp_failed",
                     rfq_number=rfq.rfq_number,
@@ -539,26 +677,9 @@ class RFQService:
                     error_message=result.error_message,
                 )
 
-            session.add(
-                RFQInvitation(
-                    rfq_id=rfq.id,
-                    rfq_number=rfq.rfq_number,
-                    counterparty_id=cp.id,
-                    recipient_name=cp.short_name or cp.name,
-                    recipient_phone=phone,
-                    channel=RFQInvitationChannel.whatsapp,
-                    message_body=message_body,
-                    provider_message_id=provider_message_id,
-                    send_status=send_status,
-                    sent_at=now_utc()
-                    if send_status == RFQInvitationStatus.sent
-                    else None,
-                    idempotency_key=idem_key,
-                )
-            )
-
-        # If any invitation was successfully sent, transition to SENT
-        session.flush()  # ensure pending invitation INSERTs are visible
+        # If any invitation was successfully sent, transition RFQ to SENT.
+        # Re-query because invitation rows were also touched in PHASE 2.
+        session.flush()
         has_sent = (
             session.query(RFQInvitation)
             .filter(
@@ -846,7 +967,13 @@ class RFQService:
     def refresh(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
         """Re-send invitations for an RFQ in SENT or QUOTED state.
 
-        The caller must ``session.commit()`` afterwards.
+        Per Phase A2 PR-4 (J-A2-05 + J-A2-07 + J-A2-OPUS-02), each refresh
+        invitation is built with the canonical-id prefix and persisted as a
+        ``purpose=refresh`` queued row, checkpoint-committed BEFORE the
+        WhatsApp send (§3.2 strategy b, per-recipient).
+
+        The caller's later ``session.commit()`` flushes the per-row status
+        updates produced by the send loop.
         """
         rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.sent, RFQState.quoted):
@@ -875,11 +1002,10 @@ class RFQService:
                 detail="No recipients to refresh",
             )
 
-        refresh_header = (
-            f"RFQ#{rfq.rfq_number} — REFRESH: please resend your FIXED price quote."
-        )
-        now = now_utc()
+        refresh_header = "REFRESH: please resend your FIXED price quote."
+
         for recipient in recipients.values():
+            now = now_utc()
             # Fetch the current phone from the Counterparty table in case
             # it has been updated since the original invitation was created.
             current_phone = recipient.recipient_phone
@@ -889,55 +1015,69 @@ class RFQService:
                 if cp and cp.whatsapp_phone:
                     current_phone = cp.whatsapp_phone
 
-            # Choose the right language text for this counterparty
+            # Choose the right language text for this counterparty.
             if cp and cp.type == CounterpartyType.bank_br and rfq.text_pt:
-                message_body = rfq.text_pt
+                raw_body = rfq.text_pt
             elif rfq.text_en:
-                message_body = rfq.text_en
+                raw_body = rfq.text_en
             else:
-                message_body = refresh_header
+                raw_body = refresh_header
 
-            send_status = RFQInvitationStatus.queued
-            provider_msg_id = f"refresh-{rfq.rfq_number}-{current_phone}"
+            message_body = prefix_with_canonical_id(raw_body, rfq.rfq_number)
+            idem_key = f"refresh-{rfq.rfq_number}-{current_phone}-{now.isoformat()}"
 
-            if recipient.channel == RFQInvitationChannel.whatsapp:
-                result = WhatsAppService.send_text_message(
-                    phone=current_phone,
-                    text=message_body,
-                )
-                if result.success:
-                    send_status = RFQInvitationStatus.sent
-                    provider_msg_id = result.provider_message_id or provider_msg_id
-                    _logger.info(
-                        "rfq_refresh_whatsapp_sent",
-                        rfq_number=rfq.rfq_number,
-                        recipient=current_phone,
-                    )
-                else:
-                    send_status = RFQInvitationStatus.failed
-                    _logger.error(
-                        "rfq_refresh_whatsapp_failed",
-                        rfq_number=rfq.rfq_number,
-                        recipient=current_phone,
-                        error_code=result.error_code,
-                        error_message=result.error_message,
-                    )
-
-            session.add(
-                RFQInvitation(
-                    rfq_id=rfq.id,
-                    rfq_number=rfq.rfq_number,
-                    counterparty_id=recipient.counterparty_id,
-                    recipient_phone=current_phone,
-                    recipient_name=recipient.recipient_name,
-                    channel=recipient.channel,
-                    message_body=message_body,
-                    provider_message_id=provider_msg_id,
-                    send_status=send_status,
-                    sent_at=now if send_status == RFQInvitationStatus.sent else None,
-                    idempotency_key=f"refresh-{rfq.rfq_number}-{current_phone}",
-                )
+            # ── DURABLE CHECKPOINT: persist the queued row in the
+            # enclosing session and commit before the WhatsApp send
+            # (J-A2-07, §3.2 strategy b). The row remains addressable in
+            # the same session after commit.
+            row = RFQInvitation(
+                rfq_id=rfq.id,
+                rfq_number=rfq.rfq_number,
+                counterparty_id=recipient.counterparty_id,
+                recipient_phone=current_phone,
+                recipient_name=recipient.recipient_name,
+                channel=recipient.channel,
+                message_body=message_body,
+                provider_message_id=None,
+                send_status=RFQInvitationStatus.queued,
+                purpose=RFQInvitationPurpose.refresh,
+                sent_at=None,
+                failure_reason=None,
+                idempotency_key=idem_key,
             )
+            session.add(row)
+            session.commit()
+
+            if recipient.channel != RFQInvitationChannel.whatsapp:
+                continue
+
+            result = WhatsAppService.send_text_message(
+                phone=current_phone,
+                text=message_body,
+            )
+            if result.success:
+                row.send_status = RFQInvitationStatus.sent
+                row.sent_at = now_utc()
+                row.provider_message_id = result.provider_message_id or ""
+                _logger.info(
+                    "rfq_refresh_whatsapp_sent",
+                    rfq_number=rfq.rfq_number,
+                    recipient=current_phone,
+                )
+            else:
+                row.send_status = RFQInvitationStatus.failed
+                row.failure_reason = (
+                    f"{result.error_code}: {result.error_message}"
+                    if (result.error_code or result.error_message)
+                    else "send_failed"
+                )
+                _logger.error(
+                    "rfq_refresh_whatsapp_failed",
+                    rfq_number=rfq.rfq_number,
+                    recipient=current_phone,
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                )
 
         return rfq
 
@@ -946,13 +1086,31 @@ class RFQService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def reject_quote(session: Session, rfq_id: UUID, quote_id: UUID) -> None:
-        """Remove a specific counterparty quote without closing the RFQ.
+    def reject_quote(
+        session: Session,
+        rfq_id: UUID,
+        quote_id: UUID,
+        user_id: str,
+        reason: str = "manual_reject",
+    ) -> None:
+        """Reject a counterparty quote without erasing it.
 
-        Sends a standardised rejection message to the counterparty via
-        WhatsApp before deleting the quote.
+        Per Phase A2 PR-4 (J-A2-08 + J-A2-OPUS-02), the quote is
+        soft-rejected via a state transition (not deleted) so economic
+        evidence is preserved, and the outbound rejection is persisted as
+        an ``RFQInvitation`` row with ``purpose=reject_quote``.
 
-        The caller must ``session.commit()`` afterwards.
+        **Coupling rule (§3.3):** the quote state transition AND the
+        queued reject outbox row land in the SAME ``session.commit()``
+        BEFORE the WhatsApp send. If the route's later commit fails after
+        a successful send, the queued row remains addressable for a
+        reconciliation worker; if the checkpoint commit itself fails,
+        neither change persists, no message has been sent, and the
+        operator can retry — eliminating the divergence between
+        "counterparty informed" and "system says quote is still active".
+
+        The caller must ``session.commit()`` afterwards to flush the
+        post-send status update on the queued row.
         """
         rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.quoted, RFQState.sent):
@@ -961,13 +1119,17 @@ class RFQService:
                 detail="RFQ must be in SENT or QUOTED state",
             )
         quote = session.get(RFQQuote, quote_id)
-        if not quote or str(quote.rfq_id) != str(rfq_id):
+        if (
+            not quote
+            or str(quote.rfq_id) != str(rfq_id)
+            or quote.state != QuoteState.active
+        ):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Quote not found for this RFQ",
             )
 
-        # Send rejection message to the counterparty
+        # Resolve counterparty for messaging language + recipient phone.
         cp = None
         if quote.counterparty_id:
             cp = session.get(
@@ -976,32 +1138,65 @@ class RFQService:
                 if isinstance(quote.counterparty_id, str)
                 else quote.counterparty_id,
             )
+
+        now = now_utc()
+
+        # ── (1) State transition on the quote (preserve evidence).
+        quote.state = QuoteState.rejected
+        quote.rejected_at = now
+        quote.rejected_reason = reason
+        quote.rejected_by = user_id
+
+        # ── (2) Build the prefixed outbound body and stage the queued row.
+        raw_body = _pick_action_message(cp, "reject")
+        message_body = prefix_with_canonical_id(raw_body, rfq.rfq_number)
+        recipient_phone = cp.whatsapp_phone if cp and cp.whatsapp_phone else ""
+        recipient_name = ""
+        if cp:
+            recipient_name = cp.short_name or cp.name or ""
+        idem_key = f"reject-quote:{rfq.rfq_number}:{quote_id}"
+
+        outbox_row: RFQInvitation | None = None
         if cp and cp.whatsapp_phone:
-            msg = _pick_action_message(cp, "reject")
-            result = WhatsAppService.send_text_message(
-                phone=cp.whatsapp_phone, text=msg
+            outbox_row = RFQInvitation(
+                rfq_id=rfq.id,
+                rfq_number=rfq.rfq_number,
+                counterparty_id=cp.id,
+                recipient_name=recipient_name,
+                recipient_phone=recipient_phone,
+                channel=RFQInvitationChannel.whatsapp,
+                message_body=message_body,
+                provider_message_id=None,
+                send_status=RFQInvitationStatus.queued,
+                purpose=RFQInvitationPurpose.reject_quote,
+                sent_at=None,
+                failure_reason=None,
+                idempotency_key=idem_key,
             )
-            if result.success:
-                _logger.info(
-                    "rfq_reject_whatsapp_sent",
-                    rfq_number=rfq.rfq_number,
-                    recipient=cp.whatsapp_phone,
-                )
-            else:
-                _logger.error(
-                    "rfq_reject_whatsapp_failed",
-                    rfq_number=rfq.rfq_number,
-                    recipient=cp.whatsapp_phone,
-                    error_code=result.error_code,
-                    error_message=result.error_message,
-                )
+            session.add(outbox_row)
 
-        session.delete(quote)
-
-        # Check if there are remaining quotes — if none, revert to SENT
+        # ── (3) If this is the last ACTIVE quote, fold the
+        # ALL_QUOTES_REJECTED revert into the SAME pre-send checkpoint
+        # as the rejection + outbox (Codex P2). Without this, a crash
+        # between the checkpoint commit and the post-send revert block
+        # would leave the RFQ in QUOTED with zero eligible quotes —
+        # appearing quoteable/awardable while ranking has nothing to
+        # rank.
+        #
+        # The id filter excludes the just-rejected quote from the
+        # count; the state==active filter excludes any previously
+        # soft-rejected rows. SessionLocal in this project has
+        # autoflush=False, so a query without an explicit flush would
+        # NOT see the in-memory `quote.state = rejected` mutation —
+        # the id filter is what makes the count correct here without
+        # a flush.
         remaining = (
             session.query(RFQQuote)
-            .filter(RFQQuote.rfq_id == rfq_id, RFQQuote.id != quote_id)
+            .filter(
+                RFQQuote.rfq_id == rfq_id,
+                RFQQuote.id != quote_id,
+                RFQQuote.state == QuoteState.active,
+            )
             .count()
         )
         if remaining == 0 and rfq.state == RFQState.quoted:
@@ -1012,9 +1207,45 @@ class RFQService:
                     from_state=RFQState.quoted,
                     to_state=RFQState.sent,
                     reason="ALL_QUOTES_REJECTED",
-                    event_timestamp=now_utc(),
+                    event_timestamp=now,
                 )
             )
+
+        # ── (4) Atomic checkpoint: quote state transition + queued
+        # outbox + (when applicable) RFQ revert + ALL_QUOTES_REJECTED
+        # state event ALL land in the SAME commit (§3.3 coupling rule
+        # extended per Codex P2). If this commit fails, none of the
+        # four mutations persist; no send has been attempted yet.
+        session.commit()
+
+        # ── (5) Send WhatsApp now that durable evidence exists.
+        if outbox_row is not None and cp is not None and cp.whatsapp_phone:
+            result = WhatsAppService.send_text_message(
+                phone=cp.whatsapp_phone, text=message_body
+            )
+            if result.success:
+                outbox_row.send_status = RFQInvitationStatus.sent
+                outbox_row.sent_at = now_utc()
+                outbox_row.provider_message_id = result.provider_message_id or ""
+                _logger.info(
+                    "rfq_reject_whatsapp_sent",
+                    rfq_number=rfq.rfq_number,
+                    recipient=cp.whatsapp_phone,
+                )
+            else:
+                outbox_row.send_status = RFQInvitationStatus.failed
+                outbox_row.failure_reason = (
+                    f"{result.error_code}: {result.error_message}"
+                    if (result.error_code or result.error_message)
+                    else "send_failed"
+                )
+                _logger.error(
+                    "rfq_reject_whatsapp_failed",
+                    rfq_number=rfq.rfq_number,
+                    recipient=cp.whatsapp_phone,
+                    error_code=result.error_code,
+                    error_message=result.error_message,
+                )
 
     @staticmethod
     def refresh_counterparty(
@@ -1022,7 +1253,11 @@ class RFQService:
     ) -> RFQ:
         """Re-send invitation to a specific counterparty.
 
-        The caller must ``session.commit()`` afterwards.
+        Per Phase A2 PR-4 (J-A2-05 + J-A2-07 + J-A2-OPUS-02), the new
+        invitation is built with the canonical-id prefix, persisted as a
+        ``purpose=refresh`` queued row, and the row is checkpoint-committed
+        BEFORE the WhatsApp send (§3.2 strategy b). The caller's later
+        ``session.commit()`` flushes the row's status update.
         """
         rfq = RFQService.get_live(session, rfq_id)
         if rfq.state not in (RFQState.sent, RFQState.quoted):
@@ -1051,9 +1286,6 @@ class RFQService:
                 detail="No invitation found for this counterparty",
             )
 
-        message_body = (
-            f"RFQ#{rfq.rfq_number} — REFRESH: please resend your FIXED price quote."
-        )
         now = now_utc()
 
         # Fetch the current phone from the Counterparty table in case
@@ -1065,53 +1297,63 @@ class RFQService:
             if cp and cp.whatsapp_phone:
                 current_phone = cp.whatsapp_phone
 
-        # Use the standardised refresh message for the counterparty language
-        message_body = _pick_action_message(cp, "refresh")
+        # Use the standardised refresh message for the counterparty language,
+        # then prefix with the canonical id at the transport boundary.
+        raw_body = _pick_action_message(cp, "refresh")
+        message_body = prefix_with_canonical_id(raw_body, rfq.rfq_number)
+        idem_key = f"refresh-{rfq.rfq_number}-{current_phone}-{now.isoformat()}"
 
-        # Actually send the WhatsApp message
-        send_status = RFQInvitationStatus.queued
-        provider_message_id = (
-            f"refresh-{rfq.rfq_number}-{current_phone}-{now.isoformat()}"
+        # ── DURABLE CHECKPOINT: persist the queued row + commit before the
+        # WhatsApp send (J-A2-07, §3.2 strategy b).
+        row = RFQInvitation(
+            rfq_id=rfq.id,
+            rfq_number=rfq.rfq_number,
+            counterparty_id=existing.counterparty_id,
+            recipient_phone=current_phone,
+            recipient_name=existing.recipient_name,
+            channel=existing.channel,
+            message_body=message_body,
+            provider_message_id=None,
+            send_status=RFQInvitationStatus.queued,
+            purpose=RFQInvitationPurpose.refresh,
+            sent_at=None,
+            failure_reason=None,
+            idempotency_key=idem_key,
         )
+        session.add(row)
+        session.commit()
 
-        if existing.channel == RFQInvitationChannel.whatsapp:
-            result = WhatsAppService.send_text_message(
-                phone=current_phone,
-                text=message_body,
-            )
-            if result.success:
-                send_status = RFQInvitationStatus.sent
-                provider_message_id = result.provider_message_id or provider_message_id
-                _logger.info(
-                    "rfq_refresh_whatsapp_sent",
-                    rfq_number=rfq.rfq_number,
-                    recipient=current_phone,
-                )
-            else:
-                send_status = RFQInvitationStatus.failed
-                _logger.error(
-                    "rfq_refresh_whatsapp_failed",
-                    rfq_number=rfq.rfq_number,
-                    recipient=current_phone,
-                    error_code=result.error_code,
-                    error_message=result.error_message,
-                )
+        if existing.channel != RFQInvitationChannel.whatsapp:
+            return rfq
 
-        session.add(
-            RFQInvitation(
-                rfq_id=rfq.id,
+        result = WhatsAppService.send_text_message(
+            phone=current_phone,
+            text=message_body,
+        )
+        if result.success:
+            row.send_status = RFQInvitationStatus.sent
+            row.sent_at = now_utc()
+            row.provider_message_id = result.provider_message_id or ""
+            _logger.info(
+                "rfq_refresh_whatsapp_sent",
                 rfq_number=rfq.rfq_number,
-                counterparty_id=existing.counterparty_id,
-                recipient_phone=current_phone,
-                recipient_name=existing.recipient_name,
-                channel=existing.channel,
-                message_body=message_body,
-                provider_message_id=provider_message_id,
-                send_status=send_status,
-                sent_at=now if send_status == RFQInvitationStatus.sent else None,
-                idempotency_key=f"refresh-{rfq.rfq_number}-{current_phone}-{now.isoformat()}",
+                recipient=current_phone,
             )
-        )
+        else:
+            row.send_status = RFQInvitationStatus.failed
+            row.failure_reason = (
+                f"{result.error_code}: {result.error_message}"
+                if (result.error_code or result.error_message)
+                else "send_failed"
+            )
+            _logger.error(
+                "rfq_refresh_whatsapp_failed",
+                rfq_number=rfq.rfq_number,
+                recipient=current_phone,
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
+
         return rfq
 
     @staticmethod

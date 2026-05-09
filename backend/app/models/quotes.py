@@ -1,7 +1,8 @@
+import enum
 import uuid
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -11,6 +12,18 @@ from app.core.precision import (
     PRICE_NUMERIC_SCALE,
 )
 from app.models.base import Base
+
+
+class QuoteState(enum.Enum):
+    """Lifecycle marker for an `RFQQuote`.
+
+    `rejected` quotes are preserved as economic evidence (per J-A2-08) but
+    must be excluded from ranking and latest-quote selection. Hard-deleting
+    them would erase audit history.
+    """
+
+    active = "active"
+    rejected = "rejected"
 
 
 class RFQQuote(Base):
@@ -34,3 +47,13 @@ class RFQQuote(Base):
     float_pricing_convention: Mapped[str] = mapped_column("pricing_convention", String(length=64), nullable=False)
     received_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    state: Mapped[QuoteState] = mapped_column(
+        Enum(QuoteState, name="rfq_quote_state"),
+        nullable=False,
+        server_default="active",
+    )
+    rejected_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rejected_reason: Mapped[str | None] = mapped_column(String(length=128), nullable=True)
+    rejected_by: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
