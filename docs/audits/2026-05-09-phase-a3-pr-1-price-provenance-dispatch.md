@@ -11,6 +11,12 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex catches absorbed against commit `1b13e66c0` (1 P1 + 1 P2):**
+
+1. **Quantize derived ledger amounts before comparison and persistence (P1).** Round-7 §3.7 derived `amount = quantity × price` directly. Codex caught: `quantity_mt` and `price_value` each carry their own decimal scales; their unrounded product can have > 6 fractional digits. `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` — DB rounds on insert. Idempotent re-ingest then recomputes the unrounded product; `_ledger_entry_matches` compares exact Decimal values → false 409 conflict on legitimately identical re-ingest. Same problem for the payload-vs-derived 422 check: an operator-supplied amount rounded to 6 digits would mismatch the unrounded derived value. **Fix:** §3.7 sketch now `quantize`s `derived_amount` to `Decimal("0.000001")` with `ROUND_HALF_EVEN` BEFORE both the 422 comparison and persistence. §10 new DO NOT codifies the rule. §7 adds two regression tests. §6 gains a quantize criterion.
+
+2. **Use in-repo static calendar, not `holidays` package (P2).** Round-2 §3.6 prescribed `_market_calendar_for_symbol(symbol) -> holidays.HolidayBase`. Codex verified `backend/requirements.txt` does NOT have `holidays` / `python-holidays`. Direct `import holidays` in the new helper would raise `ModuleNotFoundError` on every backend startup and CI test run. **Fix:** §3.6 paragraph rewritten to prescribe an in-repo `_LME_HOLIDAYS: frozenset[date]` static map. `_prior_business_day` signature updated to `(price_date: date, calendar: frozenset[date])`. Operator-auditable, no new dependency, year-by-year updates rolled in via small follow-up PRs. §10 new DO NOT forbids `import holidays`. §7 adds an explicit regression test asserting the absence of the `holidays` import.
+
 **Two Codex catches absorbed against commit `18b38b159` (1 P1 + 1 P2):**
 
 1. **Guard NULL ledger `price_value` before normalizing (P1).** Round-6 added `_normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])` to `_ledger_entry_matches`. Round-7 then introduced FIXED-leg-NULL-provenance design (§3.7). Codex caught: when re-ingesting a settlement whose FIXED leg has `price_value=None`, the comparator calls `_normalize_decimal(None)` which becomes `Decimal('None')` and raises `decimal.InvalidOperation` — every FIXED-leg idempotency check returns 500. **Fix:** added `_decimal_or_none_eq(a, b)` helper (None-safe Decimal equality); `_ledger_entry_matches` uses it for `price_value`. String + date columns compare safely with `==` (None == None is True). §10 new DO NOT codifies the rule. §7 adds `test_ledger_idempotency_no_op_on_fixed_leg_with_null_provenance`. **Self-blame:** classic cross-round inconsistency — round-6 added the comparator field assuming non-NULL; round-7 added the NULL design without revisiting round-6's comparator. The propagation rule from round 7 ("when a quadruple is established as canonical provenance shape, every parallel surface must mirror it") expands to: **when a NULL-able shape is introduced, every comparator that touches the affected fields must be re-audited for NULL-safety**.
@@ -362,12 +368,49 @@ Current at **`backend/app/services/price_lookup_service.py:157-160`**: `lookback
 
 **Replacement**: compute the **EXACT prior business day** using the calendar, then query for that exact date. The calendar's only role is to skip weekends and holidays when computing the prior-business-day **date** — it does NOT define a fallback window of acceptable older dates.
 
-**Per-commodity calendar**: LME aluminum / copper / etc. share the LME holiday calendar. Other commodities may have different ones. A `_market_calendar_for_symbol(symbol: str)` helper returns a `holidays.HolidayBase` instance (or equivalent). Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. That fall-through would be exactly the kind of fallback governance §2.6 forbids.
+**Per-commodity calendar — in-repo static map** (per Codex P2 absorbed in §0 round 11): LME aluminum / copper / etc. share the LME holiday calendar; other commodities may have different ones. The `holidays` / `python-holidays` library is NOT a current dependency in `backend/requirements.txt`; importing it without adding the dep would cause `ModuleNotFoundError` on every backend startup / test run. The institutional choice for PR-A3-1 is an **in-repo static map** of holiday dates — operator-auditable, no new dependency, year-by-year updates rolled in via small follow-up PRs. The trade-off (manual yearly maintenance) is acceptable because LME holidays are slow-changing, publicly published in advance, and reviewable in the same audit cycle as any other constitutional change.
+
+```python
+# backend/app/utils/market_calendar.py
+from datetime import date
+
+# LME official holidays (UK bank holidays + LME-specific). Source: lme.com/Trading/Holiday-calendar
+# Operator updates this map when the next year's calendar is published.
+_LME_HOLIDAYS: frozenset[date] = frozenset({
+    date(2026, 1, 1),    # New Year's Day
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 4, 6),    # Easter Monday
+    date(2026, 5, 4),    # Early May Bank Holiday
+    date(2026, 5, 25),   # Spring Bank Holiday
+    date(2026, 8, 31),   # Summer Bank Holiday
+    date(2026, 12, 25),  # Christmas Day
+    date(2026, 12, 28),  # Boxing Day (substitute)
+    # Add 2027+ as published.
+})
+
+def _market_calendar_for_symbol(symbol: str) -> frozenset[date]:
+    """Return the holiday set for the symbol's market (frozenset[date]).
+
+    Raises PriceReferenceUnprovable for symbols without a registered
+    calendar — operator must extend the map before lookups can run.
+    """
+    if symbol.startswith("LME_"):
+        return _LME_HOLIDAYS
+    raise PriceReferenceUnprovable(
+        f"No market calendar registered for symbol {symbol!r}; "
+        "operator must extend `_market_calendar_for_symbol` before "
+        "MTM/P&L can be computed for this commodity.",
+        symbol=symbol,
+        as_of_date=None,
+    )
+```
+
+Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. That fall-through would be exactly the kind of fallback governance §2.6 forbids.
 
 **Algorithm — exact prior business day**:
 
 ```python
-def _prior_business_day(price_date: date, calendar) -> date:
+def _prior_business_day(price_date: date, calendar: frozenset[date]) -> date:
     """Return the SINGLE most recent business day strictly before `price_date`.
 
     Walks back exactly one business day, skipping weekends and calendar
@@ -523,8 +566,21 @@ def _build_expected_entry(
     def _direction_from_side(side: HedgeLegSide) -> LedgerDirection:
         return LedgerDirection.out if side == HedgeLegSide.buy else LedgerDirection.in_
 
+    # Quantize derived amount to the ledger column scale (Numeric(18, 6))
+    # BEFORE both 422 comparison and persistence (per Codex P1 absorbed in
+    # §0 round 11). `quantity_mt` and `price_value` each carry their own
+    # decimal scales; their unrounded product can have > 6 fractional
+    # digits, but `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` and the
+    # DB rounds on insert. An idempotent re-ingest then recomputes the
+    # unrounded product and the comparator (`_ledger_entry_matches`)
+    # compares exact Decimal values → false 409 conflict on legitimately
+    # identical re-ingest. Quantize once, deterministically.
+    LEDGER_AMOUNT_SCALE = Decimal("0.000001")  # 6 decimal places, matches Numeric(18, 6)
+
     if leg.leg_id == LedgerLegId.fixed:
-        derived_amount = quantity * contract.fixed_price_value
+        derived_amount = (quantity * contract.fixed_price_value).quantize(
+            LEDGER_AMOUNT_SCALE, rounding=ROUND_HALF_EVEN
+        )
         derived_direction = _direction_from_side(contract.fixed_leg_side)
         # FIXED leg has NO price lookup — provenance fields stay NULL
         # (admissible per the all-or-four-NULL CHECK constraint).
@@ -535,7 +591,9 @@ def _build_expected_entry(
             "price_value": None,
         }
     elif leg.leg_id == LedgerLegId.float:
-        derived_amount = quantity * settlement_quote.value
+        derived_amount = (quantity * settlement_quote.value).quantize(
+            LEDGER_AMOUNT_SCALE, rounding=ROUND_HALF_EVEN
+        )
         derived_direction = _direction_from_side(contract.variable_leg_side)
         # FLOAT leg consumed _with_provenance — full quadruple populated.
         provenance = {
@@ -796,6 +854,8 @@ def downgrade() -> None:
     - Direction per leg derived from EACH LEG'S OWN side field: FIXED from `contract.fixed_leg_side`; FLOAT from `contract.variable_leg_side`. Side → direction mapping: `buy → OUT (customer pays this leg)`, `sell → IN (customer receives this leg)`. Variable side is NOT inferred as "opposite of fixed" — the contract row's stored variable_leg_side is authoritative.
 - [ ] `compute_pl` reading both ledger rows produces the correct net: `qty × (settlement − fixed)` for `fixed_leg_side=buy`; `qty × (fixed − settlement)` for `fixed_leg_side=sell`. Verified end-to-end in tests with both sides.
 - [ ] All `amount` values persisted on `cashflow_ledger_entries` are NON-NEGATIVE (institutional magnitude convention). `compute_pl`'s direction-driven sign application reads correctly.
+- [ ] Derived `amount` is `quantize`d to `Decimal("0.000001")` (matching `Numeric(18, 6)`) with `ROUND_HALF_EVEN` BEFORE both the 422 payload comparison and persistence. Idempotent re-ingest of the same payload + same canonical price returns the existing row (silent no-op) — NOT a 409 from precision drift.
+- [ ] Market calendar is an in-repo `frozenset[date]` static map (`_LME_HOLIDAYS`), NOT an import from a missing `holidays` / `python-holidays` package. `_prior_business_day(price_date, calendar: frozenset[date])` consumes the frozenset.
 - [ ] Per-leg derivation mismatch (`leg.direction != derived_direction` OR `leg.amount != derived_amount`) raises `HTTPException(422, "Leg <fixed|float> <direction|amount> mismatch: ...")`.
 - [ ] `compute_pl` reads ledger-row provenance (post-§3.7) into `PriceReferenceEntry` records and appends them to `result.price_references` for the realized path; the unrealized lookup's quote is appended last; duplicates are deduped on `(symbol, source, settlement_date, value)`.
 - [ ] A settled-period P&L snapshot has at least one `PriceReferenceEntry` per **priced** ledger entry consumed in `realized_pl` — i.e., per ledger row whose `price_*` provenance fields are non-NULL (FLOAT legs only). FIXED legs deliberately have NULL provenance per §3.7 (their economics come from `contract.fixed_price_value`, not a market lookup); requiring a reference for them would force fabricated provenance. A settled period that consumed only FLOAT priced rows MUST emit ≥1 reference; a hypothetical period consuming only FIXED legs (institutional edge case) emits zero realized references — the unrealized lookup still ensures `price_references` is non-empty for any compute_pl run that hits the active-contract path.
@@ -894,6 +954,9 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_canonical_source_for_symbol_returns_westmetall_for_LME_symbols` — fixture asserts known mapping
   - `test_canonical_source_for_symbol_raises_PriceReferenceUnprovable_for_unknown_symbol` — `XYZ_FAKE` not in `_CANONICAL_SOURCE_BY_SYMBOL` → exception with structured message
   - `test_lookup_filters_by_canonical_source_excluding_other_sources` — fixture: insert two `CashSettlementPrice` rows with same `(symbol=LME_AL, settlement_date=D)` but different sources `westmetall` and `bloomberg`; lookup MUST return the westmetall row (canonical) regardless of insertion order. Without source filter, `.first()` is non-deterministic.
+  - `test_market_calendar_is_in_repo_frozenset_not_holidays_dependency` — assert no `import holidays` in `app/utils/market_calendar.py`; `_LME_HOLIDAYS` is a `frozenset[date]` literal in source. Regression for the round-11 P2 missing-dep risk.
+  - `test_settlement_amount_quantized_to_ledger_scale` — fixture: `quantity=Decimal("10.500000")` × `price=Decimal("2585.123457")` produces unrounded 8-digit-fractional result; assert persisted `amount.quantize(Decimal("0.000001"))` matches the persisted row exactly; idempotent re-ingest returns the existing row (no 409, no payload-comparison 422).
+  - `test_settlement_idempotent_reingest_no_409_after_quantize` — fixture: persist a settlement; re-ingest same payload immediately; assert silent no-op (`_ledger_entry_matches` returns True via post-quantize values). Regression for the round-11 P1 quantize-precision-drift bug.
   - `test_price_usd_returned_as_decimal_not_float_post_migration`
 
 - `backend/tests/test_038_migration_roundtrip.py` (new, manual or marked):
@@ -1012,6 +1075,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT derive the FLOAT leg's direction as "opposite of `contract.fixed_leg_side`". Read `contract.variable_leg_side` directly. The DB CHECK constraint at `models/contracts.py:78-80` only ties `classification` to `fixed_leg_side`; there is NO invariant forcing `variable_leg_side != fixed_leg_side`. A contract with both sides equal is degenerate but admissible at the schema layer; deriving FLOAT direction from "opposite of fixed" would silently rewrite the stored variable side and let an inconsistent contract generate realized P&L from a fabricated direction (per Codex P2 absorbed in §0 round 8).
 - DO NOT call `_normalize_decimal(value)` directly on a nullable Decimal column without first checking for None. `_normalize_decimal(None) == Decimal(str(None))` raises `decimal.InvalidOperation`. FIXED-leg ledger rows have `price_value = None` per §3.7; a comparator that calls `_normalize_decimal(entry.price_value)` unconditionally will raise during idempotency re-ingest, returning a 500 instead of the existing settlement / a clean 409. Use the `_decimal_or_none_eq(a, b)` helper for nullable Decimal equality (per Codex P1 absorbed in §0 round 10).
 - DO NOT query `cash_settlement_prices` filtering only by `(symbol, settlement_date)` and using `.first()`. The unique constraint is on `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. Without the source filter, `.first()` returns whichever row the DB happens to order first, making MTM / P&L provenance non-deterministic across environments. Lookup MUST filter on `(source == canonical_source, symbol, settlement_date)` where `canonical_source = _canonical_source_for_symbol(symbol)` (per Codex P2 absorbed in §0 round 10).
+- DO NOT persist or compare unrounded `derived_amount` values. `quantity_mt × price` carries the sum of both factors' decimal scales (potentially > 6); `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` and the DB rounds on insert. Quantize `derived_amount` to `Decimal("0.000001")` with `ROUND_HALF_EVEN` BEFORE both the 422 payload comparison and persistence. Skipping the quantize causes idempotent re-ingest to throw a false 409 (or to reject a payload that supplies the rounded value as a 422 mismatch) (per Codex P1 absorbed in §0 round 11).
+- DO NOT `import holidays` (or `python_holidays`, or any other external calendar library) in the new `app/utils/market_calendar.py`. Those packages are NOT in `backend/requirements.txt`; the import would raise `ModuleNotFoundError` on every backend startup / test run. Use the in-repo `_LME_HOLIDAYS: frozenset[date]` static map prescribed in §3.6 (per Codex P2 absorbed in §0 round 11). If the operator decides to migrate to a package later, it lands as a separate dispatch with explicit dependency review.
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
 - DO NOT limit `PLResultResponse.price_references` to the unrealized-MTM lookup. `compute_pl` reads `CashFlowLedgerEntry` rows for the realized path; after §3.7 those rows carry provenance. Settled-period P&L snapshots MUST collect ledger-row provenance into `price_references` — otherwise a fully-settled period emits an empty references list and J-A3-05 stays open at the snapshot layer (per Codex P1 absorbed in §0 round 5).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
