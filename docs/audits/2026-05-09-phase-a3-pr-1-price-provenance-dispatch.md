@@ -11,6 +11,8 @@
 
 ## 0. Refresh notes (read first)
 
+**Codex P2 absorbed against commit `61446f204` — fail-closed on calendar coverage gap.** Round-11 §3.6 prescribed `_LME_HOLIDAYS: frozenset[date]` as a single-year static set covering only 2026. Codex caught: a 2027 lookup walking `_prior_business_day` would silently treat 2027 LME holidays as ordinary business days (they're not in the 2026-only set), querying the wrong date as "the prior business day". Worse: the lookup might return a valid row for that date (a Friday non-holiday in 2027 that happens to follow a 2027 LME holiday) and persist the wrong proof on MTM/P&L snapshots. Operator-maintained static maps need explicit coverage validation — silent degradation when the calendar lapses violates the no-fallback rule. **Fix:** §3.6 calendar refactored to `_LME_HOLIDAYS_BY_YEAR: dict[int, frozenset[date]]`; `_market_calendar_for_symbol(symbol, year)` raises `PriceReferenceUnprovable` for years outside the keyed coverage; `_prior_business_day(price_date, calendar_for_year)` consumes a year-aware callable that fail-closes when the cursor walks into uncovered territory. §10 new DO NOT codifies "year-keyed calendar with fail-closed coverage check, NOT single-year frozenset". §6 acceptance updated. §7 adds two regression tests (year-outside-coverage + cursor-crosses-year-boundary).
+
 **Two Codex catches absorbed against commit `7a62ea0b0` (1 P1 + 1 P2):**
 
 1. **Key `_CANONICAL_SOURCE_BY_SYMBOL` by RESOLVED long-form settlement symbols (P1).** Round-10 §3.6 introduced `_CANONICAL_SOURCE_BY_SYMBOL` keyed by short codes (`LME_AL`, `LME_CU`, etc.). Codex caught: the lookup chain is `resolve_symbol(contract.commodity)` → LONG form (`LME_ALU_CASH_SETTLEMENT_DAILY`) → `_canonical_source_for_symbol(long_form)`. The short-code-keyed map raises `PriceReferenceUnprovable` for every legitimate lookup. Plus PB/SN (lead/tin) commodities supported by `COMMODITY_SYMBOL_MAP` were missing entirely. **Fix:** §3.6 map rewritten with all SIX supported commodities (AL/CU/ZN/NI/PB/SN) keyed by their resolved long-form symbols. §10 new DO NOT codifies the keying rule + COMMODITY_SYMBOL_MAP cross-reference. §7 adds two tests (six-commodity coverage + end-to-end short-code-input regression). **Self-blame:** classic factual cross-check miss — I prescribed short-code keys without verifying what `resolve_symbol` actually returns. Sub-rule 10 (Serena-verify identifiers) didn't catch this because the keys are NEW values, not existing identifiers; the rule expands to: **when a NEW lookup key is prescribed, verify the lookup chain end-to-end via Serena (caller → producer → consumer) — not just one endpoint.**
@@ -381,34 +383,54 @@ Current at **`backend/app/services/price_lookup_service.py:157-160`**: `lookback
 from datetime import date
 
 # LME official holidays (UK bank holidays + LME-specific). Source: lme.com/Trading/Holiday-calendar
-# Operator updates this map when the next year's calendar is published.
-_LME_HOLIDAYS: frozenset[date] = frozenset({
-    date(2026, 1, 1),    # New Year's Day
-    date(2026, 4, 3),    # Good Friday
-    date(2026, 4, 6),    # Easter Monday
-    date(2026, 5, 4),    # Early May Bank Holiday
-    date(2026, 5, 25),   # Spring Bank Holiday
-    date(2026, 8, 31),   # Summer Bank Holiday
-    date(2026, 12, 25),  # Christmas Day
-    date(2026, 12, 28),  # Boxing Day (substitute)
-    # Add 2027+ as published.
-})
+# Calendar is YEAR-KEYED so coverage gaps surface as fail-closed errors
+# rather than silently degrading to "weekends only" (per Codex P2 absorbed
+# in §0 round 13). Operator extends with 2027+ as published.
+_LME_HOLIDAYS_BY_YEAR: dict[int, frozenset[date]] = {
+    2026: frozenset({
+        date(2026, 1, 1),    # New Year's Day
+        date(2026, 4, 3),    # Good Friday
+        date(2026, 4, 6),    # Easter Monday
+        date(2026, 5, 4),    # Early May Bank Holiday
+        date(2026, 5, 25),   # Spring Bank Holiday
+        date(2026, 8, 31),   # Summer Bank Holiday
+        date(2026, 12, 25),  # Christmas Day
+        date(2026, 12, 28),  # Boxing Day (substitute)
+    }),
+    # Add 2027+ as published — DO NOT delete past years.
+}
 
-def _market_calendar_for_symbol(symbol: str) -> frozenset[date]:
-    """Return the holiday set for the symbol's market (frozenset[date]).
+def _market_calendar_for_symbol(symbol: str, year: int) -> frozenset[date]:
+    """Return the holiday set for the symbol's market in `year` (frozenset[date]).
 
-    Raises PriceReferenceUnprovable for symbols without a registered
-    calendar — operator must extend the map before lookups can run.
+    Fail-closed in two cases:
+      (a) Symbol has no registered market calendar (unknown commodity).
+      (b) Year is outside the coverage of the year-keyed holiday map
+          (operator hasn't published next year's dates yet). Without
+          this guard, a 2027 prior-business-day calculation against a
+          2026-only map silently treats 2027 holidays as ordinary
+          business days, returning a missing-row 424 from the wrong
+          date and recording the wrong proof on any persisted snapshot.
     """
-    if symbol.startswith("LME_"):
-        return _LME_HOLIDAYS
-    raise PriceReferenceUnprovable(
-        f"No market calendar registered for symbol {symbol!r}; "
-        "operator must extend `_market_calendar_for_symbol` before "
-        "MTM/P&L can be computed for this commodity.",
-        symbol=symbol,
-        as_of_date=None,
-    )
+    if not symbol.startswith("LME_"):
+        raise PriceReferenceUnprovable(
+            f"No market calendar registered for symbol {symbol!r}; "
+            "operator must extend `_market_calendar_for_symbol` before "
+            "MTM/P&L can be computed for this commodity.",
+            symbol=symbol,
+            as_of_date=None,
+        )
+    holidays = _LME_HOLIDAYS_BY_YEAR.get(year)
+    if holidays is None:
+        covered = sorted(_LME_HOLIDAYS_BY_YEAR.keys())
+        raise PriceReferenceUnprovable(
+            f"LME holiday calendar coverage does not include year {year}; "
+            f"covered years: {covered}. Operator must extend "
+            f"`_LME_HOLIDAYS_BY_YEAR` before lookups for this period.",
+            symbol=symbol,
+            as_of_date=date(year, 1, 1),
+        )
+    return holidays
 ```
 
 Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. That fall-through would be exactly the kind of fallback governance §2.6 forbids.
@@ -416,17 +438,24 @@ Unknown commodities **MUST raise a structured error** at lookup time — do NOT 
 **Algorithm — exact prior business day**:
 
 ```python
-def _prior_business_day(price_date: date, calendar: frozenset[date]) -> date:
+def _prior_business_day(price_date: date, calendar_for_year) -> date:
     """Return the SINGLE most recent business day strictly before `price_date`.
 
     Walks back exactly one business day, skipping weekends and calendar
-    holidays. Returns the unique date the caller MUST query for an
-    exact match — there is no range fallback. If the row at that exact
-    date is missing, the lookup raises PriceReferenceUnprovable; older
+    holidays. Returns the unique date the caller MUST query for an exact
+    match — there is no range fallback. If the row at that exact date
+    is missing, the lookup raises PriceReferenceUnprovable; older
     business-day rows are NOT considered.
+
+    `calendar_for_year` is a callable `(year: int) -> frozenset[date]`
+    that fail-closes when the year is outside calendar coverage — so a
+    cursor walking across a year boundary into uncovered territory
+    surfaces as a structured `PriceReferenceUnprovable` rather than
+    silently degrading to "weekends only" (per Codex P2 absorbed in §0
+    round 13).
     """
     cursor = price_date - timedelta(days=1)
-    while cursor.weekday() >= 5 or cursor in calendar:
+    while cursor.weekday() >= 5 or cursor in calendar_for_year(cursor.year):
         cursor -= timedelta(days=1)
     return cursor
 ```
@@ -467,7 +496,8 @@ def _canonical_source_for_symbol(symbol: str) -> str:
 
 ```python
 canonical_source = _canonical_source_for_symbol(symbol)  # may raise PriceReferenceUnprovable
-prior_bd = _prior_business_day(as_of_date, _market_calendar_for_symbol(symbol))
+calendar_for_year = lambda yr: _market_calendar_for_symbol(symbol, yr)  # year-keyed; fail-closed on coverage gap
+prior_bd = _prior_business_day(as_of_date, calendar_for_year)
 row = (
     db.query(CashSettlementPrice)
     .filter(
@@ -867,7 +897,7 @@ def downgrade() -> None:
 - [ ] `compute_pl` reading both ledger rows produces the correct net: `qty × (settlement − fixed)` for `fixed_leg_side=buy`; `qty × (fixed − settlement)` for `fixed_leg_side=sell`. Verified end-to-end in tests with both sides.
 - [ ] All `amount` values persisted on `cashflow_ledger_entries` are NON-NEGATIVE (institutional magnitude convention). `compute_pl`'s direction-driven sign application reads correctly.
 - [ ] Derived `amount` is `quantize`d to `Decimal("0.000001")` (matching `Numeric(18, 6)`) with `ROUND_HALF_EVEN` BEFORE both the 422 payload comparison and persistence. Idempotent re-ingest of the same payload + same canonical price returns the existing row (silent no-op) — NOT a 409 from precision drift.
-- [ ] Market calendar is an in-repo `frozenset[date]` static map (`_LME_HOLIDAYS`), NOT an import from a missing `holidays` / `python-holidays` package. `_prior_business_day(price_date, calendar: frozenset[date])` consumes the frozenset.
+- [ ] Market calendar is an in-repo YEAR-KEYED dict (`_LME_HOLIDAYS_BY_YEAR: dict[int, frozenset[date]]`), NOT an import from a missing `holidays` / `python-holidays` package. `_market_calendar_for_symbol(symbol, year)` raises `PriceReferenceUnprovable` when `year` is outside the covered keys (operator-extended coverage). `_prior_business_day(price_date, calendar_for_year)` consumes a year-aware callable; cursor walking into uncovered year fails-closed rather than silently treating year-N+1 holidays as business days.
 - [ ] Per-leg derivation mismatch (`leg.direction != derived_direction` OR `leg.amount != derived_amount`) raises `HTTPException(422, "Leg <fixed|float> <direction|amount> mismatch: ...")`.
 - [ ] `compute_pl` reads ledger-row provenance (post-§3.7) into `PriceReferenceEntry` records and appends them to `result.price_references` for the realized path; the unrealized lookup's quote is appended last; duplicates are deduped on `(symbol, source, settlement_date, value)`.
 - [ ] A settled-period P&L snapshot has at least one `PriceReferenceEntry` per **priced** ledger entry consumed in `realized_pl` — i.e., per ledger row whose `price_*` provenance fields are non-NULL (FLOAT legs only). FIXED legs deliberately have NULL provenance per §3.7 (their economics come from `contract.fixed_price_value`, not a market lookup); requiring a reference for them would force fabricated provenance. A settled period that consumed only FLOAT priced rows MUST emit ≥1 reference; a hypothetical period consuming only FIXED legs (institutional edge case) emits zero realized references — the unrealized lookup still ensures `price_references` is non-empty for any compute_pl run that hits the active-contract path.
@@ -967,7 +997,9 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_canonical_source_for_symbol_raises_PriceReferenceUnprovable_for_unknown_symbol` — `XYZ_FAKE` not in `_CANONICAL_SOURCE_BY_SYMBOL` → exception with structured message
   - `test_canonical_source_lookup_chain_works_for_short_code_input` — fixture: `commodity="LME_AL"` → `resolve_symbol` returns `"LME_ALU_CASH_SETTLEMENT_DAILY"` → `_canonical_source_for_symbol` returns `"westmetall"` → lookup succeeds. Regression for the round-12 P1 mis-keying bug (short code AL keyed map silently raised on the long-form output).
   - `test_lookup_filters_by_canonical_source_excluding_other_sources` — fixture: insert two `CashSettlementPrice` rows with same `(symbol=LME_AL, settlement_date=D)` but different sources `westmetall` and `bloomberg`; lookup MUST return the westmetall row (canonical) regardless of insertion order. Without source filter, `.first()` is non-deterministic.
-  - `test_market_calendar_is_in_repo_frozenset_not_holidays_dependency` — assert no `import holidays` in `app/utils/market_calendar.py`; `_LME_HOLIDAYS` is a `frozenset[date]` literal in source. Regression for the round-11 P2 missing-dep risk.
+  - `test_market_calendar_is_in_repo_year_keyed_not_holidays_dependency` — assert no `import holidays` in `app/utils/market_calendar.py`; `_LME_HOLIDAYS_BY_YEAR` is a `dict[int, frozenset[date]]` literal in source. Regression for the round-11 P2 missing-dep risk.
+  - `test_market_calendar_fails_closed_on_year_outside_coverage` — fixture: only 2026 in `_LME_HOLIDAYS_BY_YEAR`; call `_market_calendar_for_symbol("LME_ALU_CASH_SETTLEMENT_DAILY", 2027)` → raises `PriceReferenceUnprovable` with message naming covered years. Regression for the round-13 P2 silent-degradation bug.
+  - `test_prior_business_day_fails_closed_when_walk_crosses_into_uncovered_year` — fixture: only 2026 in calendar; `_prior_business_day(date(2027, 1, 4), calendar_for_year)` → cursor enters 2027, callable raises. Verifies the year-aware lookup propagates correctly through the walk loop.
   - `test_settlement_amount_quantized_to_ledger_scale` — fixture: `quantity=Decimal("10.500000")` × `price=Decimal("2585.123457")` produces unrounded 8-digit-fractional result; assert persisted `amount.quantize(Decimal("0.000001"))` matches the persisted row exactly; idempotent re-ingest returns the existing row (no 409, no payload-comparison 422).
   - `test_settlement_idempotent_reingest_no_409_after_quantize` — fixture: persist a settlement; re-ingest same payload immediately; assert silent no-op (`_ledger_entry_matches` returns True via post-quantize values). Regression for the round-11 P1 quantize-precision-drift bug.
   - `test_price_usd_returned_as_decimal_not_float_post_migration`
@@ -1090,7 +1122,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT query `cash_settlement_prices` filtering only by `(symbol, settlement_date)` and using `.first()`. The unique constraint is on `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. Without the source filter, `.first()` returns whichever row the DB happens to order first, making MTM / P&L provenance non-deterministic across environments. Lookup MUST filter on `(source == canonical_source, symbol, settlement_date)` where `canonical_source = _canonical_source_for_symbol(symbol)` (per Codex P2 absorbed in §0 round 10).
 - DO NOT key `_CANONICAL_SOURCE_BY_SYMBOL` by SHORT commodity codes (`LME_AL`, `LME_CU`, etc.). The lookup chain is `resolve_symbol(contract.commodity)` → LONG-form settlement symbol (e.g., `LME_ALU_CASH_SETTLEMENT_DAILY`) → `_canonical_source_for_symbol(long_form)`. The map MUST be keyed by the long-form symbol that `resolve_symbol` actually returns. Verify against `backend/app/services/price_lookup_service.py:62-79` (`COMMODITY_SYMBOL_MAP`); cover all six supported commodities (AL/CU/ZN/NI/PB/SN). Keying by short codes would silently raise `PriceReferenceUnprovable` on every legitimate lookup (per Codex P1 absorbed in §0 round 12).
 - DO NOT persist or compare unrounded `derived_amount` values. `quantity_mt × price` carries the sum of both factors' decimal scales (potentially > 6); `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` and the DB rounds on insert. Quantize `derived_amount` to `Decimal("0.000001")` with `ROUND_HALF_EVEN` BEFORE both the 422 payload comparison and persistence. Skipping the quantize causes idempotent re-ingest to throw a false 409 (or to reject a payload that supplies the rounded value as a 422 mismatch) (per Codex P1 absorbed in §0 round 11).
-- DO NOT `import holidays` (or `python_holidays`, or any other external calendar library) in the new `app/utils/market_calendar.py`. Those packages are NOT in `backend/requirements.txt`; the import would raise `ModuleNotFoundError` on every backend startup / test run. Use the in-repo `_LME_HOLIDAYS: frozenset[date]` static map prescribed in §3.6 (per Codex P2 absorbed in §0 round 11). If the operator decides to migrate to a package later, it lands as a separate dispatch with explicit dependency review.
+- DO NOT `import holidays` (or `python_holidays`, or any other external calendar library) in the new `app/utils/market_calendar.py`. Those packages are NOT in `backend/requirements.txt`; the import would raise `ModuleNotFoundError` on every backend startup / test run. Use the in-repo `_LME_HOLIDAYS_BY_YEAR: dict[int, frozenset[date]]` static map prescribed in §3.6 (per Codex P2 absorbed in §0 round 11). If the operator decides to migrate to a package later, it lands as a separate dispatch with explicit dependency review.
+- DO NOT use a single-year `frozenset[date]` for the holiday calendar (the round-11 first sketch). The map MUST be YEAR-KEYED (`dict[int, frozenset[date]]`) so a lookup whose prior-business-day calculation falls into an uncovered year fails-closed with a structured `PriceReferenceUnprovable` rather than silently treating year-N+1 holidays as business days. `_prior_business_day` consumes a `(year: int) -> frozenset[date]` callable that fail-closes on coverage gap. Operator extending the calendar yearly is institutional — coverage drift is operator's responsibility, but the system MUST surface the gap, not absorb it (per Codex P2 absorbed in §0 round 13).
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
 - DO NOT limit `PLResultResponse.price_references` to the unrealized-MTM lookup. `compute_pl` reads `CashFlowLedgerEntry` rows for the realized path; after §3.7 those rows carry provenance. Settled-period P&L snapshots MUST collect ledger-row provenance into `price_references` — otherwise a fully-settled period emits an empty references list and J-A3-05 stays open at the snapshot layer (per Codex P1 absorbed in §0 round 5).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
