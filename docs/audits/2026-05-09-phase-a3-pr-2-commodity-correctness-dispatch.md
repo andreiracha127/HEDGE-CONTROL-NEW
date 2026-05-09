@@ -11,7 +11,11 @@
 
 ## 0. Refresh notes (read first)
 
-This is the **first iteration** of the PR-A3-2 dispatch. Wave 1 PR-A3-1 (PR #41) merged at main `030a49bff` introduced the price-provenance machinery (`_with_provenance` lookup, MTM/P&L/Baseline snapshots carrying `price_source` + `price_symbol` + `price_settlement_date` + `inputs_hash` + `price_value`, server-side ledger derivation, business-calendar lookback). Wave 2 builds on that foundation — without it, the commodity-correctness fix would persist non-aluminum snapshots with the same `price_symbol="LME_ALU_CASH_SETTLEMENT_DAILY"` regardless of fix, hiding the bug at the symbol layer.
+This is the **second iteration** of the PR-A3-2 dispatch. Iteration 1 was reviewed by Codex (PR #42 round 1) and flagged a Tipo I fact-mismatch in §7's prescribed test assertion: it referenced `result.contracts[<id>].price_quote.symbol`, but `ScenarioWhatIfRunResponse` exposes `mtm_snapshot` (not `contracts`), and `_mtm_for_contract` constructs `MTMResultResponse` without populating `price_quote`. The test was doubly unsatisfiable.
+
+Iteration 2 resolves this by **extending the scope** to plumb the existing Wave 1 `PriceQuote` provenance through the scenario MTM call sites — a parallel-persistence-symmetry application of the Wave 1 invariant to the scenario surface. The plumbing is a clean type-flow change (no new concepts): `_build_price_lookup` and `_resolve_price_d1` now return `PriceQuote` instead of `Decimal`; `_mtm_for_contract` and `_mtm_for_order` accept `PriceQuote` and populate `MTMResultResponse.price_quote`. The test then asserts `mtm_snapshot[<i>].price_quote.symbol` against the correct response shape, with the symbol provably matching the operator-supplied commodity. See §3.7.
+
+Wave 1 PR-A3-1 (PR #41) merged at main `030a49bff` introduced the price-provenance machinery (`_with_provenance` lookup, MTM/P&L/Baseline snapshots carrying `price_source` + `price_symbol` + `price_settlement_date` + `inputs_hash` + `price_value`, server-side ledger derivation, business-calendar lookback). Wave 2 builds on that foundation — without it, the commodity-correctness fix would persist non-aluminum snapshots with the same `price_symbol="LME_ALU_CASH_SETTLEMENT_DAILY"` regardless of fix, hiding the bug at the symbol layer.
 
 Verified via Serena against `main = 030a49bff`:
 - `mtm_order_service.compute_mtm_for_order` at `:21-79` declares `commodity: str = DEFAULT_COMMODITY` parameter; `DEFAULT_COMMODITY = "LME_AL"` constant.
@@ -19,6 +23,9 @@ Verified via Serena against `main = 030a49bff`:
 - 5 call sites consume `compute_mtm_for_order` without passing the `commodity` argument: `routes/mtm.py:44`, `routes/mtm.py:73` (via `create_mtm_snapshot_for_order`), `cashflow_analytic_service.py:52`, `mtm_snapshot_service.py:129` (via `create_mtm_snapshot_for_order`), `scenario_whatif_service.py:181` (explicit `commodity=DEFAULT_COMMODITY`).
 - `scenario_whatif_service.py:43` declares its own `DEFAULT_COMMODITY = "LME_AL"`; `scenario_whatif_service.py:181` constructs `VirtualHedgeContract(commodity=DEFAULT_COMMODITY, ...)` — operator cannot specify which commodity the virtual hedge is for.
 - `AddUnlinkedHedgeContractDelta` schema at `schemas/scenario.py:18-34` has fields for `contract_id`, `quantity_mt`, `fixed_leg_side`, `variable_leg_side`, `fixed_price_value`, `fixed_price_unit`, `float_pricing_convention` — but **no `commodity` field**.
+- `scenario_whatif_service._mtm_for_contract` (`:84-103`) and `_mtm_for_order` (`:107-...`) construct `MTMResultResponse` without populating `price_quote` — the field exists on the schema (`MTMResultResponse.price_quote: PriceQuote | None = None`, `schemas/mtm.py:24`) but defaults to `None` in scenario context. After Wave 1, real (non-scenario) MTM/P&L call sites populate `price_quote` via `get_cash_settlement_price_d1_with_provenance`, but the scenario MTM still uses the thin `get_cash_settlement_price_d1` wrapper that discards the provenance triplet.
+- `_build_price_lookup` (`:60-72`) callable signature is `Callable[[Session, str, date], Decimal]`; `_resolve_price_d1` (`:75-82`) returns `Decimal`. These are the two pivot points for the Iteration-2 plumbing change.
+- `PriceQuote` (`utils/price_reference.py:24-31`) is a frozen dataclass with 4 required fields: `value: Decimal`, `source: str`, `settlement_date: date`, `symbol: str`. No `inputs_hash`. Constructible by both the override path (with `source="scenario_override"`) and the settlement-table path (delegating to `get_cash_settlement_price_d1_with_provenance`).
 
 Wave 2 surface is much smaller than Wave 1 (no schema migration; no new utility modules; existing models unchanged). Expected dispatch size: ~400 lines vs Wave 1's 1,176.
 
@@ -33,6 +40,7 @@ After PR-A3-2:
 - `AddUnlinkedHedgeContractDelta` carries an explicit `commodity` field. `scenario_whatif_service` reads `delta.commodity` when constructing `VirtualHedgeContract`. The `DEFAULT_COMMODITY` constant in `scenario_whatif_service` is removed.
 - Every existing call site that passes `commodity=DEFAULT_COMMODITY` is updated.
 - Cross-commodity tests (Cu, Zn, Ni, Pb, Sn) verify each commodity prices against its own curve, persisting the correct `price_symbol` on the resulting `MTMSnapshot` (verifying the Wave 1 provenance machinery surfaces the fix).
+- Scenario MTM plumbing (`_build_price_lookup`, `_resolve_price_d1`, `_mtm_for_contract`, `_mtm_for_order`) threads `PriceQuote` end-to-end so that `mtm_snapshot[i].price_quote.symbol` is populated for every scenario MTM result. This is parallel-persistence-symmetry with Wave 1: real MTM surfaces gained provenance plumbing in PR #41; the scenario MTM surface gains it here. The test for J-A3-OPUS-01 then asserts the resulting `price_quote.symbol` matches the operator-supplied commodity directly.
 
 **Persona:** Senior software engineer building an institutional trading platform. Constitution `docs/governance.md` is supreme authority — **§2.1 VALUATION/MTM/CASHFLOW** (governance.md:131-146, "no fallback pricing regimes"), **§2.6 GOVERNANCE HARD FAILS** (governance.md:159-174, "evidence missing" / "price reference unprovable"). Pricing-domain awareness obligatory.
 
@@ -214,9 +222,191 @@ virtual_contracts.append(
 
 **Remove the `DEFAULT_COMMODITY = "LME_AL"` constant** at `scenario_whatif_service.py:43`. After this commit, the constant is unreferenced.
 
-**Remove the `_resolve_price_d1` default** at `scenario_whatif_service.py:79`: change `commodity: str = DEFAULT_COMMODITY` to a required argument `commodity: str`. Walk every caller of `_resolve_price_d1` and ensure it passes the commodity explicitly. (Per Serena `find_referencing_symbols`, `_resolve_price_d1` is called from N call sites within `scenario_whatif_service.py` — locate via grep on the function name and update each.)
+**Remove the `_resolve_price_d1` default** at `scenario_whatif_service.py:79`: change `commodity: str = DEFAULT_COMMODITY` to a required argument `commodity: str`. Walk every caller of `_resolve_price_d1` and ensure it passes the commodity explicitly. Verified via Serena against `030a49bff`: `_resolve_price_d1` is called from **5 call sites** within `scenario_whatif_service.py` — `:472`, `:485`, `:499`, `:550`, `:595` (the same set updated in §3.7.5 for the `PriceQuote` plumbing). Each of these already passes `commodity` explicitly today (`contract.commodity`, `order.commodity`); removing the default is a defensive lockdown so future call sites cannot rely on the implicit aluminum default.
 
-### 3.7 Frontend regen
+### 3.7 Scenario MTM provenance plumbing (parallel-persistence-symmetry with Wave 1)
+
+This subsection extends Iteration 2 of the dispatch (see §0 refresh notes). It threads the existing Wave 1 `PriceQuote` shape through the scenario MTM call sites so the scenario `mtm_snapshot` carries `price_quote.symbol` evidence — closing the provenance gap that made the J-A3-OPUS-01 test assertion unsatisfiable in Iteration 1.
+
+The change is a clean type-flow plumbing — no new schemas, no new conceptual model. The `MTMResultResponse.price_quote` field already exists (`schemas/mtm.py:24`); we are populating it on the scenario surface, paralleling what Wave 1 did for non-scenario MTM.
+
+#### 3.7.1 Lookup callable returns `PriceQuote`
+
+**Current** at `scenario_whatif_service.py:60-72`:
+
+```python
+def _build_price_lookup(
+    overrides: dict[tuple[str, date], Decimal],
+) -> Callable[[Session, str, date], Decimal]:
+    def lookup(db: Session, symbol: str, as_of_date: date) -> Decimal:
+        prior_bd = _prior_business_day(
+            as_of_date, lambda year: _market_calendar_for_symbol(symbol, year)
+        )
+        key = (symbol, prior_bd)
+        if key in overrides:
+            return overrides[key]
+        return get_cash_settlement_price_d1(db, symbol=symbol, as_of_date=as_of_date)
+
+    return lookup
+```
+
+**Replacement**:
+
+```python
+def _build_price_lookup(
+    overrides: dict[tuple[str, date], Decimal],
+) -> Callable[[Session, str, date], PriceQuote]:
+    def lookup(db: Session, symbol: str, as_of_date: date) -> PriceQuote:
+        prior_bd = _prior_business_day(
+            as_of_date, lambda year: _market_calendar_for_symbol(symbol, year)
+        )
+        key = (symbol, prior_bd)
+        if key in overrides:
+            return PriceQuote(
+                value=overrides[key],
+                source="scenario_override",
+                settlement_date=prior_bd,
+                symbol=symbol,
+            )
+        # Settlement-table path: delegate to the Wave-1 provenance-bearing
+        # lookup. The HTTPException(424) translation that the thin wrapper
+        # used to provide is no longer applied here; raise the underlying
+        # PriceReferenceUnprovable and let the caller decide how to expose
+        # it (the scenario service's existing exception-handling layer
+        # translates it consistently with non-scenario MTM).
+        return get_cash_settlement_price_d1_with_provenance(
+            db, symbol=symbol, as_of_date=as_of_date
+        )
+
+    return lookup
+```
+
+**Override `source="scenario_override"`**: this is a new canonical source identifier specific to scenario what-if runs. The caller asserting `price_quote.source == "scenario_override"` proves the result derives from the operator's hypothetical override rather than the canonical settlement table — institutionally important for audit-trail readers. No DB column constraint applies (`PriceQuote.source` is a string; `MTMSnapshot.price_source` is also a string per Wave 1 schema). Document the literal in `price_lookup_service.py` or `utils/price_reference.py` constants if a constants module is the convention; otherwise keep inline.
+
+**HTTPException translation removal**: the Iteration-1 lookup raised `HTTPException(424)` via the thin `get_cash_settlement_price_d1` wrapper. The new shape raises `PriceReferenceUnprovable` directly. The scenario service must either (a) catch and translate it to `HTTPException(424)` at the call site (preferred, matching the Wave-1 pattern in `compute_mtm_for_order`) or (b) verify the request handler translates it via existing FastAPI exception handlers. Audit the scenario top-level handler at `routes/scenario.py` and confirm — if no handler exists, add the `try/except PriceReferenceUnprovable` translation at each `_resolve_price_d1` call site.
+
+#### 3.7.2 `_resolve_price_d1` returns `PriceQuote`
+
+**Current** at `scenario_whatif_service.py:75-82`:
+
+```python
+def _resolve_price_d1(
+    db: Session,
+    as_of_date: date,
+    lookup: Callable[[Session, str, date], Decimal],
+    commodity: str = DEFAULT_COMMODITY,
+) -> Decimal:
+    symbol = resolve_symbol(commodity)
+    return lookup(db, symbol, as_of_date)
+```
+
+**Replacement** (drop default per §3.6; change return type):
+
+```python
+def _resolve_price_quote(
+    db: Session,
+    as_of_date: date,
+    lookup: Callable[[Session, str, date], PriceQuote],
+    commodity: str,
+) -> PriceQuote:
+    symbol = resolve_symbol(commodity)
+    return lookup(db, symbol, as_of_date)
+```
+
+**Rename consideration**: the function now returns a `PriceQuote`, not a `price_d1` Decimal. Renaming to `_resolve_price_quote` is the cleaner API contract. The 5 call sites (4 in `_mtm_for_contract` + 1 in `_mtm_for_order`) are updated in lockstep with the signature changes in §3.7.3 / §3.7.4. If renaming is preferred to keep the diff smaller, the old name `_resolve_price_d1` stays — but it is misleading. Pick one and document the choice in the PR body.
+
+#### 3.7.3 `_mtm_for_contract` accepts `PriceQuote`; populates `MTMResultResponse.price_quote`
+
+**Current** at `scenario_whatif_service.py:84-103`:
+
+```python
+def _mtm_for_contract(
+    contract_id: UUID,
+    quantity_mt: Decimal,
+    entry_price: Decimal,
+    as_of_date: date,
+    price_d1: Decimal,
+) -> MTMResultResponse:
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(entry_price)
+    price_d1 = quantize_price(price_d1)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
+    return MTMResultResponse(
+        object_type=MTMObjectType.hedge_contract,
+        object_id=str(contract_id),
+        as_of_date=as_of_date,
+        mtm_value=mtm_value,
+        price_d1=price_d1,
+        entry_price=entry_price,
+        quantity_mt=quantity_mt,
+    )
+```
+
+**Replacement**:
+
+```python
+def _mtm_for_contract(
+    contract_id: UUID,
+    quantity_mt: Decimal,
+    entry_price: Decimal,
+    as_of_date: date,
+    price_quote: PriceQuote,
+) -> MTMResultResponse:
+    quantity_mt = quantize_mt(quantity_mt)
+    entry_price = quantize_price(entry_price)
+    price_d1 = quantize_price(price_quote.value)
+    mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
+    return MTMResultResponse(
+        object_type=MTMObjectType.hedge_contract,
+        object_id=str(contract_id),
+        as_of_date=as_of_date,
+        mtm_value=mtm_value,
+        price_d1=price_d1,
+        entry_price=entry_price,
+        quantity_mt=quantity_mt,
+        price_quote=price_quote,
+    )
+```
+
+**Quantization note**: `price_quote.value` is quantized into `price_d1` for the `MTMResultResponse.price_d1` field but the `price_quote` itself is passed unmodified. This matches Wave 1's pattern in `compute_mtm_for_order`: the persisted `MTMSnapshot.price_value` is the quantized value, but the audit-trail `price_quote` reflects the canonical-source raw value. Verify against Wave-1 `compute_mtm_for_order` body before authoring — if Wave 1 quantizes inside the `PriceQuote` too, mirror that here for parallel-persistence-symmetry.
+
+#### 3.7.4 `_mtm_for_order` accepts `PriceQuote`; populates `MTMResultResponse.price_quote`
+
+Symmetric change for the order path. Current signature accepts `price_d1: Decimal` (`scenario_whatif_service.py:107-...`). Replace with `price_quote: PriceQuote`; populate `MTMResultResponse(price_quote=price_quote, ...)`.
+
+#### 3.7.5 Update all 5 call sites
+
+Verified via Serena against `030a49bff` — the 4 `_mtm_for_contract` call sites at `scenario_whatif_service.py:467, 480, 545, 590` and the 1 `_mtm_for_order` call site at `scenario_whatif_service.py:495` all currently pass `price_d1=_resolve_price_d1(db, ..., commodity=...)`. Each must be updated to:
+
+```python
+price_quote=_resolve_price_quote(db, ..., lookup, commodity=...)
+```
+
+(or `_resolve_price_d1` if rename is rejected per §3.7.2 — but pass the result as `price_quote=...` either way; the kwarg name on `_mtm_for_*` is what changes).
+
+**Imports to add** at `scenario_whatif_service.py` top:
+
+```python
+from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable
+from app.services.price_lookup_service import (
+    canonical_commodity,
+    get_cash_settlement_price_d1_with_provenance,  # NEW (replaces _d1 wrapper)
+    resolve_symbol,
+)
+```
+
+The existing `get_cash_settlement_price_d1` import is removed — the thin wrapper is no longer used inside `scenario_whatif_service`. Verify via grep that no other reference to `get_cash_settlement_price_d1` exists in the file before deleting the import.
+
+#### 3.7.6 Scope guard: do NOT extend plumbing beyond scenario MTM
+
+`MTMResultResponse.price_quote` plumbing in scenario context stops at `mtm_snapshot[i].price_quote`. Do NOT thread `PriceQuote` into:
+- `CashFlowItem` (scenario cashflow snapshot) — that's a Wave 4 concern (cashflow boundary fix).
+- `ScenarioPLSnapshotItem` — the P&L unrealized field consumes `_mtm_for_contract().mtm_value`, but the P&L snapshot does NOT need the underlying `PriceQuote`. Leave P&L snapshots untouched.
+- Real non-scenario MTM call sites (Wave 1 already handled these).
+
+Out-of-scope plumbing here would expand PR-A3-2 into a Wave-1.5-style cross-cutting refactor. The line is: scenario `mtm_snapshot` gains parity; nothing else in the scenario response shape changes.
+
+### 3.8 Frontend regen
 
 The `AddUnlinkedHedgeContractDelta` schema change adds a required field — OpenAPI + frontend `schema.d.ts` regen is required. Per Wave 1 PR-A3-1 §11 step 15:
 
@@ -227,9 +417,9 @@ cd ../frontend-svelte && OPENAPI_SOURCE=../docs/api/openapi_v1.json node scripts
 
 If the frontend has any UI for adding scenario deltas (e.g., a form), add a commodity-picker field. The `commodity` enum / dropdown should mirror `COMMODITY_SYMBOL_MAP.keys()` from `price_lookup_service.py`. If no UI exists today, document the gap in the PR body and defer to Phase A6 (frontend audit).
 
-### 3.8 No migration, no model change
+### 3.9 No migration, no model change
 
-PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is needed; `alembic heads` continues to return `["038_a3_price_provenance"]`. No Order model change (the `commodity` field already exists). No MTMSnapshot/PLSnapshot model change (Wave 1 already added price provenance fields).
+PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is needed; `alembic heads` continues to return `["038_a3_price_provenance"]`. No Order model change (the `commodity` field already exists). No MTMSnapshot/PLSnapshot model change (Wave 1 already added price provenance fields). No `MTMResultResponse` schema change (the `price_quote` field already exists per `schemas/mtm.py:24`; we are populating it on the scenario path, not introducing it).
 
 **Legacy MTMSnapshot rows with wrong `price_symbol`**: rows persisted between PR-A3-1 merge (Wave 1 added `price_symbol` to MTMSnapshot) and PR-A3-2 merge for non-aluminum orders carry `price_symbol="LME_ALU_CASH_SETTLEMENT_DAILY"` despite the order being copper/zinc/etc. Per `feedback_dispatch_self_consistency` "Hash/key signature changes — backfill only if you have all the inputs": legacy rows stay sealed (do NOT mass-update; they are forensic artifacts of the buggy regime). Post-PR-A3-2 snapshots persist correct provenance. The boundary is a **deployment timestamp** — operators recomputing MTM/P&L for a date in the buggy window can detect the gap via `MTMSnapshot.price_symbol` not matching the order's `commodity`.
 
@@ -241,7 +431,7 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 - **Cashflow boundary fix** (J-A3-04 Baseline reads Analytic; J-A3-OPUS-08 reconciliation) — Wave 4 (PR-A3-4).
 - **P&L lifecycle** (J-A3-OPUS-09 partially-settled zeroes unrealized MTM) — Wave 5 (PR-A3-5).
 - **Cross-A1 deferred** (X-A3-J-01 deal_engine; X-A3-J-02 scenario duplicates A1 exposure) — future Phase A1 follow-up audit.
-- **Backfill of legacy MTMSnapshot rows with wrong `price_symbol`** — out of scope. Legacy stays sealed (per §3.8). Documenting the regime boundary in operator runbook is a Phase A5 audit-trail concern.
+- **Backfill of legacy MTMSnapshot rows with wrong `price_symbol`** — out of scope. Legacy stays sealed (per §3.9). Documenting the regime boundary in operator runbook is a Phase A5 audit-trail concern.
 - **Adding new commodity → settlement symbol mappings** to `COMMODITY_SYMBOL_MAP` — out of scope. The current six (AL/CU/ZN/NI/PB/SN) are fixed; new commodities land via separate dispatches with full price-source review.
 - **Frontend UI for commodity selection** in scenario delta form — out of scope (Phase A6).
 
@@ -263,8 +453,14 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 - [ ] `AddUnlinkedHedgeContractDelta` schema has a new required `commodity: str` field with `Field(..., max_length=64)`. Schema validator rejects 422 if `resolve_symbol(commodity)` raises.
 - [ ] `scenario_whatif_service` reads `delta.commodity` when constructing `VirtualHedgeContract` (no `DEFAULT_COMMODITY`).
 - [ ] `DEFAULT_COMMODITY` constant removed from `scenario_whatif_service.py`.
-- [ ] `_resolve_price_d1` no longer has a `commodity` default; every caller passes the commodity explicitly.
-- [ ] OpenAPI + `schema.d.ts` regenerated to reflect the new required field.
+- [ ] `_resolve_price_d1` (or its renamed successor `_resolve_price_quote`) no longer has a `commodity` default; every one of the 5 call sites passes the commodity explicitly.
+- [ ] `_build_price_lookup` callable returns `PriceQuote` instead of `Decimal`. Override path constructs `PriceQuote(source="scenario_override", ...)`. Settlement-table path delegates to `get_cash_settlement_price_d1_with_provenance` (Wave 1).
+- [ ] `_mtm_for_contract` accepts `price_quote: PriceQuote` (replacing the `price_d1: Decimal` parameter); populates `MTMResultResponse(price_quote=price_quote, ...)`.
+- [ ] `_mtm_for_order` accepts `price_quote: PriceQuote` symmetrically; populates `MTMResultResponse(price_quote=price_quote, ...)`.
+- [ ] All 5 call sites (`scenario_whatif_service.py:467, 480, 495, 545, 590`) updated to thread the `PriceQuote` end-to-end.
+- [ ] Scenario request handler translates `PriceReferenceUnprovable` to `HTTPException(424)` consistently with non-scenario MTM (either via `try/except` at call sites or via FastAPI exception handler — see §3.7.1).
+- [ ] No `MTMResultResponse.price_quote == None` for any item in `mtm_snapshot` returned from `/scenario` (every scenario MTM result carries provenance after this PR).
+- [ ] OpenAPI + `schema.d.ts` regenerated to reflect the new required `commodity` field on `AddUnlinkedHedgeContractDelta` and the now-always-populated `price_quote` field on scenario `MTMResultResponse` items.
 - [ ] `[BEHAVIOR_SHIFT]` flag in PR body: scenario API consumers must update payloads to include `commodity`.
 - [ ] `alembic heads` continues to return `["038_a3_price_provenance"]` (no new migration).
 - [ ] `test_alembic_chain.py` continues passing.
@@ -289,7 +485,9 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 - `backend/tests/test_scenario_whatif_run.py` (extension):
   - `test_scenario_add_unlinked_hedge_contract_requires_commodity` — POST `/scenario` with delta missing `commodity` → 422 with field-level error.
   - `test_scenario_add_unlinked_hedge_contract_validates_known_commodity` — delta with `commodity="UNKNOWN_FAKE"` → 422 with structured message about settlement-symbol mapping.
-  - `test_scenario_virtual_hedge_uses_provided_commodity_not_default` — delta with `commodity="ZINC"` → resulting virtual contract MTM priced against zinc; assert `result.contracts[<id>].price_quote.symbol == "LME_ZN_CASH_SETTLEMENT_DAILY"`.
+  - `test_scenario_virtual_hedge_uses_provided_commodity_not_default` — delta with `commodity="ZINC"` + canonical zinc settlement seeded for the prior business day with `source="westmetall"` (the canonical source returned by `_canonical_source_for_symbol("LME_ZN_CASH_SETTLEMENT_DAILY")` per `utils/market_calendar.py:173-176`); POST `/scenario`; locate the virtual hedge in `response.mtm_snapshot` by `object_id == str(delta.contract_id)` and `object_type == MTMObjectType.hedge_contract`; assert `item.price_quote.symbol == resolve_symbol("ZINC")` (i.e., `"LME_ZN_CASH_SETTLEMENT_DAILY"`); assert `item.price_quote.source == "westmetall"`; assert `item.mtm_value == quantize_money(qty * (zinc_settlement - entry_price))`. **Note**: assertion path is `mtm_snapshot[i].price_quote.symbol`, NOT `contracts[id].price_quote.symbol` — the response shape exposes `mtm_snapshot: list[MTMResultResponse]`, not a `contracts` mapping.
+  - `test_scenario_price_override_constructs_scenario_override_provenance` — delta of type `add_cash_settlement_price_override` with `symbol="LME_AL_CASH_SETTLEMENT_DAILY"`, `settlement_date=<prior business day of req.as_of_date>`, `price_usd=Decimal("2500.00")`; fixture additionally persists an active aluminum hedge contract so the override has a contract to price; POST `/scenario`; locate the aluminum MTM result in `mtm_snapshot`; assert `item.price_quote.source == "scenario_override"` and `item.price_quote.value == Decimal("2500.00")` (post-quantization equality — apply `quantize_price` if Wave 1 quantizes inside the `PriceQuote`; otherwise raw equality) and `item.price_quote.symbol == "LME_AL_CASH_SETTLEMENT_DAILY"` and `item.price_quote.settlement_date == <prior_bd>`. Pins the override-path `PriceQuote` construction; this is the ONLY test that exercises the override branch end-to-end with provenance assertions.
+  - `test_scenario_real_contract_mtm_carries_price_quote` — fixture: persist 1 active hedge contract for copper + canonical copper settlement (source `"westmetall"`); POST `/scenario` with no deltas; locate the real contract result in `response.mtm_snapshot` by `object_id == str(contract.id)`; assert `item.price_quote is not None`, `item.price_quote.symbol == "LME_CU_CASH_SETTLEMENT_DAILY"`, and `item.price_quote.source == "westmetall"`. Pins parallel-persistence-symmetry on the non-virtual scenario MTM path.
 
 ---
 
@@ -335,7 +533,7 @@ Operators must update their delta payloads.
 ## Files changed
 
 - `backend/app/services/mtm_order_service.py` — drop `commodity` parameter; resolve from `order.commodity`; remove `DEFAULT_COMMODITY` constant
-- `backend/app/services/scenario_whatif_service.py` — read `delta.commodity`; remove `DEFAULT_COMMODITY` constant; remove `_resolve_price_d1` default
+- `backend/app/services/scenario_whatif_service.py` — read `delta.commodity`; remove `DEFAULT_COMMODITY` constant; remove `_resolve_price_d1` default; thread `PriceQuote` through `_build_price_lookup` / `_resolve_price_d1` (or rename to `_resolve_price_quote`) / `_mtm_for_contract` / `_mtm_for_order`; populate `MTMResultResponse.price_quote` on every scenario MTM call site
 - `backend/app/schemas/scenario.py` — `AddUnlinkedHedgeContractDelta` gains required `commodity` field with `resolve_symbol` validation
 - `docs/api/openapi_v1.json` — regen
 - `frontend-svelte/src/lib/api/schema.d.ts` — regen
@@ -351,7 +549,9 @@ Operators must update their delta payloads.
 
 §2.1 (no fallback pricing regimes — commodity defaulting was a fallback
 by another name), §2.7 (free of speculation — persisted `price_symbol`
-now matches input commodity).
+now matches input commodity; scenario `mtm_snapshot` items now carry
+`price_quote.symbol` evidence in the response, paralleling Wave 1's
+provenance plumbing for non-scenario MTM).
 
 ## Out of scope
 
@@ -374,6 +574,9 @@ J-A3-02 + J-A3-OPUS-01.
 - DO NOT backfill legacy MTMSnapshot rows whose `price_symbol` is wrong. Legacy stays sealed; the regime boundary is the deployment timestamp.
 - DO NOT add new commodities to `COMMODITY_SYMBOL_MAP` in this PR. The six existing commodities are fixed scope; new commodities land via separate dispatches with full price-source review.
 - DO NOT use `strip(...)` with character classes that include hyphen `-`, plus `+`, period `.`, comma `,` anywhere in the changed files. Pricing-domain awareness mandatory.
+- DO NOT thread `PriceQuote` plumbing into surfaces other than scenario MTM. Specifically: do NOT add `price_quote` to `CashFlowItem` (Wave 4 concern), do NOT add it to `ScenarioPLSnapshotItem` (P&L consumes only `mtm_value`), do NOT touch non-scenario MTM call sites (Wave 1 already handled them). Out-of-scope plumbing turns PR-A3-2 into a cross-cutting refactor.
+- DO NOT introduce a `PriceQuote.inputs_hash` field or any new `PriceQuote` attribute to support this PR. The existing 4-field shape (`value`, `source`, `settlement_date`, `symbol`) is sufficient. Schema evolution requires its own dispatch.
+- DO NOT silently coerce the override-path `source` to anything other than `"scenario_override"`. The literal must be unique and grep-able for audit-trail readers. Do NOT use `"override"`, `"manual"`, `"adjustment"`, or unset (None defaults are not acceptable on a `frozen=True` dataclass with a required field).
 - DO NOT auto-merge — wait for Codex review.
 - DO NOT use `--no-verify` to skip git hooks.
 
@@ -390,15 +593,23 @@ J-A3-02 + J-A3-OPUS-01.
 7. Add `commodity` field to `AddUnlinkedHedgeContractDelta` (`schemas/scenario.py:18-34`); extend the validator.
 8. Update virtual-hedge construction at `scenario_whatif_service.py:178-191` to read `delta.commodity`.
 9. Remove `DEFAULT_COMMODITY` constant at `scenario_whatif_service.py:43`.
-10. Remove default from `_resolve_price_d1` at `scenario_whatif_service.py:79`; walk callers via Serena `find_referencing_symbols` and update each.
-11. Run targeted pytest: `pytest backend/tests/test_mtm_order_service.py backend/tests/test_multi_commodity.py backend/tests/test_mtm_snapshot_service.py backend/tests/test_cashflow_analytic_service.py backend/tests/test_scenario_whatif_run.py backend/tests/test_alembic_chain.py -v`
-12. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
-13. **Frontend regen**:
+10. Remove default from `_resolve_price_d1` at `scenario_whatif_service.py:79`; walk the 5 callers (`:472, :485, :499, :550, :595`) via Serena `find_referencing_symbols` and update each.
+11. **Provenance plumbing (§3.7)**:
+    - Update `_build_price_lookup` callable signature: `Callable[[Session, str, date], PriceQuote]`. Override path constructs `PriceQuote(value=overrides[key], source="scenario_override", settlement_date=prior_bd, symbol=symbol)`. Settlement-table path delegates to `get_cash_settlement_price_d1_with_provenance`.
+    - Update `_resolve_price_d1` (or rename to `_resolve_price_quote` per §3.7.2) to return `PriceQuote`.
+    - Update `_mtm_for_contract` signature: drop `price_d1: Decimal`, add `price_quote: PriceQuote`. Quantize `price_quote.value` into `price_d1` for `MTMResultResponse.price_d1`. Pass `price_quote` unmodified into `MTMResultResponse(price_quote=price_quote, ...)`.
+    - Update `_mtm_for_order` symmetrically.
+    - Update all 5 call sites (`:467, :480, :495, :545, :590`) to pass the `PriceQuote` returned by `_resolve_price_d1` (or `_resolve_price_quote`) as `price_quote=...`.
+    - Add imports: `from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable`; `from app.services.price_lookup_service import get_cash_settlement_price_d1_with_provenance`. Remove import of `get_cash_settlement_price_d1` (verify no remaining references via grep).
+    - Audit `routes/scenario.py` for `PriceReferenceUnprovable` translation. If no FastAPI handler exists, add `try/except PriceReferenceUnprovable` translation at each `_resolve_price_d1` call site mirroring the Wave-1 pattern in `compute_mtm_for_order`.
+12. Run targeted pytest: `pytest backend/tests/test_mtm_order_service.py backend/tests/test_multi_commodity.py backend/tests/test_mtm_snapshot_service.py backend/tests/test_cashflow_analytic_service.py backend/tests/test_scenario_whatif_run.py backend/tests/test_alembic_chain.py -v`
+13. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
+14. **Frontend regen**:
     - `cd backend && DATABASE_URL=sqlite:///:memory: SECRET_KEY=dummy JWT_SIGNING_SECRET=dummy AUDIT_HMAC_KEY=dummy AUDIT_SIGNING_KEY=test python -c "from app.main import app; import json; json.dump(app.openapi(), open('../docs/api/openapi_v1.json', 'w'), indent=2, sort_keys=True)"`
     - `cd ../frontend-svelte && OPENAPI_SOURCE=../docs/api/openapi_v1.json node scripts/regen-schema.mjs`
-14. `git push -u origin audit-a3/commodity-correctness && gh pr create --base main --title "<§9 title>" --body-file <body>` — DO NOT use `--draft` (the PR-A3-1 incident with draft-state-blocking-merge is fresh; open as ready-for-review).
-15. **STOP. Wait for Codex review.** Address each catch as a new commit. Expected catch count: 1-3 per A2 cycle history (parser-style fix; smaller surface).
-16. Report back to orchestrator with PR URL, final SHA, Codex review state, files-touched grouping, test counts, frontend regen evidence.
+15. `git push -u origin audit-a3/commodity-correctness && gh pr create --base main --title "<§9 title>" --body-file <body>` — DO NOT use `--draft` (the PR-A3-1 incident with draft-state-blocking-merge is fresh; open as ready-for-review).
+16. **STOP. Wait for Codex review.** Address each catch as a new commit. Expected catch count: 2-5 (the plumbing extension is a wider type-flow change; matches Wave-1 surface complexity for the affected functions).
+17. Report back to orchestrator with PR URL, final SHA, Codex review state, files-touched grouping, test counts, frontend regen evidence.
 
 ---
 
