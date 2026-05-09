@@ -11,6 +11,12 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex P1 absorbed against commit `84292ec9c`:**
+
+1. **Persist P&L provenance in the SNAPSHOT service, not the calculation service.** The first round-1 §3.3 directive said `compute_pl` collects + persists. Codex caught: `compute_pl` (in `pl_calculation_service.py`) only returns `PLResultResponse`; `PLSnapshot` rows are created and conflict-checked in a SEPARATE service `pl_snapshot_service.py:create_pl_snapshot`. Without explicit two-service propagation, the executor would persist nothing and J-A3-05 stays open. **Fix:** §3.3 now prescribes a four-step propagation chain: (1) extend `PLResultResponse` with structured `price_references: list[PriceReferenceEntry]`; (2) `compute_pl` populates the field; (3) `create_pl_snapshot` reads from the response and persists; (4) idempotency / conflict logic in `create_pl_snapshot` compares the new fields and raises 409 on divergence. §6/§7 list four matching acceptance criteria + six matching test cases.
+
+2. **Include `price_symbol` in ledger-entry construction AND idempotency.** The §3.7 implementation sketch from round-1 still populated only `price_source + price_settlement_date` in `_build_expected_entry`'s returned dict — even though round-1's catch had added `price_symbol` to the column set + CHECK constraint. With the all-or-none CHECK, persisting the dict would violate; if the CHECK were relaxed, the ledger would remain ambiguous across multi-commodity-same-source-same-date (the same shape that the §0 round-1 first catch was meant to prevent). **Fix:** §3.7 example now includes `price_symbol=settlement_quote.symbol` in the dict and updates `_ledger_entry_matches` to include all three provenance fields in the equality check; §6 acceptance gains a criterion for `_build_expected_entry`'s symbol population and a criterion for idempotency-with-divergent-provenance raising 409. **Self-blame:** this is a cross-section sweep miss — round-1's fix added the column but skipped the §3.7 concrete code example. The 4-offense pattern from PR-5 strikes again; the 8-section sweep checklist must include "every concrete code example that constructs an instance of the affected schema" not just the schema declaration.
+
 **Two Codex P1 absorbed against pre-merge dispatch (commit `0cbb20a87`):**
 
 1. **Persist the settlement symbol with MTM provenance.** The first draft of §3.2 added `price_source + price_settlement_date + inputs_hash` (three columns) to `MTMSnapshot`. Codex caught: `cash_settlement_prices` is uniquely identified by `(source, symbol, settlement_date)`. When westmetall publishes LME_AL + LME_CU + LME_ZN on the same date, three rows share `(source, settlement_date)`; without `symbol` persisted, the snapshot cannot prove which row fed it. `inputs_hash` is a one-way verifier — not reverse-queryable. **Fix:** added `price_symbol: String(length=32)` as a fourth provenance column on `MTMSnapshot` and as a third provenance column on `cashflow_ledger_entries`; updated CHECK constraints, migration, snapshot creators, and §6/§7 references throughout. P&L stays JSON-list-shaped (per-entry `symbol` was already required in the example).
@@ -179,7 +185,26 @@ inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True
 
 CHECK constraint pattern same as §3.2: `(price_references IS NULL AND inputs_hash IS NULL) OR (price_references IS NOT NULL AND inputs_hash IS NOT NULL)` (`pl_snapshots_provenance_all_or_none`). Application-layer guard for SQLite parity.
 
-**Update `pl_calculation_service.compute_pl`**: the function must collect every `PriceQuote` it consumes during the period under calculation (locate via Serena `find_symbol`); persist the list in `price_references`; compute `inputs_hash` over the full input set (period_start, period_end, entity_type, entity_id, all `price_references`, plus realized_pl + unrealized_mtm).
+**Two-service propagation chain** (per Codex P1 absorbed in §0): in this repo, `compute_pl` lives in `backend/app/services/pl_calculation_service.py` and returns a `PLResultResponse`; `PLSnapshot` rows are created and conflict-checked in a SEPARATE service `backend/app/services/pl_snapshot_service.py:create_pl_snapshot`. The provenance contract MUST flow through both:
+
+1. **Extend `PLResultResponse`** at `backend/app/schemas/pl.py:10-12` with a structured `price_references` field:
+   ```python
+   class PriceReferenceEntry(BaseModel):
+       symbol: str
+       source: str
+       settlement_date: date
+       value: Decimal
+
+   class PLResultResponse(BaseModel):
+       realized_pl: Decimal
+       unrealized_mtm: Decimal
+       price_references: list[PriceReferenceEntry] = Field(default_factory=list)
+   ```
+2. **Update `compute_pl`**: locate every `PriceQuote` consumed during the period (via the migrated `_with_provenance` calls per §3.1); populate `price_references` on the returned `PLResultResponse`. Order of references is the deterministic order of consumption; one entry per distinct `(symbol, source, settlement_date)` lookup.
+3. **Update `create_pl_snapshot`** in `pl_snapshot_service.py`: read `result.price_references` from the `PLResultResponse`; persist as `[entry.model_dump() for entry in result.price_references]` on `PLSnapshot.price_references`; compute `inputs_hash` over the full input set (period_start, period_end, entity_type, entity_id, sorted `price_references` payload, plus `realized_pl` + `unrealized_mtm`); persist on the row.
+4. **Update `create_pl_snapshot` idempotency / conflict logic**: when an existing `PLSnapshot` matches `(entity_type, entity_id, period_start, period_end)`, the conflict check MUST compare the new fields too. A divergence in `price_references` (e.g., a new market-data row materialized that wasn't there in the prior snapshot) or in `inputs_hash` is a **legitimate conflict** (recompute happened against newer inputs); raise `HTTPException(409, ...)` matching the existing conflict shape, NOT a silent no-op return of the legacy row.
+
+Without all four steps, the snapshot insertion path persists no provenance and the J-A3-05 finding remains open. The §6 acceptance + §7 tests below cover each step explicitly.
 
 **Backward compat** (per `feedback_dispatch_self_consistency` "Hash/key signature changes — backfill only if you have all the inputs"): legacy `PLSnapshot` rows do NOT have the inputs that would be needed to backfill `price_references`. Legacy rows stay with `NULL` provenance. The idempotency contract for §3.7 ledger derivation applies to **post-deployment** rows only; legacy rows are forensic artifacts.
 
@@ -331,9 +356,31 @@ def _build_expected_entry(
         "direction": leg.direction.value,
         "amount": derived_amount,
         "price_source": settlement_quote.source,
+        "price_symbol": settlement_quote.symbol,
         "price_settlement_date": settlement_quote.settlement_date,
     }
 ```
+
+**Update `_ledger_entry_matches`** at `backend/app/services/cashflow_ledger_service.py:25-35` to include the new provenance fields in the idempotency comparison. A re-ingest of the same `source_event_id` whose derived `(price_source, price_symbol, price_settlement_date)` differs from the persisted row is a legitimate conflict (the canonical settlement table grew or a new symbol was published since the prior ingest); raise the existing 409 conflict shape, do NOT silently no-op:
+
+```python
+def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
+    return (
+        entry.hedge_contract_id == expected["hedge_contract_id"]
+        and entry.source_event_type == expected["source_event_type"]
+        and entry.source_event_id == expected["source_event_id"]
+        and entry.leg_id == expected["leg_id"]
+        and entry.cashflow_date == expected["cashflow_date"]
+        and entry.currency == expected["currency"]
+        and entry.direction == expected["direction"]
+        and _normalize_decimal(entry.amount) == _normalize_decimal(expected["amount"])
+        and entry.price_source == expected["price_source"]
+        and entry.price_symbol == expected["price_symbol"]
+        and entry.price_settlement_date == expected["price_settlement_date"]
+    )
+```
+
+Without this idempotency extension, two ingests of the same `source_event_id` with different price provenance silently treat the second as a no-op and the audit trace cannot distinguish them.
 
 **HTTP payload contract**: the `HedgeContractSettlementCreate.legs[].amount` field becomes **advisory / verification only** — server-side derivation is canonical; if the payload supplies a value, the service VERIFIES it matches the derived amount (within a tolerance) and rejects 422 on mismatch. This preserves any external-system idempotency keying that uses the amount, while making the derivation authoritative.
 
@@ -484,9 +531,14 @@ def downgrade() -> None:
 - [ ] `cash_settlement_prices.price_usd` is `Numeric(18, 6)` post-migration on Postgres; SQLite `create_all` produces the new shape.
 - [ ] Migration `038_a3_price_provenance` ships; `alembic.script.get_heads()` returns single head `["038_a3_price_provenance"]`.
 - [ ] `mtm_snapshot_service.create_mtm_snapshot_for_contract` and `_for_order` consume `_with_provenance` and persist `price_source` + `price_symbol` + `price_settlement_date` + `inputs_hash` on every NEW snapshot.
-- [ ] `pl_calculation_service.compute_pl` collects every `PriceQuote` it consumes; the resulting snapshot persists `price_references` (JSON list) + `inputs_hash`.
+- [ ] `PLResultResponse` (`backend/app/schemas/pl.py`) carries `price_references: list[PriceReferenceEntry]` (default `[]`) — extends the response contract.
+- [ ] `pl_calculation_service.compute_pl` populates `result.price_references` with every `PriceQuote` consumed during the period (one entry per distinct `(symbol, source, settlement_date)`).
+- [ ] `pl_snapshot_service.create_pl_snapshot` reads `result.price_references`, persists as JSON on `PLSnapshot.price_references`, computes `inputs_hash` over the full input set, and persists both on the row.
+- [ ] `pl_snapshot_service.create_pl_snapshot` idempotency / conflict logic compares `price_references` and `inputs_hash` on the existing row; divergence raises `HTTPException(409, ...)` matching the existing conflict shape — NOT a silent no-op return of the legacy row.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
+- [ ] `cashflow_ledger_service._build_expected_entry` populates `price_source` + `price_symbol` + `price_settlement_date` on every constructed dict; the persisted `CashFlowLedgerEntry` row carries all three.
+- [ ] `cashflow_ledger_service._ledger_entry_matches` includes the three provenance fields in its equality check; idempotency-with-divergent-provenance raises 409, not silent no-op.
 - [ ] `price_lookup_service` computes the EXACT prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (no range). 5-calendar-day legacy AND any range fallback are gone.
 - [ ] When the prior-business-day row is missing, `PriceReferenceUnprovable` raises — older business-day rows are NOT considered.
 - [ ] `_market_calendar_for_symbol(symbol)` raises a structured error for unknown commodities — no silent fall-through to a global default calendar.
@@ -510,9 +562,16 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_mtm_snapshot_partial_provenance_violates_check_constraint` — assert that constructing a row with three of four provenance fields populated and one NULL raises an `IntegrityError`
 
 - `backend/tests/test_pl_calculation_service.py`:
-  - `test_pl_snapshot_persists_price_references_list`
-  - `test_pl_snapshot_inputs_hash_covers_full_input_set`
-  - `test_pl_snapshot_multi_commodity_persists_one_reference_per_lookup` (regression for "scalar columns can't represent collection inputs")
+  - `test_compute_pl_returns_price_references_in_result_response` — asserts `PLResultResponse.price_references` is populated by `compute_pl`
+  - `test_compute_pl_emits_one_entry_per_distinct_symbol_source_date_lookup`
+
+- `backend/tests/test_pl_snapshot_service.py` (new or extended):
+  - `test_create_pl_snapshot_persists_price_references_from_result`
+  - `test_create_pl_snapshot_inputs_hash_covers_full_input_set` — period_start/end + entity + price_references + realized_pl + unrealized_mtm
+  - `test_create_pl_snapshot_multi_commodity_persists_one_reference_per_lookup` (regression for "scalar columns can't represent collection inputs")
+  - `test_create_pl_snapshot_idempotency_no_op_on_identical_rerun`
+  - `test_create_pl_snapshot_conflict_409_when_price_references_diverge` — second call with same `(entity, period)` but new market-data row materialized raises 409
+  - `test_create_pl_snapshot_conflict_409_when_inputs_hash_diverges` — guard that hash drift surfaces as conflict, not silent no-op
 
 - `backend/tests/test_cashflow_baseline_service.py`:
   - `test_cashflow_baseline_inputs_hash_is_deterministic`
@@ -523,6 +582,8 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_settlement_payload_amount_mismatch_raises_422`
   - `test_settlement_persists_price_source_and_symbol_and_settlement_date`
   - `test_settlement_partial_provenance_violates_check_constraint`
+  - `test_ledger_entry_matches_includes_provenance_in_equality` — fixture persists row with `(source=A, symbol=LME_AL, date=D)`; second `ingest` with derived `(source=A, symbol=LME_CU, date=D)` raises 409, NOT silent no-op
+  - `test_ledger_idempotency_no_op_on_identical_rerun` — same payload + same derived provenance returns the existing row without conflict
 
 - `backend/tests/test_price_lookup_service.py`:
   - `test_lookup_queries_exact_prior_business_day_not_a_range` — assert the SQL/ORM query filters on `settlement_date == prior_bd` (not a `<=` range)
@@ -586,7 +647,9 @@ ingesting legacy mismatched payloads must update upstream.
 - `backend/app/models/market_data.py` — price_usd Float → Numeric
 - `backend/app/services/price_lookup_service.py` — business-calendar lookback
 - `backend/app/services/mtm_snapshot_service.py` — consume `_with_provenance`, persist triplet + hash
-- `backend/app/services/pl_calculation_service.py` — collect PriceQuotes, persist price_references + hash
+- `backend/app/services/pl_calculation_service.py` — collect PriceQuotes; populate `PLResultResponse.price_references`
+- `backend/app/services/pl_snapshot_service.py` — read response references; persist on `PLSnapshot`; compute + persist `inputs_hash`; extend idempotency / conflict logic
+- `backend/app/schemas/pl.py` — extend `PLResultResponse` with `price_references: list[PriceReferenceEntry]`
 - `backend/app/services/cashflow_baseline_service.py` — compute + persist inputs_hash
 - `backend/app/services/cashflow_ledger_service.py` — server-side amount derivation
 - `backend/app/services/mtm_contract_service.py` + `mtm_order_service.py` — propagate PriceQuote upward
@@ -635,6 +698,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT use `JSONB` directly in `mapped_column(...)`; use `JSON().with_variant(JSONB(), "postgresql")` for portability (per `feedback_dispatch_self_consistency` "Every DDL construct touched by `create_all()` must be portable").
 - DO NOT use a range query (`WHERE settlement_date <= price_date AND >= lookback_limit ORDER BY ... DESC`) for the D-1 settlement lookup, even with a business-calendar-bounded window. The query MUST be `WHERE settlement_date == _prior_business_day(as_of_date, calendar)` (exact match). A range query silently accepts older rows when the prior BD's row is missing — the OPUS-04 fallback regime that PR-A3-1 closes (per Codex P1 absorbed in §0).
 - DO NOT omit `price_symbol` from any snapshot provenance contract (`MTMSnapshot`, `cashflow_ledger_entries`, per-row entries inside `CashFlowBaselineSnapshot.snapshot_data`, list entries inside `PLSnapshot.price_references`). `(source, settlement_date)` alone cannot disambiguate multi-commodity-same-source-same-date publishings (westmetall publishing LME_AL + LME_CU + LME_ZN on the same session); without the symbol, J-A3-01 / J-A3-05 reconstrutibilidade is not actually closed (per Codex P1 absorbed in §0).
+- DO NOT omit `price_symbol` from `cashflow_ledger_service._build_expected_entry`'s constructed dict OR from `_ledger_entry_matches`'s equality check. Both must enumerate the three provenance fields explicitly. The all-or-none CHECK constraint makes a missing field a HARD failure at insert time, but a missing field in the comparator is a SILENT idempotency drift — equally bad institutionally (per Codex P1 absorbed in §0 round 2).
+- DO NOT persist P&L provenance from `pl_calculation_service.compute_pl` alone. Snapshot creation lives in `pl_snapshot_service.create_pl_snapshot`; both services must change. Returning `price_references` on `PLResultResponse` is the propagation contract; persistence happens in the snapshot service.
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
 - DO NOT skip the Ledger amount-mismatch 422 path. Returning 200 with derived amount silently overrides operator-supplied input — that's the kind of fallback governance §2.6 forbids.
 - DO NOT skip `session.flush()` between provenance row insertion and any subsequent DB read that depends on the row being visible.
