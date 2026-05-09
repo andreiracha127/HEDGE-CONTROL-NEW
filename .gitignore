@@ -56,3 +56,6 @@ theming-base-content-master/
 .continue/
 .cursor/
 .claude/settings.local.json
+
+# Pre-push dispatch review cache
+.cache/
