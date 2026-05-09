@@ -13,6 +13,12 @@
 
 **Codex P1 absorbed against pre-merge dispatch (commit `8c8ac6147`), then strengthened in `e93xxxx`:** the §3.1 regex `r"RFQ#(?P<num>RFQ-\d{4}-\d{6})"` had no end boundary after the 6-digit sequence, so `re.search` would match malformed inputs as their 6-digit prefixes and route the message to a real older RFQ. Three classes of malformed shapes had this property: post-`:06d`-overflow digits (`RFQ#RFQ-2026-1234567`), adversarial digit-prepend (`RFQ#RFQ-2026-0001234`), and alphanumeric suffixes (`RFQ#RFQ-2026-000123A`, `RFQ#RFQ-2026-000123_`). All three must land in `no_canonical_id` at the parser boundary per §6's hard-fail-rather-than-fallback rule. **Final fix:** `(?!\w)` negative lookahead rejects every adjacent word character (digit, letter, underscore); a weaker `(?!\d)` would only block digits, and `\b` would still admit `_`. Three §7 parser tests pin the full boundary: `rejects_overlong_sequence_post_overflow`, `rejects_adversarial_digit_prepend`, `rejects_alphanumeric_suffix`.
 
+**Two Codex P2 absorbed against commit `b2f69ddd2` — multi-id park + outbound-vs-inbound persistence boundary.**
+
+1. **Park messages with multiple distinct canonical ids (forwarded threads).** The previous §3.1 paragraph said multi-id was "operationally a forwarded thread" but the §3.2 flow used `_parse_canonical_id` (`re.search`, returns first match) for correlation and `_strip_canonical_id` (`re.sub`, strips ALL matches). For an inbound `RFQ#A — 2550 ... RFQ#B — 2600`, correlation went to A while the LLM/price parser saw `2550 ... 2600` (mixed prices from both RFQs) and could auto-create the wrong-priced quote for A. **Fix:** `_parse_canonical_ids` returns the full list via `finditer`; §3.2 step 1 dedupes via `set(...)` and routes to new `multi_canonical_id` status when 2+ distinct ids are present. Repeated SAME id (counterparty quoting their own outbound) collapses to one and proceeds to single-RFQ correlation — that is not a forwarded thread. §7 adds `test_inbound_with_multiple_canonical_ids_parks` and `test_inbound_with_repeated_same_canonical_id_correlates`. §3.3 status taxonomy adds the row.
+
+2. **Remove inbound assertion on `RFQInvitation.message_body`.** The `test_inbound_strips_canonical_token_before_llm_classify` test description previously asserted that `RFQInvitation.message_body` contains the FULL inbound `msg.text`. That column is the OUTBOUND invitation body persisted by PR-4's create/refresh paths; raw inbound durability is X-A2-J-01 (deferred to Phase A4). The assertion would either fail against the current model or pressure the implementation to overwrite outbound evidence with inbound text. **Fix:** the test now asserts that `msg.text` (the WhatsAppInboundMessage dataclass attribute) is NOT mutated by the orchestrator — that's the actual no-side-effect invariant for PR-5. Inbound-side persistence is explicitly out-of-scope and §4 already states this.
+
 **Codex P1 + P2 absorbed against commit `84df86096` — sign-preserving strip + symmetric boundary.**
 
 1. **Preserve leading minus signs while stripping IDs (P1, economic).** The previous `_strip_canonical_id` did `_CANONICAL_ID_RE.sub("", text).strip(" \t\n—–-")` — the trailing `strip` set included regular hyphen `-`. For an inbound like `RFQ#RFQ-2026-000123 — -5 USD/MT` the strip would consume both the em-dash separator AND the `-5` price's leading minus, yielding `5 USD/MT`. The downstream LLM and `_price_appears_in_text` would then see a positive magnitude, and the auto-quote path could create the opposite-signed quote while raw `msg.text` evidence still showed `-5` — an institutional P1 economic incident. **Fix:** `_CANONICAL_ID_RE` now consumes the separator (em-dash / en-dash with surrounding whitespace) as an internal `(?:\s*[—–]\s*)?` group, restricted to em-dash and en-dash only — never the regular hyphen. `_strip_canonical_id` then trims only whitespace via `.strip()`, never hyphens. §7 adds `test_strip_canonical_id_preserves_leading_minus_sign` (pins the sign-preservation invariant) and `test_strip_canonical_id_preserves_trivial_word` (regression for the original strip use-case).
@@ -99,23 +105,24 @@ _CANONICAL_ID_RE = re.compile(
 )
 
 
-def _parse_canonical_id(text: str | None) -> str | None:
-    """Extract `RFQ-YYYY-NNNNNN` from a message body.
+def _parse_canonical_ids(text: str | None) -> list[str]:
+    """Extract every canonical-id occurrence from a message body, in order.
 
-    Returns the bare rfq_number (without the `RFQ#` prefix) if a single
-    match is found anywhere in the text; None if absent or the input is
-    falsy. `re.search` (not `re.match`) is used because the outbound
-    helper `prefix_with_canonical_id` (rfq_service.py:84-99) places the
-    prefix at the *start* of the body, but counterparties may quote-reply
-    with the canonical id appearing after their text — both positions are
-    acceptable.
+    Returns the list of bare rfq_numbers (without the `RFQ#` prefix) for
+    every regex hit. `re.finditer` (not `re.search`) is used so callers
+    can detect multi-id forwarded threads — a counterparty replying with
+    `RFQ#A — 2550 ... RFQ#B — 2600` produces a list of length 2 with
+    distinct values, which §3.2 routes to the `multi_canonical_id` park
+    status. A counterparty quoting their own outbound (where the prefix
+    appears twice but for the SAME rfq_number) yields a list with two
+    identical values, which §3.2 deduplicates and processes as a single
+    correlation.
 
     Idempotent. Pure. Does NOT touch the database.
     """
     if not text:
-        return None
-    m = _CANONICAL_ID_RE.search(text)
-    return m.group("num") if m else None
+        return []
+    return [m.group("num") for m in _CANONICAL_ID_RE.finditer(text)]
 
 
 def _strip_canonical_id(text: str | None) -> str:
@@ -150,7 +157,7 @@ def _strip_canonical_id(text: str | None) -> str:
 - **Both leading `(?<!\w)` lookbehind AND trailing `(?!\w)` lookahead are mandatory** — without them, `re.search` would match malformed inputs as substrings of larger word-character sequences and route the message to a real older RFQ. `\w` is `[A-Za-z0-9_]` in Python's default flags, so the boundaries reject every adjacent word character on either side. Trailing-boundary cases: digit (post-overflow `RFQ#RFQ-2026-1234567` truncating to `RFQ-2026-123456`; adversarial digit-prepend `RFQ#RFQ-2026-0001234` truncating to `RFQ-2026-000123`), letter (`RFQ#RFQ-2026-000123A`), underscore (`RFQ#RFQ-2026-000123_`). Leading-boundary cases: `abcRFQ#RFQ-2026-000123` (the `RFQ#` literal alone is not enough — adversary prepends word chars and the search finds the substring). The combined boundary enforces "exactly RFQ#RFQ-YYYY-NNNNNN as a standalone token (or internal to non-word characters)". A weaker single-side boundary would admit one or the other class. All malformed shapes must land in the `no_canonical_id` path — the §6 hard-fail-rather-than-fallback rule at the parser boundary.
 - The optional trailing `(?:\s*[—–]\s*)?` group **inside the regex** consumes the canonical separator written by the outbound helper `prefix_with_canonical_id` (`f"{canonical} — {body}"` at `rfq_service.py:83-96` — em-dash with surrounding spaces). Including the separator in the matched span lets `_CANONICAL_ID_RE.sub("", text)` cleanly remove the prefix without accidentally consuming downstream characters. **Critical: the separator group is restricted to em-dash and en-dash (`[—–]`) and does NOT include the regular hyphen `-`.** A naive `strip("-")`-style cleanup at the call site would remove the leading minus sign of a negative price (e.g. counterparty replies `RFQ#RFQ-2026-000123 — -5 USD/MT`; stripping `-` would yield `5 USD/MT`, sign-flipping the inbound and routing the LLM/price parser to auto-create the opposite-signed quote — a P1 economic incident). Restricting the separator class to dashes-that-are-never-numeric-signs preserves the sign on every numeric in the downstream payload.
 - The literal `RFQ#` separator is mandatory — `re.search` will not match a body that contains `RFQ-2026-000123` without the `#` separator. That is intentional: the canonical id is `RFQ#<rfq_number>`, not the bare `rfq_number`. A counterparty echo without the `#` is institutionally a non-canonical reply and must park.
-- Multiple canonical ids in a single message body (counterparty quotes two RFQs in one reply): `re.search` returns only the first. PR-5 does NOT support multi-RFQ-per-message dispatch — the constitution's correlation clause is one canonical id per message, the outbound shape is one canonical id per outbound message, and a multi-id inbound is operationally a forwarded thread. If a future use case demands multi-id handling, that is a Phase A4 / A5 surface, not PR-5.
+- Multiple canonical ids in a single message body (counterparty forwards a thread mixing replies for two RFQs, e.g. `RFQ#A — 2550 ... RFQ#B — 2600`) **must park** with status `multi_canonical_id`. `_parse_canonical_ids` returns the full list (via `finditer`); §3.2 step 1 deduplicates and routes to park when 2+ distinct ids are present. A counterparty quoting their own outbound (the prefix appears twice but for the SAME rfq_number) yields a list with two identical values, deduplicates to one distinct id, and proceeds to single-RFQ correlation. PR-5 explicitly does NOT correlate-by-first-id with the multi-id case: that would let downstream price/intent extraction mix data from two RFQs (e.g. the LLM seeing `2550 ... 2600` after `_strip_canonical_id` removes both prefixes, and emitting `2600` as a quote for RFQ A — Tipo II self-undermining). Multi-id messages are operationally forwarded threads and need human disambiguation.
 
 ### 3.2 Rewrite `_process_single_message` correlation
 
@@ -159,9 +166,17 @@ def _strip_canonical_id(text: str | None) -> str:
 **Replace** the phone-correlation block at `:282-326` (the `phone_variants → query(RFQInvitation).join(RFQ, ...).first()` lookup at 282-293, `not invitation` branch at 295-305, and `active_rfq_count > 1` warning block at 307-326) with the canonical-id-first correlator below. **Preserve** the downstream archived-RFQ check at 328-340, the rfq-not-quotable branch at 342-352, and every guard / LLM block from line 354 onward — those operate on already-correlated messages and PR-5 does not redesign them.
 
 ```python
-# ── Step 1: parse canonical id from inbound text ──
-canonical_number = _parse_canonical_id(msg.text)
-if canonical_number is None:
+# ── Step 1: parse canonical id(s) from inbound text ──
+# `_parse_canonical_ids` returns a list of every regex hit. Three cases:
+# - 0 distinct ids → no_canonical_id (counterparty did not echo the prefix)
+# - 1 distinct id (possibly repeated, e.g. counterparty quoted their own
+#   outbound which also had the prefix) → proceed with that id
+# - 2+ distinct ids → multi_canonical_id (forwarded thread mixing
+#   replies for two RFQs; downstream price/intent extraction would mix
+#   data from both — institutionally a hard-fail/park per §6)
+canonical_numbers = _parse_canonical_ids(msg.text)
+distinct_ids = set(canonical_numbers)
+if not distinct_ids:
     logger.warning(
         "orchestrator_no_canonical_id",
         from_phone=msg.from_phone,
@@ -172,6 +187,19 @@ if canonical_number is None:
         "status": "no_canonical_id",
         "from_phone": msg.from_phone,
     }
+if len(distinct_ids) > 1:
+    logger.warning(
+        "orchestrator_multi_canonical_id",
+        from_phone=msg.from_phone,
+        canonical_numbers=sorted(distinct_ids),
+        message_id=msg.message_id,
+    )
+    return {
+        "message_id": msg.message_id,
+        "status": "multi_canonical_id",
+        "canonical_numbers": sorted(distinct_ids),
+    }
+canonical_number = next(iter(distinct_ids))
 
 # ── Step 2: locate the RFQ by canonical id alone ──
 # Do NOT filter on RFQState here. `RFQService.archive` (rfq_service.py:753-796)
@@ -293,7 +321,7 @@ text_for_downstream = _strip_canonical_id(msg.text)
 #                requires the unmodified inbound payload. ──
 ```
 
-**Identifiers used:** `_parse_canonical_id`, `RFQ`, `RFQState`, `RFQInvitation`, `RFQInvitationChannel`, `RFQOrchestrator._phone_variants`. All five are already imported at `rfq_orchestrator.py:34-42` — no new imports beyond `re` (which is already imported at `:21`).
+**Identifiers used:** `_parse_canonical_ids`, `_strip_canonical_id`, `RFQ`, `RFQState`, `RFQInvitation`, `RFQInvitationChannel`, `RFQOrchestrator._phone_variants`. The model imports are already present at `rfq_orchestrator.py:34-42` — no new imports beyond `re` (which is already imported at `:21`).
 
 **The multi-RFQ-same-phone warning at `:307-326` is unreachable post-PR-5.** Canonical id is unique on `RFQ.rfq_number`; the WHERE-clause filter returns at most one RFQ. **Delete the warning block** and the `from sqlalchemy import func, distinct` import contributors that are no longer used (audit `from sqlalchemy import func, distinct, or_` at `:28` — `distinct` may become unused; remove if so to keep the import set honest. `func` and `or_` are likely used elsewhere — verify before deleting; do not delete imports that other code in the file still depends on).
 
@@ -303,7 +331,8 @@ PR-5 introduces three new status values returned by `_process_single_message`:
 
 | Status | Trigger | Persistence | Operator action (downstream) |
 |---|---|---|---|
-| `no_canonical_id` | `_parse_canonical_id(msg.text)` returns None | Non-mutating; no DB lookup attempted | Route to human review queue; counterparty did not echo `RFQ#<rfq_number>` |
+| `no_canonical_id` | `_parse_canonical_ids(msg.text)` returns an empty list | Non-mutating; no DB lookup attempted | Route to human review queue; counterparty did not echo `RFQ#<rfq_number>` |
+| `multi_canonical_id` | `_parse_canonical_ids` returns 2+ DISTINCT canonical numbers | Non-mutating; no DB lookup attempted | Route to human review queue; forwarded-thread or copy-paste mixing replies for two RFQs — downstream price/intent extraction would silently mix data from both |
 | `canonical_id_unknown` | Parsed id has no matching `RFQ.rfq_number` in the database at all | Non-mutating; one DB query attempted | Route to human review queue; counterparty referenced a stale or fabricated id |
 | `phone_mismatch` | Canonical id matches a live RFQ but sender phone is not on any invitation for that RFQ | Non-mutating; two DB queries attempted | Route to human review queue; potential cross-counterparty forwarding or hostile echo |
 
@@ -359,10 +388,11 @@ The new tests in §7 (`test_inbound_canonical_id.py`) are *additive*; they do no
 
 ## 6. Acceptance criteria
 
-- [ ] `_parse_canonical_id(text)` helper exists, returns the bare `rfq_number` for `"RFQ#RFQ-2026-000123"`, returns `None` for missing/malformed text.
-- [ ] `_parse_canonical_id` is idempotent (same input → same output) and pure (no DB access).
-- [ ] `_process_single_message` calls `_parse_canonical_id` BEFORE any `session.query(...)`. The first DB access is the canonical-id lookup, never a phone lookup.
-- [ ] When `_parse_canonical_id` returns `None`, `_process_single_message` returns `{"status": "no_canonical_id", ...}` without performing any DB query.
+- [ ] `_parse_canonical_ids(text)` helper exists, returns `["RFQ-2026-000123"]` for `"RFQ#RFQ-2026-000123 — ok"`, returns `[]` for missing/malformed text, returns multiple entries for forwarded-thread bodies.
+- [ ] `_parse_canonical_ids` is idempotent (same input → same output) and pure (no DB access).
+- [ ] `_process_single_message` calls `_parse_canonical_ids` BEFORE any `session.query(...)`. The first DB access is the canonical-id lookup, never a phone lookup.
+- [ ] When `_parse_canonical_ids` returns an empty list, `_process_single_message` returns `{"status": "no_canonical_id", ...}` without performing any DB query.
+- [ ] When `_parse_canonical_ids` returns 2+ DISTINCT canonical numbers, `_process_single_message` returns `{"status": "multi_canonical_id", "canonical_numbers": [...]}` without performing any DB query — the message is parked because correlating to one and stripping both would expose downstream classifiers to mixed-RFQ data.
 - [ ] When the parsed id matches no `RFQ.rfq_number` in the database, returns `{"status": "canonical_id_unknown", "canonical_number": ...}` (post-fetch lifecycle branches at §3.2 step 3a/3b are NOT reached when the row does not exist).
 - [ ] When the matched RFQ has `deleted_at IS NOT NULL`, returns `{"status": "rfq_archived", "rfq_id": ...}` (status preserved from pre-PR-5 behavior; canonical-id world's archived branch).
 - [ ] When the matched RFQ is live but no `RFQInvitation` row exists for that RFQ + sender phone variant + whatsapp channel, returns `{"status": "phone_mismatch", "canonical_number": ..., "rfq_id": ...}`.
@@ -402,7 +432,9 @@ The new tests in §7 (`test_inbound_canonical_id.py`) are *additive*; they do no
 - `test_inbound_with_canonical_id_terminal_state_rfq` — fixture: RFQ A in `awarded` state, `deleted_at IS NULL`; inbound carries the canonical id. Asserts `{"status": "rfq_not_quotable", "rfq_id": str(A.id), "rfq_state": "awarded"}`. The pre-PR-5 `rfq_not_quotable` taxonomy is preserved by the §3.2 step 3b branch.
 - `test_inbound_with_canonical_id_closed_not_archived_rfq` — fixture: RFQ A in `closed` state, `deleted_at IS NULL` (closed via cancel/reject route but not archived). Inbound carries canonical id. Asserts `{"status": "rfq_not_quotable", "rfq_state": "closed"}` — closed-not-archived must NOT collapse into `rfq_archived` (which requires `deleted_at IS NOT NULL`).
 - `test_inbound_strips_canonical_token_before_trivial_guard` — fixture: live RFQ A with invitation to `+5511999999999`; inbound from same phone, `text="RFQ#<A.rfq_number> — ok"`. Asserts `{"status": "trivial_message_skipped"}`. Without the §3.1 `_strip_canonical_id` helper, `_is_trivial_message` would not detect "ok" through the canonical-id prefix, falsely escaping to the LLM path. This test pins the downstream-text contract.
-- `test_inbound_strips_canonical_token_before_llm_classify` — fixture: live RFQ A; inbound `text="RFQ#<A.rfq_number> — vou ver com o time e te respondo"` (a non-trivial counterparty-question body). Mock `LLMAgent.classify_intent` to assert the argument it receives is `"vou ver com o time e te respondo"` (NO canonical token). Persistence-side asserts `RFQInvitation.message_body` (or any audit emission) contains the FULL `msg.text` including the token — evidence body unchanged.
+- `test_inbound_strips_canonical_token_before_llm_classify` — fixture: live RFQ A; inbound `text="RFQ#<A.rfq_number> — vou ver com o time e te respondo"` (a non-trivial counterparty-question body). Mock `LLMAgent.classify_intent` to assert the argument it receives is `"vou ver com o time e te respondo"` (NO canonical token). Also assert that `msg.text` (the `WhatsAppInboundMessage` dataclass attribute) is NOT mutated by `_process_single_message` — the orchestrator must not write to the inbound message object. **Do NOT assert anything about `RFQInvitation.message_body`**: that column is the OUTBOUND invitation body persisted by PR-4's create/refresh paths, not an inbound-evidence column. Raw inbound durability is X-A2-J-01 (deferred to Phase A4) — no inbound-side persistence happens in PR-5.
+- `test_inbound_with_multiple_canonical_ids_parks` — fixture: live RFQ A and live RFQ B both with invitations to `+5511999999999`; inbound from same phone, `text="RFQ#<A.rfq_number> — 2550\nRFQ#<B.rfq_number> — 2600"` (forwarded thread mixing replies). Asserts `{"status": "multi_canonical_id", "canonical_numbers": sorted([A.rfq_number, B.rfq_number])}` and that NO DB query for `RFQ` (or `RFQInvitation`) is performed — mock `session.query` to fail-loud. Hard-fail at the parser boundary; downstream auto-quote MUST NOT run.
+- `test_inbound_with_repeated_same_canonical_id_correlates` — fixture: live RFQ A with invitation to `+5511999999999`; inbound `text="RFQ#<A.rfq_number> — RFQ#<A.rfq_number> — ok"` (counterparty quoted their own outbound twice; the prefix appears twice but for the SAME rfq_number). Asserts `{"status": "trivial_message_skipped"}` (or the equivalent single-id correlation success path). The `len(distinct_ids) > 1` guard must NOT trigger because the set has length 1 after deduplication.
 - `test_inbound_with_canonical_id_skips_phone_variant_match_on_other_rfq` — fixture: live RFQ A on phone `+55119999`, live RFQ B on phone `+55119998`; inbound from `+55119999` carries `RFQ#<B.rfq_number>`. Asserts `{"status": "phone_mismatch", ...}` (cross-RFQ canonical id with non-matching phone parks; does NOT silently fall through to RFQ A on the same phone — that would be the J-A2-06 bug returning).
 
 **Integration tests in existing `backend/tests/test_rfq_orchestrator.py`** (rewrites per §3.5):
@@ -457,7 +489,7 @@ webhook_processor; queue routing is a Phase A4 surface (X-A2-J-01).
 
 ## Files changed
 
-- `backend/app/services/rfq_orchestrator.py` — `_parse_canonical_id` helper,
+- `backend/app/services/rfq_orchestrator.py` — `_parse_canonical_ids` + `_strip_canonical_id` helpers,
   rewrite of `_process_single_message` correlator (canonical-id-first, phone
   as secondary probe), deletion of `orchestrator_multi_rfq_same_phone` block.
 - `backend/tests/test_inbound_canonical_id.py` (new) — helper-level +
@@ -506,7 +538,7 @@ J-A2-06.
 - **DO NOT** delete `RFQOrchestrator._phone_variants`. It is repurposed as the secondary consistency probe in §3.2 step 4.
 - **DO NOT** filter `RFQ.deleted_at IS NULL` in the canonical-id WHERE clause. The post-fetch step 3a check preserves the granular `rfq_archived` status; folding it into WHERE would degrade operator queue routing (archived would silently become `canonical_id_unknown`).
 - **DO NOT** apply an `RFQ.state` filter in the canonical-id WHERE clause. The §3.2 step 2 query loads by `RFQ.rfq_number` alone, then steps 3a/3b branch on `deleted_at` and on `state not in (sent, quoted)` to return `rfq_archived` and `rfq_not_quotable` respectively. Re-introducing a state predicate (e.g., `state.in_([sent, quoted])`) would silently exclude archived RFQs (`state == closed` per `RFQService.archive` invariant at `rfq_service.py:753-796`), collapsing them into `canonical_id_unknown` and breaking the granular taxonomy required by §3.3 + §6 + §7.
-- **DO NOT** call `_parse_canonical_id` more than once per message. Cache the result.
+- **DO NOT** call `_parse_canonical_ids` more than once per message. Cache the list and the deduped set.
 - **DO NOT** use `re.match` in the parser; use `re.search` (per §3.1 rationale). Quote-replies place the canonical id mid-body.
 - **DO NOT** weaken the regex (e.g., to `RFQ-?#?\d+`). The canonical id is exactly `RFQ#RFQ-YYYY-NNNNNN`; partial matches park.
 - **DO NOT** introduce `re.findall`-based multi-id handling. One canonical id per message; extras ignored. Multi-id support is a future feature, not PR-5's scope.
@@ -525,7 +557,7 @@ J-A2-06.
 3. Read jury §2 J-A2-06 in full (`docs/audits/2026-05-06-phase-a2-jury-verdict.md` lines 145-170).
 4. Read `_process_single_message` body in `backend/app/services/rfq_orchestrator.py:258-535` to confirm the line numbers in this dispatch are still accurate; if main has advanced, locate by symbol name.
 5. Read `prefix_with_canonical_id` at `rfq_service.py:84-99` to confirm the outbound shape (canonical id at start of body, optional whitespace) the inbound parser must tolerate.
-6. Implement `_parse_canonical_id` helper per §3.1 (alongside other static helpers in `rfq_orchestrator.py`).
+6. Implement `_parse_canonical_ids` and `_strip_canonical_id` helpers per §3.1 (alongside other static helpers in `rfq_orchestrator.py`).
 7. Rewrite the correlator block in `_process_single_message` per §3.2: parse canonical id → live-RFQ lookup → archived post-fetch → secondary phone probe. Preserve all downstream guards from line 354 onward.
 8. Delete the `orchestrator_multi_rfq_same_phone` warning block. Audit imports — drop `distinct` and `func` if unused (verify other code in the file does not still depend on them before deleting).
 9. Rewrite/update tests per §3.5 in `backend/tests/test_rfq_orchestrator.py`; inject `RFQ#<rfq_number>` into inbound `text` fixtures for every successful-correlation test.
