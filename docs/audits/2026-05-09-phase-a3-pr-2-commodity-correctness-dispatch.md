@@ -313,7 +313,7 @@ def _resolve_price_quote(
     return lookup(db, symbol, as_of_date)
 ```
 
-**Rename consideration**: the function now returns a `PriceQuote`, not a `price_d1` Decimal. Renaming to `_resolve_price_quote` is the cleaner API contract. The 5 call sites (4 in `_mtm_for_contract` + 1 in `_mtm_for_order`) are updated in lockstep with the signature changes in §3.7.3 / §3.7.4. If renaming is preferred to keep the diff smaller, the old name `_resolve_price_d1` stays — but it is misleading. Pick one and document the choice in the PR body.
+**Rename mandate**: the function now returns a `PriceQuote`, not a `price_d1` Decimal. Rename `_resolve_price_d1` → `_resolve_price_quote` — the new name IS the API contract. The 5 call sites (4 in `_mtm_for_contract` + 1 in `_mtm_for_order`) are updated in lockstep with the signature changes in §3.7.3 / §3.7.4. The old name is deleted; no aliasing.
 
 #### 3.7.3 `_mtm_for_contract` accepts `PriceQuote`; populates `MTMResultResponse.price_quote`
 
@@ -374,6 +374,8 @@ def _mtm_for_contract(
 
 Symmetric change for the order path. Current signature accepts `price_d1: Decimal` (`scenario_whatif_service.py:107-...`). Replace with `price_quote: PriceQuote`; populate `MTMResultResponse(price_quote=price_quote, ...)`.
 
+**Preserve all existing NULL-guards verbatim**: `_mtm_for_order` has guards rejecting orders that cannot be MTMed (e.g., fixed-price orders, non-`avg`/`avginter` pricing convention, NULL `avg_entry_price`). The signature change ONLY swaps `price_d1: Decimal` → `price_quote: PriceQuote` and the `MTMResultResponse(...)` constructor — leave every existing guard, exception type, and error message untouched. Quantization (`quantize_price(price_quote.value)`) happens AFTER all guards, mirroring the current order of operations in the function body.
+
 #### 3.7.5 Update all 5 call sites
 
 Verified via Serena against `030a49bff` — the 4 `_mtm_for_contract` call sites at `scenario_whatif_service.py:467, 480, 545, 590` and the 1 `_mtm_for_order` call site at `scenario_whatif_service.py:495` all currently pass `price_d1=_resolve_price_d1(db, ..., commodity=...)`. Each must be updated to:
@@ -382,7 +384,7 @@ Verified via Serena against `030a49bff` — the 4 `_mtm_for_contract` call sites
 price_quote=_resolve_price_quote(db, ..., lookup, commodity=...)
 ```
 
-(or `_resolve_price_d1` if rename is rejected per §3.7.2 — but pass the result as `price_quote=...` either way; the kwarg name on `_mtm_for_*` is what changes).
+(post-rename per §3.7.2 the function is `_resolve_price_quote`; the kwarg on `_mtm_for_*` becomes `price_quote=...`).
 
 **Imports to add** at `scenario_whatif_service.py` top:
 
@@ -449,11 +451,11 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 
 - [ ] `compute_mtm_for_order` signature drops the `commodity` parameter; resolves `order.commodity` via `resolve_symbol(order.commodity)` directly inside the function.
 - [ ] `DEFAULT_COMMODITY` constant removed from `mtm_order_service.py`.
-- [ ] All 4 call sites of `compute_mtm_for_order` (routes/mtm.py × 2, mtm_snapshot_service.py, cashflow_analytic_service.py) work without modification — they were not passing `commodity` anyway, but now do so explicitly via the order.
+- [ ] All 4 call sites of `compute_mtm_for_order` (routes/mtm.py × 2, mtm_snapshot_service.py, cashflow_analytic_service.py) are unchanged — they were already not passing `commodity`; the function now resolves it internally from `order.commodity`.
 - [ ] `AddUnlinkedHedgeContractDelta` schema has a new required `commodity: str` field with `Field(..., max_length=64)`. Schema validator rejects 422 if `resolve_symbol(commodity)` raises.
 - [ ] `scenario_whatif_service` reads `delta.commodity` when constructing `VirtualHedgeContract` (no `DEFAULT_COMMODITY`).
 - [ ] `DEFAULT_COMMODITY` constant removed from `scenario_whatif_service.py`.
-- [ ] `_resolve_price_d1` (or its renamed successor `_resolve_price_quote`) no longer has a `commodity` default; every one of the 5 call sites passes the commodity explicitly.
+- [ ] `_resolve_price_d1` is renamed to `_resolve_price_quote` (cleaner contract — function now returns `PriceQuote`, not Decimal) and no longer has a `commodity` default; every one of the 5 call sites passes the commodity explicitly.
 - [ ] `_build_price_lookup` callable returns `PriceQuote` instead of `Decimal`. Override path constructs `PriceQuote(source="scenario_override", ...)`. Settlement-table path delegates to `get_cash_settlement_price_d1_with_provenance` (Wave 1).
 - [ ] `_mtm_for_contract` accepts `price_quote: PriceQuote` (replacing the `price_d1: Decimal` parameter); populates `MTMResultResponse(price_quote=price_quote, ...)`.
 - [ ] `_mtm_for_order` accepts `price_quote: PriceQuote` symmetrically; populates `MTMResultResponse(price_quote=price_quote, ...)`.
@@ -462,6 +464,7 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 - [ ] No `MTMResultResponse.price_quote == None` for any item in `mtm_snapshot` returned from `/scenario` (every scenario MTM result carries provenance after this PR).
 - [ ] OpenAPI + `schema.d.ts` regenerated to reflect the new required `commodity` field on `AddUnlinkedHedgeContractDelta` and the now-always-populated `price_quote` field on scenario `MTMResultResponse` items.
 - [ ] `[BEHAVIOR_SHIFT]` flag in PR body: scenario API consumers must update payloads to include `commodity`.
+- [ ] **Pre-fix test cleanup completed** (per §11 step 12): existing `test_multi_commodity.py` tests that pass `commodity=` kwarg to `compute_mtm_for_order` are deleted or rewritten; existing `test_scenario_whatif_run.py` tests posting `add_unlinked_hedge_contract` deltas have a `commodity` field added.
 - [ ] `alembic heads` continues to return `["038_a3_price_provenance"]` (no new migration).
 - [ ] `test_alembic_chain.py` continues passing.
 
@@ -602,14 +605,18 @@ J-A3-02 + J-A3-OPUS-01.
     - Update all 5 call sites (`:467, :480, :495, :545, :590`) to pass the `PriceQuote` returned by `_resolve_price_d1` (or `_resolve_price_quote`) as `price_quote=...`.
     - Add imports: `from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable`; `from app.services.price_lookup_service import get_cash_settlement_price_d1_with_provenance`. Remove import of `get_cash_settlement_price_d1` (verify no remaining references via grep).
     - Audit `routes/scenario.py` for `PriceReferenceUnprovable` translation. If no FastAPI handler exists, add `try/except PriceReferenceUnprovable` translation at each `_resolve_price_d1` call site mirroring the Wave-1 pattern in `compute_mtm_for_order`.
-12. Run targeted pytest: `pytest backend/tests/test_mtm_order_service.py backend/tests/test_multi_commodity.py backend/tests/test_mtm_snapshot_service.py backend/tests/test_cashflow_analytic_service.py backend/tests/test_scenario_whatif_run.py backend/tests/test_alembic_chain.py -v`
-13. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
-14. **Frontend regen**:
+12. **Pre-fix test cleanup** — delete or rewrite existing tests that depend on the dropped `commodity` kwarg shape OR the old commodity-less scenario delta. Verified via Serena against `030a49bff`:
+    - `backend/tests/test_multi_commodity.py::TestMTMOrderMultiCommodity`: **delete or rewrite** (a) `test_order_with_copper_commodity` — passes `compute_mtm_for_order(..., commodity="LME_CU")`; the kwarg no longer exists post-§3.1; (b) `test_order_default_commodity_is_aluminium` — depends on the now-removed default-aluminum behavior; (c) `test_order_with_unknown_commodity_raises_400` — passes `commodity="NOPE"` to a function that no longer accepts the kwarg. The new tests prescribed in §7 (`test_compute_mtm_for_order_uses_order_commodity_not_default`, `test_compute_mtm_for_order_function_signature_does_not_accept_commodity_kwarg`, plus the cross-commodity isolation test) replace these — the executor MUST remove or update each before running pytest.
+    - `backend/tests/test_scenario_whatif_run.py::test_add_unlinked_contract_affects_global_exposure` (and any other test posting `add_unlinked_hedge_contract` deltas) currently posts the delta WITHOUT a `commodity` field. Post-§3.5 these will receive 422 from the schema validator. **Audit every existing scenario test that posts an `add_unlinked_hedge_contract` delta** and add `"commodity": "<some valid commodity, e.g. LME_AL>"` to the payload. Use `grep -n "add_unlinked_hedge_contract" backend/tests/test_scenario_whatif_run.py` to enumerate.
+    - General rule: any test fixture that constructs a value in a format that this PR newly validates MUST be audited (per `feedback_dispatch_self_consistency` rule "Parser-introducing PRs need pre-merge fixture-compat audit").
+13. Run targeted pytest: `pytest backend/tests/test_mtm_order_service.py backend/tests/test_multi_commodity.py backend/tests/test_mtm_snapshot_service.py backend/tests/test_cashflow_analytic_service.py backend/tests/test_scenario_whatif_run.py backend/tests/test_alembic_chain.py -v`
+14. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
+15. **Frontend regen**:
     - `cd backend && DATABASE_URL=sqlite:///:memory: SECRET_KEY=dummy JWT_SIGNING_SECRET=dummy AUDIT_HMAC_KEY=dummy AUDIT_SIGNING_KEY=test python -c "from app.main import app; import json; json.dump(app.openapi(), open('../docs/api/openapi_v1.json', 'w'), indent=2, sort_keys=True)"`
     - `cd ../frontend-svelte && OPENAPI_SOURCE=../docs/api/openapi_v1.json node scripts/regen-schema.mjs`
-15. `git push -u origin audit-a3/commodity-correctness && gh pr create --base main --title "<§9 title>" --body-file <body>` — DO NOT use `--draft` (the PR-A3-1 incident with draft-state-blocking-merge is fresh; open as ready-for-review).
-16. **STOP. Wait for Codex review.** Address each catch as a new commit. Expected catch count: 2-5 (the plumbing extension is a wider type-flow change; matches Wave-1 surface complexity for the affected functions).
-17. Report back to orchestrator with PR URL, final SHA, Codex review state, files-touched grouping, test counts, frontend regen evidence.
+16. `git push -u origin audit-a3/commodity-correctness && gh pr create --base main --title "<§9 title>" --body-file <body>` — DO NOT use `--draft` (the PR-A3-1 incident with draft-state-blocking-merge is fresh; open as ready-for-review).
+17. **STOP. Wait for Codex review.** Address each catch as a new commit. Expected catch count: 2-5 (the plumbing extension is a wider type-flow change; matches Wave-1 surface complexity for the affected functions).
+18. Report back to orchestrator with PR URL, final SHA, Codex review state, files-touched grouping, test counts, frontend regen evidence.
 
 ---
 
