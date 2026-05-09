@@ -11,9 +11,16 @@ from sqlalchemy import inspect
 from sqlalchemy.exc import IntegrityError
 
 
+MIGRATION_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "alembic"
+    / "versions"
+    / "038_a3_price_provenance.py"
+)
+
+
 def _load_migration():
-    path = Path("backend/alembic/versions/038_a3_price_provenance.py")
-    spec = importlib.util.spec_from_file_location("migration_038", path)
+    spec = importlib.util.spec_from_file_location("migration_038", MIGRATION_PATH)
     assert spec is not None and spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
@@ -143,7 +150,7 @@ def test_038_preflight_rejects_out_of_scale_float_rows() -> None:
     with pytest.raises(RuntimeError, match="Refusing to convert 1 rows"):
         migration.upgrade()
 
-    source = Path("backend/alembic/versions/038_a3_price_provenance.py").read_text()
+    source = MIGRATION_PATH.read_text()
     assert "scale(price_usd::numeric) > 6" in source
     assert "Refusing to convert" in source
 
@@ -181,7 +188,7 @@ def test_038_post_upgrade_insert_with_provenance_survives_downgrade_then_upgrade
 
 
 def test_038_uses_batch_alter_table_for_new_check_constraints() -> None:
-    source = Path("backend/alembic/versions/038_a3_price_provenance.py").read_text()
+    source = MIGRATION_PATH.read_text()
     assert 'batch_alter_table("mtm_snapshots")' in source
     assert 'batch_alter_table("pl_snapshots")' in source
     assert 'batch_alter_table("cashflow_ledger_entries")' in source

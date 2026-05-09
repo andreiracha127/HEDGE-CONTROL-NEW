@@ -124,6 +124,31 @@ def test_settlement_is_idempotent_with_same_payload(client) -> None:
     assert second.json()["event"]["id"] == source_event_id
 
 
+def test_settlement_replay_does_not_reprice_after_contract_is_settled(client) -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 14), "110")
+    contract_id = _create_hedge_contract(client)
+    source_event_id = str(uuid4())
+    payload = _settlement_payload(source_event_id)
+
+    first = client.post(f"/cashflow/contracts/{contract_id}/settle", json=payload)
+    assert first.status_code == status.HTTP_201_CREATED
+
+    with SessionLocal() as session:
+        session.query(CashSettlementPrice).filter(
+            CashSettlementPrice.symbol == "LME_ALU_CASH_SETTLEMENT_DAILY",
+            CashSettlementPrice.settlement_date == date(2026, 1, 14),
+        ).delete(synchronize_session=False)
+        session.commit()
+
+    second = client.post(f"/cashflow/contracts/{contract_id}/settle", json=payload)
+    assert second.status_code == status.HTTP_201_CREATED
+    assert second.json()["event"]["id"] == source_event_id
+    float_entry = next(
+        entry for entry in second.json()["ledger_entries"] if entry["leg_id"] == "FLOAT"
+    )
+    assert float_entry["price_value"] == "110.000000"
+
+
 def test_settlement_conflicts_on_different_payload(client) -> None:
     _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 14), "110")
     contract_id = _create_hedge_contract(client)

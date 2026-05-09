@@ -52,6 +52,24 @@ def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
     )
 
 
+def _ledger_entry_matches_payload(
+    entry: CashFlowLedgerEntry,
+    contract_id: UUID,
+    payload: HedgeContractSettlementCreate,
+    leg: HedgeContractSettlementLeg,
+) -> bool:
+    return (
+        entry.hedge_contract_id == contract_id
+        and entry.source_event_type == SOURCE_EVENT_TYPE
+        and entry.source_event_id == payload.source_event_id
+        and entry.leg_id == leg.leg_id.value
+        and entry.cashflow_date == payload.cashflow_date
+        and entry.currency == "USD"
+        and entry.direction == leg.direction.value
+        and _normalize_decimal(entry.amount) == _normalize_decimal(Decimal(str(leg.amount)))
+    )
+
+
 def _direction_from_side(side: HedgeLegSide) -> LedgerDirection:
     return LedgerDirection.out if side == HedgeLegSide.buy else LedgerDirection.in_
 
@@ -160,6 +178,42 @@ def _raise_conflict() -> None:
     )
 
 
+def _raise_replay_payload_mismatch() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Settlement payload does not match persisted ledger event",
+    )
+
+
+def _validate_existing_settlement_replay(
+    *,
+    existing_event: HedgeContractSettlementEvent,
+    existing_entries: list[CashFlowLedgerEntry],
+    contract_id: UUID,
+    payload: HedgeContractSettlementCreate,
+) -> None:
+    if (
+        existing_event.hedge_contract_id != contract_id
+        or existing_event.cashflow_date != payload.cashflow_date
+        or len(existing_entries) != len(payload.legs)
+    ):
+        _raise_conflict()
+
+    seen_leg_ids: set[str] = set()
+    for leg in payload.legs:
+        if leg.leg_id.value in seen_leg_ids:
+            _raise_conflict()
+        seen_leg_ids.add(leg.leg_id.value)
+        match = next(
+            (entry for entry in existing_entries if entry.leg_id == leg.leg_id.value),
+            None,
+        )
+        if match is None or not _ledger_entry_matches_payload(
+            match, contract_id, payload, leg
+        ):
+            _raise_replay_payload_mismatch()
+
+
 def ingest_hedge_contract_settlement(
     db: Session,
     contract_id: UUID,
@@ -174,10 +228,6 @@ def ingest_hedge_contract_settlement(
     _validate_currency(payload)
 
     existing_event = db.get(HedgeContractSettlementEvent, payload.source_event_id)
-    expected_entries = [
-        _build_expected_entry(db, contract, payload, leg) for leg in payload.legs
-    ]
-
     existing_entries = (
         db.query(CashFlowLedgerEntry)
         .filter(
@@ -189,52 +239,26 @@ def ingest_hedge_contract_settlement(
         .all()
     )
 
-    if contract.status == HedgeContractStatus.settled:
-        if existing_event is None or len(existing_entries) != 2:
-            _raise_conflict()
-        for expected in expected_entries:
-            match = next(
-                (
-                    entry
-                    for entry in existing_entries
-                    if entry.leg_id == expected["leg_id"]
-                ),
-                None,
-            )
-            if match is None or not _ledger_entry_matches(match, expected):
-                _raise_conflict()
-        if (
-            existing_event.hedge_contract_id != contract_id
-            or existing_event.cashflow_date != payload.cashflow_date
-        ):
-            _raise_conflict()
+    if existing_event is not None:
+        _validate_existing_settlement_replay(
+            existing_event=existing_event,
+            existing_entries=existing_entries,
+            contract_id=contract_id,
+            payload=payload,
+        )
         return existing_event, existing_entries
+
+    if contract.status == HedgeContractStatus.settled:
+        _raise_conflict()
 
     _assert_contract_active(contract)
 
-    if existing_event is not None:
-        if (
-            existing_event.hedge_contract_id != contract_id
-            or existing_event.cashflow_date != payload.cashflow_date
-        ):
-            _raise_conflict()
-        if len(existing_entries) != 2:
-            _raise_conflict()
-        for expected in expected_entries:
-            match = next(
-                (
-                    entry
-                    for entry in existing_entries
-                    if entry.leg_id == expected["leg_id"]
-                ),
-                None,
-            )
-            if match is None or not _ledger_entry_matches(match, expected):
-                _raise_conflict()
-        return existing_event, existing_entries
-
     if existing_entries:
         _raise_conflict()
+
+    expected_entries = [
+        _build_expected_entry(db, contract, payload, leg) for leg in payload.legs
+    ]
 
     settlement_event = HedgeContractSettlementEvent(
         id=payload.source_event_id,
