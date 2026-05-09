@@ -11,6 +11,9 @@
 
 ## 0. Refresh notes (read first)
 
+**Codex P1 absorbed against pre-merge dispatch (commit `8c8ac6147`):** the §3.1 regex `r"RFQ#(?P<num>RFQ-\d{4}-\d{6})"` had no end boundary after the 6-digit sequence, so `re.search` would match `RFQ#RFQ-2026-1234567` (post-`:06d`-overflow, sequence ≥ 1_000_000) as the unrelated 6-digit `RFQ-2026-123456`. Adversarial digit-prepend (`RFQ#RFQ-2026-0001234`) had the same shape. Both cases would route a malformed canonical id to a real older RFQ and let the downstream auto-quote path run despite the dispatch's "partial matches park" rule. **Fix:** added `(?!\d)` negative lookahead to the regex (rejects digit-to-digit transitions), plus two new parser tests in §7 (`rejects_overlong_sequence_post_overflow`, `rejects_adversarial_digit_prepend`). The post-overflow scenario then lands in the `no_canonical_id` path at the parser boundary, consistent with §6's hard-fail-rather-than-fallback rule.
+
+
 This dispatch is a **factual refresh + rigor upgrade** of `docs/audits/2026-05-06-phase-a2-pr-5-inbound-canonical-id-dispatch.md` (committed on the `audit/phase-a2` branch at `39c1b9d`, never merged). The institutional purpose (replace phone+timestamp correlation with canonical-id correlation), the scope (`_process_single_message` only), the single finding closed (J-A2-06), and the no-migration shape are **unchanged**. What is updated:
 
 - **Format upgraded from "reduced rigor / Wave 2 demo cycle" (191 lines) to institutional rigor matching the PR-4 refresh shape** (§0–§12 ceremony, line-validated citations, explicit Codex-cycle wait, governance cited by line numbers rather than section names, mandatory worktree + bypassPermissions workflow). The original's "concise dispatch — Wave 2 demo cycle" trailer is removed; PR-5 is the closing PR of A2 and ships under the same protocol that produced PRs #28, #29, #30, #31, #36.
@@ -77,7 +80,7 @@ import re
 
 # Format mirrored from rfq_service.py:558 — `f"RFQ-{year}-{int(seq.id):06d}"`.
 # 4-digit year + 6-digit zero-padded sequence; uppercase RFQ literal.
-_CANONICAL_ID_RE = re.compile(r"RFQ#(?P<num>RFQ-\d{4}-\d{6})")
+_CANONICAL_ID_RE = re.compile(r"RFQ#(?P<num>RFQ-\d{4}-\d{6})(?!\d)")
 
 
 def _parse_canonical_id(text: str | None) -> str | None:
@@ -102,6 +105,7 @@ def _parse_canonical_id(text: str | None) -> str | None:
 **Regex anchoring rationale:**
 - `re.search` covers both "prefix at start" (the canonical outbound shape) and "prefix appearing inside a quoted reply" (counterparties using WhatsApp's quote feature, which may indent or whitespace-pad the original text). The original 2026-05-06 dispatch already specified `search` over `match`; preserved.
 - `RFQ-\d{4}-\d{6}` is an exact match for `f"RFQ-{year}-{int(seq.id):06d}"` at `rfq_service.py:558`. Year is always 4-digit (will not collide with 5-digit format until year 10000). Sequence is `:06d`-formatted from a `RFQSequence.id` integer; once the sequence exceeds 999_999 the format will widen — at that point this regex needs a corresponding update, but PR-5 does NOT pre-emptively widen for that scenario (premature design).
+- The trailing **`(?!\d)` negative lookahead is mandatory** — without it, `re.search` would match `RFQ#RFQ-2026-1234567` (post-overflow 7-digit sequence) as the unrelated 6-digit `RFQ-2026-123456`, routing a future-format canonical id to a real older RFQ and silently letting the auto-quote path run. The lookahead enforces "exactly 6 digits, then a non-digit (or end-of-string)" so post-overflow inputs and adversarial digit-prepended inputs (`RFQ#RFQ-2026-0001234` truncating to `RFQ-2026-000123`) are rejected by the parser and land in the `no_canonical_id` path. This is the §6 hard-fail-rather-than-fallback rule applied at the parser boundary.
 - The literal `RFQ#` separator is mandatory — `re.search` will not match a body that contains `RFQ-2026-000123` without the `#` separator. That is intentional: the canonical id is `RFQ#<rfq_number>`, not the bare `rfq_number`. A counterparty echo without the `#` is institutionally a non-canonical reply and must park.
 - Multiple canonical ids in a single message body (counterparty quotes two RFQs in one reply): `re.search` returns only the first. PR-5 does NOT support multi-RFQ-per-message dispatch — the constitution's correlation clause is one canonical id per message, the outbound shape is one canonical id per outbound message, and a multi-id inbound is operationally a forwarded thread. If a future use case demands multi-id handling, that is a Phase A4 / A5 surface, not PR-5.
 
@@ -302,6 +306,8 @@ The new tests in §7 (`test_inbound_canonical_id.py`) are *additive*; they do no
 - `test_parse_canonical_id_returns_none_on_empty_or_none` — `""` and `None` both return `None` without exception.
 - `test_parse_canonical_id_rejects_bare_rfq_number_without_hash` — `"RFQ-2026-000123"` (no `#`) → `None`.
 - `test_parse_canonical_id_rejects_short_sequence` — `"RFQ#RFQ-2026-12345"` (5 digits) → `None`.
+- `test_parse_canonical_id_rejects_overlong_sequence_post_overflow` — `"RFQ#RFQ-2026-1234567"` (7 digits, simulating post-`:06d`-overflow when sequence ≥ 1_000_000) → `None`. Without the `(?!\d)` lookahead the parser would silently truncate to `RFQ-2026-123456` and route a future canonical id to an unrelated older RFQ; this test pins the hard-fail.
+- `test_parse_canonical_id_rejects_adversarial_digit_prepend` — `"RFQ#RFQ-2026-0001234"` (extra leading digit, 7 total) → `None`. Same lookahead concern: without `(?!\d)` the parser would extract `RFQ-2026-000123` (the 6-digit prefix), routing the malformed input to a real older RFQ. Test pins the boundary.
 - `test_inbound_with_canonical_id_resolves_by_rfq_number` — fixture: live RFQ A; inbound `from_phone=+5511999999999`, `text="RFQ#<A.rfq_number> ..."`. Asserts `_process_single_message` returns the auto-quote success path, `rfq_id == A.id`, downstream guards executed.
 - `test_inbound_without_canonical_id_is_parked_not_correlated_by_phone` — fixture: live RFQ A with invitation to `+5511999999999`; inbound from same phone, `text="ola tudo bem"` (no canonical id). Asserts `{"status": "no_canonical_id"}` and no auto-quote, no DB query attempted on the invitation table (mock `session.query` to fail-loud if called).
 - `test_inbound_with_canonical_id_phone_mismatch_defense_in_depth` — fixture: live RFQ A with invitation to `+5511111111111`; inbound from `+5522222222222` carrying `RFQ#<A.rfq_number>`. Asserts `{"status": "phone_mismatch", "canonical_number": ..., "rfq_id": str(A.id)}` and no auto-quote.
