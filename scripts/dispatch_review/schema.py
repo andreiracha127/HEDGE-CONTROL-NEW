@@ -24,12 +24,12 @@ class Finding(BaseModel):
     )
     snippet: str = Field(
         ...,
-        max_length=500,
+        max_length=1200,
         description="The exact dispatch excerpt that violates the rule.",
     )
     why: str = Field(
         ...,
-        max_length=800,
+        max_length=2500,
         description=(
             "Why this is wrong. Cite the file, symbol, or sibling bullet "
             "that contradicts the prescription."
@@ -37,7 +37,7 @@ class Finding(BaseModel):
     )
     fix_suggestion: str = Field(
         ...,
-        max_length=600,
+        max_length=2000,
         description="Concrete suggestion for resolving the catch.",
     )
 
@@ -69,7 +69,7 @@ class ReviewReport(BaseModel):
     )
     summary: str = Field(
         ...,
-        max_length=400,
+        max_length=2000,
         description=(
             "One-paragraph summary of the dispatch's overall self-consistency "
             "state. Mention key strengths and the most important catch if any."
