@@ -89,6 +89,18 @@ def test_lookup_skips_weekend_correctly_to_friday() -> None:
         assert quote.value == Decimal("333.0")
 
 
+def test_lookup_at_start_of_year_uses_prior_business_day_in_adjacent_covered_year() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2025, 12, 31), price_usd=444.0)
+
+    with SessionLocal() as session:
+        quote = get_cash_settlement_price_d1_with_provenance(
+            session, symbol=symbol, as_of_date=date(2026, 1, 2)
+        )
+        assert quote.settlement_date == date(2025, 12, 31)
+        assert quote.value == Decimal("444.0")
+
+
 def test_missing_prior_business_day_raises_even_when_older_business_day_exists() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
     _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=333.0)
