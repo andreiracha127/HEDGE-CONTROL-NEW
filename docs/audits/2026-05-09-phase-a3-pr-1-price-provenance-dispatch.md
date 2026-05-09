@@ -11,6 +11,12 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex catches absorbed against commit `7a62ea0b0` (1 P1 + 1 P2):**
+
+1. **Key `_CANONICAL_SOURCE_BY_SYMBOL` by RESOLVED long-form settlement symbols (P1).** Round-10 §3.6 introduced `_CANONICAL_SOURCE_BY_SYMBOL` keyed by short codes (`LME_AL`, `LME_CU`, etc.). Codex caught: the lookup chain is `resolve_symbol(contract.commodity)` → LONG form (`LME_ALU_CASH_SETTLEMENT_DAILY`) → `_canonical_source_for_symbol(long_form)`. The short-code-keyed map raises `PriceReferenceUnprovable` for every legitimate lookup. Plus PB/SN (lead/tin) commodities supported by `COMMODITY_SYMBOL_MAP` were missing entirely. **Fix:** §3.6 map rewritten with all SIX supported commodities (AL/CU/ZN/NI/PB/SN) keyed by their resolved long-form symbols. §10 new DO NOT codifies the keying rule + COMMODITY_SYMBOL_MAP cross-reference. §7 adds two tests (six-commodity coverage + end-to-end short-code-input regression). **Self-blame:** classic factual cross-check miss — I prescribed short-code keys without verifying what `resolve_symbol` actually returns. Sub-rule 10 (Serena-verify identifiers) didn't catch this because the keys are NEW values, not existing identifiers; the rule expands to: **when a NEW lookup key is prescribed, verify the lookup chain end-to-end via Serena (caller → producer → consumer) — not just one endpoint.**
+
+2. **Limit ledger provenance acceptance to PRICED legs only (P2).** §6 acceptance round-3/5 said `_build_expected_entry` populates `price_source + price_symbol + price_settlement_date` on every constructed dict. Round-7 then introduced the FIXED-leg-NULL design in §3.7. Sibling-bullet inconsistency: the §6 acceptance bullet still required population on every dict, contradicting §3.7. Per the all-four-or-NULL CHECK, the FIXED leg's NULL provenance is admissible — but the §6 wording would either force fabricated provenance or fail the CHECK. **Fix:** §6 bullet rewritten to scope population to FLOAT legs explicitly; FIXED legs construct all-four-NULL dicts. **Self-blame:** sibling-bullet sweep miss again (round 9 had analogous; round 11 had analogous; this is the third instance) — sub-rule 17 (sibling-bullet sweep within single section) was not applied to the §6 acceptance list when round-7 changed §3.7's design. The rule must propagate retroactively: **when a §3.X redesign establishes a NULL/non-NULL boundary on a schema, every §6 acceptance bullet referencing that schema's fields must be re-read and the boundary explicitly enumerated**.
+
 **Two Codex catches absorbed against commit `1b13e66c0` (1 P1 + 1 P2):**
 
 1. **Quantize derived ledger amounts before comparison and persistence (P1).** Round-7 §3.7 derived `amount = quantity × price` directly. Codex caught: `quantity_mt` and `price_value` each carry their own decimal scales; their unrounded product can have > 6 fractional digits. `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` — DB rounds on insert. Idempotent re-ingest then recomputes the unrounded product; `_ledger_entry_matches` compares exact Decimal values → false 409 conflict on legitimately identical re-ingest. Same problem for the payload-vs-derived 422 check: an operator-supplied amount rounded to 6 digits would mismatch the unrounded derived value. **Fix:** §3.7 sketch now `quantize`s `derived_amount` to `Decimal("0.000001")` with `ROUND_HALF_EVEN` BEFORE both the 422 comparison and persistence. §10 new DO NOT codifies the rule. §7 adds two regression tests. §6 gains a quantize criterion.
@@ -427,15 +433,20 @@ def _prior_business_day(price_date: date, calendar: frozenset[date]) -> date:
 
 **Canonical source per symbol** (per Codex P2 absorbed in §0 round 10): `cash_settlement_prices` unique constraint at `models/market_data.py:13` is `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. The lookup MUST filter by source to be deterministic; a `_canonical_source_for_symbol(symbol)` helper (in the new `app/utils/market_calendar.py` or a sibling module) returns the institutional canonical source. Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. This mirrors the calendar selection rule (§3.6 paragraph above).
 
-For the existing data: westmetall is the de-facto canonical for LME_* symbols (per the existing helper docstring "PriceQuote.source is the row's source column verbatim, e.g. 'westmetall'"). Initial mapping:
+For the existing data: westmetall is the de-facto canonical source for all LME settlement symbols (per the existing helper docstring "PriceQuote.source is the row's source column verbatim, e.g. 'westmetall'"). The `_canonical_source_for_symbol` map is keyed by the **resolved settlement symbol** that `resolve_symbol(commodity)` returns (e.g., `LME_ALU_CASH_SETTLEMENT_DAILY`) — NOT by the short commodity code (`LME_AL`). Per Codex P1 absorbed in §0 round 12: keying by short codes makes every normal AL/CU/ZN/NI lookup raise `PriceReferenceUnprovable` because the lookup chain is `resolve_symbol(contract.commodity)` → long form → `_canonical_source_for_symbol(long_form)` map miss.
+
+Verified against `backend/app/services/price_lookup_service.py:62-79` (`COMMODITY_SYMBOL_MAP`): the codebase supports six LME commodities (AL/CU/ZN/NI/PB/SN), all resolving to `LME_<X>_CASH_SETTLEMENT_DAILY`. The mapping below covers all six explicitly:
 
 ```python
 _CANONICAL_SOURCE_BY_SYMBOL: dict[str, str] = {
-    "LME_AL": "westmetall",
-    "LME_CU": "westmetall",
-    "LME_ZN": "westmetall",
-    "LME_NI": "westmetall",
-    # Extend as new commodities / sources are onboarded.
+    "LME_ALU_CASH_SETTLEMENT_DAILY": "westmetall",  # aluminum
+    "LME_CU_CASH_SETTLEMENT_DAILY": "westmetall",   # copper
+    "LME_ZN_CASH_SETTLEMENT_DAILY": "westmetall",   # zinc
+    "LME_NI_CASH_SETTLEMENT_DAILY": "westmetall",   # nickel
+    "LME_PB_CASH_SETTLEMENT_DAILY": "westmetall",   # lead
+    "LME_SN_CASH_SETTLEMENT_DAILY": "westmetall",   # tin
+    # Extend as new commodities / sources are onboarded — keyed by the
+    # resolved settlement symbol, NOT the short code.
 }
 
 def _canonical_source_for_symbol(symbol: str) -> str:
@@ -443,8 +454,9 @@ def _canonical_source_for_symbol(symbol: str) -> str:
         return _CANONICAL_SOURCE_BY_SYMBOL[symbol]
     except KeyError as exc:
         raise PriceReferenceUnprovable(
-            f"No canonical source registered for symbol {symbol!r}; "
-            "operator must extend _CANONICAL_SOURCE_BY_SYMBOL before "
+            f"No canonical source registered for resolved symbol {symbol!r}; "
+            "operator must extend _CANONICAL_SOURCE_BY_SYMBOL (keyed by the "
+            "long-form settlement symbol from resolve_symbol) before "
             "MTM/P&L can be computed for this commodity.",
             symbol=symbol,
             as_of_date=None,  # not yet relevant — no lookup attempted
@@ -871,8 +883,8 @@ def downgrade() -> None:
 - [ ] `cashflow_baseline_service` serializes the analytic response via `response.model_dump(mode="json")` so each item's `price_*` fields land in `snapshot_data`; the hash is computed over the SAME `mode="json"` shape.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
-- [ ] `cashflow_ledger_service._build_expected_entry` populates `price_source` + `price_symbol` + `price_settlement_date` on every constructed dict; the persisted `CashFlowLedgerEntry` row carries all three.
-- [ ] `cashflow_ledger_service._ledger_entry_matches` includes ALL FOUR provenance fields (`price_source`, `price_symbol`, `price_settlement_date`, `price_value`) in its equality check; idempotency-with-divergent-provenance raises 409, not silent no-op. Specifically: a canonical settlement row corrected in-place with same `(source, symbol, date)` but new `value` triggers 409 on re-ingest of the same `source_event_id`.
+- [ ] `cashflow_ledger_service._build_expected_entry` populates the four provenance fields ONLY on FLOAT legs (full quadruple from `settlement_quote`); FIXED legs construct dicts with all four `price_*` fields = NULL (no market lookup made — economics from `contract.fixed_price_value`). Per the all-four-or-NULL CHECK constraint, both shapes are admissible. Per §3.7.
+- [ ] `cashflow_ledger_service._ledger_entry_matches` includes ALL FOUR provenance fields (`price_source`, `price_symbol`, `price_settlement_date`, `price_value`) in its equality check via `_decimal_or_none_eq` for the Decimal column; idempotency-with-divergent-provenance raises 409, not silent no-op. Specifically: a canonical settlement row corrected in-place with same `(source, symbol, date)` but new `value` triggers 409 on re-ingest of the same `source_event_id`. FIXED legs (all-four-NULL) are silently idempotent on re-ingest.
 - [ ] `price_lookup_service` computes the EXACT prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (no range). 5-calendar-day legacy AND any range fallback are gone.
 - [ ] When the prior-business-day row is missing, `PriceReferenceUnprovable` raises — older business-day rows are NOT considered.
 - [ ] `_market_calendar_for_symbol(symbol)` raises a structured error for unknown commodities — no silent fall-through to a global default calendar.
@@ -951,8 +963,9 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_lookup_skips_LME_holiday_correctly`
   - `test_missing_prior_business_day_raises_PriceReferenceUnprovable_even_when_older_business_day_exists` — fixture has Friday's row present but Monday's missing; lookup for Tuesday must raise (Monday is the exact prior BD; Friday is NOT considered)
   - `test_unknown_commodity_raises_structured_error_not_silent_default_calendar`
-  - `test_canonical_source_for_symbol_returns_westmetall_for_LME_symbols` — fixture asserts known mapping
+  - `test_canonical_source_for_symbol_returns_westmetall_for_resolved_LME_symbols` — fixture asserts mapping for ALL SIX commodities (`LME_ALU_CASH_SETTLEMENT_DAILY`, `LME_CU_CASH_SETTLEMENT_DAILY`, `LME_ZN_CASH_SETTLEMENT_DAILY`, `LME_NI_CASH_SETTLEMENT_DAILY`, `LME_PB_CASH_SETTLEMENT_DAILY`, `LME_SN_CASH_SETTLEMENT_DAILY`) — keys are the **resolved long-form symbols** that `resolve_symbol(commodity)` returns, not short codes
   - `test_canonical_source_for_symbol_raises_PriceReferenceUnprovable_for_unknown_symbol` — `XYZ_FAKE` not in `_CANONICAL_SOURCE_BY_SYMBOL` → exception with structured message
+  - `test_canonical_source_lookup_chain_works_for_short_code_input` — fixture: `commodity="LME_AL"` → `resolve_symbol` returns `"LME_ALU_CASH_SETTLEMENT_DAILY"` → `_canonical_source_for_symbol` returns `"westmetall"` → lookup succeeds. Regression for the round-12 P1 mis-keying bug (short code AL keyed map silently raised on the long-form output).
   - `test_lookup_filters_by_canonical_source_excluding_other_sources` — fixture: insert two `CashSettlementPrice` rows with same `(symbol=LME_AL, settlement_date=D)` but different sources `westmetall` and `bloomberg`; lookup MUST return the westmetall row (canonical) regardless of insertion order. Without source filter, `.first()` is non-deterministic.
   - `test_market_calendar_is_in_repo_frozenset_not_holidays_dependency` — assert no `import holidays` in `app/utils/market_calendar.py`; `_LME_HOLIDAYS` is a `frozenset[date]` literal in source. Regression for the round-11 P2 missing-dep risk.
   - `test_settlement_amount_quantized_to_ledger_scale` — fixture: `quantity=Decimal("10.500000")` × `price=Decimal("2585.123457")` produces unrounded 8-digit-fractional result; assert persisted `amount.quantize(Decimal("0.000001"))` matches the persisted row exactly; idempotent re-ingest returns the existing row (no 409, no payload-comparison 422).
@@ -1075,6 +1088,7 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT derive the FLOAT leg's direction as "opposite of `contract.fixed_leg_side`". Read `contract.variable_leg_side` directly. The DB CHECK constraint at `models/contracts.py:78-80` only ties `classification` to `fixed_leg_side`; there is NO invariant forcing `variable_leg_side != fixed_leg_side`. A contract with both sides equal is degenerate but admissible at the schema layer; deriving FLOAT direction from "opposite of fixed" would silently rewrite the stored variable side and let an inconsistent contract generate realized P&L from a fabricated direction (per Codex P2 absorbed in §0 round 8).
 - DO NOT call `_normalize_decimal(value)` directly on a nullable Decimal column without first checking for None. `_normalize_decimal(None) == Decimal(str(None))` raises `decimal.InvalidOperation`. FIXED-leg ledger rows have `price_value = None` per §3.7; a comparator that calls `_normalize_decimal(entry.price_value)` unconditionally will raise during idempotency re-ingest, returning a 500 instead of the existing settlement / a clean 409. Use the `_decimal_or_none_eq(a, b)` helper for nullable Decimal equality (per Codex P1 absorbed in §0 round 10).
 - DO NOT query `cash_settlement_prices` filtering only by `(symbol, settlement_date)` and using `.first()`. The unique constraint is on `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. Without the source filter, `.first()` returns whichever row the DB happens to order first, making MTM / P&L provenance non-deterministic across environments. Lookup MUST filter on `(source == canonical_source, symbol, settlement_date)` where `canonical_source = _canonical_source_for_symbol(symbol)` (per Codex P2 absorbed in §0 round 10).
+- DO NOT key `_CANONICAL_SOURCE_BY_SYMBOL` by SHORT commodity codes (`LME_AL`, `LME_CU`, etc.). The lookup chain is `resolve_symbol(contract.commodity)` → LONG-form settlement symbol (e.g., `LME_ALU_CASH_SETTLEMENT_DAILY`) → `_canonical_source_for_symbol(long_form)`. The map MUST be keyed by the long-form symbol that `resolve_symbol` actually returns. Verify against `backend/app/services/price_lookup_service.py:62-79` (`COMMODITY_SYMBOL_MAP`); cover all six supported commodities (AL/CU/ZN/NI/PB/SN). Keying by short codes would silently raise `PriceReferenceUnprovable` on every legitimate lookup (per Codex P1 absorbed in §0 round 12).
 - DO NOT persist or compare unrounded `derived_amount` values. `quantity_mt × price` carries the sum of both factors' decimal scales (potentially > 6); `CashFlowLedgerEntry.amount` is `Numeric(18, 6)` and the DB rounds on insert. Quantize `derived_amount` to `Decimal("0.000001")` with `ROUND_HALF_EVEN` BEFORE both the 422 payload comparison and persistence. Skipping the quantize causes idempotent re-ingest to throw a false 409 (or to reject a payload that supplies the rounded value as a 422 mismatch) (per Codex P1 absorbed in §0 round 11).
 - DO NOT `import holidays` (or `python_holidays`, or any other external calendar library) in the new `app/utils/market_calendar.py`. Those packages are NOT in `backend/requirements.txt`; the import would raise `ModuleNotFoundError` on every backend startup / test run. Use the in-repo `_LME_HOLIDAYS: frozenset[date]` static map prescribed in §3.6 (per Codex P2 absorbed in §0 round 11). If the operator decides to migrate to a package later, it lands as a separate dispatch with explicit dependency review.
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
