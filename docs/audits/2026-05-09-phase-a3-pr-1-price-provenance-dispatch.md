@@ -11,12 +11,18 @@
 
 ## 0. Refresh notes (read first)
 
-This is the **first iteration** of the PR-A3-1 dispatch. No Codex catches yet absorbed; expect 4–9 catches per A1/A2 cycle history (the 4-offense cross-section sweep pattern from PR-5 round 4/5/9/10 will apply here unless the orchestrator + executor stay disciplined from the start).
+**Two Codex P1 absorbed against pre-merge dispatch (commit `0cbb20a87`):**
+
+1. **Persist the settlement symbol with MTM provenance.** The first draft of §3.2 added `price_source + price_settlement_date + inputs_hash` (three columns) to `MTMSnapshot`. Codex caught: `cash_settlement_prices` is uniquely identified by `(source, symbol, settlement_date)`. When westmetall publishes LME_AL + LME_CU + LME_ZN on the same date, three rows share `(source, settlement_date)`; without `symbol` persisted, the snapshot cannot prove which row fed it. `inputs_hash` is a one-way verifier — not reverse-queryable. **Fix:** added `price_symbol: String(length=32)` as a fourth provenance column on `MTMSnapshot` and as a third provenance column on `cashflow_ledger_entries`; updated CHECK constraints, migration, snapshot creators, and §6/§7 references throughout. P&L stays JSON-list-shaped (per-entry `symbol` was already required in the example).
+
+2. **Require the EXACT prior business-day price — no range fallback.** The first draft of §3.6 walked back 3 business days and queried `WHERE settlement_date <= price_date AND settlement_date >= lookback_limit ORDER BY settlement_date DESC`. Codex caught: a missing D-1 business-day row silently falls back to D-2/D-3/D-4 within the window. That is exactly the stale-price fallback OPUS-04 was meant to remove — re-created at a different layer. **Fix:** §3.6 now computes the SINGLE prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (exact match). When the prior BD row is missing, `PriceReferenceUnprovable` raises; older business-day rows are NOT considered. The calendar's role is reduced to "skip weekends/holidays when computing the date" — never "define a fallback window".
+
+This is the **first iteration** of the PR-A3-1 dispatch (now hardened against the two P1 catches above). Expect 2–7 more catches based on A1/A2 cycle history (the 4-offense cross-section sweep pattern from PR-5 round 4/5/9/10 will continue to apply unless the orchestrator + executor stay disciplined).
 
 The Phase A3 jury verdict (`docs/audits/2026-05-09-phase-a3-jury-verdict.md`) is the institutional input. Findings are quoted as written there; do not re-adjudicate.
 
 **Key infrastructure already in place (verified via Serena 2026-05-09 against `659e5ba9d`):**
-- `PriceQuote` dataclass at `backend/app/services/price_lookup_service.py:42-56` carries `(value: Decimal, source: str, settlement_date: date, symbol: str)` — the canonical provenance triplet.
+- `PriceQuote` dataclass at `backend/app/services/price_lookup_service.py:42-56` carries `(value: Decimal, source: str, settlement_date: date, symbol: str)` — the canonical provenance quadruple. Note: `symbol` is part of the canonical key (per §0 absorbed Codex P1) — without it, multi-commodity-same-source-same-date publishings cannot be disambiguated.
 - `get_cash_settlement_price_d1_with_provenance(db, symbol, as_of_date) -> PriceQuote` at `:137-183` returns the triplet and raises `PriceReferenceUnprovable` on no row in the lookback window.
 - `get_cash_settlement_price_d1(db, symbol, as_of_date) -> Decimal` at `:186-211` is the legacy scalar wrapper. Its docstring already says "New code requiring the full provenance triplet MUST use `…_with_provenance` directly."
 
@@ -26,7 +32,7 @@ PR-A3-1 is **largely a downstream-consumer migration** — the contract is alrea
 
 ## 1. Mission
 
-Make every persisted valuation snapshot **reconstructible from its inputs** by storing the canonical price-provenance triplet `(price_value, price_source, price_settlement_date)` and a `inputs_hash` covering the full input set; correct the canonical price column from `Float` to `Numeric` so that "the price" cannot drift by binary rounding; replace the 5-calendar-day price lookback with a business-calendar-aware D-1 lookback so weekend / holiday handling is auditable; and stop accepting the Ledger settlement amount from HTTP payload — derive it server-side from contract facts + price evidence.
+Make every persisted valuation snapshot **reconstructible from its inputs** by storing the canonical price-provenance quadruple `(price_value, price_source, price_symbol, price_settlement_date)` and a `inputs_hash` covering the full input set; correct the canonical price column from `Float` to `Numeric` so that "the price" cannot drift by binary rounding; replace the 5-calendar-day price lookback with a business-calendar-aware D-1 lookback so weekend / holiday handling is auditable; and stop accepting the Ledger settlement amount from HTTP payload — derive it server-side from contract facts + price evidence.
 
 This is the **foundational** wave of Phase A3: every later wave (commodity correctness, projection hardening, cashflow boundaries, P&L lifecycle) consumes the provenance triplet that this PR introduces. Without Wave 1, those waves cannot prove what price they used.
 
@@ -81,21 +87,24 @@ The **contract change is already done** (`PriceQuote` exists, `get_cash_settleme
 
 ### 3.2 `MTMSnapshot` provenance fields + `inputs_hash`
 
-Add to **`backend/app/models/mtm.py:MTMSnapshot`** (current body at `:18-35`) three new columns:
+Add to **`backend/app/models/mtm.py:MTMSnapshot`** (current body at `:18-35`) **four** new columns:
 
 ```python
 # new fields after `quantity_mt`, before `correlation_id`:
 price_source: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
+price_symbol: Mapped[str | None] = mapped_column(String(length=32), nullable=True)
 price_settlement_date: Mapped[date | None] = mapped_column(Date, nullable=True)
 inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
 ```
+
+**Why `price_symbol` is mandatory** (per Codex P1 absorbed in §0): `cash_settlement_prices` is uniquely identified by `(source, symbol, settlement_date)`. When the same source publishes multiple commodities on the same date (westmetall publishes LME_AL + LME_CU + LME_ZN per session), `price_source + price_settlement_date + price_d1` is NOT sufficient to prove which row was consumed — the same `price_source + settlement_date` matches three rows. Persisting `price_symbol` makes the provenance triplet a unique key into the source table; `inputs_hash` is a one-way verifier but cannot be reverse-queried, so the human-queryable provenance must carry the symbol as a structured column.
 
 **Why nullable** (per `feedback_dispatch_self_consistency` "NOT NULL columns vs absent-value cases"): legacy rows pre-PR-A3-1 have no provenance recorded; `NULL` is the honest representation of "this row pre-dates the provenance regime; do not use for reconstrutibilidade verification". A CHECK constraint in `__table_args__` enforces the all-or-none invariant for **new** rows:
 
 ```python
 CheckConstraint(
-    "(price_source IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
-    "OR (price_source IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
+    "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
+    "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
     name="ck_mtm_snapshots_provenance_all_or_none",
 )
 ```
@@ -114,6 +123,7 @@ snapshot = MTMSnapshot(
     entry_price=_as_decimal(computed.entry_price),
     quantity_mt=_as_decimal(computed.quantity_mt),
     price_source=computed.price_quote.source,
+    price_symbol=computed.price_quote.symbol,
     price_settlement_date=computed.price_quote.settlement_date,
     inputs_hash=_compute_inputs_hash(computed),
     correlation_id=correlation_id,
@@ -140,7 +150,7 @@ def _compute_inputs_hash(computed) -> str:
     return hashlib.sha256(blob).hexdigest()
 ```
 
-**Existence-check / conflict logic at `:33-46` and `:81-95`** must extend to compare the new fields too: a fresh recompute that diverges in `price_source` or `price_settlement_date` (e.g., the canonical settlement table grew a row for a date previously unavailable) is a **legitimate conflict**, not a silent no-op. Match the existing conflict shape (raise `HTTPException(409, ...)`).
+**Existence-check / conflict logic at `:33-46` and `:81-95`** must extend to compare the new fields too: a fresh recompute that diverges in `price_source`, `price_symbol`, or `price_settlement_date` (e.g., the canonical settlement table grew a row for a date previously unavailable, or a different symbol's row was now consumed) is a **legitimate conflict**, not a silent no-op. Match the existing conflict shape (raise `HTTPException(409, ...)`).
 
 ### 3.3 `PLSnapshot` price_references + `inputs_hash`
 
@@ -240,37 +250,56 @@ def upgrade():
 
 **Update `get_cash_settlement_price_d1_with_provenance`** at `:179`: `value=Decimal(str(row.price_usd))` becomes `value=row.price_usd` (already Decimal post-migration). Verify no consumer of `CashSettlementPrice.price_usd` assumes `float` arithmetic.
 
-### 3.6 Business-calendar D-1 lookback (OPUS-04)
+### 3.6 Business-calendar D-1 lookup — **EXACT prior business day, no range fallback** (OPUS-04)
 
-Current at **`backend/app/services/price_lookup_service.py:157-160`**: `lookback_limit = price_date - timedelta(days=5)` — 5 calendar days, no business-calendar awareness.
+Current at **`backend/app/services/price_lookup_service.py:157-160`**: `lookback_limit = price_date - timedelta(days=5)` paired with `WHERE settlement_date <= price_date AND settlement_date >= lookback_limit` ordered desc — a **range query that silently accepts older rows**. This is the OPUS-04 violation: when the actual D-1 row is missing, the query happily returns D-2 or D-3 instead.
 
-**Replacement**: a business-calendar-aware lookback that walks back N **business days** (where N is bounded; recommend N=3 business days = up to a long weekend + 1-day reserve). Use `holidays` library if already a dependency, or define a per-commodity calendar in a new `app/utils/market_calendar.py` module.
+**Replacement**: compute the **EXACT prior business day** using the calendar, then query for that exact date. The calendar's only role is to skip weekends and holidays when computing the prior-business-day **date** — it does NOT define a fallback window of acceptable older dates.
 
-**Per-commodity calendar**: LME aluminum / copper / etc. share the LME holiday calendar. Other commodities may have different ones. Recommend a `_market_calendar_for_symbol(symbol: str)` helper that returns a `holidays.HolidayBase` instance (or equivalent). Default to LME for unknown commodities (with a warning log) only if no per-commodity mapping exists; **do NOT silently fall through to a global calendar** — that's the kind of fallback governance §2.6 forbids.
+**Per-commodity calendar**: LME aluminum / copper / etc. share the LME holiday calendar. Other commodities may have different ones. A `_market_calendar_for_symbol(symbol: str)` helper returns a `holidays.HolidayBase` instance (or equivalent). Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. That fall-through would be exactly the kind of fallback governance §2.6 forbids.
 
-**Lookback algorithm**:
+**Algorithm — exact prior business day**:
 
 ```python
-def _lookback_business_days(price_date: date, calendar, max_business_days: int = 3) -> date:
-    """Walk back up to `max_business_days` business days from `price_date`.
+def _prior_business_day(price_date: date, calendar) -> date:
+    """Return the SINGLE most recent business day strictly before `price_date`.
 
-    Returns the EARLIEST date that should be queried; the caller does
-    `WHERE settlement_date <= price_date AND settlement_date >= lookback_limit`
-    and orders by settlement_date desc. The returned `lookback_limit` is
-    inclusive.
+    Walks back exactly one business day, skipping weekends and calendar
+    holidays. Returns the unique date the caller MUST query for an
+    exact match — there is no range fallback. If the row at that exact
+    date is missing, the lookup raises PriceReferenceUnprovable; older
+    business-day rows are NOT considered.
     """
-    cursor = price_date
-    business_days_walked = 0
-    while business_days_walked < max_business_days:
+    cursor = price_date - timedelta(days=1)
+    while cursor.weekday() >= 5 or cursor in calendar:
         cursor -= timedelta(days=1)
-        if cursor.weekday() < 5 and cursor not in calendar:
-            business_days_walked += 1
     return cursor
 ```
 
-**Hard-fail signal preserved**: `PriceReferenceUnprovable` still raises when the (now business-day-bounded) window contains zero rows. The exception's message text gains the calendar name for audit clarity (e.g., `"No westmetall LME_AL settlement on or after {lookback_limit} (LME calendar)"`).
+**Replacement lookup body** (replaces the range query at `:157-167`):
 
-**Update `get_cash_settlement_price_d1_with_provenance`** to consume the new helper. The 5-calendar-day legacy is gone.
+```python
+prior_bd = _prior_business_day(as_of_date, _market_calendar_for_symbol(symbol))
+row = (
+    db.query(CashSettlementPrice)
+    .filter(
+        CashSettlementPrice.symbol == symbol,
+        CashSettlementPrice.settlement_date == prior_bd,  # EXACT match — no range
+    )
+    .first()
+)
+if not row:
+    raise PriceReferenceUnprovable(
+        f"No {symbol} cash settlement for prior business day {prior_bd} "
+        f"(as_of={as_of_date}); older settlements are NOT considered.",
+        symbol=symbol,
+        as_of_date=as_of_date,
+    )
+```
+
+**Why no range fallback** (per Codex P1 absorbed in §0): the OPUS-04 finding cited "5-calendar-day lookback" as a regime that lets stale prices in. A 3-business-day range fallback has the same shape one layer down — Monday's missing row silently becomes Friday's. Constitution §2.1 ("no fallback pricing regimes") and §2.6 ("price reference unprovable") together require: if THE prior business day's row is missing, hard-fail. The operator must publish the missing row before MTM/P&L for that as_of_date can compute. There is no auto-fallback.
+
+**Update `get_cash_settlement_price_d1_with_provenance`** to consume the new helper. The 5-calendar-day legacy AND any range scan are gone — replaced by exact-date query.
 
 ### 3.7 Ledger settlement amount server-side derivation (J-A3-03)
 
@@ -308,7 +337,7 @@ def _build_expected_entry(
 
 **HTTP payload contract**: the `HedgeContractSettlementCreate.legs[].amount` field becomes **advisory / verification only** — server-side derivation is canonical; if the payload supplies a value, the service VERIFIES it matches the derived amount (within a tolerance) and rejects 422 on mismatch. This preserves any external-system idempotency keying that uses the amount, while making the derivation authoritative.
 
-**Add Ledger provenance columns**: `cashflow_ledger_entries.price_source` (str nullable) + `price_settlement_date` (date nullable) + a CHECK invariant that they are NULL together OR populated together. Migration in §3.8.
+**Add Ledger provenance columns**: `cashflow_ledger_entries.price_source` (str nullable) + `price_symbol` (str nullable, length=32) + `price_settlement_date` (date nullable) + a CHECK invariant that all three are NULL together OR all three are populated together. Migration in §3.8. Why include `price_symbol` here too: the Ledger row's source-of-truth proof needs the same `(source, symbol, settlement_date)` triplet that uniquely keys the canonical price table; without it, an audit trace from a Ledger row back to the price source is ambiguous when the source published multiple commodities the same day.
 
 ### 3.8 Migration `038_a3_price_provenance`
 
@@ -349,15 +378,16 @@ def upgrade() -> None:
             postgresql_using="price_usd::numeric",
         )
 
-    # 2. mtm_snapshots: price_source + price_settlement_date + inputs_hash
+    # 2. mtm_snapshots: price_source + price_symbol + price_settlement_date + inputs_hash
     op.add_column("mtm_snapshots", sa.Column("price_source", sa.String(length=64), nullable=True))
+    op.add_column("mtm_snapshots", sa.Column("price_symbol", sa.String(length=32), nullable=True))
     op.add_column("mtm_snapshots", sa.Column("price_settlement_date", sa.Date(), nullable=True))
     op.add_column("mtm_snapshots", sa.Column("inputs_hash", sa.String(length=64), nullable=True))
     op.create_check_constraint(
         "ck_mtm_snapshots_provenance_all_or_none",
         "mtm_snapshots",
-        "(price_source IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
-        "OR (price_source IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
+        "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
+        "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
     )
 
     # 3. pl_snapshots: price_references (JSONB on PG, JSON on SQLite) + inputs_hash
@@ -376,20 +406,22 @@ def upgrade() -> None:
     # 4. cashflow_baseline_snapshots: inputs_hash
     op.add_column("cashflow_baseline_snapshots", sa.Column("inputs_hash", sa.String(length=64), nullable=True))
 
-    # 5. cashflow_ledger_entries: price_source + price_settlement_date
+    # 5. cashflow_ledger_entries: price_source + price_symbol + price_settlement_date
     op.add_column("cashflow_ledger_entries", sa.Column("price_source", sa.String(length=64), nullable=True))
+    op.add_column("cashflow_ledger_entries", sa.Column("price_symbol", sa.String(length=32), nullable=True))
     op.add_column("cashflow_ledger_entries", sa.Column("price_settlement_date", sa.Date(), nullable=True))
     op.create_check_constraint(
         "ck_cashflow_ledger_entries_provenance_all_or_none",
         "cashflow_ledger_entries",
-        "(price_source IS NULL AND price_settlement_date IS NULL) "
-        "OR (price_source IS NOT NULL AND price_settlement_date IS NOT NULL)",
+        "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL) "
+        "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL)",
     )
 
 
 def downgrade() -> None:
     op.drop_constraint("ck_cashflow_ledger_entries_provenance_all_or_none", "cashflow_ledger_entries")
     op.drop_column("cashflow_ledger_entries", "price_settlement_date")
+    op.drop_column("cashflow_ledger_entries", "price_symbol")
     op.drop_column("cashflow_ledger_entries", "price_source")
     op.drop_column("cashflow_baseline_snapshots", "inputs_hash")
     op.drop_constraint("ck_pl_snapshots_provenance_all_or_none", "pl_snapshots")
@@ -398,6 +430,7 @@ def downgrade() -> None:
     op.drop_constraint("ck_mtm_snapshots_provenance_all_or_none", "mtm_snapshots")
     op.drop_column("mtm_snapshots", "inputs_hash")
     op.drop_column("mtm_snapshots", "price_settlement_date")
+    op.drop_column("mtm_snapshots", "price_symbol")
     op.drop_column("mtm_snapshots", "price_source")
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
@@ -444,17 +477,19 @@ def downgrade() -> None:
 
 ## 6. Acceptance criteria
 
-- [ ] `MTMSnapshot.price_source`, `price_settlement_date`, `inputs_hash` columns exist (nullable) with CHECK constraint enforcing all-or-none.
+- [ ] `MTMSnapshot.price_source`, `price_symbol`, `price_settlement_date`, `inputs_hash` columns exist (nullable) with CHECK constraint enforcing all-or-none across all four.
 - [ ] `PLSnapshot.price_references` (JSON/JSONB) + `inputs_hash` columns exist with all-or-none CHECK.
 - [ ] `CashFlowBaselineSnapshot.inputs_hash` column exists.
-- [ ] `cashflow_ledger_entries.price_source` + `price_settlement_date` columns exist with all-or-none CHECK.
+- [ ] `cashflow_ledger_entries.price_source` + `price_symbol` + `price_settlement_date` columns exist with all-or-none CHECK across all three.
 - [ ] `cash_settlement_prices.price_usd` is `Numeric(18, 6)` post-migration on Postgres; SQLite `create_all` produces the new shape.
 - [ ] Migration `038_a3_price_provenance` ships; `alembic.script.get_heads()` returns single head `["038_a3_price_provenance"]`.
-- [ ] `mtm_snapshot_service.create_mtm_snapshot_for_contract` and `_for_order` consume `_with_provenance` and persist `price_source` + `price_settlement_date` + `inputs_hash` on every NEW snapshot.
+- [ ] `mtm_snapshot_service.create_mtm_snapshot_for_contract` and `_for_order` consume `_with_provenance` and persist `price_source` + `price_symbol` + `price_settlement_date` + `inputs_hash` on every NEW snapshot.
 - [ ] `pl_calculation_service.compute_pl` collects every `PriceQuote` it consumes; the resulting snapshot persists `price_references` (JSON list) + `inputs_hash`.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
-- [ ] Business-calendar lookback in `price_lookup_service` walks back up to 3 business days (LME holidays for LME_* symbols; per-commodity mapping for others). 5-calendar-day legacy is gone.
+- [ ] `price_lookup_service` computes the EXACT prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (no range). 5-calendar-day legacy AND any range fallback are gone.
+- [ ] When the prior-business-day row is missing, `PriceReferenceUnprovable` raises — older business-day rows are NOT considered.
+- [ ] `_market_calendar_for_symbol(symbol)` raises a structured error for unknown commodities — no silent fall-through to a global default calendar.
 - [ ] Float→Numeric migration preflight FAILS-CLOSED on any out-of-scale row.
 - [ ] `test_alembic_chain.py` continues passing (single head invariant).
 - [ ] Legacy MTMSnapshot / PLSnapshot / CashFlowBaselineSnapshot rows have `NULL` provenance fields (no backfill); a fresh-session readback test confirms.
@@ -466,10 +501,13 @@ def downgrade() -> None:
 New / extended tests (locate existing test files via `Glob backend/tests/test_{mtm,pl,cashflow,price_lookup}*.py`):
 
 - `backend/tests/test_mtm_snapshot_service.py`:
-  - `test_mtm_snapshot_persists_price_provenance_triplet`
+  - `test_mtm_snapshot_persists_price_provenance_quadruple` — asserts `price_source`, `price_symbol`, `price_settlement_date`, `inputs_hash` all populated on a fresh snapshot
+  - `test_mtm_snapshot_persists_price_symbol_distinguishing_multi_commodity_same_source_same_date` — fixture with two `CashSettlementPrice` rows on the same date from the same source for different symbols (LME_AL + LME_CU); assert the snapshot's `price_symbol` correctly identifies which row was consumed
   - `test_mtm_snapshot_inputs_hash_is_deterministic_over_same_inputs`
   - `test_mtm_snapshot_inputs_hash_changes_when_price_settlement_date_changes`
+  - `test_mtm_snapshot_inputs_hash_changes_when_price_symbol_changes`
   - `test_mtm_snapshot_legacy_null_provenance_does_not_violate_check`
+  - `test_mtm_snapshot_partial_provenance_violates_check_constraint` — assert that constructing a row with three of four provenance fields populated and one NULL raises an `IntegrityError`
 
 - `backend/tests/test_pl_calculation_service.py`:
   - `test_pl_snapshot_persists_price_references_list`
@@ -483,13 +521,15 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
 - `backend/tests/test_cashflow_ledger_service.py`:
   - `test_settlement_amount_derived_server_side_not_from_payload`
   - `test_settlement_payload_amount_mismatch_raises_422`
-  - `test_settlement_persists_price_source_and_settlement_date`
+  - `test_settlement_persists_price_source_and_symbol_and_settlement_date`
+  - `test_settlement_partial_provenance_violates_check_constraint`
 
 - `backend/tests/test_price_lookup_service.py`:
-  - `test_lookback_uses_business_calendar_not_5_calendar_days`
-  - `test_lookback_skips_weekend_correctly`
-  - `test_lookback_skips_LME_holiday_correctly`
-  - `test_lookback_raises_PriceReferenceUnprovable_after_3_business_days`
+  - `test_lookup_queries_exact_prior_business_day_not_a_range` — assert the SQL/ORM query filters on `settlement_date == prior_bd` (not a `<=` range)
+  - `test_lookup_skips_weekend_correctly_to_friday`
+  - `test_lookup_skips_LME_holiday_correctly`
+  - `test_missing_prior_business_day_raises_PriceReferenceUnprovable_even_when_older_business_day_exists` — fixture has Friday's row present but Monday's missing; lookup for Tuesday must raise (Monday is the exact prior BD; Friday is NOT considered)
+  - `test_unknown_commodity_raises_structured_error_not_silent_default_calendar`
   - `test_price_usd_returned_as_decimal_not_float_post_migration`
 
 - `backend/tests/test_038_migration_roundtrip.py` (new, manual or marked):
@@ -520,7 +560,7 @@ PR-A3-1 ships against **linear main** (`659e5ba9d` at authoring time). All A2 PR
 ## Summary
 
 Foundational Wave 1 of Phase A3 remediation. Persists the canonical
-price-provenance triplet `(price_value, price_source, price_settlement_date)`
+price-provenance quadruple `(price_value, price_source, price_symbol, price_settlement_date)`
 on every new MTM/P&L/Baseline snapshot; adds `inputs_hash` for
 reconstrutibilidade verification; corrects `cash_settlement_prices.price_usd`
 from `Float` to `Numeric(18, 6)`; replaces 5-calendar-day price lookback
@@ -593,6 +633,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT modify `cashflow_analytic_service`, `cashflow_projection_service`, or `scenario_whatif_service` beyond the lookup-contract migration (if they call `get_cash_settlement_price_d1` directly). Waves 3 and 2 own those surfaces.
 - DO NOT use `Numeric` without a precision/scale (e.g., bare `Numeric()`). Always `Numeric(18, 6)` matching the existing repo convention.
 - DO NOT use `JSONB` directly in `mapped_column(...)`; use `JSON().with_variant(JSONB(), "postgresql")` for portability (per `feedback_dispatch_self_consistency` "Every DDL construct touched by `create_all()` must be portable").
+- DO NOT use a range query (`WHERE settlement_date <= price_date AND >= lookback_limit ORDER BY ... DESC`) for the D-1 settlement lookup, even with a business-calendar-bounded window. The query MUST be `WHERE settlement_date == _prior_business_day(as_of_date, calendar)` (exact match). A range query silently accepts older rows when the prior BD's row is missing — the OPUS-04 fallback regime that PR-A3-1 closes (per Codex P1 absorbed in §0).
+- DO NOT omit `price_symbol` from any snapshot provenance contract (`MTMSnapshot`, `cashflow_ledger_entries`, per-row entries inside `CashFlowBaselineSnapshot.snapshot_data`, list entries inside `PLSnapshot.price_references`). `(source, settlement_date)` alone cannot disambiguate multi-commodity-same-source-same-date publishings (westmetall publishing LME_AL + LME_CU + LME_ZN on the same session); without the symbol, J-A3-01 / J-A3-05 reconstrutibilidade is not actually closed (per Codex P1 absorbed in §0).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
 - DO NOT skip the Ledger amount-mismatch 422 path. Returning 200 with derived amount silently overrides operator-supplied input — that's the kind of fallback governance §2.6 forbids.
 - DO NOT skip `session.flush()` between provenance row insertion and any subsequent DB read that depends on the row being visible.
