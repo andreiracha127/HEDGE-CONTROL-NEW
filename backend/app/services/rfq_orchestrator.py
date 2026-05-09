@@ -616,42 +616,55 @@ class RFQOrchestrator:
                 "error": str(exc),
             }
 
+        rfq_id_str = str(rfq.id)
         try:
             quote = RFQService.submit_quote(session, rfq.id, quote_payload)
+            # Codex P2 (PR-8 round): capture scalar attributes BEFORE
+            # `session.commit()` because SQLAlchemy default
+            # `expire_on_commit=True` (`backend/app/core/database.py`)
+            # would expire `quote`/`rfq`/`invitation` instances after
+            # commit, so any subsequent attribute read in the post-commit
+            # log/return path could trigger a refresh query — which, if
+            # the DB connection drops mid-flight, would raise inside the
+            # post-commit code and route a durably-committed quote into
+            # the failure path. Snapshot now while attrs are live.
+            quote_id_str = str(quote.id)
+            counterparty_id_str = str(invitation.counterparty_id)
+            quote_price_str = str(quote.fixed_price_value)
             session.commit()
         except (HTTPException, IntegrityError, OperationalError) as exc:
             session.rollback()
             logger.error(
                 "orchestrator_auto_quote_failed",
-                rfq_id=str(rfq.id),
+                rfq_id=rfq_id_str,
                 error=str(exc),
             )
             return {
                 "message_id": msg.message_id,
                 "status": "auto_quote_failed",
-                "rfq_id": str(rfq.id),
+                "rfq_id": rfq_id_str,
                 "error": str(exc),
             }
 
         try:
             logger.info(
                 "orchestrator_auto_quote_created",
-                rfq_id=str(rfq.id),
-                quote_id=str(quote.id),
-                counterparty=str(invitation.counterparty_id),
-                price=str(quote.fixed_price_value),
+                rfq_id=rfq_id_str,
+                quote_id=quote_id_str,
+                counterparty=counterparty_id_str,
+                price=quote_price_str,
             )
         except Exception:
             logger.warning(
                 "orchestrator_auto_quote_post_commit_log_failed",
-                quote_id=str(quote.id),
+                quote_id=quote_id_str,
             )
 
         return {
             "message_id": msg.message_id,
             "status": "auto_quote_created",
-            "rfq_id": str(rfq.id),
-            "quote_id": str(quote.id),
+            "rfq_id": rfq_id_str,
+            "quote_id": quote_id_str,
             "confidence": parsed.confidence,
         }
 
