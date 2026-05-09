@@ -11,6 +11,8 @@
 
 ## 0. Refresh notes (read first)
 
+**Codex P2 absorbed against commit `9db30a848` — derive FLOAT direction from `variable_leg_side`, not "opposite of fixed".** Round-7 §3.7 derived FLOAT direction as the inverse of FIXED direction (assumption: contracts have inverse fixed/variable sides). Codex caught: the DB CHECK constraint at `models/contracts.py:78-80` only ties `classification` to `fixed_leg_side`; there is NO invariant forcing `variable_leg_side != fixed_leg_side`. A contract with both sides equal is degenerate but admissible at the schema layer; deriving FLOAT direction from "opposite of fixed" would silently rewrite the stored variable side and let an inconsistent contract generate realized P&L from a fabricated direction. **Fix:** §3.7 sketch now reads each leg's direction from its OWN stored side field — FIXED from `contract.fixed_leg_side`, FLOAT from `contract.variable_leg_side`. A `_direction_from_side(HedgeLegSide) -> LedgerDirection` helper centralizes the side→direction mapping. §10 new DO NOT codifies "do NOT derive FLOAT direction as opposite of fixed". §7 adds `test_settlement_float_direction_derived_from_variable_leg_side_not_fixed_inverse` regressing the degenerate-contract scenario. **Self-blame:** another factual cross-check miss — I assumed inverse symmetry between the two side fields without consulting the DB CHECK constraints. The 10th sweep-check sub-rule (Serena-verify identifier definitions) should expand to "Serena-verify schema invariants too — DB-level CHECK constraints document what the codebase actually enforces, vs what the developer assumes is enforced".
+
 **Two Codex P1 absorbed against commit `2df6bcb23`:**
 
 1. **Derive ledger entries PER LEG, not twice from net (P1, doubling).** Round-5 §3.7 sketch derived `gross = qty × (settlement − fixed)` and applied it once. Codex caught: `HedgeContractSettlementCreate` validates exactly 2 legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Round-5's formula, applied to BOTH legs, persists two IN rows with the SAME net amount; `compute_pl` adds both → realized_pl is DOUBLED (qty=10/fixed=100/settlement=110 yields `+200` instead of correct `+100`). **Fix:** §3.7 fully redesigned with per-leg derivation. FIXED leg: `amount = qty × contract.fixed_price_value`; provenance NULL (no lookup). FLOAT leg: `amount = qty × settlement_quote.value`; provenance quadruple populated. Direction per leg from `contract.fixed_leg_side` (buy → FIXED OUT, FLOAT IN; sell → opposite). Per-leg payload-vs-derived verification with two distinct 422 paths (direction + amount). §6 gains four matching acceptance criteria + the long/short net P&L verification. §7 adds five tests including `test_settlement_compute_pl_realized_long_side` regressing the doubling bug. §10 new DO NOT codifies "do NOT derive both legs from a single net formula".
@@ -423,12 +425,15 @@ def _build_expected_entry(
     #   FLOAT leg: amount = quantity × settlement_quote.value
     #              (lookup made — provenance quadruple populated)
     #
-    # Direction derives from contract.fixed_leg_side (HedgeLegSide.buy or
-    # .sell at models/contracts.py:138-141):
-    #   fixed_leg_side == buy  → FIXED is OUT (customer pays fixed),
-    #                            FLOAT is IN  (customer receives float)
-    #   fixed_leg_side == sell → FIXED is IN  (customer receives fixed),
-    #                            FLOAT is OUT (customer pays float)
+    # Direction per leg from each leg's OWN stored side field
+    # (per Codex P2 absorbed in §0 round 8):
+    #   FIXED leg direction: from contract.fixed_leg_side
+    #   FLOAT leg direction: from contract.variable_leg_side  (NOT "opposite
+    #                        of fixed_leg_side" — there is no DB invariant
+    #                        forcing the two sides to be opposite)
+    # Side → direction mapping (matches the classification CHECK):
+    #   side == buy  → direction = OUT (customer pays this leg)
+    #   side == sell → direction = IN  (customer receives this leg)
     #
     # `compute_pl` (pl_calculation_service.py:16-83) iterates both rows
     # and applies sign by direction:
@@ -449,12 +454,36 @@ def _build_expected_entry(
             f"Cannot derive settlement: contract {contract.id} has no fixed_price_value",
         )
 
+    # Each leg's direction is derived from the leg's OWN stored side field
+    # (`fixed_leg_side` for FIXED, `variable_leg_side` for FLOAT) — NOT from
+    # "opposite of the other leg" (per Codex P2 absorbed in §0 round 8).
+    # The DB CHECK constraint at models/contracts.py:78-80 only ties
+    # `classification` to `fixed_leg_side`; there is NO invariant that
+    # `variable_leg_side != fixed_leg_side`. A contract with both sides
+    # equal is degenerate but admissible at the schema layer; deriving
+    # FLOAT direction as "opposite of fixed_leg_side" would silently
+    # rewrite the stored variable side and let an inconsistent contract
+    # generate realized P&L from a fabricated direction. Read each side
+    # field independently from the contract row.
+    #
+    # Convention (matches the CHECK constraint):
+    #   side == buy  → customer pays that leg   → direction = OUT
+    #   side == sell → customer receives that leg → direction = IN
+    #
+    # For a well-formed long swap:
+    #   fixed_leg_side=buy + variable_leg_side=sell → FIXED OUT + FLOAT IN
+    # For a well-formed short swap:
+    #   fixed_leg_side=sell + variable_leg_side=buy → FIXED IN + FLOAT OUT
+    # A degenerate contract (both buy or both sell) will fail the
+    # operator-supplied-vs-derived 422 check below if the payload reflects
+    # the institutional intent rather than the broken stored state — that
+    # surfaces the inconsistency rather than masking it.
+    def _direction_from_side(side: HedgeLegSide) -> LedgerDirection:
+        return LedgerDirection.out if side == HedgeLegSide.buy else LedgerDirection.in_
+
     if leg.leg_id == LedgerLegId.fixed:
         derived_amount = quantity * contract.fixed_price_value
-        derived_direction = (
-            LedgerDirection.out if contract.fixed_leg_side == HedgeLegSide.buy
-            else LedgerDirection.in_
-        )
+        derived_direction = _direction_from_side(contract.fixed_leg_side)
         # FIXED leg has NO price lookup — provenance fields stay NULL
         # (admissible per the all-or-four-NULL CHECK constraint).
         provenance = {
@@ -465,10 +494,7 @@ def _build_expected_entry(
         }
     elif leg.leg_id == LedgerLegId.float:
         derived_amount = quantity * settlement_quote.value
-        derived_direction = (
-            LedgerDirection.in_ if contract.fixed_leg_side == HedgeLegSide.buy
-            else LedgerDirection.out
-        )
+        derived_direction = _direction_from_side(contract.variable_leg_side)
         # FLOAT leg consumed _with_provenance — full quadruple populated.
         provenance = {
             "price_source": settlement_quote.source,
@@ -708,7 +734,7 @@ def downgrade() -> None:
 - [ ] `cashflow_ledger_service._build_expected_entry` derives EACH LEG independently:
     - FIXED leg: amount = `quantity × contract.fixed_price_value`; provenance fields all NULL (no lookup made).
     - FLOAT leg: amount = `quantity × settlement_quote.value`; provenance quadruple populated from the lookup.
-    - Direction per leg derived from `contract.fixed_leg_side` (buy → FIXED is OUT, FLOAT is IN; sell → FIXED is IN, FLOAT is OUT).
+    - Direction per leg derived from EACH LEG'S OWN side field: FIXED from `contract.fixed_leg_side`; FLOAT from `contract.variable_leg_side`. Side → direction mapping: `buy → OUT (customer pays this leg)`, `sell → IN (customer receives this leg)`. Variable side is NOT inferred as "opposite of fixed" — the contract row's stored variable_leg_side is authoritative.
 - [ ] `compute_pl` reading both ledger rows produces the correct net: `qty × (settlement − fixed)` for `fixed_leg_side=buy`; `qty × (fixed − settlement)` for `fixed_leg_side=sell`. Verified end-to-end in tests with both sides.
 - [ ] All `amount` values persisted on `cashflow_ledger_entries` are NON-NEGATIVE (institutional magnitude convention). `compute_pl`'s direction-driven sign application reads correctly.
 - [ ] Per-leg derivation mismatch (`leg.direction != derived_direction` OR `leg.amount != derived_amount`) raises `HTTPException(422, "Leg <fixed|float> <direction|amount> mismatch: ...")`.
@@ -783,6 +809,7 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_settlement_compute_pl_realized_short_side` — fixture `fixed_leg_side=sell`, `qty=10, fixed=100, settlement=110`; `compute_pl` returns `realized_pl = -100` (short P&L: `qty*(fixed - settlement) = 10*-10`).
   - `test_settlement_payload_leg_direction_mismatch_raises_422` — payload's FIXED leg direction differs from `fixed_leg_side`-derived direction → 422.
   - `test_settlement_payload_leg_amount_mismatch_raises_422` — payload's FLOAT leg amount differs from `qty × settlement_value` → 422.
+  - `test_settlement_float_direction_derived_from_variable_leg_side_not_fixed_inverse` — fixture: contract with `fixed_leg_side=buy, variable_leg_side=buy` (degenerate but schema-admissible). Payload supplies FLOAT direction matching `variable_leg_side=buy` → OUT. Assert derivation reads `variable_leg_side` (produces OUT) and the row persists with FLOAT direction OUT — NOT the "opposite of fixed_leg_side" (which would have been IN). Regression for the round-8 P2 — proves the variable side is read independently.
   - `test_settlement_persists_price_source_and_symbol_and_settlement_date_and_value` — quadruple persistence
   - `test_settlement_partial_provenance_violates_check_constraint` — three of four populated, one NULL → `IntegrityError`
   - `test_ledger_entry_matches_includes_provenance_in_equality` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; second `ingest` with derived `(source=A, symbol=LME_CU, date=D, value=9300)` raises 409, NOT silent no-op
@@ -914,7 +941,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT use plain `op.create_check_constraint(...)` for new CHECK constraints in this migration. Wrap every `add_column` + `create_check_constraint` pair in `op.batch_alter_table(...)` so the SQLite roundtrip succeeds (per Codex P2 absorbed in §0 round 3). Postgres passthrough is transparent.
 - DO NOT reference `contract.commodity_symbol` in any service or migration code. `HedgeContract` exposes `commodity` (str) — pricing services resolve to a symbol via `resolve_symbol(contract.commodity)`. Copying `commodity_symbol` raises `AttributeError` at runtime (per Codex P2 absorbed in §0 round 3).
 - DO NOT persist `CashFlowLedgerEntry.amount` as a SIGNED value. The existing `compute_pl` (`pl_calculation_service.py:16-83`) applies the sign from `direction` (IN adds, OUT subtracts) when reading ledger entries. The institutional convention is: `amount` is the NON-NEGATIVE MAGNITUDE; `direction` carries the sign (per Codex P1 absorbed in §0 round 5).
-- DO NOT derive both ledger legs from a single net formula `(settlement − fixed) × qty`. The settlement payload carries TWO legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Each leg's amount derives independently: FIXED uses `contract.fixed_price_value`, FLOAT uses `settlement_quote.value`; direction per leg comes from `contract.fixed_leg_side`. Copying one net formula across both legs produces `compute_pl` doubling — qty=10/fixed=100/settlement=110 yields `+200` instead of `+100`. Institutional P1 (per Codex P1 absorbed in §0 round 7).
+- DO NOT derive both ledger legs from a single net formula `(settlement − fixed) × qty`. The settlement payload carries TWO legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Each leg's amount derives independently: FIXED uses `contract.fixed_price_value`, FLOAT uses `settlement_quote.value`. Copying one net formula across both legs produces `compute_pl` doubling — qty=10/fixed=100/settlement=110 yields `+200` instead of `+100`. Institutional P1 (per Codex P1 absorbed in §0 round 7).
+- DO NOT derive the FLOAT leg's direction as "opposite of `contract.fixed_leg_side`". Read `contract.variable_leg_side` directly. The DB CHECK constraint at `models/contracts.py:78-80` only ties `classification` to `fixed_leg_side`; there is NO invariant forcing `variable_leg_side != fixed_leg_side`. A contract with both sides equal is degenerate but admissible at the schema layer; deriving FLOAT direction from "opposite of fixed" would silently rewrite the stored variable side and let an inconsistent contract generate realized P&L from a fabricated direction (per Codex P2 absorbed in §0 round 8).
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
 - DO NOT limit `PLResultResponse.price_references` to the unrealized-MTM lookup. `compute_pl` reads `CashFlowLedgerEntry` rows for the realized path; after §3.7 those rows carry provenance. Settled-period P&L snapshots MUST collect ledger-row provenance into `price_references` — otherwise a fully-settled period emits an empty references list and J-A3-05 stays open at the snapshot layer (per Codex P1 absorbed in §0 round 5).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
