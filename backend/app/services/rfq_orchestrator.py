@@ -114,7 +114,7 @@ _MIN_QUOTE_LENGTH = 3
 
 # Format mirrored from rfq_service.py: RFQ-{year}-{sequence:06d}.
 _CANONICAL_ID_RE = re.compile(
-    r"(?<!\w)RFQ#(?P<num>RFQ-\d{4}-\d{6})(?!\w)(?:\s*[—–]\s*)?"
+    r"(?<!\w)RFQ#(?P<num>RFQ-\d{4}-\d{6})(?!\w)(?:\s+[—–]\s+)?"
 )
 
 

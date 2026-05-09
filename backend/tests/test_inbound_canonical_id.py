@@ -209,6 +209,13 @@ def test_strip_canonical_id_preserves_leading_minus_sign():
     assert _strip_canonical_id("RFQ#RFQ-2026-000123 — -5 USD/MT") == "-5 USD/MT"
 
 
+@pytest.mark.parametrize("dash", ["–", "—"])
+def test_strip_canonical_id_preserves_compact_dash_sign(dash):
+    assert _strip_canonical_id(f"RFQ#RFQ-2026-000123 {dash}5 USD/MT") == (
+        f"{dash}5 USD/MT"
+    )
+
+
 def test_strip_canonical_id_preserves_trivial_word():
     assert _strip_canonical_id("RFQ#RFQ-2026-000123 — ok") == "ok"
 
