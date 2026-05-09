@@ -95,21 +95,68 @@ Use this helper at every `WhatsAppService.send_text_message(... text=...)` call 
 
 After PR-4, `grep -nE "WhatsAppService.send_text_message|_pick_action_message|LLMAgent.generate_outbound_message" backend/app/services/rfq_*.py` should show every call site whose text output passes through `prefix_with_canonical_id` first. **Do NOT rely on `_DEFAULT_MESSAGES` templates carrying `RFQ#` themselves** — keep the helper at the call site; templates remain about content, the prefix is a transport-level invariant.
 
-### 3.2 Persist before send — outbox pattern on `RFQInvitation`
+### 3.2 Persist before send — **durable** outbox pattern on `RFQInvitation`
 
-Convert each send path from "send → if success persist with sent_at; if failure persist with sent_at=None" to:
+The queued `RFQInvitation` row containing `message_body` must be **durably committed to the database before `WhatsAppService.send_text_message` is invoked**. `session.flush()` alone is **NOT sufficient** — it makes the row visible within the current transaction but a process crash, exception, or downstream rollback between the WhatsApp send and the route's eventual `commit()` would discard the queued row, leaving the counterparty with a message and the system with no evidence. That is the precise §2.3 / §2.6 violation PR-4 exists to close; a flush-only pattern leaves the bug in place at a different layer.
 
-1. Construct `RFQInvitation` with `send_status=RFQInvitationStatus.queued`, `sent_at=NULL`, `provider_message_id=NULL`, `message_body=<final, prefixed text>`. Add to session and `flush()` (durable in this transaction).
-2. `result = WhatsAppService.send_text_message(...)`.
-3. If `result.success`: update the **same row** with `send_status=sent`, `sent_at=now_utc()`, `provider_message_id=result.provider_message_id`. Otherwise: `send_status=failed`, leave `sent_at=NULL`, store `result.error_code/message` in the new `failure_reason` column.
-4. Do NOT raise on send failure inside the loop unless the failure is structural (network unreachable for all, etc.); a single failed send must not roll back the entire RFQ creation. Currently the row is inserted on both success and failure paths but with the wrong NOT NULL semantics (see §3.6 latent bug); with the outbox change the row exists either way and `sent_at IS NULL` becomes the honest representation of failure.
+**Required pattern** (per send call site):
+
+1. **Persist the queued row in a transaction that commits before the network call.** Acceptable implementation strategies:
+   - **(a) Separate `SessionLocal()` for the outbox write** — open a fresh session, add+commit+close. Most isolated; zero impact on the enclosing transaction. Required for orchestrator paths (`notify_award` / `notify_reject`) which have no enclosing route transaction guaranteed.
+   - **(b) Service-side checkpoint commit** — service calls `session.commit()` after adding the queued row, then proceeds. Breaks the strict UoW pattern (route-only commit) but is institutionally acceptable for outbox checkpoints because the row MUST survive subsequent failures, and the constitutional invariant (§2.3) outranks the architectural preference.
+   - **(c) Two-phase route transaction** — restructure the route to commit the RFQ + queued invitations as transaction-1, iterate WhatsApp sends + status updates as transaction-2. Cleanest UoW-respecting option for `RFQService.create` (which needs RFQ atomicity with its invitations); requires route-level coordination.
+
+   Choose (a) for `notify_award` / `notify_reject` and `reject_quote`'s outbound message. Choose (b) or (c) for `RFQService.create` / `refresh` / `refresh_counterparty`. Whichever pattern is chosen, the **fresh-session readback test (§7)** must demonstrate that the row is durable before `send_text_message` returns.
+
+   Example (pattern a):
+   ```python
+   from app.core.database import SessionLocal
+
+   def _persist_outbox_queued(rfq_id, rfq_number, ..., message_body, purpose, idempotency_key) -> UUID:
+       outbox_session = SessionLocal()
+       try:
+           row = RFQInvitation(
+               rfq_id=rfq_id, rfq_number=rfq_number,
+               ...,
+               send_status=RFQInvitationStatus.queued,
+               sent_at=None,
+               provider_message_id=None,
+               message_body=message_body,
+               purpose=purpose,
+               idempotency_key=idempotency_key,
+           )
+           outbox_session.add(row)
+           outbox_session.commit()
+           return row.id
+       finally:
+           outbox_session.close()
+   ```
+
+2. `result = WhatsAppService.send_text_message(...)`. The row is durable; subsequent failures cannot lose evidence.
+
+3. **Update status** in the route's (or service's) ongoing session:
+   ```python
+   row = session.get(RFQInvitation, row_id)
+   if result.success:
+       row.send_status = RFQInvitationStatus.sent
+       row.sent_at = now_utc()
+       row.provider_message_id = result.provider_message_id
+   else:
+       row.send_status = RFQInvitationStatus.failed
+       row.failure_reason = f"{result.error_code}: {result.error_message}"
+   # the route or service commits at boundary
+   ```
+
+   If the route's later commit fails after a successful send, the row stays as `queued` with `sent_at=NULL`. **This failure mode is institutionally MUCH milder than evidence loss**: a reconciliation worker can later flip `queued` rows to `sent` based on WhatsApp's `provider_message_id` retrieved from the provider API; no worker can recover a row that was never written. Status accuracy is a downstream audit concern; durable evidence is the §2.3 invariant PR-4 must close.
+
+4. Do NOT raise on send failure inside the loop unless the failure is structural (network unreachable for all, etc.); a single failed send must not roll back the entire RFQ creation. With the durable-outbox change the row exists either way (queued or sent/failed); the §3.6 latent NOT NULL violation is resolved as a side effect.
 
 This requires the schema changes in §3.4.
 
 **Apply the pattern to:**
-- `RFQService.create` — invitation loop at `rfq_service.py:487-558`.
-- `RFQService.refresh` — recipient loop within `rfq_service.py:844-941` (iteration over `recipients.values()`; the per-recipient `RFQInvitation` insertion is at lines 926-940).
-- `RFQService.refresh_counterparty` — single-counterparty body at `rfq_service.py:1018-1114` (the `RFQInvitation` insertion is at lines 1100-1114).
+- `RFQService.create` — invitation loop at `rfq_service.py:487-558`. Recommended strategy: (c) two-phase route transaction so RFQ + queued invitations land atomically in tx-1 before any WhatsApp sends; status updates in tx-2.
+- `RFQService.refresh` — recipient loop within `rfq_service.py:844-941` (per-recipient `RFQInvitation` insertion at 926-940). Recommended: (b) service-side checkpoint commit per recipient.
+- `RFQService.refresh_counterparty` — single-counterparty body at `rfq_service.py:1018-1114` (insertion at 1100-1114). Recommended: (b) service-side checkpoint commit.
 
 ### 3.3 `reject_quote`: preserve quote evidence, persist outbound message
 
@@ -237,26 +284,23 @@ Skip on SQLite if the existing migration pattern in 025 / 033 does so (`if bind.
 
 In `backend/app/services/rfq_orchestrator.py`:
 
-- `notify_award` (current shape at `:674-720`):
+- `notify_award` (current shape at `:674-720`) — use **§3.2 strategy (a)** (separate `SessionLocal()` for the outbox write), since the orchestrator path has no enclosing route transaction guarantee:
   ```python
   message = LLMAgent.generate_outbound_message(...)
   message = prefix_with_canonical_id(message, rfq.rfq_number)
-  invitation_row = RFQInvitation(
+  row_id = _persist_outbox_queued(
       rfq_id=rfq.id, rfq_number=rfq.rfq_number,
       counterparty_id=cp_uuid,
       recipient_name=invitation.recipient_name,
       recipient_phone=invitation.recipient_phone,
       channel=RFQInvitationChannel.whatsapp,
       message_body=message,
-      provider_message_id=None,
-      send_status=RFQInvitationStatus.queued,
-      sent_at=None,
-      idempotency_key=f"award-notify:{rfq.rfq_number}:{cp_uuid}",
       purpose=RFQInvitationPurpose.award_notify,
-  )
-  session.add(invitation_row)
-  session.flush()
+      idempotency_key=f"award-notify:{rfq.rfq_number}:{cp_uuid}",
+  )  # commits in its own session; row is durable
   result = WhatsAppService.send_text_message(...)
+  # update status in the orchestrator's session (or in another fresh session if none)
+  invitation_row = session.get(RFQInvitation, row_id)
   if result.success:
       invitation_row.send_status = RFQInvitationStatus.sent
       invitation_row.sent_at = now_utc()
@@ -266,7 +310,7 @@ In `backend/app/services/rfq_orchestrator.py`:
       invitation_row.failure_reason = f"{result.error_code}: {result.error_message}"
   ```
 
-- `notify_reject` (current shape at `:721-749`): same pattern, looped per deduped recipient (`seen.values()` at line 743), with `purpose=reject_notify`.
+- `notify_reject` (current shape at `:721-749`): same pattern, looped per deduped recipient (`seen.values()` at line 743), with `purpose=RFQInvitationPurpose.reject_notify`. Each iteration is one separate-session commit before its send call.
 
 The LLM-generated text concern is **deferred to Phase A4** (X-A2-J-03 in jury §8). PR-4 only ensures the **persistence** invariant; A4 will decide whether `LLMAgent.generate_outbound_message` is replaced with deterministic templating.
 
@@ -318,7 +362,8 @@ If any other consumer of `RFQInvitation` rows assumes `sent_at IS NOT NULL`, aud
 - [ ] `prefix_with_canonical_id(body, rfq_number)` helper exists and is idempotent
 - [ ] Every `WhatsAppService.send_text_message(... text=X)` call site routes `X` through the helper first
 - [ ] Every `RFQInvitation.message_body` contains `RFQ#<rfq_number>` (verified by a model-level check or test that asserts startswith)
-- [ ] `RFQService.create`, `refresh`, `refresh_counterparty` follow the outbox pattern: persist `queued` row first, send, update status. No invitation insertion happens *after* the network call.
+- [ ] `RFQService.create`, `refresh`, `refresh_counterparty` follow the **durable** outbox pattern: queued `RFQInvitation` row is committed to the database (NOT just flushed) before `WhatsAppService.send_text_message` is invoked. No invitation insertion happens *after* the network call. A fresh-session readback (separate `SessionLocal()`) can find the row by id while the send is in flight.
+- [ ] `notify_award`, `notify_reject`, and `reject_quote` outbound use a separate-session commit (§3.2 strategy (a)) so the queued row survives any subsequent route/orchestrator failure.
 - [ ] `RFQInvitation.sent_at` is `nullable=True` in model + DB schema. `provider_message_id` is `nullable=True`.
 - [ ] `RFQInvitation.purpose` enum exists with all 5 values (`rfq_invite`, `refresh`, `reject_quote`, `award_notify`, `reject_notify`).
 - [ ] `RFQInvitation.failure_reason` column exists (nullable String(256)).
@@ -354,6 +399,8 @@ If any other consumer of `RFQInvitation` rows assumes `sent_at IS NOT NULL`, aud
   - `test_prefix_with_canonical_id_idempotent`
   - `test_prefix_with_canonical_id_handles_existing_prefix_with_whitespace`
   - `test_outbox_failed_send_leaves_queued_row_with_failure_reason`
+  - `test_outbox_row_durably_committed_before_whatsapp_send` — fake `WhatsAppService.send_text_message` to assert via a **fresh `SessionLocal()`** (not the test's existing fixture session) that the corresponding `RFQInvitation` row already exists at the moment `send_text_message` is invoked. This is the §3.2 durability invariant; flush-only patterns will fail this test.
+  - `test_outbox_row_survives_post_send_rollback` — with a successful send, force the route's session to roll back AFTER send returns; assert the queued row remains in the database (i.e., the queued commit was independent of the route transaction).
 - `backend/tests/test_rfq_orchestrator.py`:
   - `test_notify_award_persists_evidence_and_prefixes_id`
   - `test_notify_reject_persists_one_row_per_recipient`
@@ -423,6 +470,7 @@ is resolved as a no-cost fix.
 - [ ] `alembic heads` reports single head after upgrade
 - [ ] No `session.delete` on `RFQQuote` remains in the codebase
 - [ ] Every outbound text routes through `prefix_with_canonical_id`
+- [ ] Queued `RFQInvitation` rows are **durably committed** (NOT just flushed) before any `WhatsAppService.send_text_message` call — verified by `test_outbox_row_durably_committed_before_whatsapp_send` and `test_outbox_row_survives_post_send_rollback`
 
 ## Constitutional impact
 
@@ -450,7 +498,7 @@ J-A2-05 + J-A2-07 + J-A2-08 + J-A2-OPUS-02.
 - DO NOT alter `RFQQuote.fixed_price_value` or `RFQQuote.counterparty_id` types — PR-1 (#28) already shipped them as `Decimal` and `UUID FK`. Reverting is forbidden.
 - DO NOT reintroduce a `RFQService.award_quote` method — PR-7 (#30) deleted the legacy non-canonical award path; the canonical award is `RFQService.award` only.
 - DO NOT re-fork the alembic chain. The migration must declare `down_revision = "036_merge_w1_heads"` (single string), so the head remains linear after PR-4.
-- DO NOT skip the `session.flush()` between row insertion and network call; without it, the row is not durable in the transaction and a process crash mid-send loses evidence.
+- DO NOT use `session.flush()` alone before the network call. `flush()` is **not durable** — the row is rolled back if the enclosing transaction does not commit. Use one of the §3.2 strategies (separate session, service-side checkpoint commit, or two-phase route transaction) so the queued row is durably committed to the database before `WhatsAppService.send_text_message` is invoked. If the executor's first instinct is "just flush", that's the bug PR-4 exists to close — do not write that code.
 - DO NOT auto-merge — wait for Codex review.
 - DO NOT use `--no-verify` to skip git hooks. If a hook fails, fix and create a new commit.
 
