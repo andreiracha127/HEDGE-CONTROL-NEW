@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from dispatch_review.file_resolver import extract_cited_paths, resolve_cited_files
 
 
@@ -61,14 +59,19 @@ def test_resolve_cited_files_returns_empty_when_no_cited_paths(tmp_path: Path) -
     assert resolve_cited_files(dispatch, tmp_path) == {}
 
 
-@pytest.mark.parametrize(
-    "path", ["backend/alembic/versions/038_x.py"], ids=["alembic-migration"]
-)
-def test_resolve_cited_files_skips_alembic_migrations(tmp_path: Path, path: str) -> None:
+def test_resolve_cited_files_includes_explicitly_cited_alembic_migration(tmp_path: Path) -> None:
+    """Alembic migrations are common Tipo-I catch surface; when the dispatch
+    backticks a specific migration path, the resolver MUST inline it so the
+    LLM reviewer can verify ``op.add_column`` / ``op.batch_alter_table``
+    arguments against the actual migration body.
+    """
     repo_root = tmp_path
+    path = "backend/alembic/versions/038_x.py"
     target = repo_root / path
     target.parent.mkdir(parents=True)
-    target.write_text("dummy", encoding="utf-8")
+    target.write_text("def upgrade():\n    op.add_column('orders', col)\n", encoding="utf-8")
     dispatch = repo_root / "x-dispatch.md"
     dispatch.write_text(f"See `{path}`.", encoding="utf-8")
-    assert path not in resolve_cited_files(dispatch, repo_root)
+    out = resolve_cited_files(dispatch, repo_root)
+    assert path in out
+    assert "op.add_column" in out[path]

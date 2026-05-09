@@ -17,6 +17,8 @@ import os
 import sys
 from pathlib import Path
 
+from anthropic import APIError as _AnthropicAPIError
+
 from dispatch_review.cache import write_cache_artifact
 from dispatch_review.client import call_review
 from dispatch_review.prompt_builder import (
@@ -131,11 +133,18 @@ def main(argv: list[str] | None = None) -> int:
         head_sha=args.head_sha,
     )
 
-    report: ReviewReport = call_review(
-        model=args.model,
-        cached_system_blocks=cached_system,
-        user_payload=user_payload,
-    )
+    try:
+        report: ReviewReport = call_review(
+            model=args.model,
+            cached_system_blocks=cached_system,
+            user_payload=user_payload,
+        )
+    except (RuntimeError, _AnthropicAPIError) as exc:
+        print(
+            f"[pre-push-review] API call failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     artifact_path = write_cache_artifact(
         report,

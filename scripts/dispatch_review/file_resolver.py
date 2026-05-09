@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 _PATH_PATTERN = re.compile(
-    r"`(backend/(?:app|tests)/[^`\s]+\.py|docs/governance\.md|docs/audits/[^`\s]+\.md)`"
+    r"`(backend/(?:app|tests|alembic/versions)/[^`\s]+\.py|docs/governance\.md|docs/audits/[^`\s]+\.md)`"
 )
 _LINE_CAP = 200
 
@@ -33,16 +33,16 @@ def resolve_cited_files(
 ) -> dict[str, str]:
     """Return ``{relative_path: capped excerpt}`` for paths cited in the dispatch.
 
-    Frontend paths (``frontend-svelte/**``) and alembic migrations
-    (``backend/alembic/versions/**``) are intentionally excluded — see
-    dispatch §3.1.6 / §10.
+    Frontend paths (``frontend-svelte/**``) are intentionally excluded — see
+    dispatch §3.1.6. Alembic migration files (``backend/alembic/versions/**``)
+    are included **only when explicitly cited** by the dispatch (the regex
+    requires the full path inside backticks); they are common Tipo-I catch
+    surface for ``op.add_column`` / ``op.batch_alter_table`` mismatches.
     """
     text = dispatch_path.read_text(encoding="utf-8")
     out: dict[str, str] = {}
     for rel in extract_cited_paths(text):
         if rel.startswith("frontend"):
-            continue
-        if "alembic/versions" in rel:
             continue
         full = repo_root / rel
         if not full.is_file():

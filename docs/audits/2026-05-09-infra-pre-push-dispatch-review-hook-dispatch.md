@@ -18,7 +18,7 @@ Codex Connector reviews are the institutional final-line authority for dispatch 
 
 Each round consumes orchestrator wall-time (read catch → verify via Serena → 8-section sweep → edit → push → wait Codex re-review). 13 rounds at ~10–20 min/round = 2–4 hours of orchestration per dispatch. Across the remaining A3 waves (3 more) + Phase A4/A5/A6, the round count is the dominant cycle-time driver.
 
-Many of the catches Codex returns are **mechanically detectable** — they fail one of the 14+ accumulated sub-rules in `feedback_dispatch_self_consistency`:
+Many of the catches Codex returns are **mechanically detectable** — they fail one of the 30+ accumulated sub-rules in `feedback_dispatch_self_consistency`:
 
 - **Tipo I fact-mismatch**: prescribed identifier doesn't exist (function signature, schema field, enum member, dict key, file path).
 - **Tipo II self-defeat**: §3 prescribes work that §10 forbids; §6 acceptance bullet contradicts §3 implementation; §11 step references a function whose existence §3 deletes.
@@ -36,7 +36,7 @@ This dispatch ships:
 
 1. A Python script `scripts/pre_push_review.py` that invokes Anthropic Claude Sonnet 4.6 to review dispatch markdown files against the institutional self-consistency rules and produces a structured `{p1, p2, p3}` finding list.
 2. A versioned `.githooks/pre-push` shell wrapper that triggers the script when a `docs/**/*-dispatch.md` file is in the push range.
-3. A versioned rule sheet `docs/audit-protocol/dispatch-review-rules.md` that consolidates the 14+ sub-rules from `feedback_dispatch_self_consistency` into a hookable artifact (memory files are per-user; the repo file is shareable).
+3. A versioned rule sheet `docs/audit-protocol/dispatch-review-rules.md` that consolidates the 30+ sub-rules from `feedback_dispatch_self_consistency` into a hookable artifact (memory files are per-user; the repo file is shareable).
 4. A bootstrap script `scripts/install_git_hooks.py` that runs `git config core.hooksPath .githooks` (one-time per clone).
 5. Anthropic SDK pinned in `backend/requirements.txt`.
 6. README / AGENTS update documenting the install step + bypass rules.
@@ -62,7 +62,7 @@ After this dispatch ships, the Codex feedback loop on subsequent dispatches shou
 ## 2. Reference docs (read before coding)
 
 - **`docs/governance.md`** — full file (217 lines). Cached as the constitutional ground truth.
-- **`C:\Users\Andrei\.claude\projects\d--Projetos-Hedge-Control-New\memory\feedback_dispatch_self_consistency.md`** — 53 lines. The accumulated 14+ sub-rules. **The new in-repo rule sheet (§3.3) is derived from this; the memory file remains the orchestrator's persistent source of truth.**
+- **`C:\Users\Andrei\.claude\projects\d--Projetos-Hedge-Control-New\memory\feedback_dispatch_self_consistency.md`** — 53 lines. The accumulated 30+ sub-rules. **The new in-repo rule sheet (§3.3) is derived from this; the memory file remains the orchestrator's persistent source of truth.**
 - **`memory\feedback_review_priority.md`** — Codex outranks CI green; the hook does NOT replace Codex.
 - **`memory\reference_codex_connector_calibration.md`** — Codex calibration record (~100 % accuracy); hook calibration target (~60–75 % capture rate of mechanical catches).
 - **`memory\feedback_verify_lib_api_against_pinned_version.md`** — when prescribing any library API call (Anthropic SDK shape, Pydantic schema, etc.), verify against actual pinned version before authoring.
@@ -155,33 +155,48 @@ def call_review(
 ```python
 # scripts/dispatch_review/prompt_builder.py
 
-def build_cached_system_blocks() -> list[dict]:
-    """Returns 4 cached system blocks. The first 3 are stable across runs (cache hit); the 4th is the dispatch-review rule sheet (changes when rules are amended)."""
+def build_cached_system_blocks(repo_root: Path) -> list[dict[str, Any]]:
+    """Return 4 system blocks. Blocks 1-3 are cached (TTL 5 min ephemeral);
+    block 4 (the review protocol prose) is small and not worth caching.
+
+    Block 1 — persona preamble (stable string constant)
+    Block 2 — docs/governance.md (stable per main HEAD)
+    Block 3 — docs/audit-protocol/dispatch-review-rules.md (stable per rule-sheet HEAD)
+    Block 4 — review protocol prose (the 8-section sweep instructions)
+    """
     return [
         {
             "type": "text",
-            "text": _PERSONA_PREAMBLE,           # ~500 tokens, stable
+            "text": _PERSONA_PREAMBLE,           # ~500 tokens
             "cache_control": {"type": "ephemeral"},
         },
         {
             "type": "text",
-            "text": _read_governance_md(),        # ~6000 tokens, stable per main HEAD
+            "text": load_governance(repo_root),   # ~6000 tokens
             "cache_control": {"type": "ephemeral"},
         },
         {
             "type": "text",
-            "text": _read_rule_sheet(),           # ~3000 tokens, stable per rule-sheet HEAD
+            "text": load_rule_sheet(repo_root),   # ~5000 tokens (30 rules)
             "cache_control": {"type": "ephemeral"},
         },
         {
             "type": "text",
-            "text": _read_memory_feedbacks(),     # ~3000 tokens, stable per session
-            # No cache_control on the last block — only the first 3 are cached
+            "text": _REVIEW_PROTOCOL_PROSE,       # ~400 tokens, dispatch-specific
+            # No cache_control on the last block — small + dispatch-specific
         },
     ]
 ```
 
-Per Anthropic prompt caching docs (VERIFY-LATEST against the SDK version): `cache_control: {"type": "ephemeral"}` on a system block makes the block + everything before it cacheable. TTL is 5 minutes by default. The block ordering above places stable content first (persona → governance → rule sheet → memory feedbacks) so cache hits land on persona+governance+rules consistently and only the memory-feedbacks tail re-bills.
+**Memory feedback files NOT in the system prompt**: `<memory>/feedback_*.md`
+under the orchestrator's per-user Claude Code directory are NOT loaded by
+the hook. They are per-user and not shareable across the repo. The
+versioned rule sheet at `docs/audit-protocol/dispatch-review-rules.md` is
+the canonical in-repo distillation — every sub-rule absorbed into the
+memory MUST be appended to the rule sheet in the same commit (institutional
+invariant; see §3.3).
+
+Per Anthropic prompt caching docs (VERIFY-LATEST against the SDK version): `cache_control: {"type": "ephemeral"}` on a system block makes the block + everything before it cacheable. TTL is **~5 minutes by default at authoring time** (VERIFY-LATEST: confirm against current Anthropic prompt-caching docs at implementation time). The block ordering above places stable content first (persona → governance → rule sheet) so cache hits land on the first three blocks consistently and only the trailing review-protocol prose re-bills.
 
 **Token budget per call**:
 - Cached system: ~12 k tokens (cache write on first call; cache read on subsequent calls within 5 min)
@@ -218,7 +233,9 @@ def build_user_payload(dispatch_paths: list[Path], head_sha: str, branch: str) -
 
 Regex-extract paths matching `backend/app/**/*.py`, `backend/tests/**/*.py`, `docs/governance.md`, `docs/audits/**/*.md` from the dispatch markdown. For each, read the file and include either (a) the full file if ≤ 300 lines, or (b) the symbol bodies referenced by name in the dispatch (function/class names extracted via regex). Cap each cited file at 200 lines of context to keep payload ≤ 80 k tokens.
 
-**Out-of-scope file types**: do NOT auto-include `frontend-svelte/**/*.ts` (frontend audit is Phase A6; current dispatches don't reference frontend identifiers in concrete code). Do NOT include alembic migration files (their content is verified by `test_alembic_chain.py`).
+**Out-of-scope file types**: do NOT auto-include `frontend-svelte/**/*.ts` (frontend audit is Phase A6; current dispatches don't reference frontend identifiers in concrete code).
+
+**Alembic migration files**: include them when explicitly cited (e.g. `backend/alembic/versions/038_a3_price_provenance.py` in a PR-A3-1-style dispatch). Migration concrete-code blocks (`op.add_column`, `op.batch_alter_table`, `op.create_table` arguments) are common Tipo-I catch surface — auto-excluding them silently degrades hook recall on a known catch class. The narrowed heuristic: include alembic version files matched by `backend/alembic/versions/[^`\s]+\.py` in the dispatch text; do not pull in *all* migrations indiscriminately.
 
 #### 3.1.7 Output schema (Pydantic)
 
@@ -230,15 +247,15 @@ from pydantic import BaseModel, Field
 class Finding(BaseModel):
     rule: str = Field(..., description="The self-consistency sub-rule violated, e.g. 'Tipo-I-fact-mismatch'")
     section: str = Field(..., description="Dispatch section the violation lives in, e.g. '§3.7.5'")
-    snippet: str = Field(..., max_length=500, description="The exact dispatch excerpt that violates the rule")
-    why: str = Field(..., max_length=800, description="Why this is wrong (cite the file/symbol that contradicts it)")
-    fix_suggestion: str = Field(..., max_length=600, description="Concrete suggestion for resolving the catch")
+    snippet: str = Field(..., max_length=1200, description="The exact dispatch excerpt that violates the rule")
+    why: str = Field(..., max_length=2500, description="Why this is wrong (cite the file/symbol that contradicts it)")
+    fix_suggestion: str = Field(..., max_length=2000, description="Concrete suggestion for resolving the catch")
 
 class ReviewReport(BaseModel):
     p1_blocking: list[Finding] = Field(default_factory=list, description="Tier-1 blocking findings; non-empty list halts the push")
     p2_warn: list[Finding] = Field(default_factory=list, description="Tier-2 warnings; printed but do not block")
     p3_info: list[Finding] = Field(default_factory=list, description="Informational; printed quietly")
-    summary: str = Field(..., max_length=400, description="One-paragraph summary of the dispatch's overall self-consistency state")
+    summary: str = Field(..., max_length=2000, description="One-paragraph summary of the dispatch's overall self-consistency state")
 ```
 
 #### 3.1.8 Tool-use schema for forced structured output
@@ -265,13 +282,19 @@ The model is forced to call this tool exactly once via `tool_choice`. Its `input
 def main() -> int:
     paths = read_dispatch_paths_from_args_or_stdin()
     if not paths:
-        print("[pre-push-review] no dispatch files in push range — skipping")
+        print("[pre-push-review] no dispatch files in push range -- skipping")
         return 0
-    report = run_review(paths, branch=..., head_sha=...)
+    try:
+        report = run_review(paths, branch=..., head_sha=...)
+    except (RuntimeError, anthropic.APIError) as exc:
+        # No silent fallback: per §5, API failures must produce a clear
+        # non-zero exit, not a traceback.
+        print(f"[pre-push-review] API call failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
     write_cache_artifact(report, branch=..., head_sha=...)
     if report.p1_blocking:
         print_findings(report.p1_blocking, level="P1 BLOCKING")
-        print(f"\n[pre-push-review] {len(report.p1_blocking)} P1 finding(s) — push blocked. Use `git push --no-verify` to override (not recommended).")
+        print(f"\n[pre-push-review] {len(report.p1_blocking)} P1 finding(s) -- push blocked. Use `git push --no-verify` to override (not recommended).")
         return 1
     if report.p2_warn:
         print_findings(report.p2_warn, level="P2 WARNING")
@@ -368,7 +391,7 @@ multi-curve valuation). You review dispatch artifacts with the same rigor as
 the Codex Connector — no bajulação, no scope creep, surface every fact mismatch
 or self-defeating directive you find. The dispatch is reviewed against the
 constitutional `docs/governance.md` (institutional supreme authority) and the
-14+ self-consistency sub-rules below.
+30+ self-consistency sub-rules below.
 
 ## Severity tiers
 
@@ -381,7 +404,7 @@ constitutional `docs/governance.md` (institutional supreme authority) and the
 - **P3 (info)**: stylistic inconsistencies, redundant prescriptions, minor
   unverified claims that don't undermine the PR's purpose.
 
-## The 14+ sub-rules
+## The 30+ sub-rules
 
 ### Rule 1 — Identifier verification
 Every concrete code prescription naming a function, class, attribute, enum
@@ -417,9 +440,11 @@ The hook's first action (per §3.2) is `git diff --name-only "$DIFF_RANGE" -- 'd
 
 - Regular code-only commits: no LLM call, no cost.
 - Branches that touch dispatches but the *current push* doesn't include those files: no LLM call (the diff range is push-scoped).
-- Pushes where multiple dispatches changed (e.g., two waves authored together): one LLM call per dispatch (loop in §3.1.9 entry).
+- Pushes where multiple dispatches changed (e.g., two waves authored together): a single LLM call covering all changed dispatches (one `build_user_payload` concatenation, one `report_findings` invocation; see §3.1.5 multi-path batching).
 
 **Glob shape**: `docs/**/*-dispatch.md` — matches `docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`, `docs/audits/2026-05-09-infra-pre-push-dispatch-review-hook-dispatch.md` (this PR), and any future dispatch following the trailing-`-dispatch.md` naming convention. **Verify**: every existing dispatch in `docs/audits/` matches this glob — grep before authoring.
+
+**Multi-dispatch push behavior**: when N dispatches are in the push range, `build_user_payload` (§3.1.5) iterates and concatenates them into ONE Anthropic call (one `report_findings` invocation, one `ReviewReport`). This is intentional — a single call benefits from cache hit on the system blocks while keeping the per-push cost roughly flat. Token-budget check: each dispatch adds ~30-80 k tokens of user payload; 2-3 dispatches in one push is comfortable inside Sonnet 4.6's 200 k context. If a future push exceeds N=4 dispatches, consider splitting; for v1, single-call batching is the contract.
 
 ### 3.6 `scripts/install_git_hooks.py` — bootstrap
 
@@ -519,7 +544,7 @@ If `AGENTS.md` exists at repo root (Claude / Cursor / Codex agent context file),
 - [ ] `scripts/dispatch_review/` package exists with `__init__.py`, `client.py`, `prompt_builder.py`, `schema.py`, `rules.py`, `file_resolver.py`, `cache.py`.
 - [ ] `.githooks/pre-push` exists; executable bit set on Unix; first line is `#!/usr/bin/env sh`.
 - [ ] `scripts/install_git_hooks.py` exists; running it sets `git config core.hooksPath .githooks`; running it twice is a no-op (idempotent).
-- [ ] `docs/audit-protocol/dispatch-review-rules.md` exists; enumerates 14+ sub-rules; every sub-rule has a one-paragraph statement + example violation + example correct shape.
+- [ ] `docs/audit-protocol/dispatch-review-rules.md` exists; enumerates 30+ sub-rules; every sub-rule has a one-paragraph statement + example violation + example correct shape.
 - [ ] `backend/requirements.txt` has an `anthropic==<verified-latest>` line.
 - [ ] `.gitignore` ignores `.cache/dispatch_review/` (or already covers `.cache/` at parent scope).
 - [ ] README (or `docs/dev-setup.md`) documents the install + bypass procedure.
@@ -588,7 +613,7 @@ The hook is **NOT** a prerequisite for Wave 3 — it is a productivity multiplie
 ## Summary
 
 Local pre-push hook that invokes Anthropic Claude Sonnet 4.6 against
-`docs/**/*-dispatch.md` files in the push range, applying the 14+
+`docs/**/*-dispatch.md` files in the push range, applying the 30+
 institutional self-consistency sub-rules accumulated from Phase A1/A2/A3
 Codex review cycles. P1 findings block the push; P2/P3 print and continue.
 
@@ -602,7 +627,7 @@ the dispatch reaches Codex.
 - `scripts/dispatch_review/` — package (client, prompt_builder, schema, rules, file_resolver, cache)
 - `scripts/install_git_hooks.py` — bootstrap setting `core.hooksPath`
 - `.githooks/pre-push` — versioned hook wrapper
-- `docs/audit-protocol/dispatch-review-rules.md` — versioned rule sheet (14+ sub-rules)
+- `docs/audit-protocol/dispatch-review-rules.md` — versioned rule sheet (30+ sub-rules)
 - `backend/requirements.txt` — adds `anthropic==<verified-latest>`
 - `.gitignore` — ignores `.cache/dispatch_review/`
 - README / dev-setup doc — install + bypass instructions
@@ -648,7 +673,7 @@ recovered.
 - DO NOT introduce a new top-level Python package or virtualenv layout. The scripts package lives next to backend; `backend/requirements.txt` is the dependency root.
 - DO NOT add npm dependencies. `package.json` root stays minimal.
 - DO NOT use `--no-verify` during this PR's own implementation cycle. Codex will review this PR; the dispatch reviewer doesn't apply to itself yet (this PR introduces it).
-- DO NOT ship the rule sheet missing any of the 14+ sub-rules. The institutional invariant — "memory and rule sheet move together" — kicks in starting with this commit.
+- DO NOT ship the rule sheet missing any of the 30+ sub-rules. The institutional invariant — "memory and rule sheet move together" — kicks in starting with this commit.
 - DO NOT auto-merge — wait for Codex review.
 
 ---
@@ -658,12 +683,12 @@ recovered.
 1. `git fetch origin && git worktree add D:/Projetos/Hedge-Control-New-infra-hook origin/main && cd D:/Projetos/Hedge-Control-New-infra-hook && git checkout -b infra/pre-push-dispatch-review`.
 2. Configure `.claude/settings.local.json` per the worktree pattern (`defaultMode: bypassPermissions`, allow `git`/`gh`/`pytest`/`python`/`pip`, deny `--force` raw, `--auto`, `--no-verify`, push to `main`).
 3. Read the constitutional + memory references in §2.
-4. Verify Anthropic SDK current stable version: `pip index versions anthropic` or browse PyPI; pin in `backend/requirements.txt` as `anthropic==<verified>`. Update §3.4 cited identifier `claude-sonnet-4-5-20250929` to whichever Sonnet 4.6 dated identifier the SDK release notes list as current; never use `latest` aliases.
+4. Verify Anthropic SDK current stable version: `pip index versions anthropic` or browse PyPI; pin in `backend/requirements.txt` as `anthropic==<verified>`. Confirm the model identifier in `_MODEL` (`scripts/dispatch_review/client.py`) is current — `claude-sonnet-4-6` was the production Sonnet 4.6 alias at authoring time; verify against the Anthropic model docs / SDK release notes immediately before sealing. Never use `latest` aliases.
 5. Create `scripts/dispatch_review/` package skeleton (6 modules). Stub each module with module docstring + import skeleton.
 6. Implement `scripts/dispatch_review/schema.py` first (Pydantic models + tool schema). Test it.
 7. Implement `scripts/dispatch_review/rules.py` (file loader for `docs/audit-protocol/dispatch-review-rules.md`).
 8. Implement `scripts/dispatch_review/file_resolver.py`. Test it (3 unit tests).
-9. Author `docs/audit-protocol/dispatch-review-rules.md` v1: copy the orchestrator's `feedback_dispatch_self_consistency` memory content (the 14+ sub-rules), expand each sub-rule into the structure prescribed in §3.3 (statement + example violation + example correct shape).
+9. Author `docs/audit-protocol/dispatch-review-rules.md` v1: copy the orchestrator's `feedback_dispatch_self_consistency` memory content (the 30+ sub-rules), expand each sub-rule into the structure prescribed in §3.3 (statement + example violation + example correct shape).
 10. Implement `scripts/dispatch_review/prompt_builder.py` — cached system blocks per §3.1.4; user payload per §3.1.5. Verify cache_control schema against the SDK pinned version.
 11. Implement `scripts/dispatch_review/client.py` — Anthropic API call with retry/backoff; tool-use forcing.
 12. Implement `scripts/dispatch_review/cache.py` — JSON write to `.cache/dispatch_review/{slug}-{sha}.json`.

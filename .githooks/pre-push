@@ -34,7 +34,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         DIFF_RANGE="$remote_sha..$local_sha"
     fi
 
-    DISPATCH_FILES=$(git diff --name-only "$DIFF_RANGE" -- 'docs/**/*-dispatch.md' 2>/dev/null || true)
+    # No `|| true` fallback: if `git diff` itself fails (corrupt repo,
+    # invalid range), `set -e` aborts the hook. Empty result on no
+    # matches is normal exit-0 — silent fallback would hide real errors.
+    DISPATCH_FILES=$(git diff --name-only "$DIFF_RANGE" -- 'docs/**/*-dispatch.md')
 
     if [ -z "$DISPATCH_FILES" ]; then
         continue
