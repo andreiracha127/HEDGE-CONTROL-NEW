@@ -107,6 +107,14 @@ class RFQInvitationStatus(enum.Enum):
     failed = "failed"
 
 
+class RFQInvitationPurpose(enum.Enum):
+    rfq_invite = "rfq_invite"
+    refresh = "refresh"
+    reject_quote = "reject_quote"
+    award_notify = "award_notify"
+    reject_notify = "reject_notify"
+
+
 class RFQInvitation(Base):
     __tablename__ = "rfq_invitations"
 
@@ -129,12 +137,30 @@ class RFQInvitation(Base):
         nullable=False,
     )
     message_body: Mapped[str] = mapped_column(Text, nullable=False)
-    provider_message_id: Mapped[str] = mapped_column(String(length=128), nullable=False)
+    # provider_message_id is NULL while a row is queued/failed; only populated
+    # once the WhatsApp send returns success. Per Phase A2 PR-4 (J-A2-07),
+    # outbox rows must be durable BEFORE the send, so the column cannot be
+    # NOT NULL.
+    provider_message_id: Mapped[str | None] = mapped_column(
+        String(length=128), nullable=True
+    )
     send_status: Mapped[RFQInvitationStatus] = mapped_column(
         Enum(RFQInvitationStatus, name="rfq_invitation_status"),
         nullable=False,
     )
-    sent_at: Mapped[DateTime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Distinguishes invitation kinds so `RFQInvitation` can host every RFQ
+    # outbound (initial invite, refresh, reject_quote, award_notify,
+    # reject_notify) per J-A2-OPUS-02.
+    purpose: Mapped[RFQInvitationPurpose] = mapped_column(
+        Enum(RFQInvitationPurpose, name="rfq_invitation_purpose"),
+        nullable=False,
+        server_default="rfq_invite",
+    )
+    # NULL while queued/failed; populated when send succeeds.
+    sent_at: Mapped[DateTime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure_reason: Mapped[str | None] = mapped_column(String(length=256), nullable=True)
     idempotency_key: Mapped[str] = mapped_column(String(length=128), nullable=False)
     created_at: Mapped[DateTime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

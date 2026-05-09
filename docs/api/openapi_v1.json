@@ -4953,6 +4953,15 @@
         "title": "PurchaseOrderCreate",
         "type": "object"
       },
+      "QuoteState": {
+        "description": "Lifecycle marker for `RFQQuote`. See `app.models.quotes`.",
+        "enum": [
+          "active",
+          "rejected"
+        ],
+        "title": "QuoteState",
+        "type": "string"
+      },
       "RFQAwardRequest": {
         "properties": {
           "user_id": {
@@ -5139,6 +5148,18 @@
         "title": "RFQInvitationCreate",
         "type": "object"
       },
+      "RFQInvitationPurpose": {
+        "description": "Discriminator for invitation kinds. See `app.models.rfqs`.",
+        "enum": [
+          "rfq_invite",
+          "refresh",
+          "reject_quote",
+          "award_notify",
+          "reject_notify"
+        ],
+        "title": "RFQInvitationPurpose",
+        "type": "string"
+      },
       "RFQInvitationRead": {
         "properties": {
           "channel": {
@@ -5154,6 +5175,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -5168,8 +5200,19 @@
             "type": "string"
           },
           "provider_message_id": {
-            "title": "Provider Message Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Message Id"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/RFQInvitationPurpose",
+            "default": "rfq_invite"
           },
           "recipient_name": {
             "title": "Recipient Name",
@@ -5214,7 +5257,6 @@
           "recipient_phone",
           "channel",
           "message_body",
-          "provider_message_id",
           "send_status",
           "idempotency_key",
           "created_at"
@@ -5486,10 +5528,48 @@
             "title": "Received At",
             "type": "string"
           },
+          "rejected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected At"
+          },
+          "rejected_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected By"
+          },
+          "rejected_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejected Reason"
+          },
           "rfq_id": {
             "format": "uuid",
             "title": "Rfq Id",
             "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/QuoteState",
+            "default": "active"
           }
         },
         "required": [

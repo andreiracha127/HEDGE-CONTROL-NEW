@@ -373,7 +373,7 @@ def reject_quote(
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Reject a specific counterparty quote without closing the RFQ."""
-    RFQService.reject_quote(session, rfq_id, quote_id)
+    RFQService.reject_quote(session, rfq_id, quote_id, payload.user_id)
     session.commit()
     mark_audit_success(request, rfq_id)
     request.state.audit_commit()

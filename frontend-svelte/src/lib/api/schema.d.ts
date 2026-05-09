@@ -3172,6 +3172,12 @@ export interface components {
              */
             reference_month?: string | null;
         };
+        /**
+         * QuoteState
+         * @description Lifecycle marker for `RFQQuote`. See `app.models.quotes`.
+         * @enum {string}
+         */
+        QuoteState: "active" | "rejected";
         /** RFQAwardRequest */
         RFQAwardRequest: {
             /** User Id */
@@ -3258,6 +3264,12 @@ export interface components {
              */
             counterparty_id: string;
         };
+        /**
+         * RFQInvitationPurpose
+         * @description Discriminator for invitation kinds. See `app.models.rfqs`.
+         * @enum {string}
+         */
+        RFQInvitationPurpose: "rfq_invite" | "refresh" | "reject_quote" | "award_notify" | "reject_notify";
         /** RFQInvitationRead */
         RFQInvitationRead: {
             channel: components["schemas"]["RFQInvitationChannel"];
@@ -3271,6 +3283,8 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Failure Reason */
+            failure_reason?: string | null;
             /**
              * Id
              * Format: uuid
@@ -3281,7 +3295,9 @@ export interface components {
             /** Message Body */
             message_body: string;
             /** Provider Message Id */
-            provider_message_id: string;
+            provider_message_id?: string | null;
+            /** @default rfq_invite */
+            purpose: components["schemas"]["RFQInvitationPurpose"];
             /** Recipient Name */
             recipient_name: string;
             /** Recipient Phone */
@@ -3391,11 +3407,19 @@ export interface components {
              * Format: date-time
              */
             received_at: string;
+            /** Rejected At */
+            rejected_at?: string | null;
+            /** Rejected By */
+            rejected_by?: string | null;
+            /** Rejected Reason */
+            rejected_reason?: string | null;
             /**
              * Rfq Id
              * Format: uuid
              */
             rfq_id: string;
+            /** @default active */
+            state: components["schemas"]["QuoteState"];
         };
         /** RFQRead */
         RFQRead: {
