@@ -54,16 +54,16 @@ def _settlement_payload(source_event_id: str) -> HedgeContractSettlementCreate:
         source_event_id=source_event_id,
         cashflow_date=date(2026, 1, 15),
         legs=[
-            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("100.00")},
-            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("110.00")},
+            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("500.000000")},
+            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("550.000000")},
         ],
     )
 
 
 def test_pl_snapshot_realized_from_ledger_is_idempotent() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=100.0)
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
     payload = _settlement_payload(str(uuid4()))
 
@@ -78,7 +78,7 @@ def test_pl_snapshot_realized_from_ledger_is_idempotent() -> None:
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 31),
         )
-        assert first.realized_pl == Decimal("10.00")
+        assert first.realized_pl == Decimal("50.000000")
 
     with SessionLocal() as session:
         second = create_pl_snapshot(
@@ -89,13 +89,13 @@ def test_pl_snapshot_realized_from_ledger_is_idempotent() -> None:
             period_end=date(2026, 1, 31),
         )
         assert second.id == first.id
-        assert second.realized_pl == Decimal("10.00")
+        assert second.realized_pl == Decimal("50.000000")
 
 
 def test_pl_snapshot_conflict_on_divergent_ledger() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=100.0)
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
 
     payload_first = _settlement_payload(str(uuid4()))
@@ -153,3 +153,68 @@ def test_pl_snapshot_order_hard_fails() -> None:
             )
         assert exc.value.status_code in {status.HTTP_424_FAILED_DEPENDENCY, status.HTTP_422_UNPROCESSABLE_ENTITY}
         assert "Realized cashflow ledger not implemented for orders" in exc.value.detail
+
+
+def test_create_pl_snapshot_persists_price_references_from_result() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    contract = _insert_contract(quantity_mt=10.0, entry_price=100.0, status=HedgeContractStatus.active)
+    payload = HedgeContractSettlementCreate(
+        source_event_id=str(uuid4()),
+        cashflow_date=date(2026, 1, 15),
+        legs=[
+            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("1000.000000")},
+            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("1100.000000")},
+        ],
+    )
+    with SessionLocal() as session:
+        ingest_hedge_contract_settlement(session, contract.id, payload)
+        snapshot = create_pl_snapshot(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert snapshot.price_references == [
+            {
+                "symbol": symbol,
+                "source": "westmetall",
+                "settlement_date": "2026-01-14",
+                "value": "110.000000",
+            }
+        ]
+        assert snapshot.inputs_hash is not None
+        assert len(snapshot.inputs_hash) == 64
+
+
+def test_create_pl_snapshot_idempotency_no_op_on_identical_rerun() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    contract = _insert_contract(quantity_mt=10.0, entry_price=100.0, status=HedgeContractStatus.active)
+    payload = HedgeContractSettlementCreate(
+        source_event_id=str(uuid4()),
+        cashflow_date=date(2026, 1, 15),
+        legs=[
+            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("1000.000000")},
+            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("1100.000000")},
+        ],
+    )
+    with SessionLocal() as session:
+        ingest_hedge_contract_settlement(session, contract.id, payload)
+        first = create_pl_snapshot(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        second = create_pl_snapshot(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert second.id == first.id
+        assert second.inputs_hash == first.inputs_hash

@@ -1404,6 +1404,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Inputs Hash */
+            inputs_hash?: string | null;
             /** Snapshot Data */
             snapshot_data: {
                 [key: string]: unknown;
@@ -1421,6 +1423,14 @@ export interface components {
             object_id: string;
             /** Object Type */
             object_type: string;
+            /** Price Settlement Date */
+            price_settlement_date?: string | null;
+            /** Price Source */
+            price_source?: string | null;
+            /** Price Symbol */
+            price_symbol?: string | null;
+            /** Price Value */
+            price_value?: string | null;
             /**
              * Settlement Date
              * Format: date
@@ -1457,6 +1467,14 @@ export interface components {
             id: string;
             /** Leg Id */
             leg_id: string;
+            /** Price Settlement Date */
+            price_settlement_date?: string | null;
+            /** Price Source */
+            price_source?: string | null;
+            /** Price Symbol */
+            price_symbol?: string | null;
+            /** Price Value */
+            price_value?: string | null;
             /** Source Event Id */
             source_event_id: string | null;
             /** Source Event Type */
@@ -1610,7 +1628,7 @@ export interface components {
              */
             id: string;
             /** Price Usd */
-            price_usd: number;
+            price_usd: string;
             /**
              * Settlement Date
              * Format: date
@@ -2629,6 +2647,7 @@ export interface components {
             object_type: components["schemas"]["MTMObjectType"];
             /** Price D1 */
             price_d1: string;
+            price_quote?: components["schemas"]["PriceQuote"] | null;
             /** Quantity Mt */
             quantity_mt: string;
         };
@@ -2666,6 +2685,8 @@ export interface components {
             entry_price: string;
             /** Id */
             id: string;
+            /** Inputs Hash */
+            inputs_hash?: string | null;
             /** Mtm Value */
             mtm_value: string;
             /** Object Id */
@@ -2673,6 +2694,12 @@ export interface components {
             object_type: components["schemas"]["MTMObjectType"];
             /** Price D1 */
             price_d1: string;
+            /** Price Settlement Date */
+            price_settlement_date?: string | null;
+            /** Price Source */
+            price_source?: string | null;
+            /** Price Symbol */
+            price_symbol?: string | null;
             /** Quantity Mt */
             quantity_mt: string;
         };
@@ -2829,6 +2856,8 @@ export interface components {
         OrderType: "SO" | "PO";
         /** PLResultResponse */
         PLResultResponse: {
+            /** Price References */
+            price_references?: components["schemas"]["PriceReferenceEntry"][];
             /** Realized Pl */
             realized_pl: string;
             /** Unrealized Mtm */
@@ -2875,6 +2904,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Inputs Hash */
+            inputs_hash?: string | null;
             /**
              * Period End
              * Format: date
@@ -2885,6 +2916,10 @@ export interface components {
              * Format: date
              */
             period_start: string;
+            /** Price References */
+            price_references?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Realized Pl */
             realized_pl: string;
             /** Unrealized Mtm */
@@ -3069,6 +3104,34 @@ export interface components {
             price: string;
             /** Quantity Mt */
             quantity_mt: string;
+            /** Value */
+            value: string;
+        };
+        /** PriceQuote */
+        PriceQuote: {
+            /**
+             * Settlement Date
+             * Format: date
+             */
+            settlement_date: string;
+            /** Source */
+            source: string;
+            /** Symbol */
+            symbol: string;
+            /** Value */
+            value: string;
+        };
+        /** PriceReferenceEntry */
+        PriceReferenceEntry: {
+            /**
+             * Settlement Date
+             * Format: date
+             */
+            settlement_date: string;
+            /** Source */
+            source: string;
+            /** Symbol */
+            symbol: string;
             /** Value */
             value: string;
         };

@@ -4,6 +4,8 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.utils.price_reference import PriceQuote
+
 
 class MTMObjectType(str, Enum):
     hedge_contract = "hedge_contract"
@@ -11,6 +13,8 @@ class MTMObjectType(str, Enum):
 
 
 class MTMResultResponse(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     object_type: MTMObjectType
     object_id: str = Field(..., max_length=64)
     as_of_date: date
@@ -18,6 +22,7 @@ class MTMResultResponse(BaseModel):
     price_d1: Decimal
     entry_price: Decimal
     quantity_mt: Decimal
+    price_quote: PriceQuote | None = None
 
 
 class MTMSnapshotCreate(BaseModel):
@@ -40,5 +45,9 @@ class MTMSnapshotResponse(BaseModel):
     price_d1: Decimal
     entry_price: Decimal
     quantity_mt: Decimal
+    price_source: str | None = Field(None, max_length=64)
+    price_symbol: str | None = Field(None, max_length=32)
+    price_settlement_date: date | None = None
+    inputs_hash: str | None = Field(None, max_length=64)
     correlation_id: str = Field(..., max_length=64)
     created_at: datetime

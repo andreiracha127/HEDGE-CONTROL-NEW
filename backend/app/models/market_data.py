@@ -1,7 +1,8 @@
 from datetime import date, datetime
+from decimal import Decimal
 import uuid
 
-from sqlalchemy import Date, DateTime, Float, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -20,7 +21,7 @@ class CashSettlementPrice(Base):
     source: Mapped[str] = mapped_column(String(length=64), nullable=False)
     symbol: Mapped[str] = mapped_column(String(length=64), nullable=False)
     settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
-    price_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    price_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
 
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     html_sha256: Mapped[str] = mapped_column(String(length=64), nullable=False)

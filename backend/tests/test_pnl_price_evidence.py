@@ -399,7 +399,7 @@ class TestHappyPathProvenance:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
 
@@ -426,7 +426,7 @@ class TestHappyPathProvenance:
         assert prov is not None
         assert "ALUMINUM" in prov
         assert prov["ALUMINUM"]["source"] == "westmetall"
-        assert prov["ALUMINUM"]["settlement_date"] == "2026-01-31"
+        assert prov["ALUMINUM"]["settlement_date"] == "2026-01-30"
         assert Decimal(prov["ALUMINUM"]["value"]) == Decimal("2700.0")
         # revenue = 100 * 2700 = 270000
         assert body["physical_revenue"] == "270000.000000"
@@ -455,13 +455,13 @@ class TestBreakdownPerCommodityPricing:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         _insert_price(
             session,
             symbol="LME_CU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=9100.0,
         )
 
@@ -547,7 +547,7 @@ class TestBreakdownPerCommodityPricing:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
 
@@ -931,11 +931,11 @@ class TestSettledHedgeSkipsMarketLookup:
         the current quote, NOT zeroed). Confirms the partially_settled
         branch valuates through the same path as active hedges.
         """
-        # D-1 price for ALUMINUM at snapshot_date 2026-02-01 → 2026-01-31.
+        # D-1 price for ALUMINUM at snapshot_date 2026-02-01 → 2026-01-30.
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
 
@@ -1010,7 +1010,7 @@ class TestSettledHedgeSkipsMarketLookup:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
 

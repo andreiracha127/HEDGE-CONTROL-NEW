@@ -40,7 +40,7 @@ from app.schemas.market_data import (
 )
 from app.schemas.mtm import MTMResultResponse, MTMSnapshotCreate, MTMSnapshotResponse
 from app.schemas.orders import OrderRead, PurchaseOrderCreate, SalesOrderCreate
-from app.schemas.pl import PLResultResponse, PLSnapshotCreate, PLSnapshotResponse
+from app.schemas.pl import PriceReferenceEntry, PLResultResponse, PLSnapshotCreate, PLSnapshotResponse
 from app.schemas.rfq import (
     RFQAwardRequest,
     RFQCreate,
@@ -96,6 +96,7 @@ __all__ = [
     "MTMSnapshotCreate",
     "MTMSnapshotResponse",
     "PLResultResponse",
+    "PriceReferenceEntry",
     "PLSnapshotCreate",
     "PLSnapshotResponse",
     "RFQCreate",

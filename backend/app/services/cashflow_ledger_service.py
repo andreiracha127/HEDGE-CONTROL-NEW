@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_EVEN
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.cashflow import CashFlowLedgerEntry, HedgeContractSettlementEvent
-from app.models.contracts import HedgeContract, HedgeContractStatus
+from app.models.contracts import HedgeContract, HedgeContractStatus, HedgeLegSide
 from app.schemas.cashflow import (
     HedgeContractSettlementCreate,
     HedgeContractSettlementLeg,
+    LedgerDirection,
+    LedgerLegId,
+)
+from app.services.price_lookup_service import (
+    PriceReferenceUnprovable,
+    get_cash_settlement_price_d1_with_provenance,
+    resolve_symbol,
 )
 
 
@@ -20,6 +27,12 @@ SOURCE_EVENT_TYPE = "HEDGE_CONTRACT_SETTLED"
 
 def _normalize_decimal(value: Decimal) -> Decimal:
     return Decimal(str(value))
+
+
+def _decimal_or_none_eq(a: Decimal | None, b: Decimal | None) -> bool:
+    if a is None or b is None:
+        return a is None and b is None
+    return _normalize_decimal(a) == _normalize_decimal(b)
 
 
 def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
@@ -32,23 +45,115 @@ def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
         and entry.currency == expected["currency"]
         and entry.direction == expected["direction"]
         and _normalize_decimal(entry.amount) == _normalize_decimal(expected["amount"])
+        and entry.price_source == expected["price_source"]
+        and entry.price_symbol == expected["price_symbol"]
+        and entry.price_settlement_date == expected["price_settlement_date"]
+        and _decimal_or_none_eq(entry.price_value, expected["price_value"])
     )
 
 
-def _build_expected_entry(
+def _ledger_entry_matches_payload(
+    entry: CashFlowLedgerEntry,
     contract_id: UUID,
     payload: HedgeContractSettlementCreate,
     leg: HedgeContractSettlementLeg,
+) -> bool:
+    return (
+        entry.hedge_contract_id == contract_id
+        and entry.source_event_type == SOURCE_EVENT_TYPE
+        and entry.source_event_id == payload.source_event_id
+        and entry.leg_id == leg.leg_id.value
+        and entry.cashflow_date == payload.cashflow_date
+        and entry.currency == "USD"
+        and entry.direction == leg.direction.value
+        and _normalize_decimal(entry.amount) == _normalize_decimal(Decimal(str(leg.amount)))
+    )
+
+
+def _direction_from_side(side: HedgeLegSide) -> LedgerDirection:
+    return LedgerDirection.out if side == HedgeLegSide.buy else LedgerDirection.in_
+
+
+def _build_expected_entry(
+    db: Session,
+    contract: HedgeContract,
+    payload: HedgeContractSettlementCreate,
+    leg: HedgeContractSettlementLeg,
 ) -> dict:
+    if contract.fixed_price_value is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot derive settlement: contract {contract.id} has no fixed_price_value",
+        )
+
+    scale = Decimal("0.000001")
+    quantity = Decimal(str(contract.quantity_mt))
+    if leg.leg_id == LedgerLegId.fixed:
+        derived_amount = (quantity * Decimal(str(contract.fixed_price_value))).quantize(
+            scale, rounding=ROUND_HALF_EVEN
+        )
+        derived_direction = _direction_from_side(contract.fixed_leg_side)
+        provenance = {
+            "price_source": None,
+            "price_symbol": None,
+            "price_settlement_date": None,
+            "price_value": None,
+        }
+    elif leg.leg_id == LedgerLegId.float:
+        try:
+            settlement_quote = get_cash_settlement_price_d1_with_provenance(
+                db,
+                symbol=resolve_symbol(contract.commodity),
+                as_of_date=payload.cashflow_date,
+            )
+        except PriceReferenceUnprovable as exc:
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=str(exc),
+            ) from exc
+        derived_amount = (quantity * settlement_quote.value).quantize(
+            scale, rounding=ROUND_HALF_EVEN
+        )
+        derived_direction = _direction_from_side(contract.variable_leg_side)
+        provenance = {
+            "price_source": settlement_quote.source,
+            "price_symbol": settlement_quote.symbol,
+            "price_settlement_date": settlement_quote.settlement_date,
+            "price_value": settlement_quote.value,
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unexpected leg_id {leg.leg_id}",
+        )
+
+    if leg.direction != derived_direction:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Leg {leg.leg_id.value} direction mismatch: "
+                f"derived={derived_direction.value}, payload={leg.direction.value}"
+            ),
+        )
+    if Decimal(str(leg.amount)) != derived_amount:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Leg {leg.leg_id.value} amount mismatch: "
+                f"derived={derived_amount}, payload={leg.amount}"
+            ),
+        )
+
     return {
-        "hedge_contract_id": contract_id,
+        "hedge_contract_id": contract.id,
         "source_event_type": SOURCE_EVENT_TYPE,
         "source_event_id": payload.source_event_id,
         "leg_id": leg.leg_id.value,
         "cashflow_date": payload.cashflow_date,
         "currency": "USD",
-        "direction": leg.direction.value,
-        "amount": leg.amount,
+        "direction": derived_direction.value,
+        "amount": derived_amount,
+        **provenance,
     }
 
 
@@ -73,6 +178,42 @@ def _raise_conflict() -> None:
     )
 
 
+def _raise_replay_payload_mismatch() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Settlement payload does not match persisted ledger event",
+    )
+
+
+def _validate_existing_settlement_replay(
+    *,
+    existing_event: HedgeContractSettlementEvent,
+    existing_entries: list[CashFlowLedgerEntry],
+    contract_id: UUID,
+    payload: HedgeContractSettlementCreate,
+) -> None:
+    if (
+        existing_event.hedge_contract_id != contract_id
+        or existing_event.cashflow_date != payload.cashflow_date
+        or len(existing_entries) != len(payload.legs)
+    ):
+        _raise_conflict()
+
+    seen_leg_ids: set[str] = set()
+    for leg in payload.legs:
+        if leg.leg_id.value in seen_leg_ids:
+            _raise_conflict()
+        seen_leg_ids.add(leg.leg_id.value)
+        match = next(
+            (entry for entry in existing_entries if entry.leg_id == leg.leg_id.value),
+            None,
+        )
+        if match is None or not _ledger_entry_matches_payload(
+            match, contract_id, payload, leg
+        ):
+            _raise_replay_payload_mismatch()
+
+
 def ingest_hedge_contract_settlement(
     db: Session,
     contract_id: UUID,
@@ -87,10 +228,6 @@ def ingest_hedge_contract_settlement(
     _validate_currency(payload)
 
     existing_event = db.get(HedgeContractSettlementEvent, payload.source_event_id)
-    expected_entries = [
-        _build_expected_entry(contract_id, payload, leg) for leg in payload.legs
-    ]
-
     existing_entries = (
         db.query(CashFlowLedgerEntry)
         .filter(
@@ -102,52 +239,26 @@ def ingest_hedge_contract_settlement(
         .all()
     )
 
-    if contract.status == HedgeContractStatus.settled:
-        if existing_event is None or len(existing_entries) != 2:
-            _raise_conflict()
-        for expected in expected_entries:
-            match = next(
-                (
-                    entry
-                    for entry in existing_entries
-                    if entry.leg_id == expected["leg_id"]
-                ),
-                None,
-            )
-            if match is None or not _ledger_entry_matches(match, expected):
-                _raise_conflict()
-        if (
-            existing_event.hedge_contract_id != contract_id
-            or existing_event.cashflow_date != payload.cashflow_date
-        ):
-            _raise_conflict()
+    if existing_event is not None:
+        _validate_existing_settlement_replay(
+            existing_event=existing_event,
+            existing_entries=existing_entries,
+            contract_id=contract_id,
+            payload=payload,
+        )
         return existing_event, existing_entries
+
+    if contract.status == HedgeContractStatus.settled:
+        _raise_conflict()
 
     _assert_contract_active(contract)
 
-    if existing_event is not None:
-        if (
-            existing_event.hedge_contract_id != contract_id
-            or existing_event.cashflow_date != payload.cashflow_date
-        ):
-            _raise_conflict()
-        if len(existing_entries) != 2:
-            _raise_conflict()
-        for expected in expected_entries:
-            match = next(
-                (
-                    entry
-                    for entry in existing_entries
-                    if entry.leg_id == expected["leg_id"]
-                ),
-                None,
-            )
-            if match is None or not _ledger_entry_matches(match, expected):
-                _raise_conflict()
-        return existing_event, existing_entries
-
     if existing_entries:
         _raise_conflict()
+
+    expected_entries = [
+        _build_expected_entry(db, contract, payload, leg) for leg in payload.legs
+    ]
 
     settlement_event = HedgeContractSettlementEvent(
         id=payload.source_event_id,
@@ -168,6 +279,10 @@ def ingest_hedge_contract_settlement(
             currency=expected["currency"],
             direction=expected["direction"],
             amount=expected["amount"],
+            price_source=expected["price_source"],
+            price_symbol=expected["price_symbol"],
+            price_settlement_date=expected["price_settlement_date"],
+            price_value=expected["price_value"],
         )
         ledger_entries.append(entry)
         db.add(entry)

@@ -78,8 +78,8 @@ def _dec(value) -> Decimal:
 
 def test_scenario_run_returns_outputs(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0)
 
     response = client.post(
@@ -104,8 +104,8 @@ def test_scenario_run_returns_outputs(client) -> None:
 
 def test_price_override_changes_mtm(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0)
 
     response = client.post(
@@ -118,7 +118,7 @@ def test_price_override_changes_mtm(client) -> None:
                 {
                     "delta_type": "add_cash_settlement_price_override",
                     "symbol": symbol,
-                    "settlement_date": "2026-01-31",
+                    "settlement_date": "2026-01-30",
                     "price_usd": "120.0"
                 }
             ],
@@ -131,8 +131,8 @@ def test_price_override_changes_mtm(client) -> None:
 
 def test_add_unlinked_contract_affects_global_exposure(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
 
     response = client.post(
         "/scenario/what-if/run",
@@ -161,8 +161,8 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
 
 def test_adjust_order_quantity_changes_exposure(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _insert_order(quantity_mt=5.0)
 
     response = client.post(
@@ -185,16 +185,16 @@ def test_adjust_order_quantity_changes_exposure(client) -> None:
 
 def test_scenario_exposure_snapshots_are_commodity_scoped(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     _insert_price(
         "LME_CU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 30),
+        settlement_date=date(2026, 1, 29),
         price_usd=290.0,
     )
     _insert_price(
         "LME_CU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 31),
+        settlement_date=date(2026, 1, 30),
         price_usd=300.0,
     )
     _insert_order(quantity_mt=5.0, commodity="ALUMINUM")
@@ -230,22 +230,22 @@ def test_scenario_exposure_snapshots_are_commodity_scoped(client) -> None:
 def test_scenario_prices_mtm_and_pl_by_each_commodity(client) -> None:
     _insert_price(
         "LME_ALU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 30),
+        settlement_date=date(2026, 1, 29),
         price_usd=105.0,
     )
     _insert_price(
         "LME_ALU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 31),
+        settlement_date=date(2026, 1, 30),
         price_usd=110.0,
     )
     _insert_price(
         "LME_CU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 30),
+        settlement_date=date(2026, 1, 29),
         price_usd=290.0,
     )
     _insert_price(
         "LME_CU_CASH_SETTLEMENT_DAILY",
-        settlement_date=date(2026, 1, 31),
+        settlement_date=date(2026, 1, 30),
         price_usd=300.0,
     )
     order_id = _insert_order(
@@ -281,7 +281,7 @@ def test_scenario_prices_mtm_and_pl_by_each_commodity(client) -> None:
     assert _dec(order_mtm["mtm_value"]) == Decimal("400.00")
     assert _dec(contract_mtm["price_d1"]) == Decimal("300.0")
     assert _dec(contract_mtm["mtm_value"]) == Decimal("600.00")
-    assert _dec(contract_pl["unrealized_mtm"]) == Decimal("570.00")
+    assert _dec(contract_pl["unrealized_mtm"]) == Decimal("600.000000")
     assert _dec(data["cashflow_snapshot"]["analytic"]["total_net_cashflow"]) == Decimal(
         "1000.00"
     )
@@ -289,8 +289,8 @@ def test_scenario_prices_mtm_and_pl_by_each_commodity(client) -> None:
 
 def test_scenario_does_not_persist(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0)
 
     response = client.post(
@@ -341,8 +341,8 @@ def test_invalid_period_rejected(client) -> None:
 
 def test_scenario_is_deterministic(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
 
     payload = {
         "as_of_date": "2026-02-01",
@@ -360,8 +360,8 @@ def test_scenario_is_deterministic(client) -> None:
 
 def test_virtual_contract_id_collision_is_409(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0)
 
     response = client.post(
@@ -389,8 +389,8 @@ def test_virtual_contract_id_collision_is_409(client) -> None:
 
 def test_adjust_order_unknown_id_is_404(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=105.0)
-    _insert_price(symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
 
     response = client.post(
         "/scenario/what-if/run",

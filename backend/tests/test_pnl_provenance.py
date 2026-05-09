@@ -146,7 +146,7 @@ class TestSingleCommodityProvenance:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(ENDPOINT, json={"name": "Single", "commodity": "ALUMINUM"})
@@ -166,7 +166,7 @@ class TestSingleCommodityProvenance:
         assert set(prov.keys()) == {"ALUMINUM"}
         entry = prov["ALUMINUM"]
         assert set(entry.keys()) == {"value", "source", "settlement_date"}
-        assert entry["settlement_date"] == "2026-01-31"
+        assert entry["settlement_date"] == "2026-01-30"
         assert entry["source"] == "westmetall"
 
 
@@ -181,13 +181,13 @@ class TestMultiCommodityProvenance:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         _insert_price(
             session,
             symbol="LME_CU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=9100.0,
         )
 
@@ -237,13 +237,13 @@ class TestMultiCommodityProvenance:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         _insert_price(
             session,
             symbol="LME_CU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=9100.0,
         )
 
@@ -346,7 +346,7 @@ class TestDeduplication:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(ENDPOINT, json={"name": "Dedup", "commodity": "ALUMINUM"})
@@ -391,7 +391,7 @@ class TestIdempotency:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(ENDPOINT, json={"name": "Idem", "commodity": "ALUMINUM"})
@@ -430,7 +430,7 @@ class TestInputsHashIncludesProvenance:
             "ALUMINUM": {
                 "value": "2700.0",
                 "source": "westmetall",
-                "settlement_date": "2026-01-31",
+                "settlement_date": "2026-01-30",
             }
         }
         actual = _compute_inputs_hash(deal_id, snap_date, [link_id], prov)
@@ -460,7 +460,7 @@ class TestInputsHashIncludesProvenance:
                 "ALUMINUM": {
                     "value": "2700.0",
                     "source": "westmetall",
-                    "settlement_date": "2026-01-31",
+                    "settlement_date": "2026-01-30",
                 }
             },
         )
@@ -472,7 +472,7 @@ class TestInputsHashIncludesProvenance:
                 "ALUMINUM": {
                     "value": "2701.0",  # corrected
                     "source": "westmetall",
-                    "settlement_date": "2026-01-31",
+                    "settlement_date": "2026-01-30",
                 }
             },
         )
@@ -550,7 +550,7 @@ class TestPriceReferencesValidator:
                 "ALUMINUM": {
                     "value": "2700.0",
                     "source": "westmetall",
-                    "settlement_date": "2026-01-31",
+                    "settlement_date": "2026-01-30",
                 }
             },
         )
@@ -1143,7 +1143,7 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(
@@ -1365,7 +1365,7 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(
@@ -2044,13 +2044,13 @@ class TestPartialQuoteSuccessFailsClosed:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         _insert_price(
             session,
             symbol="LME_CU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=9100.0,
         )
         cp_id = _create_counterparty(session)
@@ -2118,7 +2118,7 @@ class TestPartialQuoteSuccessFailsClosed:
                 return PriceQuote(
                     value=Decimal("2750"),
                     source="lme_cash_settlement",
-                    settlement_date=date(2026, 1, 31),
+                    settlement_date=date(2026, 1, 30),
                     symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
                 )
             raise PriceReferenceUnprovable(
@@ -2174,7 +2174,7 @@ class TestPartialQuoteSuccessFailsClosed:
                 return PriceQuote(
                     value=Decimal("2700"),
                     source="lme_cash_settlement",
-                    settlement_date=date(2026, 1, 31),
+                    settlement_date=date(2026, 1, 30),
                     symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
                 )
             raise PriceReferenceUnprovable(
@@ -2263,7 +2263,7 @@ class TestSequenceOrderingOnReads:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 1, 30),
             price_usd=2700.0,
         )
         r = client.post(ENDPOINT, json={"name": "SeqOrd", "commodity": "ALUMINUM"})
@@ -2363,7 +2363,7 @@ class TestSequenceOrderingOnReads:
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
-            settlement_date=date(2026, 1, 31),
+            settlement_date=date(2026, 2, 2),
             price_usd=2705.0,
         )
         r = client.post(
@@ -2392,7 +2392,7 @@ class TestSequenceOrderingOnReads:
                 s.commit()
 
         # D1 = 2026-01-31 (uses settlement 2026-01-30).
-        # D2 = 2026-02-01 (uses settlement 2026-01-31).
+        # D2 = 2026-02-03 (uses settlement 2026-02-02).
         d1_old = client.post(
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-01-31"},
@@ -2404,12 +2404,12 @@ class TestSequenceOrderingOnReads:
         ).json()["id"]
         d2_old = client.post(
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
-            params={"snapshot_date": "2026-02-01"},
+            params={"snapshot_date": "2026-02-03"},
         ).json()["id"]
-        _correct_price(date(2026, 1, 31), 2715.0)
+        _correct_price(date(2026, 2, 2), 2715.0)
         d2_new = client.post(
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
-            params={"snapshot_date": "2026-02-01"},
+            params={"snapshot_date": "2026-02-03"},
         ).json()["id"]
 
         assert len({d1_old, d1_new, d2_old, d2_new}) == 4

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -43,7 +44,7 @@ class CashSettlementPriceRead(BaseModel):
     source: str = Field(..., max_length=64)
     symbol: str = Field(..., max_length=64)
     settlement_date: date
-    price_usd: float
+    price_usd: Decimal
     source_url: str = Field(..., max_length=512)
     html_sha256: str = Field(..., max_length=128)
     fetched_at: datetime

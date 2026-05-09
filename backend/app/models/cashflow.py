@@ -5,6 +5,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Date,
     DateTime,
+    CheckConstraint,
     JSON,
     Numeric,
     String,
@@ -36,6 +37,7 @@ class CashFlowBaselineSnapshot(Base):
     as_of_date: Mapped[date] = mapped_column(Date, nullable=False)
     snapshot_data: Mapped[dict] = mapped_column(JSON, nullable=False)
     total_net_cashflow: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
     correlation_id: Mapped[str] = mapped_column(String(length=64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -67,6 +69,11 @@ class CashFlowLedgerEntry(Base):
             "cashflow_date",
             name="uq_cashflow_ledger_entry_event_leg_date",
         ),
+        CheckConstraint(
+            "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL AND price_value IS NULL) "
+            "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL AND price_value IS NOT NULL)",
+            name="ck_cashflow_ledger_entries_provenance_all_or_none",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -88,6 +95,10 @@ class CashFlowLedgerEntry(Base):
     currency: Mapped[str] = mapped_column(String(length=8), nullable=False)
     direction: Mapped[str] = mapped_column(String(length=8), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    price_source: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
+    price_symbol: Mapped[str | None] = mapped_column(String(length=32), nullable=True)
+    price_settlement_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    price_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 6), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.models.contracts import HedgeContract, HedgeContractStatus
 from app.schemas.mtm import MTMObjectType, MTMResultResponse
 from app.services.price_lookup_service import (
-    get_cash_settlement_price_d1,
+    PriceReferenceUnprovable,
+    get_cash_settlement_price_d1_with_provenance,
     resolve_symbol,
 )
 
@@ -40,7 +41,16 @@ def compute_mtm_for_contract(
         )
 
     symbol = resolve_symbol(contract.commodity)
-    price_d1 = get_cash_settlement_price_d1(db, symbol=symbol, as_of_date=as_of_date)
+    try:
+        price_quote = get_cash_settlement_price_d1_with_provenance(
+            db, symbol=symbol, as_of_date=as_of_date
+        )
+    except PriceReferenceUnprovable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=str(exc),
+        ) from exc
+    price_d1 = price_quote.value
     entry_price = Decimal(str(contract.fixed_price_value))
     quantity_mt = Decimal(str(contract.quantity_mt))
 
@@ -54,4 +64,5 @@ def compute_mtm_for_contract(
         price_d1=price_d1,
         entry_price=entry_price,
         quantity_mt=quantity_mt,
+        price_quote=price_quote,
     )

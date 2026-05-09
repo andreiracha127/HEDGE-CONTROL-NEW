@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 from app.models.orders import Order, OrderPricingConvention, PriceType
 from app.schemas.mtm import MTMObjectType, MTMResultResponse
 from app.services.price_lookup_service import (
-    get_cash_settlement_price_d1,
+    PriceReferenceUnprovable,
+    get_cash_settlement_price_d1_with_provenance,
     resolve_symbol,
 )
 
@@ -52,9 +53,16 @@ def compute_mtm_for_order(
             detail="Order avg_entry_price is missing",
         )
 
-    price_d1 = get_cash_settlement_price_d1(
-        db, symbol=resolve_symbol(commodity), as_of_date=as_of_date
-    )
+    try:
+        price_quote = get_cash_settlement_price_d1_with_provenance(
+            db, symbol=resolve_symbol(commodity), as_of_date=as_of_date
+        )
+    except PriceReferenceUnprovable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=str(exc),
+        ) from exc
+    price_d1 = price_quote.value
     entry_price = Decimal(str(order.avg_entry_price))
     quantity_mt = Decimal(str(order.quantity_mt))
 
@@ -68,4 +76,5 @@ def compute_mtm_for_order(
         price_d1=price_d1,
         entry_price=entry_price,
         quantity_mt=quantity_mt,
+        price_quote=price_quote,
     )

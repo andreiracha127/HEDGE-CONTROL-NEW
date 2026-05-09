@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.cashflow import CashFlowLedgerEntry
 from app.models.contracts import HedgeContract, HedgeContractStatus
-from app.schemas.pl import PLResultResponse
+from app.schemas.pl import PLResultResponse, PriceReferenceEntry
 from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 from app.services.mtm_contract_service import compute_mtm_for_contract
 
@@ -55,10 +55,25 @@ def compute_pl(
             CashFlowLedgerEntry.cashflow_date >= period_start,
             CashFlowLedgerEntry.cashflow_date <= period_end,
         )
+        .order_by(CashFlowLedgerEntry.cashflow_date.asc(), CashFlowLedgerEntry.created_at.asc())
         .all()
     )
 
     realized_pl = Decimal("0")
+    price_references: list[PriceReferenceEntry] = []
+    seen_references: set[tuple[str, str, date, str]] = set()
+
+    def _append_reference(entry: PriceReferenceEntry) -> None:
+        key = (
+            entry.symbol,
+            entry.source,
+            entry.settlement_date,
+            str(entry.value),
+        )
+        if key not in seen_references:
+            seen_references.add(key)
+            price_references.append(entry)
+
     for entry in ledger_entries:
         amount = Decimal(str(entry.amount))
         if entry.direction == "IN":
@@ -70,6 +85,20 @@ def compute_pl(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Unsupported ledger direction: {entry.direction}",
             )
+        if (
+            entry.price_source is not None
+            and entry.price_symbol is not None
+            and entry.price_settlement_date is not None
+            and entry.price_value is not None
+        ):
+            _append_reference(
+                PriceReferenceEntry(
+                    symbol=entry.price_symbol,
+                    source=entry.price_source,
+                    settlement_date=entry.price_settlement_date,
+                    value=Decimal(str(entry.price_value)),
+                )
+            )
 
     contract = db.get(HedgeContract, entity_id)
     if not contract:
@@ -80,5 +109,17 @@ def compute_pl(
     else:
         mtm = compute_mtm_for_contract(db, contract_id=entity_id, as_of_date=period_end)
         unrealized_mtm = Decimal(mtm.mtm_value)
+        _append_reference(
+            PriceReferenceEntry(
+                symbol=mtm.price_quote.symbol,
+                source=mtm.price_quote.source,
+                settlement_date=mtm.price_quote.settlement_date,
+                value=mtm.price_quote.value,
+            )
+        )
 
-    return PLResultResponse(realized_pl=realized_pl, unrealized_mtm=unrealized_mtm)
+    return PLResultResponse(
+        realized_pl=realized_pl,
+        unrealized_mtm=unrealized_mtm,
+        price_references=price_references,
+    )

@@ -30,6 +30,10 @@ def compute_cashflow_analytic(db: Session, as_of_date: date) -> CashFlowAnalytic
                 settlement_date=as_of_date,
                 amount_usd=Decimal(mtm.mtm_value),
                 mtm_value=Decimal(mtm.mtm_value),
+                price_source=mtm.price_quote.source,
+                price_symbol=mtm.price_quote.symbol,
+                price_settlement_date=mtm.price_quote.settlement_date,
+                price_value=mtm.price_quote.value,
             )
         )
 
@@ -53,9 +57,12 @@ def compute_cashflow_analytic(db: Session, as_of_date: date) -> CashFlowAnalytic
                 settlement_date=as_of_date,
                 amount_usd=Decimal(mtm.mtm_value),
                 mtm_value=Decimal(mtm.mtm_value),
+                price_source=mtm.price_quote.source,
+                price_symbol=mtm.price_quote.symbol,
+                price_settlement_date=mtm.price_quote.settlement_date,
+                price_value=mtm.price_quote.value,
             )
         )
 
     total = sum((item.amount_usd for item in items), Decimal("0"))
     return CashFlowAnalyticResponse(as_of_date=as_of_date, cashflow_items=items, total_net_cashflow=total)
-

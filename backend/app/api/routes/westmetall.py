@@ -2,6 +2,7 @@ import calendar
 import uuid as _uuid
 from collections import defaultdict
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -53,7 +54,7 @@ def _compute_monthly_averages(
     rows = q.order_by(CashSettlementPrice.settlement_date.asc()).all()
 
     # Group by (year, month)
-    monthly: dict[tuple[int, int], list[float]] = defaultdict(list)
+    monthly: dict[tuple[int, int], list[Decimal]] = defaultdict(list)
     for r in rows:
         key = (r.settlement_date.year, r.settlement_date.month)
         monthly[key].append(r.price_usd)
@@ -62,7 +63,7 @@ def _compute_monthly_averages(
     results: list[CashSettlementPriceRead] = []
     for (year, month), prices in sorted(monthly.items(), reverse=True):
         last_day = calendar.monthrange(year, month)[1]
-        avg_price = sum(prices) / len(prices)
+        avg_price = sum(prices, Decimal("0")) / Decimal(len(prices))
         month_id = _uuid.uuid5(_NS_MONTHLY, f"{year}-{month:02d}")
         results.append(
             CashSettlementPriceRead(
@@ -70,7 +71,7 @@ def _compute_monthly_averages(
                 source="computed",
                 symbol=SYMBOL_MONTHLY_AVG,
                 settlement_date=date(year, month, last_day),
-                price_usd=round(avg_price, 2),
+                price_usd=avg_price.quantize(Decimal("0.01")),
                 source_url="computed_from_daily",
                 html_sha256="n/a",
                 fetched_at=now,
