@@ -19,6 +19,10 @@ This dispatch is a **factual refresh** of the original `2026-05-06-phase-a2-pr-4
 - §9 "Out of scope" pruned: references to PR-1/PR-3 rebase coordination removed; PR-6/PR-7 are no longer "future PRs" but in-main facts.
 - `award_quote` (legacy non-canonical award path) was **deleted** by PR-7 (#30); references removed.
 - Constitution citations (`governance.md:111-115`, `:117-121`, `:159-174`, `:208-217`) verified — **zero drift**.
+- Three Codex catches absorbed against pre-merge dispatch (commit `841b574`):
+  - **P1 enum-create-before-add-column** (§3.4 migration) — pattern now mirrors `017_add_rfq_channel_type_to_counterparty.py:17-18`: `sa.Enum(...).create(op.get_bind(), checkfirst=True)` before `op.add_column`, `.drop(op.get_bind(), checkfirst=True)` after `op.drop_column`.
+  - **P1 reject_quote durability coupling** (§3.3) — quote state transition and queued reject outbox row must land in the SAME `session.commit()` (strategy b, not a). Splitting them allows a route-commit failure after a successful WhatsApp send to leave the counterparty informed of rejection while the quote stays active.
+  - **P2 read-schema follow-through** (§3.4 + §6 + §9) — `RFQInvitationRead.provider_message_id` must become `str | None = None` in lockstep with the column relaxation; otherwise every `RFQRead` response containing a queued/failed invitation fails Pydantic validation. Add OpenAPI + frontend schema regen as a required side-output.
 
 The Phase A2 audit-cycle artifacts (3 stage prompts + 2 findings reports + jury verdict) are now in main since PR #34 (2026-05-09). Read the jury verdict directly at `docs/audits/2026-05-06-phase-a2-jury-verdict.md`. The four findings PR-4 closes (J-A2-05, J-A2-07, J-A2-08, J-A2-OPUS-02) are authoritative as written there.
 
@@ -106,7 +110,7 @@ The queued `RFQInvitation` row containing `message_body` must be **durably commi
    - **(b) Service-side checkpoint commit** — service calls `session.commit()` after adding the queued row, then proceeds. Breaks the strict UoW pattern (route-only commit) but is institutionally acceptable for outbox checkpoints because the row MUST survive subsequent failures, and the constitutional invariant (§2.3) outranks the architectural preference.
    - **(c) Two-phase route transaction** — restructure the route to commit the RFQ + queued invitations as transaction-1, iterate WhatsApp sends + status updates as transaction-2. Cleanest UoW-respecting option for `RFQService.create` (which needs RFQ atomicity with its invitations); requires route-level coordination.
 
-   Choose (a) for `notify_award` / `notify_reject` and `reject_quote`'s outbound message. Choose (b) or (c) for `RFQService.create` / `refresh` / `refresh_counterparty`. Whichever pattern is chosen, the **fresh-session readback test (§7)** must demonstrate that the row is durable before `send_text_message` returns.
+   Choose (a) for `notify_award` / `notify_reject`. Choose (b) for `reject_quote` so the **quote state transition and the queued reject outbox row land in the SAME durable checkpoint** (see §3.3 below — they cannot be split). Choose (b) or (c) for `RFQService.create` / `refresh` / `refresh_counterparty`. Whichever pattern is chosen, the **fresh-session readback test (§7)** must demonstrate that the row is durable before `send_text_message` returns.
 
    Example (pattern a):
    ```python
@@ -202,7 +206,17 @@ quote.rejected_by = user_id  # add user_id parameter to reject_quote signature; 
 
 `select_latest_quotes_by_counterparty` (`rfq_service.py:100-140`) is a pure function over a pre-fetched list and **does not need an internal filter**; the contract is "given quotes, return the latest per counterparty". The state filter belongs at the query boundary, not the in-memory selector.
 
-**Persist the outbound reject message** to `RFQInvitation` (the same table — see §3.4 purpose discussion). Use the outbox pattern from §3.2.
+**Persist the outbound reject message** to `RFQInvitation` (the same table — see §3.4 purpose discussion). Use the outbox pattern from §3.2, but with one **mandatory coupling rule**:
+
+> **Quote state transition and reject outbox row MUST land in the same durable checkpoint.** Specifically: do NOT use strategy (a) (separate `SessionLocal()`) for the reject outbox; use strategy (b) (service-side checkpoint commit) so the SAME `session.commit()` that durably persists the queued `purpose=reject_quote` row also durably persists `quote.state = QuoteState.rejected` (+ `rejected_at`/`rejected_reason`/`rejected_by`). Order of operations within `reject_quote`:
+>
+> 1. Set `quote.state = QuoteState.rejected` + `rejected_at` + `rejected_reason` + `rejected_by`.
+> 2. Add the queued `RFQInvitation` row (`purpose=reject_quote`, prefixed `message_body`).
+> 3. `session.commit()` — both mutations land atomically.
+> 4. `result = WhatsAppService.send_text_message(...)`.
+> 5. Update the queued row's status (`sent`/`failed` + `sent_at`/`provider_message_id`/`failure_reason`) and commit again.
+>
+> **Why this rule exists:** if the reject outbox were durable in its own session (strategy a) while the state transition stayed in the route's enclosing transaction, a route-level commit failure after a successful WhatsApp send would leave the counterparty informed of a rejection while the quote remained `state=active` in the DB — eligible for ranking, eligible to win the award. That is a **convergence-loss bug worse than the evidence-loss bug** PR-4 is closing: outbound says one thing, the system state says another. Coupling the two mutations into one commit eliminates the divergence; if the commit fails, neither change persists, no message has been sent, and the operator can retry. Strategy (b) is required here even though it breaks strict UoW — the constitutional invariant (§2.3 + §2.6) outranks the architectural preference, same justification as elsewhere in §3.2.
 
 ### 3.4 Schema changes on `RFQInvitation` and `RFQQuote`
 
@@ -211,6 +225,11 @@ quote.rejected_by = user_id  # add user_id parameter to reject_quote signature; 
 - `provider_message_id`: change to `nullable=True` (NULL while queued/failed).
 - Add `purpose: Mapped[RFQInvitationPurpose] = mapped_column(Enum(...), nullable=False, server_default="rfq_invite")` — values: `"rfq_invite"`, `"refresh"`, `"reject_quote"`, `"award_notify"`, `"reject_notify"`. This lets every outbound action share the same evidence table without ambiguity at audit time.
 - Add `failure_reason: Mapped[str | None] = mapped_column(String(length=256), nullable=True)`.
+
+**Read schema follow-through** (`backend/app/schemas/rfq.py:45-60`, `RFQInvitationRead`):
+- `provider_message_id: str` → `provider_message_id: str | None = None`. Today the field is non-optional; once the column relaxes to nullable, any RFQ that has even one queued/failed invitation will fail Pydantic response-validation at every route that returns `RFQRead` (which embeds `invitations: list[RFQInvitationRead]` at `rfq.py:236`). `sent_at: datetime | None = None` is already optional and needs no change.
+- After this Pydantic change, regenerate the OpenAPI snapshot + frontend schema as part of the same PR (see §11 step 15).
+- Surface `state` on `RFQQuoteRead` so the read route at `routes/rfqs.py:222-223` can distinguish active from rejected quotes (per §3.3).
 
 **`RFQQuote`** (`backend/app/models/quotes.py:15-35`):
 - Add `state`, `rejected_at`, `rejected_reason`, `rejected_by` per §3.3. These columns are non-overlapping with PR-1's `fixed_price_value` (Decimal) and `counterparty_id` (UUID FK), already in main.
@@ -233,14 +252,25 @@ depends_on = None
 
 def upgrade() -> None:
     # RFQ invitation: relax NOT NULL on sent_at and provider_message_id, add purpose + failure_reason
+    # RFQ invitation: relax NOT NULLs first (low risk, no enum work needed)
     op.alter_column("rfq_invitations", "sent_at", existing_type=sa.DateTime(timezone=True), nullable=True)
     op.alter_column("rfq_invitations", "provider_message_id", existing_type=sa.String(length=128), nullable=True)
+
+    # CRITICAL: create the PostgreSQL enum types BEFORE op.add_column references them.
+    # Pattern mirrors backend/alembic/versions/017_add_rfq_channel_type_to_counterparty.py:17-18:
+    # `sa.Enum(...).create(op.get_bind(), checkfirst=True)` then op.add_column.
+    # Skipping this step causes Postgres `ALTER TABLE ... ADD COLUMN ... <enum>` to fail because
+    # the type does not yet exist. checkfirst=True keeps it idempotent across re-runs.
+    rfq_invitation_purpose = sa.Enum(
+        "rfq_invite", "refresh", "reject_quote", "award_notify", "reject_notify",
+        name="rfq_invitation_purpose",
+    )
+    rfq_invitation_purpose.create(op.get_bind(), checkfirst=True)
     op.add_column(
         "rfq_invitations",
         sa.Column(
             "purpose",
-            sa.Enum("rfq_invite", "refresh", "reject_quote", "award_notify", "reject_notify",
-                    name="rfq_invitation_purpose"),
+            rfq_invitation_purpose,
             nullable=False,
             server_default="rfq_invite",
         ),
@@ -250,12 +280,13 @@ def upgrade() -> None:
         sa.Column("failure_reason", sa.String(length=256), nullable=True),
     )
 
-    # RFQ quote: state, rejected_at, rejected_reason, rejected_by
+    rfq_quote_state = sa.Enum("active", "rejected", name="rfq_quote_state")
+    rfq_quote_state.create(op.get_bind(), checkfirst=True)
     op.add_column(
         "rfq_quotes",
         sa.Column(
             "state",
-            sa.Enum("active", "rejected", name="rfq_quote_state"),
+            rfq_quote_state,
             nullable=False,
             server_default="active",
         ),
@@ -266,14 +297,19 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # Drop columns first; only then drop the enum types (otherwise Postgres errors with
+    # "cannot drop type ... because other objects depend on it"). Mirror 017's drop pattern:
+    # `sa.Enum(name=...).drop(op.get_bind(), checkfirst=True)`.
     op.drop_column("rfq_quotes", "rejected_by")
     op.drop_column("rfq_quotes", "rejected_reason")
     op.drop_column("rfq_quotes", "rejected_at")
     op.drop_column("rfq_quotes", "state")
-    op.execute("DROP TYPE IF EXISTS rfq_quote_state")
+    sa.Enum(name="rfq_quote_state").drop(op.get_bind(), checkfirst=True)
+
     op.drop_column("rfq_invitations", "failure_reason")
     op.drop_column("rfq_invitations", "purpose")
-    op.execute("DROP TYPE IF EXISTS rfq_invitation_purpose")
+    sa.Enum(name="rfq_invitation_purpose").drop(op.get_bind(), checkfirst=True)
+
     op.alter_column("rfq_invitations", "provider_message_id", existing_type=sa.String(length=128), nullable=False, server_default="")
     op.alter_column("rfq_invitations", "sent_at", existing_type=sa.DateTime(timezone=True), nullable=False)
 ```
@@ -363,10 +399,12 @@ If any other consumer of `RFQInvitation` rows assumes `sent_at IS NOT NULL`, aud
 - [ ] Every `WhatsAppService.send_text_message(... text=X)` call site routes `X` through the helper first
 - [ ] Every `RFQInvitation.message_body` contains `RFQ#<rfq_number>` (verified by a model-level check or test that asserts startswith)
 - [ ] `RFQService.create`, `refresh`, `refresh_counterparty` follow the **durable** outbox pattern: queued `RFQInvitation` row is committed to the database (NOT just flushed) before `WhatsAppService.send_text_message` is invoked. No invitation insertion happens *after* the network call. A fresh-session readback (separate `SessionLocal()`) can find the row by id while the send is in flight.
-- [ ] `notify_award`, `notify_reject`, and `reject_quote` outbound use a separate-session commit (§3.2 strategy (a)) so the queued row survives any subsequent route/orchestrator failure.
+- [ ] `notify_award` and `notify_reject` outbound use a separate-session commit (§3.2 strategy (a)) so the queued row survives any subsequent orchestrator failure.
+- [ ] `reject_quote` uses strategy (b) per §3.3 coupling rule: the queued reject `RFQInvitation` row AND the `quote.state = QuoteState.rejected` transition land in the SAME `session.commit()` before `WhatsAppService.send_text_message` is invoked. A test simulates a route-level commit failure after a successful reject send and asserts that EITHER both the state transition and the outbox row persisted (commit succeeded) OR neither persisted (commit failed) — never one without the other.
 - [ ] `RFQInvitation.sent_at` is `nullable=True` in model + DB schema. `provider_message_id` is `nullable=True`.
 - [ ] `RFQInvitation.purpose` enum exists with all 5 values (`rfq_invite`, `refresh`, `reject_quote`, `award_notify`, `reject_notify`).
 - [ ] `RFQInvitation.failure_reason` column exists (nullable String(256)).
+- [ ] `RFQInvitationRead.provider_message_id` is `str | None = None` in `backend/app/schemas/rfq.py`. A test exercises `RFQRead` validation against an RFQ whose invitations include at least one `queued` row with `provider_message_id IS NULL` and asserts no `ValidationError` is raised.
 - [ ] `RFQQuote` no longer has any `session.delete(...)` invocation. State transition replaces it. `state == 'rejected'` quotes are excluded from ranking and from the latest-quote selection upstream queries.
 - [ ] `notify_award` and `notify_reject` persist `RFQInvitation` rows with appropriate `purpose`.
 - [ ] `reject_quote` persists an outbound `RFQInvitation` row with `purpose='reject_quote'`.
@@ -456,7 +494,8 @@ is resolved as a no-cost fix.
   `provider_message_id` nullable, `purpose` enum, `failure_reason` column
 - `backend/app/models/quotes.py` — `state` enum, `rejected_at`,
   `rejected_reason`, `rejected_by`
-- `backend/app/schemas/rfq.py` — surface `state` on `RFQQuoteRead`
+- `backend/app/schemas/rfq.py` — `RFQInvitationRead.provider_message_id` → `str | None`; surface `state` on `RFQQuoteRead`
+- `docs/api/openapi_v1.json` + `frontend-svelte/src/lib/api/schema.d.ts` — regen after schema changes (per §11 step 15)
 - `backend/app/api/routes/rfqs.py` — confirm read route surfaces state field
   (rejected quotes remain listable for forensics; no filter applied here)
 - `backend/alembic/versions/037_rfq_outbound_evidence.py`
