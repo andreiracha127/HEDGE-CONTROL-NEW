@@ -11,6 +11,10 @@
 
 ## 0. Refresh notes (read first)
 
+**Codex P1 absorbed against commit `0f82d24ca` — `price_value` in idempotency.** Round-5 added `price_value` to the ledger entry schema (full quadruple per row) AND to `_build_expected_entry`'s constructed dict, but the `_ledger_entry_matches` equality sketch still compared only `source/symbol/date`. Codex caught: when a canonical settlement row is corrected in-place (same `(source, symbol, settlement_date)` but a new `value` — e.g., westmetall republishes with a corrected price), re-ingest of the same `source_event_id` would silently no-op because the comparator missed the divergent `value`. Realized P&L evidence stays tied to the OLD value; the snapshot becomes ambiguous. **Fix:** `_ledger_entry_matches` extended to include `_normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])`. §6 acceptance enumerates all four provenance fields explicitly and adds the in-place-correction scenario as a criterion. §7 adds `test_ledger_entry_matches_detects_price_value_only_divergence`.
+
+**Self-blame:** this is the SAME 4-offense cross-section sweep miss pattern from PR-5 cycle, now hitting PR-A3-1 round 6. Round-5 expanded the schema (added `price_value` column) and the dict construction (`_build_expected_entry`'s returned dict) but did NOT update the comparator. Mechanically identical to round-3's "missing `price_symbol` in `_ledger_entry_matches` after schema added it". Two consecutive sweep misses on the SAME function `_ledger_entry_matches` proves the discipline must include: **every time a column is added to a model that has an idempotency / equality / conflict comparator function, the comparator MUST be edited in the same commit. Comparators are not optional cross-section targets — they are load-bearing institutional defense against silent-drift no-ops.**
+
 **Three Codex catches absorbed against commit `a9e6780ca` (2 P1 + 1 P2):**
 
 1. **Store ledger amounts UNSIGNED — direction carries the sign (P1).** §3.7 round-4 sketch made `amount` signed (`sign * quantity * (settlement_quote.value - fixed_price)`). Codex caught: `compute_pl` (`pl_calculation_service.py:16-83`) applies sign by direction (IN adds, OUT subtracts) when reading `CashFlowLedgerEntry`. For an OUT leg with `gross > 0`, the sketch persists negative amount; downstream P&L applies `−1 × negative = positive`, flipping the realized P&L contribution. **Fix:** §3.7 sketch now derives `direction` from `gross` sign and persists `amount = abs(gross)`. §10 DO NOT codifies the magnitude-vs-sign convention. §6 gains acceptance criteria for non-negative amount, derived direction, and 422 on payload-direction mismatch. §7 adds two tests pinning the convention.
@@ -456,8 +460,11 @@ def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
         and entry.price_source == expected["price_source"]
         and entry.price_symbol == expected["price_symbol"]
         and entry.price_settlement_date == expected["price_settlement_date"]
+        and _normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])
     )
 ```
+
+The `price_value` comparison closes a subtle silent-drift hole: when a canonical settlement row is corrected in-place (same `(source, symbol, settlement_date)` but a different `value` — e.g., a westmetall publication is republished with a corrected price), re-ingest of the same `source_event_id` would otherwise silently no-op, leaving realized P&L tied to the OLD value. With `price_value` in the equality, that scenario surfaces as a legitimate 409 conflict; the operator decides whether to retire the stale snapshot.
 
 Without this idempotency extension, two ingests of the same `source_event_id` with different price provenance silently treat the second as a no-op and the audit trace cannot distinguish them.
 
@@ -641,7 +648,7 @@ def downgrade() -> None:
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
 - [ ] `cashflow_ledger_service._build_expected_entry` populates `price_source` + `price_symbol` + `price_settlement_date` on every constructed dict; the persisted `CashFlowLedgerEntry` row carries all three.
-- [ ] `cashflow_ledger_service._ledger_entry_matches` includes the three provenance fields in its equality check; idempotency-with-divergent-provenance raises 409, not silent no-op.
+- [ ] `cashflow_ledger_service._ledger_entry_matches` includes ALL FOUR provenance fields (`price_source`, `price_symbol`, `price_settlement_date`, `price_value`) in its equality check; idempotency-with-divergent-provenance raises 409, not silent no-op. Specifically: a canonical settlement row corrected in-place with same `(source, symbol, date)` but new `value` triggers 409 on re-ingest of the same `source_event_id`.
 - [ ] `price_lookup_service` computes the EXACT prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (no range). 5-calendar-day legacy AND any range fallback are gone.
 - [ ] When the prior-business-day row is missing, `PriceReferenceUnprovable` raises — older business-day rows are NOT considered.
 - [ ] `_market_calendar_for_symbol(symbol)` raises a structured error for unknown commodities — no silent fall-through to a global default calendar.
@@ -695,6 +702,7 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_settlement_persists_price_source_and_symbol_and_settlement_date_and_value` — quadruple persistence
   - `test_settlement_partial_provenance_violates_check_constraint` — three of four populated, one NULL → `IntegrityError`
   - `test_ledger_entry_matches_includes_provenance_in_equality` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; second `ingest` with derived `(source=A, symbol=LME_CU, date=D, value=9300)` raises 409, NOT silent no-op
+  - `test_ledger_entry_matches_detects_price_value_only_divergence` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; canonical price table is corrected in-place to `2590` for the same `(source, symbol, date)`; second `ingest` of the same `source_event_id` re-derives via `_with_provenance` and gets `value=2590`; assert 409, NOT silent no-op (the symbol/source/date triplet is identical but the `value` divergence MUST surface)
   - `test_ledger_idempotency_no_op_on_identical_rerun` — same payload + same derived provenance returns the existing row without conflict
 
 - `backend/tests/test_pl_calculation_service.py` (extension for round-5 ledger-provenance collection):
