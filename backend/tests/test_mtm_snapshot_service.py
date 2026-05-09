@@ -165,6 +165,30 @@ def test_snapshot_contract_idempotent_same_values() -> None:
         assert first.id == second.id
 
 
+def test_snapshot_contract_legacy_null_provenance_idempotent_when_values_match() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
+    cid = _insert_contract(quantity_mt=Decimal("10"), entry_price=Decimal("100"))
+    with SessionLocal() as session:
+        legacy = MTMSnapshot(
+            object_type=MTMObjectType.hedge_contract,
+            object_id=cid,
+            as_of_date=date(2026, 2, 1),
+            mtm_value=Decimal("100.00"),
+            price_d1=Decimal("110.0"),
+            entry_price=Decimal("100.0"),
+            quantity_mt=Decimal("10.0"),
+            correlation_id="legacy",
+        )
+        session.add(legacy)
+        session.commit()
+        session.refresh(legacy)
+
+        replay = create_mtm_snapshot_for_contract(
+            session, contract_id=cid, as_of_date=date(2026, 2, 1), correlation_id="c-2"
+        )
+        assert replay.id == legacy.id
+
+
 def test_snapshot_contract_conflict_409() -> None:
     _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
@@ -242,6 +266,33 @@ def test_snapshot_order_idempotent(client) -> None:
             correlation_id="o-2",
         )
         assert first.id == second.id
+
+
+def test_snapshot_order_legacy_null_provenance_idempotent_when_values_match(client) -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
+    oid = uuid.UUID(_create_variable_sales_order(client, avg_entry_price=100.0))
+    with SessionLocal() as session:
+        legacy = MTMSnapshot(
+            object_type=MTMObjectType.order,
+            object_id=oid,
+            as_of_date=date(2026, 2, 1),
+            mtm_value=Decimal("50.00"),
+            price_d1=Decimal("110.0"),
+            entry_price=Decimal("100.0"),
+            quantity_mt=Decimal("5.0"),
+            correlation_id="legacy",
+        )
+        session.add(legacy)
+        session.commit()
+        session.refresh(legacy)
+
+        replay = create_mtm_snapshot_for_order(
+            session,
+            order_id=oid,
+            as_of_date=date(2026, 2, 1),
+            correlation_id="o-2",
+        )
+        assert replay.id == legacy.id
 
 
 def test_snapshot_order_conflict_409(client) -> None:

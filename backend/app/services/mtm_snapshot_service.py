@@ -44,12 +44,24 @@ def _compute_inputs_hash(computed: MTMResultResponse) -> str:
 def _snapshot_matches(snapshot: MTMSnapshot, computed: MTMResultResponse, inputs_hash: str) -> bool:
     if computed.price_quote is None:
         return False
-    return (
+    values_match = (
         _as_decimal(snapshot.mtm_value) == _as_decimal(computed.mtm_value)
         and _as_decimal(snapshot.price_d1) == _as_decimal(computed.price_d1)
         and _as_decimal(snapshot.entry_price) == _as_decimal(computed.entry_price)
         and _as_decimal(snapshot.quantity_mt) == _as_decimal(computed.quantity_mt)
-        and snapshot.price_source == computed.price_quote.source
+    )
+    if not values_match:
+        return False
+    legacy_null_provenance = (
+        snapshot.price_source is None
+        and snapshot.price_symbol is None
+        and snapshot.price_settlement_date is None
+        and snapshot.inputs_hash is None
+    )
+    if legacy_null_provenance:
+        return True
+    return (
+        snapshot.price_source == computed.price_quote.source
         and snapshot.price_symbol == computed.price_quote.symbol
         and snapshot.price_settlement_date == computed.price_quote.settlement_date
         and snapshot.inputs_hash == inputs_hash
