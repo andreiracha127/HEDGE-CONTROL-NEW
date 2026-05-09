@@ -190,6 +190,15 @@ class AddUnlinkedHedgeContractDelta(ScenarioDeltaBase):
 
 **Schema validation**: the `resolve_symbol` round-trip in the validator catches typos / unsupported commodities at request-parse time. Mirrors the institutional pattern from §3.1: the function trusts what it's given because the boundary validated it.
 
+**Imports to add** at `backend/app/schemas/scenario.py` (verified via grep against `030a49bff`: neither `resolve_symbol` nor `HTTPException` is currently imported in this file):
+
+```python
+from fastapi import HTTPException                              # NEW — caught and re-raised by the validator
+from app.services.price_lookup_service import resolve_symbol   # NEW — round-trip target for commodity validation
+```
+
+The validator catches `HTTPException` because `resolve_symbol` raises `HTTPException(400)` on unsupported commodity (verified via Serena against `price_lookup_service.py`). The `except HTTPException` block translates it to a Pydantic `ValueError`, which Pydantic then surfaces as a structured 422 with field-level error info — preserving the institutional "boundary validates" pattern. Without the imports, `resolve_symbol` is `NameError` and `HTTPException` is `NameError` — the validator path itself fails to load.
+
 **`[BEHAVIOR_SHIFT]` flag in PR description**: existing scenario API consumers (frontend, integration tests, operator scripts) supplying `add_unlinked_hedge_contract` deltas without `commodity` will receive 422 from the new validator. Document in §9 PR body that operators must update their delta payloads to include `commodity`.
 
 ### 3.6 `scenario_whatif_service` — read commodity from delta; remove `DEFAULT_COMMODITY`
@@ -464,7 +473,7 @@ PR-A3-2 is a service-layer + schema-layer fix. No new alembic migration is neede
 - [ ] `compute_mtm_for_order` signature drops the `commodity` parameter; resolves `order.commodity` via `resolve_symbol(order.commodity)` directly inside the function.
 - [ ] `DEFAULT_COMMODITY` constant removed from `mtm_order_service.py`.
 - [ ] All 4 call sites of `compute_mtm_for_order` (routes/mtm.py × 2, mtm_snapshot_service.py, cashflow_analytic_service.py) are unchanged — they were already not passing `commodity`; the function now resolves it internally from `order.commodity`.
-- [ ] `AddUnlinkedHedgeContractDelta` schema has a new required `commodity: str` field with `Field(..., max_length=64)`. Schema validator rejects 422 if `resolve_symbol(commodity)` raises.
+- [ ] `AddUnlinkedHedgeContractDelta` schema has a new required `commodity: str` field with `Field(..., max_length=64)`. Schema validator rejects 422 if `resolve_symbol(commodity)` raises. **Imports added at `backend/app/schemas/scenario.py`**: `from fastapi import HTTPException` and `from app.services.price_lookup_service import resolve_symbol` (per §3.5).
 - [ ] `scenario_whatif_service` reads `delta.commodity` when constructing `VirtualHedgeContract` (no `DEFAULT_COMMODITY`).
 - [ ] `DEFAULT_COMMODITY` constant removed from `scenario_whatif_service.py`.
 - [ ] `_resolve_price_d1` is renamed to `_resolve_price_quote` (cleaner contract — function now returns `PriceQuote`, not Decimal) and no longer has a `commodity` default; every one of the 5 call sites passes the commodity explicitly.
