@@ -108,7 +108,7 @@ def compute_mtm_for_order(
     # ... rest of the function unchanged ...
 ```
 
-The change is exactly two edits inside the function: drop the `commodity: str = DEFAULT_COMMODITY` parameter (line 25) and replace `resolve_symbol(commodity)` with `resolve_symbol(order.commodity)` (line 57). The rest of the function — pricing-eligibility checks, exception translation, return shape — is untouched.
+The change is exactly two edits inside the function: drop the `commodity: str = DEFAULT_COMMODITY` parameter (line 26) and replace `resolve_symbol(commodity)` with `resolve_symbol(order.commodity)` (line 58, verified via Serena against `030a49bff`). The rest of the function — pricing-eligibility checks, exception translation, return shape — is untouched.
 
 **Why drop the parameter rather than make it `None`-default**: a `commodity` parameter that callers can override would re-create the bug at the caller layer (any caller forgetting to pass it gets aluminum). Resolving from `order.commodity` directly inside the function makes the data-flow contract explicit: the order knows its commodity; the function asks the order, not the caller.
 
@@ -386,18 +386,30 @@ price_quote=_resolve_price_quote(db, ..., lookup, commodity=...)
 
 (post-rename per §3.7.2 the function is `_resolve_price_quote`; the kwarg on `_mtm_for_*` becomes `price_quote=...`).
 
-**Imports to add** at `scenario_whatif_service.py` top:
+**Imports to update** at `scenario_whatif_service.py` top (verified against `030a49bff` via Serena):
+
+The current import block at lines 35-39 is:
 
 ```python
-from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable
 from app.services.price_lookup_service import (
     canonical_commodity,
-    get_cash_settlement_price_d1_with_provenance,  # NEW (replaces _d1 wrapper)
+    get_cash_settlement_price_d1,
     resolve_symbol,
 )
 ```
 
-The existing `get_cash_settlement_price_d1` import is removed — the thin wrapper is no longer used inside `scenario_whatif_service`. Verify via grep that no other reference to `get_cash_settlement_price_d1` exists in the file before deleting the import.
+Post-fix:
+
+```python
+from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable  # NEW import (top-of-file)
+from app.services.price_lookup_service import (
+    canonical_commodity,                               # unchanged — already present
+    get_cash_settlement_price_d1_with_provenance,      # NEW — replaces _d1 wrapper
+    resolve_symbol,                                    # unchanged — already present
+)
+```
+
+The existing `get_cash_settlement_price_d1` import is removed — the thin wrapper is no longer used inside `scenario_whatif_service`. The new line is `get_cash_settlement_price_d1_with_provenance`. `canonical_commodity` and `resolve_symbol` were already imported and are KEPT (not duplicated, not re-added). Verify via grep that no remaining reference to `get_cash_settlement_price_d1` (without `_with_provenance` suffix) exists in the file before deleting the import.
 
 #### 3.7.6 Scope guard: do NOT extend plumbing beyond scenario MTM
 
