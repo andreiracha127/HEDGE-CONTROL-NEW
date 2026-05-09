@@ -17,8 +17,18 @@ from alembic.script import ScriptDirectory
 
 
 def _alembic_config() -> Config:
+    """Build an alembic Config whose `script_location` resolves regardless of cwd.
+
+    `backend/alembic.ini` declares `script_location = alembic`, which alembic
+    interprets relative to the **process cwd**, not the .ini file's directory.
+    Pytest may run from `backend/` (production-deploy default) or from the repo
+    root (developer default), so we override `script_location` to an absolute
+    path derived from this test file's location.
+    """
     backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return Config(os.path.join(backend_dir, "alembic.ini"))
+    cfg = Config(os.path.join(backend_dir, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(backend_dir, "alembic"))
+    return cfg
 
 
 def test_alembic_chain_has_single_head() -> None:
