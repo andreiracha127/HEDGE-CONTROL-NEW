@@ -761,7 +761,7 @@ class TestRFQOrchestrator:
                 message_id="wamid.in1",
                 from_phone=phone,
                 timestamp=_NOW,
-                text="Ofereço 2450 USD/MT avg",
+                text=f"RFQ#{rfq_data['rfq_number']} — Ofereco 2450 USD/MT avg",
                 sender_name="Test Bank",
             )
         )
@@ -804,7 +804,7 @@ class TestRFQOrchestrator:
                 message_id="wamid.low",
                 from_phone=phone,
                 timestamp=_NOW,
-                text="Maybe 2400?",
+                text=f"RFQ#{rfq_data['rfq_number']} — Maybe 2400?",
                 sender_name="Test Bank",
             )
         )
@@ -814,7 +814,7 @@ class TestRFQOrchestrator:
         assert len(results) == 1
         assert results[0]["status"] == "needs_human_review"
 
-    def test_process_inbound_message_no_matching_rfq(
+    def test_process_inbound_message_no_canonical_id(
         self, client: TestClient, session
     ) -> None:
         from app.schemas.whatsapp import WhatsAppInboundMessage
@@ -826,7 +826,7 @@ class TestRFQOrchestrator:
         enqueue_message(
             WhatsAppInboundMessage(
                 message_id="wamid.unknown",
-                from_phone="+0000000000",  # No invitation for this phone
+                from_phone="+0000000000",
                 timestamp=_NOW,
                 text="Hello",
             )
@@ -835,7 +835,7 @@ class TestRFQOrchestrator:
         results = RFQOrchestrator.process_inbound_queue(session)
 
         assert len(results) == 1
-        assert results[0]["status"] == "no_matching_rfq"
+        assert results[0]["status"] == "no_canonical_id"
 
     def test_check_rfq_timeouts_no_quotes(self, client: TestClient, session) -> None:
         """RFQ with no quotes past timeout → flagged (state stays SENT;

@@ -25,7 +25,7 @@ from uuid import UUID
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
-from sqlalchemy import func, distinct, or_
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.logging import get_logger
@@ -111,6 +111,25 @@ _TRIVIAL_PATTERNS: set[str] = {
 
 # Minimum length (chars) for a message to be considered a potential quote
 _MIN_QUOTE_LENGTH = 3
+
+# Format mirrored from rfq_service.py: RFQ-{year}-{sequence:06d}.
+_CANONICAL_ID_RE = re.compile(
+    r"(?<!\w)RFQ#(?P<num>RFQ-\d{4}-\d{6})(?!\w)(?:\s+[—–]\s+)?"
+)
+
+
+def _parse_canonical_ids(text: str | None) -> list[str]:
+    """Extract all canonical RFQ identifiers from inbound text."""
+    if not text:
+        return []
+    return [match.group("num") for match in _CANONICAL_ID_RE.finditer(text)]
+
+
+def _strip_canonical_id(text: str | None) -> str:
+    """Remove canonical identifiers while preserving downstream price signs."""
+    if not text:
+        return ""
+    return _CANONICAL_ID_RE.sub("", text).strip()
 
 
 class RFQOrchestrator:
@@ -237,7 +256,7 @@ class RFQOrchestrator:
         """Drain the inbound message queue and process each message.
 
         For each message:
-        1. Find the matching RFQ by looking up invitations by sender phone.
+        1. Find the matching RFQ by canonical id in the message body.
         2. Parse the message via LLM Agent.
         3. If confidence >= 0.85 and intent is QUOTE, auto-create a quote.
         4. Otherwise, flag for human review.
@@ -262,71 +281,53 @@ class RFQOrchestrator:
         msg: WhatsAppInboundMessage,
     ) -> dict:
         """Process one inbound WhatsApp message."""
-        # Find the RFQ by matching sender phone to invitation recipient_phone.
-        # Brazilian mobiles can appear in 8-digit or 9-digit format, so we
-        # check both variants.
-        # Join with RFQ to only match invitations whose RFQ is in a quotable
-        # state (SENT or QUOTED), preventing replies from being attributed
-        # to stale/old RFQs.
-        # ORDER BY RFQ.created_at DESC (not invitation.created_at) so the
-        # NEWEST RFQ wins — refresh actions create many invitation rows and
-        # would otherwise cause the wrong RFQ to be selected.
-        # NOTE: ``deleted_at`` is intentionally NOT filtered here. If the
-        # newest matching RFQ is archived, we want the post-fetch check
-        # below to short-circuit with ``rfq_archived``. Filtering archived
-        # rows in the WHERE clause would silently fall through to an older
-        # still-live RFQ on the same phone and mis-attribute the reply
-        # (e.g. auto-create a quote on the wrong RFQ). This matters in
-        # particular for RFQs archived before the archive route
-        # transitioned them out of SENT / QUOTED.
-        phone_variants = RFQOrchestrator._phone_variants(msg.from_phone)
-        invitation = (
-            session.query(RFQInvitation)
-            .join(RFQ, RFQInvitation.rfq_id == RFQ.id)
-            .filter(
-                RFQInvitation.recipient_phone.in_(phone_variants),
-                RFQInvitation.channel == RFQInvitationChannel.whatsapp,
-                RFQ.state.in_([RFQState.sent, RFQState.quoted]),
-            )
-            .order_by(RFQ.created_at.desc(), RFQInvitation.created_at.desc())
-            .first()
-        )
-
-        if not invitation:
+        canonical_numbers = _parse_canonical_ids(msg.text)
+        distinct_ids = set(canonical_numbers)
+        if not distinct_ids:
             logger.warning(
-                "orchestrator_no_matching_rfq",
+                "orchestrator_no_canonical_id",
                 from_phone=msg.from_phone,
                 message_id=msg.message_id,
             )
             return {
                 "message_id": msg.message_id,
-                "status": "no_matching_rfq",
+                "status": "no_canonical_id",
                 "from_phone": msg.from_phone,
             }
 
-        # ── Guard: warn when multiple active RFQs match the same phone ──
-        active_rfq_count = (
-            session.query(func.count(distinct(RFQ.id)))
-            .join(RFQInvitation, RFQInvitation.rfq_id == RFQ.id)
-            .filter(
-                RFQInvitation.recipient_phone.in_(phone_variants),
-                RFQInvitation.channel == RFQInvitationChannel.whatsapp,
-                RFQ.state.in_([RFQState.sent, RFQState.quoted]),
-                RFQ.deleted_at.is_(None),
-            )
-            .scalar()
-        )
-        if active_rfq_count > 1:
+        if len(distinct_ids) > 1:
             logger.warning(
-                "orchestrator_multi_rfq_same_phone",
+                "orchestrator_multi_canonical_id",
                 from_phone=msg.from_phone,
-                active_rfq_count=active_rfq_count,
-                selected_rfq_id=str(invitation.rfq_id),
-                selected_rfq_number=invitation.rfq_number,
+                canonical_numbers=sorted(distinct_ids),
+                message_id=msg.message_id,
             )
+            return {
+                "message_id": msg.message_id,
+                "status": "multi_canonical_id",
+                "canonical_numbers": sorted(distinct_ids),
+            }
 
-        rfq = session.get(RFQ, invitation.rfq_id)
-        if rfq is not None and rfq.deleted_at is not None:
+        canonical_number = next(iter(distinct_ids))
+        rfq = (
+            session.query(RFQ)
+            .filter(RFQ.rfq_number == canonical_number)
+            .first()
+        )
+        if rfq is None:
+            logger.warning(
+                "orchestrator_canonical_id_unknown",
+                from_phone=msg.from_phone,
+                canonical_number=canonical_number,
+                message_id=msg.message_id,
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "canonical_id_unknown",
+                "canonical_number": canonical_number,
+            }
+
+        if rfq.deleted_at is not None:
             logger.info(
                 "orchestrator_rfq_archived",
                 rfq_id=str(rfq.id),
@@ -339,20 +340,51 @@ class RFQOrchestrator:
                 "rfq_id": str(rfq.id),
             }
 
-        if not rfq or rfq.state not in (RFQState.sent, RFQState.quoted):
+        if rfq.state not in (RFQState.sent, RFQState.quoted):
             logger.info(
                 "orchestrator_rfq_not_quotable",
-                rfq_id=str(invitation.rfq_id) if rfq else None,
-                state=rfq.state.value if rfq else None,
+                rfq_id=str(rfq.id),
+                rfq_state=rfq.state.value,
+                from_phone=msg.from_phone,
+                message_id=msg.message_id,
             )
             return {
                 "message_id": msg.message_id,
                 "status": "rfq_not_quotable",
-                "rfq_id": str(invitation.rfq_id),
+                "rfq_id": str(rfq.id),
+                "rfq_state": rfq.state.value,
             }
 
+        phone_variants = RFQOrchestrator._phone_variants(msg.from_phone)
+        invitation = (
+            session.query(RFQInvitation)
+            .filter(
+                RFQInvitation.rfq_id == rfq.id,
+                RFQInvitation.recipient_phone.in_(phone_variants),
+                RFQInvitation.channel == RFQInvitationChannel.whatsapp,
+            )
+            .order_by(RFQInvitation.created_at.desc())
+            .first()
+        )
+        if invitation is None:
+            logger.warning(
+                "orchestrator_phone_does_not_match_canonical_id",
+                from_phone=msg.from_phone,
+                canonical_number=canonical_number,
+                rfq_id=str(rfq.id),
+                message_id=msg.message_id,
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "phone_mismatch",
+                "canonical_number": canonical_number,
+                "rfq_id": str(rfq.id),
+            }
+
+        text_for_downstream = _strip_canonical_id(msg.text)
+
         # ── Guard 1: trivial message pre-filter ──
-        if RFQOrchestrator._is_trivial_message(msg.text):
+        if RFQOrchestrator._is_trivial_message(text_for_downstream):
             logger.info(
                 "orchestrator_trivial_message_skipped",
                 rfq_id=str(rfq.id),
@@ -367,7 +399,7 @@ class RFQOrchestrator:
 
         # ── Guard 2: classify intent FIRST ──
         try:
-            classification = LLMAgent.classify_intent(msg.text)
+            classification = LLMAgent.classify_intent(text_for_downstream)
         except LLMUnavailableError:
             classification = None  # proceed with parse_quote as fallback
 
@@ -417,7 +449,7 @@ class RFQOrchestrator:
         try:
             parsed = LLMAgent.parse_quote_message(
                 rfq_context=rfq_context,
-                raw_message=msg.text,
+                raw_message=text_for_downstream,
                 sender_name=msg.sender_name or invitation.recipient_name,
             )
         except LLMUnavailableError as exc:
@@ -447,7 +479,7 @@ class RFQOrchestrator:
                 else (parsed.premium_discount or Decimal("0"))
             )
             if not RFQOrchestrator._price_appears_in_text(
-                float(price_decimal), msg.text
+                float(price_decimal), text_for_downstream
             ):
                 logger.warning(
                     "orchestrator_hallucinated_price_blocked",

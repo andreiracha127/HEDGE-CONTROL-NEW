@@ -37,7 +37,7 @@ def _create_rfq(
     session: Session,
     *,
     state: RFQState = RFQState.sent,
-    rfq_number: str = "RFQ-TST-001",
+    rfq_number: str = "RFQ-2026-000001",
     created_at: datetime | None = None,
 ) -> RFQ:
     rfq = RFQ(
@@ -115,6 +115,10 @@ def _make_inbound(
         text=text,
         sender_name="Test Sender",
     )
+
+
+def _canonical_text(rfq: RFQ, text: str) -> str:
+    return f"RFQ#{rfq.rfq_number} — {text}"
 
 
 def _send_result(success: bool = True) -> WhatsAppSendResult:
@@ -207,30 +211,49 @@ def test_dispatch_ignores_already_sent(mock_send):
 
 @patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
 @patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
-def test_process_no_matching_rfq(mock_parse, mock_auto):
-    msg = _make_inbound(phone="+0000000000")
+def test_process_no_canonical_id(mock_parse, mock_auto):
+    msg = _make_inbound(phone="+0000000000", text="I can offer 2550 USD/MT")
 
     with SessionLocal() as session:
         result = RFQOrchestrator._process_single_message(session, msg)
 
-    assert result["status"] == "no_matching_rfq"
+    assert result["status"] == "no_canonical_id"
+    assert result["from_phone"] == "+0000000000"
     mock_parse.assert_not_called()
 
 
 @patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
 @patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
-def test_process_rfq_not_quotable(mock_parse, mock_auto):
-    """Invitation for a closed RFQ is now excluded by the JOIN filter,
-    so the orchestrator returns no_matching_rfq instead of rfq_not_quotable."""
+def test_process_canonical_id_unknown(mock_parse, mock_auto):
+    msg = _make_inbound(text="RFQ#RFQ-2026-999999 — I can offer 2550 USD/MT")
+
     with SessionLocal() as session:
-        rfq = _create_rfq(session, state=RFQState.closed)
+        result = RFQOrchestrator._process_single_message(session, msg)
+
+    assert result["status"] == "canonical_id_unknown"
+    assert result["canonical_number"] == "RFQ-2026-999999"
+    mock_parse.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+def test_process_canonical_id_for_terminal_state_rfq_returns_rfq_not_quotable(
+    mock_parse, mock_auto
+):
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.awarded)
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "I can offer 2550 USD/MT"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
-    assert result["status"] == "no_matching_rfq"
+    assert result["status"] == "rfq_not_quotable"
+    assert result["rfq_id"] == str(rfq.id)
+    assert result["rfq_state"] == "AWARDED"
     mock_parse.assert_not_called()
 
 
@@ -248,7 +271,10 @@ def test_process_counterparty_declined(mock_classify):
         )
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="No thanks, passing on this")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "No thanks, passing on this"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
         session.commit()
 
@@ -268,7 +294,10 @@ def test_process_counterparty_question(mock_classify):
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="What alloy grade?")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "What alloy grade?"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "counterparty_question"
@@ -287,7 +316,10 @@ def test_process_needs_human_review(mock_classify):
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="Hmm let me think about it")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "Hmm let me think about it"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "needs_human_review"
@@ -305,7 +337,10 @@ def test_process_llm_unavailable(mock_classify, mock_parse):
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "I can offer 2550 USD/MT"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "llm_unavailable"
@@ -332,7 +367,10 @@ def test_process_auto_quote_created(mock_classify, mock_parse, mock_auto, mock_s
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT avg")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "auto_quote_created"
@@ -361,7 +399,10 @@ def test_process_auto_quote_fails_gracefully(
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "2550 USD/MT"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "auto_quote_failed"
@@ -567,7 +608,7 @@ def test_notify_award_sends_message(mock_gen, mock_send):
     # Phase A2 PR-4 (J-A2-05): every outbound carries the canonical id.
     mock_send.assert_called_once_with(
         phone="+5511999990001",
-        text="RFQ#RFQ-TST-001 — Congratulations! You won the RFQ.",
+        text="RFQ#RFQ-2026-000001 — Congratulations! You won the RFQ.",
     )
 
 
@@ -793,7 +834,10 @@ def test_hallucinated_price_blocked(mock_classify, mock_parse, mock_auto):
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="ola tudo bem amigo?")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "ola tudo bem amigo?"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "hallucinated_price_blocked"
@@ -807,7 +851,7 @@ def test_trivial_message_skipped_in_flow():
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="ok")
+        msg = _make_inbound(phone="+5511999990001", text=_canonical_text(rfq, "ok"))
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "trivial_message_skipped"
@@ -826,7 +870,10 @@ def test_classify_first_blocks_greeting_with_digits(mock_classify):
         session.commit()
 
         # Has digits but not a quote — classify catches it
-        msg = _make_inbound(phone="+5511999990001", text="received your msg at 3pm")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "received your msg at 3pm"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "needs_human_review"
@@ -852,7 +899,10 @@ def test_inbound_message_skips_archived_rfq(mock_parse, mock_auto):
         _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
+        msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(rfq, "2550 USD/MT"),
+        )
         result = RFQOrchestrator._process_single_message(session, msg)
 
     assert result["status"] == "rfq_archived"
@@ -878,7 +928,7 @@ def test_archived_rfq_does_not_fall_through_to_older_live_rfq(mock_parse, mock_a
         older_live = _create_rfq(
             session,
             state=RFQState.sent,
-            rfq_number="RFQ-TST-OLDER",
+            rfq_number="RFQ-2026-000101",
             created_at=now_utc() - timedelta(days=2),
         )
         _create_invitation(session, older_live, status=RFQInvitationStatus.sent)
@@ -886,17 +936,30 @@ def test_archived_rfq_does_not_fall_through_to_older_live_rfq(mock_parse, mock_a
         newer_archived = _create_rfq(
             session,
             state=RFQState.sent,
-            rfq_number="RFQ-TST-NEWER",
+            rfq_number="RFQ-2026-000102",
             created_at=now_utc(),
         )
         newer_archived.deleted_at = now_utc()
         _create_invitation(session, newer_archived, status=RFQInvitationStatus.sent)
         session.commit()
 
-        msg = _make_inbound(phone="+5511999990001", text="2550 USD/MT")
-        result = RFQOrchestrator._process_single_message(session, msg)
+        archived_msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(newer_archived, "2550 USD/MT"),
+        )
+        archived_result = RFQOrchestrator._process_single_message(
+            session, archived_msg
+        )
 
-    assert result["status"] == "rfq_archived"
-    assert result["rfq_id"] == str(newer_archived.id)
+        live_msg = _make_inbound(
+            phone="+5511999990001",
+            text=_canonical_text(older_live, "ok"),
+        )
+        live_result = RFQOrchestrator._process_single_message(session, live_msg)
+
+    assert archived_result["status"] == "rfq_archived"
+    assert archived_result["rfq_id"] == str(newer_archived.id)
+    assert live_result["status"] == "trivial_message_skipped"
+    assert live_result["rfq_id"] == str(older_live.id)
     mock_parse.assert_not_called()
     mock_auto.assert_not_called()
