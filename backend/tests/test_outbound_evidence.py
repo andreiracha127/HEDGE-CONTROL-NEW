@@ -18,8 +18,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
-import pytest
-
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
 from app.models.counterparty import Counterparty, CounterpartyType
@@ -33,12 +31,12 @@ from app.models.rfqs import (
     RFQInvitationPurpose,
     RFQInvitationStatus,
     RFQState,
+    RFQStateEvent,
 )
-from app.schemas.llm import LLMClassifyResult, MessageIntent
 from app.schemas.rfq import RFQRead
 from app.schemas.whatsapp import WhatsAppSendResult
 from app.services.rfq_orchestrator import RFQOrchestrator
-from app.services.rfq_service import RFQService, prefix_with_canonical_id
+from app.services.rfq_service import prefix_with_canonical_id
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -312,6 +310,60 @@ def test_ranking_excludes_rejected_quotes(client) -> None:
     assert payload["ranking"][0]["quote"]["counterparty_id"] == cp_b
 
 
+def test_reject_quote_revert_lands_in_same_checkpoint_as_outbox(client) -> None:
+    """Codex P2: when rejecting the LAST active quote, the
+    ``ALL_QUOTES_REJECTED`` revert + state event must land in the SAME
+    ``session.commit()`` as the rejection + queued outbox row, BEFORE
+    the WhatsApp send. A fresh session readback at the moment
+    ``send_text_message`` is invoked must already see the RFQ in SENT
+    state and the matching state event row.
+    """
+    cp_id = _create_counterparty(client)
+    rfq = _create_global_rfq(client, [cp_id])
+    quote = _create_quote(client, rfq["id"], cp_id, "100.000")
+    rfq_uuid = uuid.UUID(rfq["id"])
+
+    captured: list[tuple[str, int]] = []
+
+    def _capture(phone: str, text: str) -> WhatsAppSendResult:
+        # Recognize the reject body so we only sample the readback for
+        # the reject_quote send (other sends, eg create-time invites,
+        # would also hit this patch in the same test if any).
+        if "Closed here" in text or "Fechamos aqui" in text:
+            with SessionLocal() as readback:
+                state_event_count = (
+                    readback.query(RFQStateEvent)
+                    .filter_by(rfq_id=rfq_uuid, reason="ALL_QUOTES_REJECTED")
+                    .count()
+                )
+                rfq_row = readback.get(RFQ, rfq_uuid)
+                rfq_state_value = rfq_row.state.value if rfq_row else None
+                captured.append((rfq_state_value, state_event_count))
+        return WhatsAppSendResult(success=True, provider_message_id=f"mock-{phone}")
+
+    with patch(
+        "app.services.rfq_service.WhatsAppService.send_text_message",
+        side_effect=_capture,
+    ):
+        resp = client.post(
+            f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
+            json={"user_id": "trader-x"},
+        )
+    assert resp.status_code == 200, resp.text
+
+    assert captured, "reject WhatsApp send was never invoked"
+    rfq_state_at_send, event_count_at_send = captured[0]
+    assert rfq_state_at_send == "SENT", (
+        f"RFQ state at moment of send was {rfq_state_at_send!r}; the "
+        "ALL_QUOTES_REJECTED revert must land in the pre-send checkpoint "
+        "(Codex P2)."
+    )
+    assert event_count_at_send == 1, (
+        f"Expected ALL_QUOTES_REJECTED state event to be durable at "
+        f"moment of send, found {event_count_at_send}."
+    )
+
+
 def test_post_reject_remaining_count_filters_active(client) -> None:
     """When all surviving quotes are rejected, the RFQ must revert to SENT
     via the ``ALL_QUOTES_REJECTED`` state event. The remaining-count query
@@ -437,12 +489,11 @@ def _seed_rfq_with_invitation(
 
 
 @patch("app.services.rfq_orchestrator.LLMAgent.generate_outbound_message")
-def test_notify_award_persists_evidence_and_prefixes_id(mock_gen, client) -> None:
+def test_notify_award_persists_evidence_and_prefixes_id(mock_gen) -> None:
     mock_gen.return_value = "Award won."
     with SessionLocal() as session:
         rfq, cp, _ = _seed_rfq_with_invitation(session)
         rfq_id = rfq.id
-        cp_id = cp.id
         rfq_number = rfq.rfq_number
 
         RFQOrchestrator.notify_award(
@@ -467,7 +518,7 @@ def test_notify_award_persists_evidence_and_prefixes_id(mock_gen, client) -> Non
 
 
 @patch("app.services.rfq_orchestrator.LLMAgent.generate_outbound_message")
-def test_notify_reject_persists_one_row_per_recipient(mock_gen, client) -> None:
+def test_notify_reject_persists_one_row_per_recipient(mock_gen) -> None:
     mock_gen.return_value = "Reject."
     with SessionLocal() as session:
         rfq, _, _ = _seed_rfq_with_invitation(

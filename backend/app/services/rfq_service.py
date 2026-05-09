@@ -1175,13 +1175,50 @@ class RFQService:
             )
             session.add(outbox_row)
 
-        # ── (3) Atomic checkpoint: state transition + queued outbox in
-        # the SAME commit (§3.3 coupling rule). If this commit fails,
-        # neither the rejection nor the queued message persist; no send
-        # has been attempted yet.
+        # ── (3) If this is the last ACTIVE quote, fold the
+        # ALL_QUOTES_REJECTED revert into the SAME pre-send checkpoint
+        # as the rejection + outbox (Codex P2). Without this, a crash
+        # between the checkpoint commit and the post-send revert block
+        # would leave the RFQ in QUOTED with zero eligible quotes —
+        # appearing quoteable/awardable while ranking has nothing to
+        # rank.
+        #
+        # The id filter excludes the just-rejected quote from the
+        # count; the state==active filter excludes any previously
+        # soft-rejected rows. SessionLocal in this project has
+        # autoflush=False, so a query without an explicit flush would
+        # NOT see the in-memory `quote.state = rejected` mutation —
+        # the id filter is what makes the count correct here without
+        # a flush.
+        remaining = (
+            session.query(RFQQuote)
+            .filter(
+                RFQQuote.rfq_id == rfq_id,
+                RFQQuote.id != quote_id,
+                RFQQuote.state == QuoteState.active,
+            )
+            .count()
+        )
+        if remaining == 0 and rfq.state == RFQState.quoted:
+            rfq.state = RFQState.sent
+            session.add(
+                RFQStateEvent(
+                    rfq_id=rfq.id,
+                    from_state=RFQState.quoted,
+                    to_state=RFQState.sent,
+                    reason="ALL_QUOTES_REJECTED",
+                    event_timestamp=now,
+                )
+            )
+
+        # ── (4) Atomic checkpoint: quote state transition + queued
+        # outbox + (when applicable) RFQ revert + ALL_QUOTES_REJECTED
+        # state event ALL land in the SAME commit (§3.3 coupling rule
+        # extended per Codex P2). If this commit fails, none of the
+        # four mutations persist; no send has been attempted yet.
         session.commit()
 
-        # ── (4) Send WhatsApp now that durable evidence exists.
+        # ── (5) Send WhatsApp now that durable evidence exists.
         if outbox_row is not None and cp is not None and cp.whatsapp_phone:
             result = WhatsAppService.send_text_message(
                 phone=cp.whatsapp_phone, text=message_body
@@ -1209,32 +1246,6 @@ class RFQService:
                     error_code=result.error_code,
                     error_message=result.error_message,
                 )
-
-        # ── (5) If no ACTIVE quotes remain, revert RFQ to SENT. The
-        # filter here MUST exclude rejected quotes — without it, a prior
-        # soft-rejected quote would inflate the count and prevent the
-        # quoted → sent revert (regression vs the pre-PR-4 hard-delete
-        # semantics).
-        remaining = (
-            session.query(RFQQuote)
-            .filter(
-                RFQQuote.rfq_id == rfq_id,
-                RFQQuote.id != quote_id,
-                RFQQuote.state == QuoteState.active,
-            )
-            .count()
-        )
-        if remaining == 0 and rfq.state == RFQState.quoted:
-            rfq.state = RFQState.sent
-            session.add(
-                RFQStateEvent(
-                    rfq_id=rfq.id,
-                    from_state=RFQState.quoted,
-                    to_state=RFQState.sent,
-                    reason="ALL_QUOTES_REJECTED",
-                    event_timestamp=now_utc(),
-                )
-            )
 
     @staticmethod
     def refresh_counterparty(
