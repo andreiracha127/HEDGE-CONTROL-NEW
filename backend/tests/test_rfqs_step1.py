@@ -1,4 +1,11 @@
 from datetime import datetime, timezone
+from decimal import Decimal
+from uuid import UUID
+
+from app.core.database import SessionLocal
+from app.models.quotes import RFQQuote
+from app.schemas.rfq import FloatPricingConvention, RFQQuoteCreate
+from app.services.rfq_service import RFQService
 
 
 def _create_counterparty(
@@ -66,6 +73,37 @@ def _create_linkage(
 
 def _create_rfq(client, payload: dict):
     return client.post("/rfqs", json=payload)
+
+
+def _create_global_rfq(client, cp_id: str | None = None) -> str:
+    if cp_id is None:
+        cp_id = _create_counterparty(client)
+    response = _create_rfq(
+        client,
+        {
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": "5.000",
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def _quote_payload(rfq_id: str, cp_id: str, price: str, unit: str = "USD/MT") -> dict:
+    return {
+        "rfq_id": rfq_id,
+        "counterparty_id": cp_id,
+        "fixed_price_value": price,
+        "fixed_price_unit": unit,
+        "float_pricing_convention": "avg",
+        "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+    }
 
 
 def _get_commercial_exposure(client) -> dict:
@@ -316,6 +354,69 @@ def test_rfq_creation_does_not_change_exposure(client) -> None:
     before.pop("calculation_timestamp")
     after.pop("calculation_timestamp")
     assert before == after
+
+
+def test_submit_quote_rejects_zero_price(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq_id = _create_global_rfq(client, cp_id)
+
+    response = client.post(
+        f"/rfqs/{rfq_id}/quotes", json=_quote_payload(rfq_id, cp_id, "0.000000")
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "fixed_price_value must be > 0"
+
+
+def test_submit_quote_rejects_negative_price(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq_id = _create_global_rfq(client, cp_id)
+
+    response = client.post(
+        f"/rfqs/{rfq_id}/quotes", json=_quote_payload(rfq_id, cp_id, "-1.000000")
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "fixed_price_value must be > 0"
+
+
+def test_submit_quote_rejects_non_canonical_unit(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq_id = _create_global_rfq(client, cp_id)
+
+    response = client.post(
+        f"/rfqs/{rfq_id}/quotes",
+        json=_quote_payload(rfq_id, cp_id, "100.000000", unit="usd-mt"),
+    )
+
+    assert response.status_code == 400
+    assert "not canonical" in response.json()["detail"]
+
+
+def test_submit_quote_quantizes_price_before_persist(client) -> None:
+    cp_id = _create_counterparty(client)
+    rfq_id = _create_global_rfq(client, cp_id)
+    received_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+
+    with SessionLocal() as session:
+        quote = RFQService.submit_quote(
+            session,
+            UUID(rfq_id),
+            RFQQuoteCreate.model_construct(
+                rfq_id=UUID(rfq_id),
+                counterparty_id=UUID(cp_id),
+                fixed_price_value=Decimal("100.1234564"),
+                fixed_price_unit="USD/MT",
+                float_pricing_convention=FloatPricingConvention.avg,
+                received_at=received_at,
+            ),
+        )
+        session.commit()
+        quote_id = quote.id
+
+    with SessionLocal() as session:
+        persisted = session.get(RFQQuote, quote_id)
+        assert persisted.fixed_price_value == Decimal("100.123456")
 
 
 # ── Archive lifecycle (Phase A2 PR-3, J-A2-OPUS-06) ─────────────────────

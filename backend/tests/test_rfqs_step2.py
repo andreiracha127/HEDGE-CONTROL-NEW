@@ -2,6 +2,9 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
+from app.core.database import SessionLocal
+from app.models.quotes import RFQQuote
+
 
 def _create_counterparty(
     client, name: str = "CP-Step2", phone: str | None = None
@@ -184,7 +187,7 @@ def test_spread_ranking_buy_direction_picks_min_spread(client) -> None:
     _create_quote(
         client,
         sell_trade_id,
-        _quote_payload(sell_trade_id, cp1, "110.000000", unit="usd-mt"),
+        _quote_payload(sell_trade_id, cp1, "110.000000"),
     )
 
     # CP2 spread = 115 - 102 = 13
@@ -192,7 +195,7 @@ def test_spread_ranking_buy_direction_picks_min_spread(client) -> None:
     _create_quote(
         client,
         sell_trade_id,
-        _quote_payload(sell_trade_id, cp2, "115.000000", unit="USDMT"),
+        _quote_payload(sell_trade_id, cp2, "115.000000"),
     )
 
     ranking = _get_ranking(client, spread_rfq_id)
@@ -302,12 +305,29 @@ def test_spread_ranking_non_canonical_unit_fails(client) -> None:
     sell_trade_id = _create_trade_rfq(client, "SELL", cp_id=cp1)
     spread_rfq_id = _create_spread_rfq(client, buy_trade_id, sell_trade_id)
 
-    _create_quote(
-        client,
-        buy_trade_id,
-        _quote_payload(buy_trade_id, cp1, "100.000000", unit="USD/KG"),
-    )
-    _create_quote(client, sell_trade_id, _quote_payload(sell_trade_id, cp1, "110.000000"))
+    received = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                RFQQuote(
+                    rfq_id=uuid.UUID(buy_trade_id),
+                    counterparty_id=uuid.UUID(cp1),
+                    fixed_price_value=Decimal("100.000000"),
+                    fixed_price_unit="USD/KG",
+                    float_pricing_convention="avg",
+                    received_at=received,
+                ),
+                RFQQuote(
+                    rfq_id=uuid.UUID(sell_trade_id),
+                    counterparty_id=uuid.UUID(cp1),
+                    fixed_price_value=Decimal("110.000000"),
+                    fixed_price_unit="USD/MT",
+                    float_pricing_convention="avg",
+                    received_at=received,
+                ),
+            ]
+        )
+        session.commit()
 
     ranking = _get_ranking(client, spread_rfq_id)
     assert ranking.status_code == 200
