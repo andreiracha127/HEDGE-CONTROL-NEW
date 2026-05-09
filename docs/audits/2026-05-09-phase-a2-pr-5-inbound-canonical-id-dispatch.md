@@ -13,6 +13,12 @@
 
 **Codex P1 absorbed against pre-merge dispatch (commit `8c8ac6147`):** the §3.1 regex `r"RFQ#(?P<num>RFQ-\d{4}-\d{6})"` had no end boundary after the 6-digit sequence, so `re.search` would match `RFQ#RFQ-2026-1234567` (post-`:06d`-overflow, sequence ≥ 1_000_000) as the unrelated 6-digit `RFQ-2026-123456`. Adversarial digit-prepend (`RFQ#RFQ-2026-0001234`) had the same shape. Both cases would route a malformed canonical id to a real older RFQ and let the downstream auto-quote path run despite the dispatch's "partial matches park" rule. **Fix:** added `(?!\d)` negative lookahead to the regex (rejects digit-to-digit transitions), plus two new parser tests in §7 (`rejects_overlong_sequence_post_overflow`, `rejects_adversarial_digit_prepend`). The post-overflow scenario then lands in the `no_canonical_id` path at the parser boundary, consistent with §6's hard-fail-rather-than-fallback rule.
 
+**Two Codex P2 absorbed against commit `59aedf886`:**
+
+1. **Strip canonical token before downstream guards.** The pre-fix §3.2 directive said "downstream behavior unchanged" but downstream guards (`_is_trivial_message`, `LLMAgent.classify_intent`, `LLMAgent.parse_quote_message`, `_price_appears_in_text`) consume `msg.text` directly. With canonical token in place, `RFQ#RFQ-2026-000123 — ok` no longer matches the trivial-word set, escapes to LLM, and a "downstream behavior unchanged" test would encode a regression. **Fix:** added `_strip_canonical_id` helper to §3.1; new step 5 in §3.2 builds `text_for_downstream` and replaces every classifier call site; persistence/audit/log paths still receive `msg.text` (evidence integrity); §7 adds `test_inbound_strips_canonical_token_before_trivial_guard` and `test_inbound_strips_canonical_token_before_llm_classify`.
+
+2. **Check archived RFQs before filtering quotable states.** The pre-fix §3.2 query filtered `state.in_([sent, quoted])` BEFORE the post-fetch `deleted_at` check. But `RFQService.archive` (rfq_service.py:753-796) requires `state == closed` — archived RFQs end up `state=closed, deleted_at IS NOT NULL` and are excluded by the WHERE clause, returning `canonical_id_unknown` instead of the granular `rfq_archived` taxonomy promised in §3.3. **Fix:** §3.2 step 2 query loads by `RFQ.rfq_number` alone (no state filter); steps 3a / 3b branch on `deleted_at IS NOT NULL` (`rfq_archived`) then on non-quotable states (`rfq_not_quotable`); §7 adds `test_inbound_with_canonical_id_closed_not_archived_rfq` and updates `terminal_state_rfq` to assert the new `rfq_not_quotable` return value.
+
 
 This dispatch is a **factual refresh + rigor upgrade** of `docs/audits/2026-05-06-phase-a2-pr-5-inbound-canonical-id-dispatch.md` (committed on the `audit/phase-a2` branch at `39c1b9d`, never merged). The institutional purpose (replace phone+timestamp correlation with canonical-id correlation), the scope (`_process_single_message` only), the single finding closed (J-A2-06), and the no-migration shape are **unchanged**. What is updated:
 
@@ -100,6 +106,29 @@ def _parse_canonical_id(text: str | None) -> str | None:
         return None
     m = _CANONICAL_ID_RE.search(text)
     return m.group("num") if m else None
+
+
+def _strip_canonical_id(text: str | None) -> str:
+    """Remove the canonical-id token + adjacent separator for downstream guards.
+
+    The outbound helper `prefix_with_canonical_id` (rfq_service.py:83-96)
+    prepends `RFQ#<rfq_number> — ` (em-dash separator with surrounding
+    spaces). When a counterparty replies with the prefix preserved,
+    leaving the token in `msg.text` causes `_is_trivial_message` to miss
+    a trivial body (the canonical token makes "ok" no longer match the
+    trivial-word set) and spuriously invokes the LLM, escaping the
+    `trivial_message_skipped` short-circuit.
+
+    Returns a downstream-safe text WITHOUT mutating `msg.text` itself;
+    `msg.text` remains the persisted evidence body. Pure function.
+    """
+    if not text:
+        return ""
+    stripped = _CANONICAL_ID_RE.sub("", text)
+    # Remove the prefix's separator (em-dash, en-dash, hyphen) + any
+    # surrounding whitespace from both ends so downstream classifiers
+    # see only the operator content.
+    return stripped.strip(" \t\n—–-")
 ```
 
 **Regex anchoring rationale:**
@@ -130,17 +159,16 @@ if canonical_number is None:
         "from_phone": msg.from_phone,
     }
 
-# ── Step 2: locate the live RFQ by canonical id ──
-# state filter mirrors the pre-PR-5 query (sent, quoted). deleted_at is
-# intentionally NOT in the WHERE clause; the post-fetch check below
-# preserves the existing `rfq_archived` status surface so operator-side
-# routing of archived replies is unchanged.
+# ── Step 2: locate the RFQ by canonical id alone ──
+# Do NOT filter on RFQState here. `RFQService.archive` (rfq_service.py:753-796)
+# requires `state == closed` before allowing archive, so archived RFQs end up
+# with both `deleted_at IS NOT NULL` AND `state == closed`. A WHERE filter on
+# `state.in_([sent, quoted])` would silently exclude archived rows, returning
+# `canonical_id_unknown` instead of the granular `rfq_archived` status that
+# §3.3 promises. Load by rfq_number first; branch on lifecycle state below.
 rfq = (
     session.query(RFQ)
-    .filter(
-        RFQ.rfq_number == canonical_number,
-        RFQ.state.in_([RFQState.sent, RFQState.quoted]),
-    )
+    .filter(RFQ.rfq_number == canonical_number)
     .first()
 )
 if rfq is None:
@@ -156,7 +184,7 @@ if rfq is None:
         "canonical_number": canonical_number,
     }
 
-# ── Step 3: archived-RFQ short-circuit (preserves existing behavior) ──
+# ── Step 3a: archived-RFQ short-circuit (preserves pre-PR-5 status) ──
 if rfq.deleted_at is not None:
     logger.info(
         "orchestrator_rfq_archived",
@@ -168,6 +196,25 @@ if rfq.deleted_at is not None:
         "message_id": msg.message_id,
         "status": "rfq_archived",
         "rfq_id": str(rfq.id),
+    }
+
+# ── Step 3b: not-quotable short-circuit (preserves pre-PR-5 status) ──
+# RFQs in non-quotable states (created / awarded / closed without archive)
+# are real-but-stale references; route to the same operator queue that
+# pre-PR-5 routed `rfq_not_quotable` to.
+if rfq.state not in (RFQState.sent, RFQState.quoted):
+    logger.info(
+        "orchestrator_rfq_not_quotable",
+        rfq_id=str(rfq.id),
+        rfq_state=rfq.state.value,
+        from_phone=msg.from_phone,
+        message_id=msg.message_id,
+    )
+    return {
+        "message_id": msg.message_id,
+        "status": "rfq_not_quotable",
+        "rfq_id": str(rfq.id),
+        "rfq_state": rfq.state.value,
     }
 
 # ── Step 4: locate the invitation row for downstream code paths
@@ -206,9 +253,30 @@ if invitation is None:
         "rfq_id": str(rfq.id),
     }
 
-# ── Downstream: existing guards (trivial, classify_intent,
-#                parse_quote, price-in-text, dedupe, auto_create_quote)
-#                operate on the (rfq, invitation) tuple unchanged. ──
+# ── Step 5: strip canonical id from text passed to downstream classifiers ──
+# `_is_trivial_message`, `LLMAgent.classify_intent`,
+# `LLMAgent.parse_quote_message` consume the message body directly. With
+# the canonical token in place, a body like `RFQ#RFQ-2026-000123 ok` no
+# longer matches `_is_trivial_message`'s trivial-word set ("ok") and
+# escapes to the LLM unnecessarily. Compute a downstream-safe text once
+# here and pass it to every text classifier. `msg.text` itself is NOT
+# mutated — it remains the persisted evidence body.
+text_for_downstream = _strip_canonical_id(msg.text)
+
+# ── Downstream: existing guards now consume `text_for_downstream`
+#                instead of `msg.text`. Replace EVERY call site between
+#                this point and the end of `_process_single_message`
+#                that today reads `msg.text` for classification or
+#                parsing — specifically:
+#                  - `_is_trivial_message(msg.text)`
+#                  - `LLMAgent.classify_intent(msg.text)` (or whatever
+#                    parameter name carries the body)
+#                  - `LLMAgent.parse_quote_message(raw_message=msg.text, ...)`
+#                  - `_price_appears_in_text(price, msg.text)`
+#                Sites that PERSIST or LOG the raw body (`message_body=`
+#                on `RFQInvitation`, `original_text=` on logs, audit
+#                emissions) MUST keep `msg.text` — evidence integrity
+#                requires the unmodified inbound payload. ──
 ```
 
 **Identifiers used:** `_parse_canonical_id`, `RFQ`, `RFQState`, `RFQInvitation`, `RFQInvitationChannel`, `RFQOrchestrator._phone_variants`. All five are already imported at `rfq_orchestrator.py:34-42` — no new imports beyond `re` (which is already imported at `:21`).
@@ -313,7 +381,10 @@ The new tests in §7 (`test_inbound_canonical_id.py`) are *additive*; they do no
 - `test_inbound_with_canonical_id_phone_mismatch_defense_in_depth` — fixture: live RFQ A with invitation to `+5511111111111`; inbound from `+5522222222222` carrying `RFQ#<A.rfq_number>`. Asserts `{"status": "phone_mismatch", "canonical_number": ..., "rfq_id": str(A.id)}` and no auto-quote.
 - `test_inbound_with_canonical_id_unknown_rfq` — fixture: no RFQ with `rfq_number == "RFQ-2026-999999"`; inbound carries `RFQ#RFQ-2026-999999`. Asserts `{"status": "canonical_id_unknown", "canonical_number": "RFQ-2026-999999"}`.
 - `test_inbound_with_canonical_id_archived_rfq` — fixture: RFQ A with `deleted_at IS NOT NULL`, state in {sent, quoted}; inbound carries the canonical id. Asserts `{"status": "rfq_archived", "rfq_id": str(A.id)}` (canonical-id world's archived branch).
-- `test_inbound_with_canonical_id_terminal_state_rfq` — fixture: RFQ A in `awarded` state; inbound carries the canonical id. Asserts `{"status": "canonical_id_unknown", ...}` because the WHERE-clause filter excludes terminal states.
+- `test_inbound_with_canonical_id_terminal_state_rfq` — fixture: RFQ A in `awarded` state, `deleted_at IS NULL`; inbound carries the canonical id. Asserts `{"status": "rfq_not_quotable", "rfq_id": str(A.id), "rfq_state": "awarded"}`. The pre-PR-5 `rfq_not_quotable` taxonomy is preserved by the §3.2 step 3b branch.
+- `test_inbound_with_canonical_id_closed_not_archived_rfq` — fixture: RFQ A in `closed` state, `deleted_at IS NULL` (closed via cancel/reject route but not archived). Inbound carries canonical id. Asserts `{"status": "rfq_not_quotable", "rfq_state": "closed"}` — closed-not-archived must NOT collapse into `rfq_archived` (which requires `deleted_at IS NOT NULL`).
+- `test_inbound_strips_canonical_token_before_trivial_guard` — fixture: live RFQ A with invitation to `+5511999999999`; inbound from same phone, `text="RFQ#<A.rfq_number> — ok"`. Asserts `{"status": "trivial_message_skipped"}`. Without the §3.1 `_strip_canonical_id` helper, `_is_trivial_message` would not detect "ok" through the canonical-id prefix, falsely escaping to the LLM path. This test pins the downstream-text contract.
+- `test_inbound_strips_canonical_token_before_llm_classify` — fixture: live RFQ A; inbound `text="RFQ#<A.rfq_number> — vou ver com o time e te respondo"` (a non-trivial counterparty-question body). Mock `LLMAgent.classify_intent` to assert the argument it receives is `"vou ver com o time e te respondo"` (NO canonical token). Persistence-side asserts `RFQInvitation.message_body` (or any audit emission) contains the FULL `msg.text` including the token — evidence body unchanged.
 - `test_inbound_with_canonical_id_skips_phone_variant_match_on_other_rfq` — fixture: live RFQ A on phone `+55119999`, live RFQ B on phone `+55119998`; inbound from `+55119999` carries `RFQ#<B.rfq_number>`. Asserts `{"status": "phone_mismatch", ...}` (cross-RFQ canonical id with non-matching phone parks; does NOT silently fall through to RFQ A on the same phone — that would be the J-A2-06 bug returning).
 
 **Integration tests in existing `backend/tests/test_rfq_orchestrator.py`** (rewrites per §3.5):
