@@ -11,6 +11,12 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex catches absorbed against commit `ecbc5b6c9` (1 P1 + 1 P2):**
+
+1. **Do not defer the only baseline provenance path (P1).** §3.4 round-3 said baseline `inputs_hash` only, with per-row provenance "inside snapshot_data" — but §10 forbade modifying `cashflow_analytic_service` "beyond the lookup-contract migration", AND `CashFlowItem` schema at `schemas/cashflow.py:33-38` had no provenance fields. The only path from price lookup → baseline `snapshot_data` is via `compute_cashflow_analytic` building `CashFlowItem`s. Codex caught: with §10 forbidding the path and `CashFlowItem` not carrying the data, the J-A3-OPUS-05 finding **remains open** despite the §6 acceptance claiming closure. **Fix:** §3.4 expanded with explicit three-step plumbing (`CashFlowItem` schema extension + `compute_cashflow_analytic` population + `cashflow_baseline_service` json-mode persistence). §10 DO NOT relaxed for Analytic provenance plumbing only — Wave 3 hardening of Analytic (OPUS-02/06/07) remains out of scope. §6 acceptance gains three matching criteria; §7 adds four matching tests across `test_cashflow_baseline_service.py` and (new) `test_cashflow_analytic_service.py`. **Self-blame:** this is the `feedback_dispatch_self_consistency` rule "An 'out of scope' forbid can deny the executor evidence they need" — exact pattern, fourth time it appears in the cycle. The §10 must always be paired against §3 directives that describe data flow; if §3 says X persists Y, every upstream service that produces Y must be in scope.
+
+2. **Use the existing ledger direction enum values (P2).** §3.7 sketch said `LedgerDirection.credit`. Codex caught: `LedgerDirection` at `schemas/cashflow.py:68-70` has `in_ = "IN"` and `out = "OUT"` — no `.credit` member. Copying the sketch would `AttributeError` before any settlement could derive. **Fix:** §3.7 sketch now reads `sign = +1 if leg.direction == LedgerDirection.in_ else -1` with a comment explaining the institutional accounting convention (IN=credit, OUT=debit). **Self-blame:** another concrete-code-example sweep miss + missing factual cross-check. The 9th sweep-check item I added in round 3 ("every concrete code example must enumerate the new field") would have caught this — except this is a different shape: not "missing field" but "wrong identifier referencing a fictitious enum member". The discipline expands: **every identifier (enum member, attribute, method) in a concrete code template must be Serena-verified against the actual definition before sealing.**
+
 **Three Codex catches absorbed against commit `148e31d60` (1 P1 + 2 P2):**
 
 1. **Serialize P&L price references with `mode="json"` BEFORE persistence and hash construction (P1).** §3.3 step 3 said `[entry.model_dump() for entry in result.price_references]`. Codex caught: in Pydantic v2, plain `model_dump()` keeps Python `date` and `Decimal` objects; SQLAlchemy's JSON/JSONB serializer rejects them at insert time. AND: hashing the plain-mode dump while persisting the json-mode dump produces a hash that cannot be reproduced from the persisted shape — silent drift on replay. **Fix:** §3.3 step 3 now uses `model_dump(mode="json")` for BOTH persistence and `inputs_hash` construction explicitly, with a "hash and persisted shape MUST match by construction" callout.
@@ -226,22 +232,46 @@ inputs_hash: Mapped[str | None] = mapped_column(String(length=64), nullable=True
 
 **Why only `inputs_hash` and not provenance triplet**: `snapshot_data: JSON` already carries the structured baseline payload; provenance for each constituent cashflow row should live INSIDE `snapshot_data` (e.g., per-row `{"price_source": ..., "price_settlement_date": ..., ...}`) rather than as snapshot-level scalar columns. The top-level `inputs_hash` covers the full assembled snapshot deterministically.
 
-**Update `cashflow_baseline_service`**: locate the snapshot creation site (likely after `compute_cashflow_analytic` returns at `:31-33` — note this Analytic-reads-Baseline boundary collapse is **Wave 4**, NOT Wave 1; PR-A3-1 only adds `inputs_hash` here and leaves the boundary fix to Wave 4). Compute hash over `(as_of_date, snapshot_data, total_net_cashflow)`; persist on the row before `db.add(snapshot)`.
+**Update `cashflow_baseline_service`**: locate the snapshot creation site (likely after `compute_cashflow_analytic` returns at `:31-33` — note this Analytic-reads-Baseline **boundary collapse is Wave 4**, NOT Wave 1; PR-A3-1 only adds `inputs_hash` and per-row provenance plumbing here and leaves the source-of-truth boundary fix to Wave 4). Compute hash over `(as_of_date, snapshot_data, total_net_cashflow)` using `mode="json"` shape consistently (per round-3 P1); persist on the row before `db.add(snapshot)`.
 
-**Per-row provenance inside `snapshot_data`**: when constructing each cashflow row in the baseline payload, every row that consumed a price lookup must carry its provenance triplet:
+**Per-row provenance flow** (per Codex P1 absorbed in §0 round 4): the only existing path that builds the rows persisted into `CashFlowBaselineSnapshot.snapshot_data` is `compute_cashflow_analytic` returning `CashFlowAnalyticResponse[items: list[CashFlowItem]]`. The current `CashFlowItem` schema at `backend/app/schemas/cashflow.py:33-38` carries only `(object_type, object_id, settlement_date, amount_usd, mtm_value)` — **no price provenance**. Without extending this schema AND populating it from `compute_cashflow_analytic`, baseline `snapshot_data` rows cannot carry provenance and the J-A3-OPUS-05 finding remains open. PR-A3-1's scope therefore **expands narrowly** to include:
 
-```python
+1. **Extend `CashFlowItem` schema** with three optional provenance fields:
+   ```python
+   class CashFlowItem(BaseModel):
+       object_type: str = Field(..., max_length=64)
+       object_id: str = Field(..., max_length=64)
+       settlement_date: date
+       amount_usd: Decimal
+       mtm_value: Decimal
+       # PR-A3-1: per-row price provenance (optional — items derived from
+       # sources that do not consult price_lookup leave these as None,
+       # which is honest absent-data, not silent fallback).
+       price_source: str | None = None
+       price_symbol: str | None = None
+       price_settlement_date: date | None = None
+   ```
+2. **Extend `compute_cashflow_analytic`** so every item that consumes a `_with_provenance` lookup (per §3.1 migration) populates the three provenance fields on the corresponding `CashFlowItem`.
+3. **Update `cashflow_baseline_service` snapshot persistence**: serialize via `response.model_dump(mode="json")` so every item's `price_*` fields land as ISO-string / regular fields in `snapshot_data`. Compute `inputs_hash` over the SAME `mode="json"` shape (per round-3 P1).
+
+This is **scope-local** to provenance plumbing inside `cashflow_analytic_service.py`. Wave 3 (cashflow projection hardening — OPUS-02/06/07) and Wave 4 (Baseline-reads-Analytic boundary fix — J-A3-04) remain out of scope; §10 codifies the boundary explicitly.
+
+The resulting `snapshot_data` row shape (post-PR-A3-1):
+
+```json
 {
-    "row_type": "settlement",
-    "amount": "1234.56",
-    "price_value": "2585.50",
+    "object_type": "hedge_contract",
+    "object_id": "<uuid>",
+    "settlement_date": "2026-05-08",
+    "amount_usd": "1234.56",
+    "mtm_value": "550.00",
     "price_source": "westmetall",
-    "price_settlement_date": "2026-05-08",
-    ...
+    "price_symbol": "LME_AL",
+    "price_settlement_date": "2026-05-08"
 }
 ```
 
-This is a **content** change inside `snapshot_data`, not a schema change.
+This is a **schema + content** change — `CashFlowItem` schema extension is the schema piece, populating it inside `compute_cashflow_analytic` is the content piece.
 
 ### 3.5 `CashSettlementPrice.price_usd` Float → Numeric
 
@@ -357,7 +387,11 @@ def _build_expected_entry(
     )
     quantity = _leg_quantity(contract, leg.leg_id)  # canonical helper
     fixed_price = contract.fixed_price_value
-    sign = +1 if leg.direction == LedgerDirection.credit else -1
+    # LedgerDirection enum at schemas/cashflow.py:68-70 has members `in_`
+    # ("IN" — credit / money received) and `out` ("OUT" — debit / money
+    # paid). There is NO `.credit` / `.debit` member; copying that shape
+    # would AttributeError. Map institutional accounting sign → enum:
+    sign = +1 if leg.direction == LedgerDirection.in_ else -1
     derived_amount = sign * quantity * (settlement_quote.value - fixed_price)
     return {
         "hedge_contract_id": contract.id,
@@ -560,6 +594,9 @@ def downgrade() -> None:
 - [ ] `pl_calculation_service.compute_pl` populates `result.price_references` with every `PriceQuote` consumed during the period (one entry per distinct `(symbol, source, settlement_date)`).
 - [ ] `pl_snapshot_service.create_pl_snapshot` reads `result.price_references`, persists as JSON on `PLSnapshot.price_references` using `entry.model_dump(mode="json")` for each entry, computes `inputs_hash` over the SAME `mode="json"` shape, and persists both on the row. Hash is reproducible by re-running the same compute against the same inputs (no `mode` mismatch between persistence and hash).
 - [ ] `pl_snapshot_service.create_pl_snapshot` idempotency / conflict logic compares `price_references` and `inputs_hash` on the existing row; divergence raises `HTTPException(409, ...)` matching the existing conflict shape — NOT a silent no-op return of the legacy row.
+- [ ] `CashFlowItem` schema (`backend/app/schemas/cashflow.py:33-38`) carries three new optional fields: `price_source`, `price_symbol`, `price_settlement_date`.
+- [ ] `compute_cashflow_analytic` populates those three fields on every item whose value derives from a `_with_provenance` price lookup; items derived from non-lookup sources leave them None.
+- [ ] `cashflow_baseline_service` serializes the analytic response via `response.model_dump(mode="json")` so each item's `price_*` fields land in `snapshot_data`; the hash is computed over the SAME `mode="json"` shape.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
 - [ ] `cashflow_ledger_service._build_expected_entry` populates `price_source` + `price_symbol` + `price_settlement_date` on every constructed dict; the persisted `CashFlowLedgerEntry` row carries all three.
@@ -602,7 +639,12 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
 
 - `backend/tests/test_cashflow_baseline_service.py`:
   - `test_cashflow_baseline_inputs_hash_is_deterministic`
-  - `test_cashflow_baseline_per_row_provenance_inside_snapshot_data`
+  - `test_cashflow_baseline_per_row_provenance_inside_snapshot_data` — fixture has Analytic emit a `CashFlowItem` with `price_source="westmetall"`, `price_symbol="LME_AL"`, `price_settlement_date=<...>`; assert the persisted `snapshot_data` row carries those three fields as ISO/regular strings (mode="json")
+  - `test_cashflow_baseline_items_without_price_lookup_have_null_provenance` — fixture has Analytic emit a fixed-cashflow item that never consulted `_with_provenance`; assert provenance fields are None in `snapshot_data` (honest absent-data, not silent fallback)
+
+- `backend/tests/test_cashflow_analytic_service.py`:
+  - `test_compute_cashflow_analytic_populates_provenance_on_priced_items`
+  - `test_compute_cashflow_analytic_leaves_provenance_none_for_non_priced_items`
 
 - `backend/tests/test_cashflow_ledger_service.py`:
   - `test_settlement_amount_derived_server_side_not_from_payload`
@@ -720,7 +762,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT backfill legacy `inputs_hash` values from current state. The hash inputs (e.g., the price the snapshot used at the time) are not historicized; backfilling from current settlement prices binds legacy snapshots to today's prices and breaks reconstrutibilidade. Legacy stays NULL.
 - DO NOT use `strip(...)` with character classes that include hyphen `-`, plus `+`, period `.`, comma `,` anywhere in the migration or service code. These are sign / decimal characters in numeric contexts; pricing-domain awareness mandatory (per `feedback_dispatch_self_consistency` PR-5 round 7 P1 lesson).
 - DO NOT change `DEFAULT_COMMODITY` defaults in `mtm_order_service` or `scenario_whatif_service`. Wave 2 owns commodity correctness; PR-A3-1 only migrates the lookup contract.
-- DO NOT modify `cashflow_analytic_service`, `cashflow_projection_service`, or `scenario_whatif_service` beyond the lookup-contract migration (if they call `get_cash_settlement_price_d1` directly). Waves 3 and 2 own those surfaces.
+- DO NOT modify `cashflow_projection_service` or `scenario_whatif_service` beyond the lookup-contract migration (if they call `get_cash_settlement_price_d1` directly). Waves 3 and 2 own those surfaces.
+- For `cashflow_analytic_service`: **scope-local provenance plumbing IS in scope** for PR-A3-1 (per §3.4 round-4 expansion) — extending `CashFlowItem` with three optional provenance fields and populating them from `_with_provenance` lookups is required so the Baseline path can carry per-row provenance through `snapshot_data`. **Other Wave 3 hardening of Analytic (OPUS-02 swallowed hard-fails / OPUS-06 zero defaults / OPUS-07 5th-view declaration) remains out of scope.** Distinguish "extend the data the function emits" (in scope) from "redesign the function's regimes" (out of scope).
 - DO NOT use `Numeric` without a precision/scale (e.g., bare `Numeric()`). Always `Numeric(18, 6)` matching the existing repo convention.
 - DO NOT use `JSONB` directly in `mapped_column(...)`; use `JSON().with_variant(JSONB(), "postgresql")` for portability (per `feedback_dispatch_self_consistency` "Every DDL construct touched by `create_all()` must be portable").
 - DO NOT use a range query (`WHERE settlement_date <= price_date AND >= lookback_limit ORDER BY ... DESC`) for the D-1 settlement lookup, even with a business-calendar-bounded window. The query MUST be `WHERE settlement_date == _prior_business_day(as_of_date, calendar)` (exact match). A range query silently accepts older rows when the prior BD's row is missing — the OPUS-04 fallback regime that PR-A3-1 closes (per Codex P1 absorbed in §0).
