@@ -448,6 +448,11 @@ def test_auto_quote_proceeds_when_all_fields_present_and_canonical(mock_submit):
 
     with SessionLocal() as session:
         rfq, invitation = _auto_quote_context(session)
+        # Capture invitation.counterparty_id while the session is still
+        # open and the instance still bound. Asserting on
+        # `invitation.counterparty_id` after `with` exit triggers a
+        # DetachedInstanceError on the now-closed session.
+        invitation_cp_id = invitation.counterparty_id
         msg = _make_inbound(text="2550 USD/MT avg")
         result = RFQOrchestrator._auto_create_quote(
             session,
@@ -460,7 +465,7 @@ def test_auto_quote_proceeds_when_all_fields_present_and_canonical(mock_submit):
     assert result["status"] == "auto_quote_created"
     mock_submit.assert_called_once()
     quote_payload = mock_submit.call_args.args[2]
-    assert quote_payload.counterparty_id == invitation.counterparty_id
+    assert quote_payload.counterparty_id == invitation_cp_id
     assert quote_payload.fixed_price_value == Decimal("2550.0")
     assert quote_payload.fixed_price_unit == "USD/MT"
     assert quote_payload.float_pricing_convention.value == "avg"
