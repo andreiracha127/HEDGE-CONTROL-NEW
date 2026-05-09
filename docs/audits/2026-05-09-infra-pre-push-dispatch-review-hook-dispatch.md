@@ -411,14 +411,14 @@ Every concrete code prescription naming a function, class, attribute, enum
 member, dict key, or schema field must reference an identifier that exists in
 the codebase (Serena-verifiable). Inventing identifiers is P1.
 
-[... continue for all 14 sub-rules, each with a one-paragraph statement +
+[... continue for all 30 rules, each with a one-paragraph statement +
 example violation + example correct shape, derived from
 `feedback_dispatch_self_consistency` ...]
 ```
 
 The rule sheet is the single source the LLM reviewer consumes. **Every time `feedback_dispatch_self_consistency` gains a sub-rule, this file MUST be updated in the same commit** — institutional invariant. Phase A3 wave-5 closure is when the 9 PR-A3-1 sub-rules consolidate (per the memory entry); that consolidation lands in this file.
 
-**Authoring scope for this PR**: the rule sheet ships at v1 with the 14 sub-rules currently captured in `feedback_dispatch_self_consistency` (status quo as of authoring date 2026-05-09). The 9 PR-A3-1-cycle additions (parallel-persistence-symmetry, comparator tracking, NULL-safety after NULL-able shape, pricing-domain awareness, decimal precision quantization, multi-leg multi-call patterns, DB-level uniqueness constraints, schema invariant verification, out-of-scope forbid trap, coverage validation) are ALL included — the implementer reads them out of the memory file (verbatim where possible) and writes them into the rule sheet during this PR.
+**Authoring scope for this PR**: the rule sheet ships at v1 with **all 30 rules** distilled from `feedback_dispatch_self_consistency` as of authoring date 2026-05-09 — covering the foundational self-consistency rules accumulated through Phase A1, the 8-section sweep formalised in A2 PR-5, the pricing-domain awareness + parser-introducing-PR fixture-compat rules from A2 cycle, plus the parallel-persistence-symmetry, comparator-tracking, NULL-safety, decimal-precision-quantization, multi-leg-invocation, DB-level-uniqueness, schema-invariant-verification, out-of-scope-forbid-trap, coverage-validation, and lookup-chain-end-to-end-verification rules from the PR-A3-1 cycle. The implementer reads ALL rules verbatim out of the memory file and writes them into the rule sheet during this PR; no rule is deferred.
 
 ### 3.4 Anthropic SDK pinning
 
