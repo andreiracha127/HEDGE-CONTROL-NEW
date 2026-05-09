@@ -1,7 +1,7 @@
 """Make ``rfq_state_events.event_timestamp`` NOT NULL.
 
 Revision ID: 035_rfq_state_event_ts_not_null
-Revises: 032_linkage_capacity_live_filter
+Revises: 033_rfq_decimal_primitives
 Create Date: 2026-05-07 00:00:00.000000
 
 Phase A2 PR-3 — closes J-A2-OPUS-07. ``RFQStateEvent`` is the canonical
@@ -37,7 +37,7 @@ from alembic import op
 
 
 revision: str = "035_rfq_state_event_ts_not_null"
-down_revision: Union[str, None] = "032_linkage_capacity_live_filter"
+down_revision: Union[str, None] = "033_rfq_decimal_primitives"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
