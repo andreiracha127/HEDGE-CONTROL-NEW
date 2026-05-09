@@ -11,6 +11,14 @@
 
 ## 0. Refresh notes (read first)
 
+**Three Codex catches absorbed against commit `148e31d60` (1 P1 + 2 P2):**
+
+1. **Serialize P&L price references with `mode="json"` BEFORE persistence and hash construction (P1).** §3.3 step 3 said `[entry.model_dump() for entry in result.price_references]`. Codex caught: in Pydantic v2, plain `model_dump()` keeps Python `date` and `Decimal` objects; SQLAlchemy's JSON/JSONB serializer rejects them at insert time. AND: hashing the plain-mode dump while persisting the json-mode dump produces a hash that cannot be reproduced from the persisted shape — silent drift on replay. **Fix:** §3.3 step 3 now uses `model_dump(mode="json")` for BOTH persistence and `inputs_hash` construction explicitly, with a "hash and persisted shape MUST match by construction" callout.
+
+2. **Resolve ledger price symbol from `contract.commodity` via `resolve_symbol(...)` (P2).** §3.7 sketch called `contract.commodity_symbol`. Codex caught: `HedgeContract` exposes `commodity` (not `commodity_symbol`) at `models/contracts.py:92`; pricing services use `resolve_symbol(contract.commodity)` per the existing convention. Copying the bad attribute name into `_build_expected_entry` would `AttributeError` before any settlement could derive. **Fix:** §3.7 now reads `resolve_symbol(contract.commodity)` with an explanatory comment.
+
+3. **Wrap CHECK creations in `batch_alter_table` for SQLite portability (P2).** §3.8 used plain `op.create_check_constraint(...)`. Codex caught: SQLite cannot ALTER an existing TABLE to add a CHECK via plain ALTER TABLE; existing migration 035 uses `batch_alter_table(...).create_check_constraint(...)` for that dialect. The migration roundtrip on SQLite would fail. **Fix:** §3.8 now wraps every `add_column` + `create_check_constraint` pair in `op.batch_alter_table(...)` (transparent passthrough on Postgres, copy-and-move on SQLite). Downgrade also wrapped. Cross-section: §3.8 NOTE block explains the dialect mechanics.
+
 **Two Codex P1 absorbed against commit `84292ec9c`:**
 
 1. **Persist P&L provenance in the SNAPSHOT service, not the calculation service.** The first round-1 §3.3 directive said `compute_pl` collects + persists. Codex caught: `compute_pl` (in `pl_calculation_service.py`) only returns `PLResultResponse`; `PLSnapshot` rows are created and conflict-checked in a SEPARATE service `pl_snapshot_service.py:create_pl_snapshot`. Without explicit two-service propagation, the executor would persist nothing and J-A3-05 stays open. **Fix:** §3.3 now prescribes a four-step propagation chain: (1) extend `PLResultResponse` with structured `price_references: list[PriceReferenceEntry]`; (2) `compute_pl` populates the field; (3) `create_pl_snapshot` reads from the response and persists; (4) idempotency / conflict logic in `create_pl_snapshot` compares the new fields and raises 409 on divergence. §6/§7 list four matching acceptance criteria + six matching test cases.
@@ -201,7 +209,7 @@ CHECK constraint pattern same as §3.2: `(price_references IS NULL AND inputs_ha
        price_references: list[PriceReferenceEntry] = Field(default_factory=list)
    ```
 2. **Update `compute_pl`**: locate every `PriceQuote` consumed during the period (via the migrated `_with_provenance` calls per §3.1); populate `price_references` on the returned `PLResultResponse`. Order of references is the deterministic order of consumption; one entry per distinct `(symbol, source, settlement_date)` lookup.
-3. **Update `create_pl_snapshot`** in `pl_snapshot_service.py`: read `result.price_references` from the `PLResultResponse`; persist as `[entry.model_dump() for entry in result.price_references]` on `PLSnapshot.price_references`; compute `inputs_hash` over the full input set (period_start, period_end, entity_type, entity_id, sorted `price_references` payload, plus `realized_pl` + `unrealized_mtm`); persist on the row.
+3. **Update `create_pl_snapshot`** in `pl_snapshot_service.py`: read `result.price_references` from the `PLResultResponse`; persist as `[entry.model_dump(mode="json") for entry in result.price_references]` on `PLSnapshot.price_references` (the `mode="json"` directive coerces `date` → ISO string and `Decimal` → JSON-string-compatible representation; without it Pydantic v2's plain `model_dump()` keeps Python objects that SQLAlchemy's JSON/JSONB serializer rejects at insert time); compute `inputs_hash` over the full input set using the SAME `mode="json"` shape (period_start ISO, period_end ISO, entity_type, str(entity_id), the JSON-mode-dumped sorted `price_references`, plus str(realized_pl) + str(unrealized_mtm)); persist on the row. **Hash and persisted shape MUST match by construction** — using `mode="json"` for one and plain `model_dump()` for the other guarantees a future-replay hash mismatch on the same logical inputs.
 4. **Update `create_pl_snapshot` idempotency / conflict logic**: when an existing `PLSnapshot` matches `(entity_type, entity_id, period_start, period_end)`, the conflict check MUST compare the new fields too. A divergence in `price_references` (e.g., a new market-data row materialized that wasn't there in the prior snapshot) or in `inputs_hash` is a **legitimate conflict** (recompute happened against newer inputs); raise `HTTPException(409, ...)` matching the existing conflict shape, NOT a silent no-op return of the legacy row.
 
 Without all four steps, the snapshot insertion path persists no provenance and the J-A3-05 finding remains open. The §6 acceptance + §7 tests below cover each step explicitly.
@@ -339,8 +347,13 @@ def _build_expected_entry(
     payload: HedgeContractSettlementCreate,
     leg: HedgeContractSettlementLeg,
 ) -> dict:
+    # HedgeContract exposes `commodity` (not `commodity_symbol`); pricing
+    # services resolve it via `resolve_symbol(...)` per the existing convention
+    # at price_lookup_service.py.
     settlement_quote = get_cash_settlement_price_d1_with_provenance(
-        db, symbol=contract.commodity_symbol, as_of_date=payload.cashflow_date
+        db,
+        symbol=resolve_symbol(contract.commodity),
+        as_of_date=payload.cashflow_date,
     )
     quantity = _leg_quantity(contract, leg.leg_id)  # canonical helper
     fixed_price = contract.fixed_price_value
@@ -425,60 +438,72 @@ def upgrade() -> None:
             postgresql_using="price_usd::numeric",
         )
 
-    # 2. mtm_snapshots: price_source + price_symbol + price_settlement_date + inputs_hash
-    op.add_column("mtm_snapshots", sa.Column("price_source", sa.String(length=64), nullable=True))
-    op.add_column("mtm_snapshots", sa.Column("price_symbol", sa.String(length=32), nullable=True))
-    op.add_column("mtm_snapshots", sa.Column("price_settlement_date", sa.Date(), nullable=True))
-    op.add_column("mtm_snapshots", sa.Column("inputs_hash", sa.String(length=64), nullable=True))
-    op.create_check_constraint(
-        "ck_mtm_snapshots_provenance_all_or_none",
-        "mtm_snapshots",
-        "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
-        "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
-    )
+    # NOTE on op.batch_alter_table: SQLite cannot ALTER an existing TABLE to
+    # add a CHECK constraint via plain ALTER TABLE (only via CREATE TABLE +
+    # copy + rename). batch_alter_table emits the copy-and-move strategy on
+    # SQLite and is a transparent passthrough on PostgreSQL, so wrapping the
+    # add_column + create_check_constraint pair in batch mode is safe on
+    # both dialects. This matches the pattern established by migration 035.
 
-    # 3. pl_snapshots: price_references (JSONB on PG, JSON on SQLite) + inputs_hash
-    if bind.dialect.name == "postgresql":
-        op.add_column("pl_snapshots", sa.Column("price_references", postgresql.JSONB(), nullable=True))
-    else:
-        op.add_column("pl_snapshots", sa.Column("price_references", sa.JSON(), nullable=True))
-    op.add_column("pl_snapshots", sa.Column("inputs_hash", sa.String(length=64), nullable=True))
-    op.create_check_constraint(
-        "ck_pl_snapshots_provenance_all_or_none",
-        "pl_snapshots",
-        "(price_references IS NULL AND inputs_hash IS NULL) "
-        "OR (price_references IS NOT NULL AND inputs_hash IS NOT NULL)",
-    )
+    # 2. mtm_snapshots: price_source + price_symbol + price_settlement_date + inputs_hash + CHECK
+    with op.batch_alter_table("mtm_snapshots") as batch:
+        batch.add_column(sa.Column("price_source", sa.String(length=64), nullable=True))
+        batch.add_column(sa.Column("price_symbol", sa.String(length=32), nullable=True))
+        batch.add_column(sa.Column("price_settlement_date", sa.Date(), nullable=True))
+        batch.add_column(sa.Column("inputs_hash", sa.String(length=64), nullable=True))
+        batch.create_check_constraint(
+            "ck_mtm_snapshots_provenance_all_or_none",
+            "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL AND inputs_hash IS NULL) "
+            "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL AND inputs_hash IS NOT NULL)",
+        )
+
+    # 3. pl_snapshots: price_references (JSONB on PG, JSON on SQLite) + inputs_hash + CHECK
+    pl_json_type = postgresql.JSONB() if bind.dialect.name == "postgresql" else sa.JSON()
+    with op.batch_alter_table("pl_snapshots") as batch:
+        batch.add_column(sa.Column("price_references", pl_json_type, nullable=True))
+        batch.add_column(sa.Column("inputs_hash", sa.String(length=64), nullable=True))
+        batch.create_check_constraint(
+            "ck_pl_snapshots_provenance_all_or_none",
+            "(price_references IS NULL AND inputs_hash IS NULL) "
+            "OR (price_references IS NOT NULL AND inputs_hash IS NOT NULL)",
+        )
 
     # 4. cashflow_baseline_snapshots: inputs_hash
-    op.add_column("cashflow_baseline_snapshots", sa.Column("inputs_hash", sa.String(length=64), nullable=True))
+    with op.batch_alter_table("cashflow_baseline_snapshots") as batch:
+        batch.add_column(sa.Column("inputs_hash", sa.String(length=64), nullable=True))
 
-    # 5. cashflow_ledger_entries: price_source + price_symbol + price_settlement_date
-    op.add_column("cashflow_ledger_entries", sa.Column("price_source", sa.String(length=64), nullable=True))
-    op.add_column("cashflow_ledger_entries", sa.Column("price_symbol", sa.String(length=32), nullable=True))
-    op.add_column("cashflow_ledger_entries", sa.Column("price_settlement_date", sa.Date(), nullable=True))
-    op.create_check_constraint(
-        "ck_cashflow_ledger_entries_provenance_all_or_none",
-        "cashflow_ledger_entries",
-        "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL) "
-        "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL)",
-    )
+    # 5. cashflow_ledger_entries: price_source + price_symbol + price_settlement_date + CHECK
+    with op.batch_alter_table("cashflow_ledger_entries") as batch:
+        batch.add_column(sa.Column("price_source", sa.String(length=64), nullable=True))
+        batch.add_column(sa.Column("price_symbol", sa.String(length=32), nullable=True))
+        batch.add_column(sa.Column("price_settlement_date", sa.Date(), nullable=True))
+        batch.create_check_constraint(
+            "ck_cashflow_ledger_entries_provenance_all_or_none",
+            "(price_source IS NULL AND price_symbol IS NULL AND price_settlement_date IS NULL) "
+            "OR (price_source IS NOT NULL AND price_symbol IS NOT NULL AND price_settlement_date IS NOT NULL)",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("ck_cashflow_ledger_entries_provenance_all_or_none", "cashflow_ledger_entries")
-    op.drop_column("cashflow_ledger_entries", "price_settlement_date")
-    op.drop_column("cashflow_ledger_entries", "price_symbol")
-    op.drop_column("cashflow_ledger_entries", "price_source")
-    op.drop_column("cashflow_baseline_snapshots", "inputs_hash")
-    op.drop_constraint("ck_pl_snapshots_provenance_all_or_none", "pl_snapshots")
-    op.drop_column("pl_snapshots", "inputs_hash")
-    op.drop_column("pl_snapshots", "price_references")
-    op.drop_constraint("ck_mtm_snapshots_provenance_all_or_none", "mtm_snapshots")
-    op.drop_column("mtm_snapshots", "inputs_hash")
-    op.drop_column("mtm_snapshots", "price_settlement_date")
-    op.drop_column("mtm_snapshots", "price_symbol")
-    op.drop_column("mtm_snapshots", "price_source")
+    # batch_alter_table also required for SQLite when dropping CHECK
+    # constraints + columns; transparent on PostgreSQL.
+    with op.batch_alter_table("cashflow_ledger_entries") as batch:
+        batch.drop_constraint("ck_cashflow_ledger_entries_provenance_all_or_none", type_="check")
+        batch.drop_column("price_settlement_date")
+        batch.drop_column("price_symbol")
+        batch.drop_column("price_source")
+    with op.batch_alter_table("cashflow_baseline_snapshots") as batch:
+        batch.drop_column("inputs_hash")
+    with op.batch_alter_table("pl_snapshots") as batch:
+        batch.drop_constraint("ck_pl_snapshots_provenance_all_or_none", type_="check")
+        batch.drop_column("inputs_hash")
+        batch.drop_column("price_references")
+    with op.batch_alter_table("mtm_snapshots") as batch:
+        batch.drop_constraint("ck_mtm_snapshots_provenance_all_or_none", type_="check")
+        batch.drop_column("inputs_hash")
+        batch.drop_column("price_settlement_date")
+        batch.drop_column("price_symbol")
+        batch.drop_column("price_source")
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
         # No backfill needed: Numeric → Float is lossless for our domain (settlement
@@ -533,7 +558,7 @@ def downgrade() -> None:
 - [ ] `mtm_snapshot_service.create_mtm_snapshot_for_contract` and `_for_order` consume `_with_provenance` and persist `price_source` + `price_symbol` + `price_settlement_date` + `inputs_hash` on every NEW snapshot.
 - [ ] `PLResultResponse` (`backend/app/schemas/pl.py`) carries `price_references: list[PriceReferenceEntry]` (default `[]`) — extends the response contract.
 - [ ] `pl_calculation_service.compute_pl` populates `result.price_references` with every `PriceQuote` consumed during the period (one entry per distinct `(symbol, source, settlement_date)`).
-- [ ] `pl_snapshot_service.create_pl_snapshot` reads `result.price_references`, persists as JSON on `PLSnapshot.price_references`, computes `inputs_hash` over the full input set, and persists both on the row.
+- [ ] `pl_snapshot_service.create_pl_snapshot` reads `result.price_references`, persists as JSON on `PLSnapshot.price_references` using `entry.model_dump(mode="json")` for each entry, computes `inputs_hash` over the SAME `mode="json"` shape, and persists both on the row. Hash is reproducible by re-running the same compute against the same inputs (no `mode` mismatch between persistence and hash).
 - [ ] `pl_snapshot_service.create_pl_snapshot` idempotency / conflict logic compares `price_references` and `inputs_hash` on the existing row; divergence raises `HTTPException(409, ...)` matching the existing conflict shape — NOT a silent no-op return of the legacy row.
 - [ ] `cashflow_baseline_service` computes `inputs_hash` over the assembled snapshot before persisting the baseline row.
 - [ ] `cashflow_ledger_service.ingest_hedge_contract_settlement` derives `amount` server-side from contract facts + `_with_provenance` lookup; HTTP-payload `amount` (if present) is verified against the derived value and rejected 422 on mismatch.
@@ -568,6 +593,8 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
 - `backend/tests/test_pl_snapshot_service.py` (new or extended):
   - `test_create_pl_snapshot_persists_price_references_from_result`
   - `test_create_pl_snapshot_inputs_hash_covers_full_input_set` — period_start/end + entity + price_references + realized_pl + unrealized_mtm
+  - `test_create_pl_snapshot_persists_price_references_via_json_mode_dump` — fixture with one `PriceReferenceEntry` carrying a `Decimal` value and `date` settlement_date; assert the persisted JSON column carries ISO-string date and string-encoded Decimal (NOT a Python object that would fail SQLAlchemy serialization)
+  - `test_create_pl_snapshot_inputs_hash_uses_json_mode_dump_consistently` — re-running compute_pl + create_pl_snapshot against the same DB state produces the same `inputs_hash` (regression for the hash-vs-persistence mode mismatch)
   - `test_create_pl_snapshot_multi_commodity_persists_one_reference_per_lookup` (regression for "scalar columns can't represent collection inputs")
   - `test_create_pl_snapshot_idempotency_no_op_on_identical_rerun`
   - `test_create_pl_snapshot_conflict_409_when_price_references_diverge` — second call with same `(entity, period)` but new market-data row materialized raises 409
@@ -700,6 +727,9 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT omit `price_symbol` from any snapshot provenance contract (`MTMSnapshot`, `cashflow_ledger_entries`, per-row entries inside `CashFlowBaselineSnapshot.snapshot_data`, list entries inside `PLSnapshot.price_references`). `(source, settlement_date)` alone cannot disambiguate multi-commodity-same-source-same-date publishings (westmetall publishing LME_AL + LME_CU + LME_ZN on the same session); without the symbol, J-A3-01 / J-A3-05 reconstrutibilidade is not actually closed (per Codex P1 absorbed in §0).
 - DO NOT omit `price_symbol` from `cashflow_ledger_service._build_expected_entry`'s constructed dict OR from `_ledger_entry_matches`'s equality check. Both must enumerate the three provenance fields explicitly. The all-or-none CHECK constraint makes a missing field a HARD failure at insert time, but a missing field in the comparator is a SILENT idempotency drift — equally bad institutionally (per Codex P1 absorbed in §0 round 2).
 - DO NOT persist P&L provenance from `pl_calculation_service.compute_pl` alone. Snapshot creation lives in `pl_snapshot_service.create_pl_snapshot`; both services must change. Returning `price_references` on `PLResultResponse` is the propagation contract; persistence happens in the snapshot service.
+- DO NOT use plain `entry.model_dump()` (Pydantic v2 default mode) when persisting `price_references` to JSON or constructing `inputs_hash`. ALWAYS `model_dump(mode="json")` so `date` becomes ISO string and `Decimal` becomes JSON-string-compatible. Plain mode keeps Python objects → SQLAlchemy serializer rejects on insert; mismatched modes between persistence and hash → non-replayable hash. The mode must match for hash+shape determinism (per Codex P1 absorbed in §0 round 3).
+- DO NOT use plain `op.create_check_constraint(...)` for new CHECK constraints in this migration. Wrap every `add_column` + `create_check_constraint` pair in `op.batch_alter_table(...)` so the SQLite roundtrip succeeds (per Codex P2 absorbed in §0 round 3). Postgres passthrough is transparent.
+- DO NOT reference `contract.commodity_symbol` in any service or migration code. `HedgeContract` exposes `commodity` (str) — pricing services resolve to a symbol via `resolve_symbol(contract.commodity)`. Copying `commodity_symbol` raises `AttributeError` at runtime (per Codex P2 absorbed in §0 round 3).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
 - DO NOT skip the Ledger amount-mismatch 422 path. Returning 200 with derived amount silently overrides operator-supplied input — that's the kind of fallback governance §2.6 forbids.
 - DO NOT skip `session.flush()` between provenance row insertion and any subsequent DB read that depends on the row being visible.
