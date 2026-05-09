@@ -10,6 +10,7 @@ from decimal import Decimal
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
 from app.models.linkages import HedgeOrderLinkage
+from app.models.market_data import CashSettlementPrice
 
 
 # -- helpers ----------------------------------------------------------------
@@ -88,6 +89,19 @@ def _award(client, rfq_id: str) -> dict:
 
 
 def _settle_contract(client, contract_id: str) -> dict:
+    with SessionLocal() as session:
+        session.add(
+            CashSettlementPrice(
+                source="westmetall",
+                symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                settlement_date=datetime(2026, 3, 13, tzinfo=timezone.utc).date(),
+                price_usd=Decimal("2300"),
+                source_url="https://example.test/source",
+                html_sha256="0" * 64,
+                fetched_at=datetime(2026, 3, 15, tzinfo=timezone.utc),
+            )
+        )
+        session.commit()
     resp = client.post(
         f"/cashflow/contracts/{contract_id}/settle",
         json={

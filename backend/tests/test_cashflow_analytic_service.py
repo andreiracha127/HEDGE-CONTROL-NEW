@@ -66,7 +66,7 @@ def _create_fixed_sales_order(client) -> str:
 
 
 def test_aggregate_hedge_contract_cashflows(client) -> None:
-    _insert_price(settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_active_contract(quantity_mt=5.0, entry_price=100.0)
 
     with SessionLocal() as session:
@@ -77,7 +77,7 @@ def test_aggregate_hedge_contract_cashflows(client) -> None:
 
 
 def test_aggregate_order_cashflows(client) -> None:
-    _insert_price(settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _create_variable_sales_order(client, "AVG", avg_entry_price=100.0)
 
     with SessionLocal() as session:
@@ -87,7 +87,7 @@ def test_aggregate_order_cashflows(client) -> None:
 
 
 def test_exclude_fixed_price_orders(client) -> None:
-    _insert_price(settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(settlement_date=date(2026, 1, 30), price_usd=110.0)
     fixed_id = _create_fixed_sales_order(client)
 
     with SessionLocal() as session:
@@ -102,3 +102,35 @@ def test_missing_d1_price_propagates_http_424(client) -> None:
         with pytest.raises(HTTPException) as exc:
             compute_cashflow_analytic(session, as_of_date=date(2026, 2, 1))
         assert exc.value.status_code == 424
+
+
+def test_compute_cashflow_analytic_populates_provenance_on_priced_items(client) -> None:
+    _insert_price(settlement_date=date(2026, 1, 30), price_usd=110.0)
+    contract_id = _insert_active_contract(quantity_mt=5.0, entry_price=100.0)
+
+    with SessionLocal() as session:
+        response = compute_cashflow_analytic(session, as_of_date=date(2026, 2, 2))
+        item = next(item for item in response.cashflow_items if item.object_id == str(contract_id))
+        assert item.price_source == "westmetall"
+        assert item.price_symbol == "LME_ALU_CASH_SETTLEMENT_DAILY"
+        assert item.price_settlement_date == date(2026, 1, 30)
+        assert item.price_value == 110
+
+
+def test_compute_cashflow_analytic_leaves_provenance_none_for_non_priced_items(client) -> None:
+    _insert_price(settlement_date=date(2026, 1, 30), price_usd=110.0)
+    fixed_id = _create_fixed_sales_order(client)
+
+    with SessionLocal() as session:
+        response = compute_cashflow_analytic(session, as_of_date=date(2026, 2, 2))
+        ids = {item.object_id for item in response.cashflow_items}
+        assert fixed_id not in ids
+        assert all(
+            item.price_source is None
+            or (
+                item.price_symbol is not None
+                and item.price_settlement_date is not None
+                and item.price_value is not None
+            )
+            for item in response.cashflow_items
+        )

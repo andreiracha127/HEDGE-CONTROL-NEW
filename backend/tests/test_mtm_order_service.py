@@ -49,7 +49,7 @@ def _create_fixed_sales_order(client) -> str:
 
 
 def test_mtm_for_avg_order(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _create_variable_sales_order(client, "AVG", avg_entry_price=100.0)
 
     with SessionLocal() as session:
@@ -61,7 +61,7 @@ def test_mtm_for_avg_order(client) -> None:
 
 
 def test_mtm_for_c2r_order(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 31), price_usd=90.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=90.0)
     order_id = _create_variable_sales_order(client, "C2R", avg_entry_price=100.0)
 
     with SessionLocal() as session:
@@ -86,7 +86,7 @@ def test_missing_d1_price_hard_fails_424(client) -> None:
 
 
 def test_snapshot_creation_for_order_idempotent(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _create_variable_sales_order(client, "AVG", avg_entry_price=100.0)
 
     with SessionLocal() as session:
@@ -100,7 +100,7 @@ def test_snapshot_creation_for_order_idempotent(client) -> None:
 
 
 def test_snapshot_conflict_for_order_409(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _create_variable_sales_order(client, "AVG", avg_entry_price=100.0)
     order_uuid = UUID(order_id)
 

@@ -8,9 +8,17 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class PriceReferenceEntry(BaseModel):
+    symbol: str
+    source: str
+    settlement_date: date
+    value: Decimal
+
+
 class PLResultResponse(BaseModel):
     realized_pl: Decimal
     unrealized_mtm: Decimal
+    price_references: list[PriceReferenceEntry] = Field(default_factory=list)
 
 
 class PLSnapshotCreate(BaseModel):
@@ -28,6 +36,8 @@ class PLSnapshotResponse(BaseModel):
     period_end: date
     realized_pl: Decimal
     unrealized_mtm: Decimal
+    price_references: list[dict] | None = None
+    inputs_hash: str | None = Field(None, max_length=64)
     created_at: datetime
     correlation_id: Optional[uuid.UUID]
 

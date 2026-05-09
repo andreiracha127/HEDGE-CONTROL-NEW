@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus, HedgeLegSide
 from app.models.market_data import CashSettlementPrice
+from app.models.cashflow import CashFlowLedgerEntry
 from app.services.cashflow_ledger_service import ingest_hedge_contract_settlement
 from app.schemas.cashflow import HedgeContractSettlementCreate
 from app.services.pl_calculation_service import compute_pl
@@ -53,16 +54,16 @@ def _settlement_payload(source_event_id: str) -> HedgeContractSettlementCreate:
         source_event_id=source_event_id,
         cashflow_date=date(2026, 1, 15),
         legs=[
-            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("100.00")},
-            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("110.00")},
+            {"leg_id": "FIXED", "direction": "OUT", "amount": Decimal("500.000000")},
+            {"leg_id": "FLOAT", "direction": "IN", "amount": Decimal("550.000000")},
         ],
     )
 
 
 def test_realized_pl_from_ledger() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=100.0)
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
     payload = _settlement_payload(str(uuid4()))
 
@@ -77,13 +78,13 @@ def test_realized_pl_from_ledger() -> None:
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 31),
         )
-        assert result.realized_pl == Decimal("10.00")
+        assert result.realized_pl == Decimal("50.000000")
 
 
 def test_realized_pl_idempotent_on_reprocess() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=100.0)
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 14), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
     source_event_id = str(uuid4())
     payload = _settlement_payload(source_event_id)
@@ -102,7 +103,7 @@ def test_realized_pl_idempotent_on_reprocess() -> None:
             period_start=date(2026, 1, 1),
             period_end=date(2026, 1, 31),
         )
-        assert result.realized_pl == Decimal("10.00")
+        assert result.realized_pl == Decimal("50.000000")
 
 
 def test_realized_pl_orders_hard_fail() -> None:
@@ -117,3 +118,80 @@ def test_realized_pl_orders_hard_fail() -> None:
             )
         assert exc.value.status_code in {status.HTTP_424_FAILED_DEPENDENCY, status.HTTP_422_UNPROCESSABLE_ENTITY}
         assert "Realized cashflow ledger not implemented for orders" in exc.value.detail
+
+
+def test_compute_pl_collects_provenance_from_ledger_entries_in_realized_path() -> None:
+    contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.settled)
+    with SessionLocal() as session:
+        session.add(
+            CashFlowLedgerEntry(
+                hedge_contract_id=contract.id,
+                source_event_type="HEDGE_CONTRACT_SETTLED",
+                source_event_id=uuid4(),
+                leg_id="FLOAT",
+                cashflow_date=date(2026, 1, 15),
+                currency="USD",
+                direction="IN",
+                amount=Decimal("550.000000"),
+                price_source="westmetall",
+                price_symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                price_settlement_date=date(2026, 1, 14),
+                price_value=Decimal("110.000000"),
+            )
+        )
+        session.commit()
+        result = compute_pl(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert result.price_references[0].symbol == "LME_ALU_CASH_SETTLEMENT_DAILY"
+        assert result.price_references[0].source == "westmetall"
+        assert result.price_references[0].settlement_date == date(2026, 1, 14)
+        assert result.price_references[0].value == Decimal("110.000000")
+
+
+def test_compute_pl_collects_only_priced_ledger_entries_into_price_references() -> None:
+    contract = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.settled)
+    source_event_id = uuid4()
+    with SessionLocal() as session:
+        session.add_all(
+            [
+                CashFlowLedgerEntry(
+                    hedge_contract_id=contract.id,
+                    source_event_type="HEDGE_CONTRACT_SETTLED",
+                    source_event_id=source_event_id,
+                    leg_id="FIXED",
+                    cashflow_date=date(2026, 1, 15),
+                    currency="USD",
+                    direction="OUT",
+                    amount=Decimal("500.000000"),
+                ),
+                CashFlowLedgerEntry(
+                    hedge_contract_id=contract.id,
+                    source_event_type="HEDGE_CONTRACT_SETTLED",
+                    source_event_id=source_event_id,
+                    leg_id="FLOAT",
+                    cashflow_date=date(2026, 1, 15),
+                    currency="USD",
+                    direction="IN",
+                    amount=Decimal("550.000000"),
+                    price_source="westmetall",
+                    price_symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                    price_settlement_date=date(2026, 1, 14),
+                    price_value=Decimal("110.000000"),
+                ),
+            ]
+        )
+        session.commit()
+        result = compute_pl(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert result.realized_pl == Decimal("50.000000")
+        assert len(result.price_references) == 1

@@ -50,7 +50,7 @@ def _insert_contract(quantity_mt: float, entry_price: float, status: HedgeContra
 
 def test_mtm_calculation_active_contract() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
 
     with SessionLocal() as session:
@@ -80,7 +80,7 @@ def test_missing_d1_price_hard_fails_424() -> None:
 
 def test_snapshot_creation_is_idempotent() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
 
     with SessionLocal() as session:
@@ -95,7 +95,7 @@ def test_snapshot_creation_is_idempotent() -> None:
 
 def test_snapshot_conflict_different_values_409() -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
-    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 31), price_usd=110.0)
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
     contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0, status=HedgeContractStatus.active)
 
     with SessionLocal() as session:

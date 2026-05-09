@@ -108,7 +108,7 @@ class TestMTMContractMultiCommodity:
         """A copper contract must look up LME_CU_CASH_SETTLEMENT_DAILY."""
         cu_symbol = COMMODITY_SYMBOL_MAP["LME_CU"]
         _insert_price(
-            symbol=cu_symbol, settlement_date=date(2026, 1, 31), price_usd=9500.0
+            symbol=cu_symbol, settlement_date=date(2026, 1, 30), price_usd=9500.0
         )
         contract_id = _insert_contract(
             commodity="LME_CU",
@@ -125,7 +125,7 @@ class TestMTMContractMultiCommodity:
     def test_zinc_contract_uses_zinc_symbol(self) -> None:
         zn_symbol = COMMODITY_SYMBOL_MAP["LME_ZN"]
         _insert_price(
-            symbol=zn_symbol, settlement_date=date(2026, 1, 31), price_usd=2800.0
+            symbol=zn_symbol, settlement_date=date(2026, 1, 30), price_usd=2800.0
         )
         contract_id = _insert_contract(
             commodity="LME_ZN",
@@ -161,7 +161,7 @@ class TestMTMOrderMultiCommodity:
     def test_order_with_copper_commodity(self) -> None:
         cu_symbol = COMMODITY_SYMBOL_MAP["LME_CU"]
         _insert_price(
-            symbol=cu_symbol, settlement_date=date(2026, 1, 31), price_usd=9500.0
+            symbol=cu_symbol, settlement_date=date(2026, 1, 30), price_usd=9500.0
         )
         order_id = _insert_order(quantity_mt=10.0, avg_entry_price=9000.0)
         with SessionLocal() as session:
@@ -177,7 +177,7 @@ class TestMTMOrderMultiCommodity:
     def test_order_default_commodity_is_aluminium(self) -> None:
         al_symbol = COMMODITY_SYMBOL_MAP["LME_AL"]
         _insert_price(
-            symbol=al_symbol, settlement_date=date(2026, 1, 31), price_usd=2400.0
+            symbol=al_symbol, settlement_date=date(2026, 1, 30), price_usd=2400.0
         )
         order_id = _insert_order(quantity_mt=10.0, avg_entry_price=2300.0)
         with SessionLocal() as session:

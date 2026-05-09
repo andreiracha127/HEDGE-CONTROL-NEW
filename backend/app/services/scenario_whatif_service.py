@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Callable
 from uuid import UUID
@@ -37,6 +37,7 @@ from app.services.price_lookup_service import (
     get_cash_settlement_price_d1,
     resolve_symbol,
 )
+from app.utils.market_calendar import _market_calendar_for_symbol, _prior_business_day
 
 
 DEFAULT_COMMODITY = "LME_AL"
@@ -60,8 +61,10 @@ def _build_price_lookup(
     overrides: dict[tuple[str, date], Decimal],
 ) -> Callable[[Session, str, date], Decimal]:
     def lookup(db: Session, symbol: str, as_of_date: date) -> Decimal:
-        price_date = as_of_date - timedelta(days=1)
-        key = (symbol, price_date)
+        prior_bd = _prior_business_day(
+            as_of_date, lambda year: _market_calendar_for_symbol(symbol, year)
+        )
+        key = (symbol, prior_bd)
         if key in overrides:
             return overrides[key]
         return get_cash_settlement_price_d1(db, symbol=symbol, as_of_date=as_of_date)

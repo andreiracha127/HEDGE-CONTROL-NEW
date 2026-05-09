@@ -37,6 +37,10 @@ class CashFlowItem(BaseModel):
     settlement_date: date
     amount_usd: Decimal
     mtm_value: Decimal
+    price_source: str | None = Field(None, max_length=64)
+    price_symbol: str | None = Field(None, max_length=32)
+    price_settlement_date: date | None = None
+    price_value: Decimal | None = None
 
 
 class CashFlowAnalyticResponse(BaseModel):
@@ -57,6 +61,7 @@ class CashFlowBaselineSnapshotResponse(BaseModel):
     as_of_date: date
     snapshot_data: dict
     total_net_cashflow: Decimal
+    inputs_hash: str | None = Field(None, max_length=64)
     created_at: datetime
     correlation_id: str = Field(..., max_length=64)
 
@@ -127,6 +132,10 @@ class CashFlowLedgerEntryRead(BaseModel):
     currency: str = Field(..., max_length=8)
     direction: str = Field(..., max_length=8)
     amount: Decimal
+    price_source: str | None = Field(None, max_length=64)
+    price_symbol: str | None = Field(None, max_length=32)
+    price_settlement_date: date | None = None
+    price_value: Decimal | None = None
     created_at: datetime
 
 

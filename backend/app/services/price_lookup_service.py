@@ -1,60 +1,18 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.market_data import CashSettlementPrice
-
-
-# ── Domain exception ──────────────────────────────────────────────────
-# Raised when a market reference price cannot be proven for the
-# requested (symbol, as_of_date) — e.g. no row within the lookback
-# window. PR-8 (J-A1-01) hard-fail surface: callers in deal_engine.py
-# (compute_deal_pnl, _order_value, _get_market_price) MUST propagate
-# this to the route layer instead of returning None / Decimal("0") /
-# falling back to avg_entry_price.
-class PriceReferenceUnprovable(Exception):
-    """No cash-settlement reference price within the lookback window.
-
-    This is a domain hard-fail (per governance §2.6 — "price reference
-    cannot be proven → hard-fail"). The route layer catches this and
-    returns 422; service callers must NOT silence it.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        commodity: str | None = None,
-        symbol: str | None = None,
-        as_of_date: date | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.commodity = commodity
-        self.symbol = symbol
-        self.as_of_date = as_of_date
-
-
-# ── Structured price-lookup result ────────────────────────────────────
-@dataclass(frozen=True)
-class PriceQuote:
-    """Structured result of a cash-settlement price lookup.
-
-    Carries the actual settlement_date used (which may differ from
-    as_of_date - 1 due to weekend / holiday lookback up to 5 days),
-    the source string from CashSettlementPrice.source, the resolved
-    symbol, and the value as Decimal. Used by P&L provenance
-    persistence (DealPNLSnapshot.price_references).
-    """
-
-    value: Decimal
-    source: str
-    settlement_date: date
-    symbol: str
+from app.utils.market_calendar import (
+    _canonical_source_for_symbol,
+    _market_calendar_for_symbol,
+    _prior_business_day,
+)
+from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable
 
 # ── Commodity → Price-symbol mapping ───────────────────────────────────
 # Each tradeable commodity is mapped to the symbol that its cash-settlement
@@ -138,46 +96,33 @@ def resolve_symbol(commodity: str) -> str:
 def get_cash_settlement_price_d1_with_provenance(
     db: Session, symbol: str, as_of_date: date
 ) -> PriceQuote:
-    """Return the most recent cash-settlement price as a PriceQuote.
-
-    Falls back up to 5 calendar days to handle weekends / holidays.
-
-    The returned PriceQuote.settlement_date is the ACTUAL row's
-    settlement_date (may be earlier than ``as_of_date - 1`` when the
-    nominal D-1 was a weekend/holiday). PriceQuote.source is the row's
-    ``source`` column verbatim (e.g. ``"westmetall"``); upstream
-    persistence in DealPNLSnapshot.price_references uses this string
-    as the canonical evidence of the lookup origin.
-
-    Raises
-    ------
-    PriceReferenceUnprovable
-        When no row exists within the 5-day lookback window. This is
-        the domain hard-fail signal — callers MUST propagate it.
-    """
-    price_date = as_of_date - timedelta(days=1)
-    lookback_limit = price_date - timedelta(days=5)
+    """Return the exact prior-business-day cash-settlement price."""
+    canonical_source = _canonical_source_for_symbol(symbol)
+    prior_bd = _prior_business_day(
+        as_of_date, lambda year: _market_calendar_for_symbol(symbol, year)
+    )
 
     row = (
         db.query(CashSettlementPrice)
         .filter(
+            CashSettlementPrice.source == canonical_source,
             CashSettlementPrice.symbol == symbol,
-            CashSettlementPrice.settlement_date <= price_date,
-            CashSettlementPrice.settlement_date >= lookback_limit,
+            CashSettlementPrice.settlement_date == prior_bd,
         )
-        .order_by(CashSettlementPrice.settlement_date.desc())
         .first()
     )
 
     if not row:
         raise PriceReferenceUnprovable(
-            f"No cash settlement price for {symbol} on or before {price_date}",
+            f"No {canonical_source} {symbol} cash settlement for prior business day {prior_bd} "
+            f"(as_of={as_of_date}); older settlements and other sources are NOT considered.",
             symbol=symbol,
             as_of_date=as_of_date,
         )
 
+    value = row.price_usd if isinstance(row.price_usd, Decimal) else Decimal(str(row.price_usd))
     return PriceQuote(
-        value=Decimal(str(row.price_usd)),
+        value=value,
         source=row.source,
         settlement_date=row.settlement_date,
         symbol=symbol,

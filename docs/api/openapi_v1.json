@@ -328,6 +328,18 @@
             "title": "Id",
             "type": "string"
           },
+          "inputs_hash": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs Hash"
+          },
           "snapshot_data": {
             "additionalProperties": true,
             "title": "Snapshot Data",
@@ -371,6 +383,54 @@
             "maxLength": 64,
             "title": "Object Type",
             "type": "string"
+          },
+          "price_settlement_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Settlement Date"
+          },
+          "price_source": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Source"
+          },
+          "price_symbol": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Symbol"
+          },
+          "price_value": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Value"
           },
           "settlement_date": {
             "format": "date",
@@ -429,6 +489,54 @@
             "maxLength": 16,
             "title": "Leg Id",
             "type": "string"
+          },
+          "price_settlement_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Settlement Date"
+          },
+          "price_source": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Source"
+          },
+          "price_symbol": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Symbol"
+          },
+          "price_value": {
+            "anyOf": [
+              {
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Value"
           },
           "source_event_id": {
             "anyOf": [
@@ -770,8 +878,9 @@
             "type": "string"
           },
           "price_usd": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Price Usd",
-            "type": "number"
+            "type": "string"
           },
           "settlement_date": {
             "format": "date",
@@ -3676,6 +3785,16 @@
             "title": "Price D1",
             "type": "string"
           },
+          "price_quote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PriceQuote"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "quantity_mt": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Quantity Mt",
@@ -3752,6 +3871,18 @@
             "title": "Id",
             "type": "string"
           },
+          "inputs_hash": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs Hash"
+          },
           "mtm_value": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Mtm Value",
@@ -3769,6 +3900,42 @@
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Price D1",
             "type": "string"
+          },
+          "price_settlement_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Settlement Date"
+          },
+          "price_source": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Source"
+          },
+          "price_symbol": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Symbol"
           },
           "quantity_mt": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -4147,6 +4314,13 @@
       },
       "PLResultResponse": {
         "properties": {
+          "price_references": {
+            "items": {
+              "$ref": "#/components/schemas/PriceReferenceEntry"
+            },
+            "title": "Price References",
+            "type": "array"
+          },
           "realized_pl": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Realized Pl",
@@ -4231,6 +4405,18 @@
             "title": "Id",
             "type": "string"
           },
+          "inputs_hash": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inputs Hash"
+          },
           "period_end": {
             "format": "date",
             "title": "Period End",
@@ -4240,6 +4426,21 @@
             "format": "date",
             "title": "Period Start",
             "type": "string"
+          },
+          "price_references": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price References"
           },
           "realized_pl": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
@@ -4701,6 +4902,66 @@
           "value"
         ],
         "title": "PnlPhysicalItem",
+        "type": "object"
+      },
+      "PriceQuote": {
+        "properties": {
+          "settlement_date": {
+            "format": "date",
+            "title": "Settlement Date",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "source",
+          "settlement_date",
+          "symbol"
+        ],
+        "title": "PriceQuote",
+        "type": "object"
+      },
+      "PriceReferenceEntry": {
+        "properties": {
+          "settlement_date": {
+            "format": "date",
+            "title": "Settlement Date",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "source",
+          "settlement_date",
+          "value"
+        ],
+        "title": "PriceReferenceEntry",
         "type": "object"
       },
       "PriceType": {

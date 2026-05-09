@@ -8,14 +8,52 @@ from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.mtm import MTMObjectType, MTMSnapshot
+from app.schemas.mtm import MTMResultResponse
 from app.services.mtm_contract_service import compute_mtm_for_contract
 from app.services.mtm_order_service import compute_mtm_for_order
+from app.utils.provenance import sha256_json
 
 
 def _as_decimal(value) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _compute_inputs_hash(computed: MTMResultResponse) -> str:
+    if computed.price_quote is None:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail="MTM price provenance is missing",
+        )
+    return sha256_json(
+        {
+            "as_of_date": computed.as_of_date.isoformat(),
+            "object_type": computed.object_type.value,
+            "object_id": str(computed.object_id),
+            "entry_price": str(computed.entry_price),
+            "quantity_mt": str(computed.quantity_mt),
+            "price_value": str(computed.price_quote.value),
+            "price_source": computed.price_quote.source,
+            "price_settlement_date": computed.price_quote.settlement_date.isoformat(),
+            "symbol": computed.price_quote.symbol,
+        }
+    )
+
+
+def _snapshot_matches(snapshot: MTMSnapshot, computed: MTMResultResponse, inputs_hash: str) -> bool:
+    if computed.price_quote is None:
+        return False
+    return (
+        _as_decimal(snapshot.mtm_value) == _as_decimal(computed.mtm_value)
+        and _as_decimal(snapshot.price_d1) == _as_decimal(computed.price_d1)
+        and _as_decimal(snapshot.entry_price) == _as_decimal(computed.entry_price)
+        and _as_decimal(snapshot.quantity_mt) == _as_decimal(computed.quantity_mt)
+        and snapshot.price_source == computed.price_quote.source
+        and snapshot.price_symbol == computed.price_quote.symbol
+        and snapshot.price_settlement_date == computed.price_quote.settlement_date
+        and snapshot.inputs_hash == inputs_hash
+    )
 
 
 def create_mtm_snapshot_for_contract(
@@ -34,14 +72,10 @@ def create_mtm_snapshot_for_contract(
     computed = compute_mtm_for_contract(
         db, contract_id=contract_id, as_of_date=as_of_date
     )
+    inputs_hash = _compute_inputs_hash(computed)
 
     if existing is not None:
-        if (
-            _as_decimal(existing.mtm_value) != _as_decimal(computed.mtm_value)
-            or _as_decimal(existing.price_d1) != _as_decimal(computed.price_d1)
-            or _as_decimal(existing.entry_price) != _as_decimal(computed.entry_price)
-            or _as_decimal(existing.quantity_mt) != _as_decimal(computed.quantity_mt)
-        ):
+        if not _snapshot_matches(existing, computed, inputs_hash):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="MTM snapshot conflict"
             )
@@ -55,6 +89,10 @@ def create_mtm_snapshot_for_contract(
         price_d1=_as_decimal(computed.price_d1),
         entry_price=_as_decimal(computed.entry_price),
         quantity_mt=_as_decimal(computed.quantity_mt),
+        price_source=computed.price_quote.source,
+        price_symbol=computed.price_quote.symbol,
+        price_settlement_date=computed.price_quote.settlement_date,
+        inputs_hash=inputs_hash,
         correlation_id=correlation_id,
     )
     db.add(snapshot)
@@ -77,14 +115,10 @@ def create_mtm_snapshot_for_order(
     )
 
     computed = compute_mtm_for_order(db, order_id=order_id, as_of_date=as_of_date)
+    inputs_hash = _compute_inputs_hash(computed)
 
     if existing is not None:
-        if (
-            _as_decimal(existing.mtm_value) != _as_decimal(computed.mtm_value)
-            or _as_decimal(existing.price_d1) != _as_decimal(computed.price_d1)
-            or _as_decimal(existing.entry_price) != _as_decimal(computed.entry_price)
-            or _as_decimal(existing.quantity_mt) != _as_decimal(computed.quantity_mt)
-        ):
+        if not _snapshot_matches(existing, computed, inputs_hash):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT, detail="MTM snapshot conflict"
             )
@@ -98,6 +132,10 @@ def create_mtm_snapshot_for_order(
         price_d1=_as_decimal(computed.price_d1),
         entry_price=_as_decimal(computed.entry_price),
         quantity_mt=_as_decimal(computed.quantity_mt),
+        price_source=computed.price_quote.source,
+        price_symbol=computed.price_quote.symbol,
+        price_settlement_date=computed.price_quote.settlement_date,
+        inputs_hash=inputs_hash,
         correlation_id=correlation_id,
     )
     db.add(snapshot)

@@ -83,7 +83,7 @@ def _create_variable_sales_order(client, avg_entry_price: float = 100.0) -> str:
 
 
 def test_snapshot_contract_creates_record() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         snap = create_mtm_snapshot_for_contract(
@@ -95,8 +95,65 @@ def test_snapshot_contract_creates_record() -> None:
         assert snap.correlation_id == "c-1"
 
 
+def test_mtm_snapshot_persists_price_provenance_quadruple() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
+    cid = _insert_contract()
+    with SessionLocal() as session:
+        snap = create_mtm_snapshot_for_contract(
+            session, contract_id=cid, as_of_date=date(2026, 2, 2), correlation_id="c-1"
+        )
+        assert snap.price_source == "westmetall"
+        assert snap.price_symbol == "LME_ALU_CASH_SETTLEMENT_DAILY"
+        assert snap.price_settlement_date == date(2026, 1, 30)
+        assert snap.inputs_hash is not None
+        assert len(snap.inputs_hash) == 64
+
+
+def test_mtm_snapshot_inputs_hash_is_deterministic_over_same_inputs() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
+    cid = _insert_contract()
+    with SessionLocal() as session:
+        first = create_mtm_snapshot_for_contract(
+            session, contract_id=cid, as_of_date=date(2026, 2, 2), correlation_id="c-1"
+        )
+        first_hash = first.inputs_hash
+        second = create_mtm_snapshot_for_contract(
+            session, contract_id=cid, as_of_date=date(2026, 2, 2), correlation_id="c-2"
+        )
+        assert second.inputs_hash == first_hash
+
+
+def test_mtm_snapshot_persists_price_symbol_distinguishing_multi_commodity_same_source_same_date() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
+    _insert_price("LME_CU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 9300.0)
+    cid = _insert_contract()
+    with SessionLocal() as session:
+        snap = create_mtm_snapshot_for_contract(
+            session, contract_id=cid, as_of_date=date(2026, 2, 2), correlation_id="c-1"
+        )
+        assert snap.price_symbol == "LME_ALU_CASH_SETTLEMENT_DAILY"
+
+
+def test_mtm_snapshot_legacy_null_provenance_does_not_violate_check() -> None:
+    cid = _insert_contract()
+    with SessionLocal() as session:
+        session.add(
+            MTMSnapshot(
+                object_type=MTMObjectType.hedge_contract,
+                object_id=cid,
+                as_of_date=date(2026, 2, 1),
+                mtm_value=Decimal("1"),
+                price_d1=Decimal("2"),
+                entry_price=Decimal("3"),
+                quantity_mt=Decimal("4"),
+                correlation_id="legacy",
+            )
+        )
+        session.commit()
+
+
 def test_snapshot_contract_idempotent_same_values() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         first = create_mtm_snapshot_for_contract(
@@ -109,7 +166,7 @@ def test_snapshot_contract_idempotent_same_values() -> None:
 
 
 def test_snapshot_contract_conflict_409() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         session.add(
@@ -137,7 +194,7 @@ def test_snapshot_contract_conflict_409() -> None:
 
 
 def test_snapshot_contract_values_correct() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract(quantity_mt=10.0, entry_price=100.0)
     with SessionLocal() as session:
         snap = create_mtm_snapshot_for_contract(
@@ -154,7 +211,7 @@ def test_snapshot_contract_values_correct() -> None:
 
 
 def test_snapshot_order_creates_record(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     oid = _create_variable_sales_order(client)
     with SessionLocal() as session:
         snap = create_mtm_snapshot_for_order(
@@ -169,7 +226,7 @@ def test_snapshot_order_creates_record(client) -> None:
 
 
 def test_snapshot_order_idempotent(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     oid = _create_variable_sales_order(client)
     with SessionLocal() as session:
         first = create_mtm_snapshot_for_order(
@@ -188,7 +245,7 @@ def test_snapshot_order_idempotent(client) -> None:
 
 
 def test_snapshot_order_conflict_409(client) -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     oid = _create_variable_sales_order(client)
     with SessionLocal() as session:
         session.add(
@@ -219,7 +276,7 @@ def test_snapshot_order_conflict_409(client) -> None:
 
 
 def test_get_mtm_snapshot_returns_existing() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         created = create_mtm_snapshot_for_contract(
@@ -249,7 +306,7 @@ def test_get_mtm_snapshot_not_found_404() -> None:
 
 
 def test_get_mtm_snapshot_wrong_date_404() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         create_mtm_snapshot_for_contract(
@@ -266,7 +323,7 @@ def test_get_mtm_snapshot_wrong_date_404() -> None:
 
 
 def test_get_mtm_snapshot_wrong_type_404() -> None:
-    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 31), 110.0)
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 110.0)
     cid = _insert_contract()
     with SessionLocal() as session:
         create_mtm_snapshot_for_contract(
