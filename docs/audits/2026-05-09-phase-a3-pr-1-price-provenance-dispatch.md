@@ -11,6 +11,12 @@
 
 ## 0. Refresh notes (read first)
 
+**Two Codex catches absorbed against commit `18b38b159` (1 P1 + 1 P2):**
+
+1. **Guard NULL ledger `price_value` before normalizing (P1).** Round-6 added `_normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])` to `_ledger_entry_matches`. Round-7 then introduced FIXED-leg-NULL-provenance design (§3.7). Codex caught: when re-ingesting a settlement whose FIXED leg has `price_value=None`, the comparator calls `_normalize_decimal(None)` which becomes `Decimal('None')` and raises `decimal.InvalidOperation` — every FIXED-leg idempotency check returns 500. **Fix:** added `_decimal_or_none_eq(a, b)` helper (None-safe Decimal equality); `_ledger_entry_matches` uses it for `price_value`. String + date columns compare safely with `==` (None == None is True). §10 new DO NOT codifies the rule. §7 adds `test_ledger_idempotency_no_op_on_fixed_leg_with_null_provenance`. **Self-blame:** classic cross-round inconsistency — round-6 added the comparator field assuming non-NULL; round-7 added the NULL design without revisiting round-6's comparator. The propagation rule from round 7 ("when a quadruple is established as canonical provenance shape, every parallel surface must mirror it") expands to: **when a NULL-able shape is introduced, every comparator that touches the affected fields must be re-audited for NULL-safety**.
+
+2. **Select a deterministic price source (P2).** §3.6 round-2 changed lookup to exact-date query but filtered only `(symbol, settlement_date)`. Codex caught: `cash_settlement_prices` unique constraint is `(source, symbol, settlement_date)` (verified at `models/market_data.py:13`). Multiple sources can publish for the same `(symbol, date)`; `.first()` without source filter returns whichever row the DB orders first → MTM / P&L provenance non-deterministic across environments and over time as new sources are onboarded. **Fix:** new `_canonical_source_for_symbol(symbol)` helper with `_CANONICAL_SOURCE_BY_SYMBOL` mapping (initial: LME_* → westmetall); raises `PriceReferenceUnprovable` for unknown commodities. Lookup query adds `CashSettlementPrice.source == canonical_source` — three-column filter matches the unique constraint, so `.first()` is deterministic by construction. §6 gains three acceptance criteria. §7 adds three tests including a multi-source fixture regression. §10 new DO NOT codifies the rule.
+
 **Two Codex P1 absorbed against commit `33b0f66cb`:**
 
 1. **Require `PriceReferenceEntry` only for PRICED ledger rows (P1).** §6 acceptance round-7 said "≥1 PriceReferenceEntry per ledger entry consumed in realized_pl". Codex caught: `compute_pl` consumes BOTH FIXED and FLOAT rows; FIXED rows deliberately have NULL provenance per §3.7 (their economics come from `contract.fixed_price_value`, not a market lookup). Requiring a reference for FIXED rows forces either fabricated provenance or makes the acceptance test impossible. **Fix:** §6 criterion now says "per **priced** ledger entry (i.e., row with non-NULL price provenance — FLOAT legs only)"; FIXED legs are explicitly excluded from the count. §7 test renamed to `test_compute_pl_settled_period_with_priced_rows_does_not_emit_empty_price_references` + new `test_compute_pl_collects_only_priced_ledger_entries_into_price_references` regressing the FIXED-vs-FLOAT boundary.
@@ -376,26 +382,56 @@ def _prior_business_day(price_date: date, calendar) -> date:
     return cursor
 ```
 
+**Canonical source per symbol** (per Codex P2 absorbed in §0 round 10): `cash_settlement_prices` unique constraint at `models/market_data.py:13` is `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. The lookup MUST filter by source to be deterministic; a `_canonical_source_for_symbol(symbol)` helper (in the new `app/utils/market_calendar.py` or a sibling module) returns the institutional canonical source. Unknown commodities **MUST raise a structured error** at lookup time — do NOT silently fall through to a global default. This mirrors the calendar selection rule (§3.6 paragraph above).
+
+For the existing data: westmetall is the de-facto canonical for LME_* symbols (per the existing helper docstring "PriceQuote.source is the row's source column verbatim, e.g. 'westmetall'"). Initial mapping:
+
+```python
+_CANONICAL_SOURCE_BY_SYMBOL: dict[str, str] = {
+    "LME_AL": "westmetall",
+    "LME_CU": "westmetall",
+    "LME_ZN": "westmetall",
+    "LME_NI": "westmetall",
+    # Extend as new commodities / sources are onboarded.
+}
+
+def _canonical_source_for_symbol(symbol: str) -> str:
+    try:
+        return _CANONICAL_SOURCE_BY_SYMBOL[symbol]
+    except KeyError as exc:
+        raise PriceReferenceUnprovable(
+            f"No canonical source registered for symbol {symbol!r}; "
+            "operator must extend _CANONICAL_SOURCE_BY_SYMBOL before "
+            "MTM/P&L can be computed for this commodity.",
+            symbol=symbol,
+            as_of_date=None,  # not yet relevant — no lookup attempted
+        ) from exc
+```
+
 **Replacement lookup body** (replaces the range query at `:157-167`):
 
 ```python
+canonical_source = _canonical_source_for_symbol(symbol)  # may raise PriceReferenceUnprovable
 prior_bd = _prior_business_day(as_of_date, _market_calendar_for_symbol(symbol))
 row = (
     db.query(CashSettlementPrice)
     .filter(
+        CashSettlementPrice.source == canonical_source,
         CashSettlementPrice.symbol == symbol,
         CashSettlementPrice.settlement_date == prior_bd,  # EXACT match — no range
     )
-    .first()
+    .first()  # uniqueness guaranteed by uq_cash_settlement_prices_source_symbol_date
 )
 if not row:
     raise PriceReferenceUnprovable(
-        f"No {symbol} cash settlement for prior business day {prior_bd} "
-        f"(as_of={as_of_date}); older settlements are NOT considered.",
+        f"No {canonical_source} {symbol} cash settlement for prior business day {prior_bd} "
+        f"(as_of={as_of_date}); older settlements and other sources are NOT considered.",
         symbol=symbol,
         as_of_date=as_of_date,
     )
 ```
+
+The `(source, symbol, settlement_date)` triplet matches the unique constraint at `uq_cash_settlement_prices_source_symbol_date`; `.first()` is now deterministic by construction (at most one row possible).
 
 **Why no range fallback** (per Codex P1 absorbed in §0): the OPUS-04 finding cited "5-calendar-day lookback" as a regime that lets stale prices in. A 3-business-day range fallback has the same shape one layer down — Monday's missing row silently becomes Friday's. Constitution §2.1 ("no fallback pricing regimes") and §2.6 ("price reference unprovable") together require: if THE prior business day's row is missing, hard-fail. The operator must publish the missing row before MTM/P&L for that as_of_date can compute. There is no auto-fallback.
 
@@ -553,6 +589,18 @@ def _build_expected_entry(
 **Update `_ledger_entry_matches`** at `backend/app/services/cashflow_ledger_service.py:25-35` to include the new provenance fields in the idempotency comparison. A re-ingest of the same `source_event_id` whose derived `(price_source, price_symbol, price_settlement_date)` differs from the persisted row is a legitimate conflict (the canonical settlement table grew or a new symbol was published since the prior ingest); raise the existing 409 conflict shape, do NOT silently no-op:
 
 ```python
+def _decimal_or_none_eq(a: Decimal | None, b: Decimal | None) -> bool:
+    """Equality for nullable Decimal columns.
+
+    `_normalize_decimal(None)` becomes `Decimal('None')` which raises;
+    FIXED-leg ledger rows have `price_value=None` per §3.7's all-or-four-NULL
+    design, so the idempotency comparator MUST handle nullables safely.
+    """
+    if a is None or b is None:
+        return a is None and b is None
+    return _normalize_decimal(a) == _normalize_decimal(b)
+
+
 def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
     return (
         entry.hedge_contract_id == expected["hedge_contract_id"]
@@ -563,10 +611,15 @@ def _ledger_entry_matches(entry: CashFlowLedgerEntry, expected: dict) -> bool:
         and entry.currency == expected["currency"]
         and entry.direction == expected["direction"]
         and _normalize_decimal(entry.amount) == _normalize_decimal(expected["amount"])
+        # The four price_* fields are NULL-together for FIXED legs and
+        # populated-together for FLOAT legs (per §3.7 + the all-four-or-NULL
+        # CHECK constraint). String / date columns compare safely with `==`
+        # (None == None is True in Python); the Decimal column needs the
+        # NULL-aware helper above to avoid `_normalize_decimal(None)` raising.
         and entry.price_source == expected["price_source"]
         and entry.price_symbol == expected["price_symbol"]
         and entry.price_settlement_date == expected["price_settlement_date"]
-        and _normalize_decimal(entry.price_value) == _normalize_decimal(expected["price_value"])
+        and _decimal_or_none_eq(entry.price_value, expected["price_value"])
     )
 ```
 
@@ -763,6 +816,9 @@ def downgrade() -> None:
 - [ ] `price_lookup_service` computes the EXACT prior business day via `_prior_business_day(as_of_date, calendar)` and queries `WHERE settlement_date == prior_bd` (no range). 5-calendar-day legacy AND any range fallback are gone.
 - [ ] When the prior-business-day row is missing, `PriceReferenceUnprovable` raises — older business-day rows are NOT considered.
 - [ ] `_market_calendar_for_symbol(symbol)` raises a structured error for unknown commodities — no silent fall-through to a global default calendar.
+- [ ] `_canonical_source_for_symbol(symbol)` (new helper) returns the institutional canonical source per commodity (e.g., `LME_AL → "westmetall"`); raises `PriceReferenceUnprovable` for symbols not in `_CANONICAL_SOURCE_BY_SYMBOL`.
+- [ ] Lookup query filters by `(source == canonical_source, symbol == symbol, settlement_date == prior_bd)` — three columns matching `uq_cash_settlement_prices_source_symbol_date`; `.first()` is deterministic by uniqueness construction (at most one row).
+- [ ] `_decimal_or_none_eq(a, b)` helper handles nullable Decimal comparison without `_normalize_decimal(None)` raising; `_ledger_entry_matches` uses it for `price_value` so FIXED-leg idempotency comparison works (FIXED legs have all four price_* fields NULL).
 - [ ] Float→Numeric migration preflight FAILS-CLOSED on any out-of-scale row.
 - [ ] `test_alembic_chain.py` continues passing (single head invariant).
 - [ ] Legacy MTMSnapshot / PLSnapshot / CashFlowBaselineSnapshot rows have `NULL` provenance fields (no backfill); a fresh-session readback test confirms.
@@ -820,6 +876,7 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_settlement_partial_provenance_violates_check_constraint` — three of four populated, one NULL → `IntegrityError`
   - `test_ledger_entry_matches_includes_provenance_in_equality` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; second `ingest` with derived `(source=A, symbol=LME_CU, date=D, value=9300)` raises 409, NOT silent no-op
   - `test_ledger_entry_matches_detects_price_value_only_divergence` — fixture persists row with `(source=A, symbol=LME_AL, date=D, value=2585)`; canonical price table is corrected in-place to `2590` for the same `(source, symbol, date)`; second `ingest` of the same `source_event_id` re-derives via `_with_provenance` and gets `value=2590`; assert 409, NOT silent no-op (the symbol/source/date triplet is identical but the `value` divergence MUST surface)
+  - `test_ledger_idempotency_no_op_on_fixed_leg_with_null_provenance` — fixture: persist a settlement event whose FIXED leg has all four `price_*` fields NULL (per §3.7); re-ingest the SAME `source_event_id` with identical payload; assert no 500 / no AttributeError / no Decimal('None') raise — the comparator returns True via `_decimal_or_none_eq` and the call is silently idempotent. Regression for the round-10 P1 NULL-handling bug.
   - `test_ledger_idempotency_no_op_on_identical_rerun` — same payload + same derived provenance returns the existing row without conflict
 
 - `backend/tests/test_pl_calculation_service.py` (extension for round-5 ledger-provenance collection):
@@ -834,6 +891,9 @@ New / extended tests (locate existing test files via `Glob backend/tests/test_{m
   - `test_lookup_skips_LME_holiday_correctly`
   - `test_missing_prior_business_day_raises_PriceReferenceUnprovable_even_when_older_business_day_exists` — fixture has Friday's row present but Monday's missing; lookup for Tuesday must raise (Monday is the exact prior BD; Friday is NOT considered)
   - `test_unknown_commodity_raises_structured_error_not_silent_default_calendar`
+  - `test_canonical_source_for_symbol_returns_westmetall_for_LME_symbols` — fixture asserts known mapping
+  - `test_canonical_source_for_symbol_raises_PriceReferenceUnprovable_for_unknown_symbol` — `XYZ_FAKE` not in `_CANONICAL_SOURCE_BY_SYMBOL` → exception with structured message
+  - `test_lookup_filters_by_canonical_source_excluding_other_sources` — fixture: insert two `CashSettlementPrice` rows with same `(symbol=LME_AL, settlement_date=D)` but different sources `westmetall` and `bloomberg`; lookup MUST return the westmetall row (canonical) regardless of insertion order. Without source filter, `.first()` is non-deterministic.
   - `test_price_usd_returned_as_decimal_not_float_post_migration`
 
 - `backend/tests/test_038_migration_roundtrip.py` (new, manual or marked):
@@ -950,6 +1010,8 @@ J-A3-01 + J-A3-03 + J-A3-05 + J-A3-OPUS-03 + J-A3-OPUS-04 + J-A3-OPUS-05.
 - DO NOT persist `CashFlowLedgerEntry.amount` as a SIGNED value. The existing `compute_pl` (`pl_calculation_service.py:16-83`) applies the sign from `direction` (IN adds, OUT subtracts) when reading ledger entries. The institutional convention is: `amount` is the NON-NEGATIVE MAGNITUDE; `direction` carries the sign (per Codex P1 absorbed in §0 round 5).
 - DO NOT derive both ledger legs from a single net formula `(settlement − fixed) × qty`. The settlement payload carries TWO legs {FIXED, FLOAT}; `_build_expected_entry` is invoked ONCE PER LEG. Each leg's amount derives independently: FIXED uses `contract.fixed_price_value`, FLOAT uses `settlement_quote.value`. Copying one net formula across both legs produces `compute_pl` doubling — qty=10/fixed=100/settlement=110 yields `+200` instead of `+100`. Institutional P1 (per Codex P1 absorbed in §0 round 7).
 - DO NOT derive the FLOAT leg's direction as "opposite of `contract.fixed_leg_side`". Read `contract.variable_leg_side` directly. The DB CHECK constraint at `models/contracts.py:78-80` only ties `classification` to `fixed_leg_side`; there is NO invariant forcing `variable_leg_side != fixed_leg_side`. A contract with both sides equal is degenerate but admissible at the schema layer; deriving FLOAT direction from "opposite of fixed" would silently rewrite the stored variable side and let an inconsistent contract generate realized P&L from a fabricated direction (per Codex P2 absorbed in §0 round 8).
+- DO NOT call `_normalize_decimal(value)` directly on a nullable Decimal column without first checking for None. `_normalize_decimal(None) == Decimal(str(None))` raises `decimal.InvalidOperation`. FIXED-leg ledger rows have `price_value = None` per §3.7; a comparator that calls `_normalize_decimal(entry.price_value)` unconditionally will raise during idempotency re-ingest, returning a 500 instead of the existing settlement / a clean 409. Use the `_decimal_or_none_eq(a, b)` helper for nullable Decimal equality (per Codex P1 absorbed in §0 round 10).
+- DO NOT query `cash_settlement_prices` filtering only by `(symbol, settlement_date)` and using `.first()`. The unique constraint is on `(source, symbol, settlement_date)` — multiple sources can publish for the same `(symbol, date)`. Without the source filter, `.first()` returns whichever row the DB happens to order first, making MTM / P&L provenance non-deterministic across environments. Lookup MUST filter on `(source == canonical_source, symbol, settlement_date)` where `canonical_source = _canonical_source_for_symbol(symbol)` (per Codex P2 absorbed in §0 round 10).
 - DO NOT trust the operator-supplied `payload.legs[*].direction` blindly. If the derived direction differs from the payload, raise `HTTPException(422, "Settlement direction does not match derived sign")` — same fail-closed shape as the existing `_validate_currency`. Operator intent verification stays; server-side derivation is authoritative.
 - DO NOT limit `PLResultResponse.price_references` to the unrealized-MTM lookup. `compute_pl` reads `CashFlowLedgerEntry` rows for the realized path; after §3.7 those rows carry provenance. Settled-period P&L snapshots MUST collect ledger-row provenance into `price_references` — otherwise a fully-settled period emits an empty references list and J-A3-05 stays open at the snapshot layer (per Codex P1 absorbed in §0 round 5).
 - DO NOT skip the Float→Numeric preflight. A row with `price_usd = 2585.501234567` would silently round; the preflight makes the failure visible.
