@@ -23,6 +23,7 @@ This dispatch is a **factual refresh** of the original `2026-05-06-phase-a2-pr-4
   - **P1 enum-create-before-add-column** (§3.4 migration) — pattern now mirrors `017_add_rfq_channel_type_to_counterparty.py:17-18`: `sa.Enum(...).create(op.get_bind(), checkfirst=True)` before `op.add_column`, `.drop(op.get_bind(), checkfirst=True)` after `op.drop_column`.
   - **P1 reject_quote durability coupling** (§3.3) — quote state transition and queued reject outbox row must land in the SAME `session.commit()` (strategy b, not a). Splitting them allows a route-commit failure after a successful WhatsApp send to leave the counterparty informed of rejection while the quote stays active.
   - **P2 read-schema follow-through** (§3.4 + §6 + §9) — `RFQInvitationRead.provider_message_id` must become `str | None = None` in lockstep with the column relaxation; otherwise every `RFQRead` response containing a queued/failed invitation fails Pydantic validation. Add OpenAPI + frontend schema regen as a required side-output.
+  - **P2 downgrade backfill** (§3.4) — `downgrade()` cannot reassert `NOT NULL` on `sent_at` / `provider_message_id` without first backfilling NULL rows that PR-4 legitimately introduces. Pattern mirrors 035 precedent: `UPDATE rfq_invitations SET provider_message_id = '' WHERE provider_message_id IS NULL` and `UPDATE rfq_invitations SET sent_at = created_at WHERE sent_at IS NULL` before `ALTER COLUMN ... SET NOT NULL`. Downgrade remains destructive (purpose + failure_reason + state + rejected_* data dropped); backfill is consistent with that one-way nature.
 
 The Phase A2 audit-cycle artifacts (3 stage prompts + 2 findings reports + jury verdict) are now in main since PR #34 (2026-05-09). Read the jury verdict directly at `docs/audits/2026-05-06-phase-a2-jury-verdict.md`. The four findings PR-4 closes (J-A2-05, J-A2-07, J-A2-08, J-A2-OPUS-02) are authoritative as written there.
 
@@ -310,6 +311,31 @@ def downgrade() -> None:
     op.drop_column("rfq_invitations", "purpose")
     sa.Enum(name="rfq_invitation_purpose").drop(op.get_bind(), checkfirst=True)
 
+    # Backfill NULL outbox-shape rows BEFORE reasserting NOT NULL.
+    # Post-PR-4, queued/failed rows can legitimately have provider_message_id=NULL
+    # and sent_at=NULL; `ALTER COLUMN ... SET NOT NULL` would fail on Postgres
+    # with those rows present. Pattern mirrors 035 precedent (event_timestamp
+    # backfilled from created_at before NOT NULL re-imposed).
+    #
+    # Downgrade is already destructive (purpose + failure_reason + state +
+    # rejected_* data are dropped above), so backfilling sent_at from
+    # created_at and provider_message_id from "" is consistent with the
+    # one-way nature of this rollback. Operators must accept evidence loss
+    # if they choose to downgrade post-deployment.
+    op.execute(
+        """
+        UPDATE rfq_invitations
+           SET provider_message_id = ''
+         WHERE provider_message_id IS NULL
+        """
+    )
+    op.execute(
+        """
+        UPDATE rfq_invitations
+           SET sent_at = created_at
+         WHERE sent_at IS NULL
+        """
+    )
     op.alter_column("rfq_invitations", "provider_message_id", existing_type=sa.String(length=128), nullable=False, server_default="")
     op.alter_column("rfq_invitations", "sent_at", existing_type=sa.DateTime(timezone=True), nullable=False)
 ```
@@ -408,7 +434,7 @@ If any other consumer of `RFQInvitation` rows assumes `sent_at IS NOT NULL`, aud
 - [ ] `RFQQuote` no longer has any `session.delete(...)` invocation. State transition replaces it. `state == 'rejected'` quotes are excluded from ranking and from the latest-quote selection upstream queries.
 - [ ] `notify_award` and `notify_reject` persist `RFQInvitation` rows with appropriate `purpose`.
 - [ ] `reject_quote` persists an outbound `RFQInvitation` row with `purpose='reject_quote'`.
-- [ ] Migration `037_rfq_outbound_evidence` ships; up/down/up roundtrip clean on local Postgres.
+- [ ] Migration `037_rfq_outbound_evidence` ships; up/down/up roundtrip clean on local Postgres. Include a roundtrip variant where a `queued` outbox row (with `sent_at=NULL` and `provider_message_id=NULL`) is inserted between upgrade and downgrade — downgrade must succeed without violating the restored NOT NULL constraints (per the §3.4 backfill UPDATE statements).
 - [ ] `alembic heads` reports a single head after the migration applies.
 - [ ] Test asserts `RFQ#<rfq_number>` in every persisted `RFQInvitation.message_body` after `create`/`refresh`/`refresh_counterparty`/`reject_quote`/`notify_award`/`notify_reject`.
 - [ ] Test asserts that a `WhatsAppService.send_text_message` failure leaves a `failed` invitation row with `sent_at IS NULL` and `failure_reason` populated (no rollback of RFQ creation).
