@@ -178,12 +178,16 @@ def handle_find_symbol(payload: dict[str, Any], *, repo_root: Path) -> dict[str,
     name = payload["name"]
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         return {"ok": False, "error": f"invalid Python identifier: {name!r}"}
-    # `(?:async\s+)?` matches both `def` and `async def` — backend/app/api/routes/
-    # has many `async def cancel_rfq(...)`, `async def run_what_if_scenario(...)`
-    # style handlers that the v1 regex would have missed (silent FN —
-    # exactly the FP-class v2 is designed to eliminate).
+    # `^\s*` anchors to line-start but allows leading whitespace so
+    # indented method definitions match (e.g.,
+    # `    def create_deal(...)` inside `class DealEngine:`). Without
+    # leading-whitespace tolerance the regex only matches column-0
+    # `def`/`class` and silently misses every method on the codebase's
+    # service classes — re-introducing the v1 FP class v2 must
+    # eliminate. `(?:async\s+)?` covers `async def` route handlers
+    # under backend/app/api/routes/.
     pattern = (
-        rf"^(class\s+{re.escape(name)}\b|(?:async\s+)?def\s+{re.escape(name)}\b|{re.escape(name)}\s*[:=])"
+        rf"^\s*(class\s+{re.escape(name)}\b|(?:async\s+)?def\s+{re.escape(name)}\b|{re.escape(name)}\s*[:=])"
     )
     return _grep_with_context(repo_root, pattern, ["backend/app", "backend/tests", "scripts"], context_lines=15, byte_cap=_MAX_FIND_SYMBOL_BYTES)
 
@@ -717,7 +721,7 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 16 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+New test file. 17 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
 
 Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
 
@@ -739,6 +743,7 @@ Test enumeration (mechanical):
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
 - `test_handle_find_symbol_locates_async_function_definition` — fixture with `async def cancel_rfq(...):` → assert `find_symbol(name="cancel_rfq")` returns matching line. Pins the `(?:async\s+)?` regex prefix; without it, every async route handler in `backend/app/api/routes/` would silently return `matches=[]` (re-introducing the v1 FP class v2 is designed to eliminate).
+- `test_handle_find_symbol_locates_indented_method_definition` — fixture with `class DealEngine:\n    def create_deal(...):\n        ...`; assert `find_symbol(name="create_deal")` returns matching line at the indented `def`. Pins the `^\s*` regex prefix; without it, every method on every service class in `backend/app/services/` (DealEngineService.create_deal, etc.) would silently return `matches=[]` — large share of the repo's service APIs invisible to the verifier.
 - `test_handle_find_symbol_rejects_invalid_identifier` — `name="not a thing!"`, assert `ok: False, error: "invalid Python identifier"`.
 - `test_handle_grep_pattern_returns_matches_with_context` — fixture file with known pattern + 2-line context, assert excerpt format.
 - `test_handle_grep_pattern_truncates_at_80_results` — fixture with 200 matches, assert response has `truncated: True` and ≤ 80 matches.
@@ -807,7 +812,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 16 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 17 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -879,7 +884,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 16 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 17 mechanical tests
 
 ## Acceptance evidence
 
@@ -938,7 +943,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (16 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (17 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
