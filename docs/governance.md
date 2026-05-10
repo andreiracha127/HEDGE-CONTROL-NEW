@@ -137,6 +137,7 @@ VALUATION, MTM & CASHFLOW
   - Baseline (persistent)
   - Ledger (accounting)
   - What-if (simulation only)
+  - Projection (forward-looking estimate, non-persistent)
 
 Rules:
 
@@ -144,6 +145,17 @@ Rules:
 - One methodology per endpoint
 - No fallback pricing regimes
 - Premium pricing is explicitly excluded
+
+Projection invariants:
+
+- Per-row commodity pricing (no global single-curve lookup)
+- Hard-fail propagation: price reference unprovable → HTTP 424
+- No fallback regimes: missing market price for a variable row
+  is unprovable, never substituted from entry/fixed values
+- No zero-defaults: missing required economics (avg_entry_price,
+  fixed_price_value) → HTTP 422
+- No date substitution: missing settlement_date → HTTP 422
+- Emitted commodity matches the source row's commodity field
 
 ────────────────────────────────────────
 SCENARIO / WHAT-IF RULES
