@@ -20,7 +20,8 @@ Verified against `main = 40aa682d6`:
 - `backend/app/schemas/scenario.py:95-97` declares `ScenarioCashflowSnapshot.analytic` and `.baseline` with the same `CashFlowAnalyticResponse` type.
 - `backend/app/services/scenario_whatif_service.py:523-530` builds one `cashflow_analytic` object and assigns it to both `analytic` and `baseline`.
 - `backend/app/services/cashflow_ledger_service.py:77-157` now derives ledger rows server-side and persists price provenance for the floating leg.
-- `backend/app/models/cashflow.py:25-41` stores `CashFlowBaselineSnapshot.snapshot_data` as JSON and `total_net_cashflow` as a column, so PR-A3-4 can change the snapshot payload contract without a migration.
+- `backend/app/models/cashflow.py:25-41` stores `CashFlowBaselineSnapshot.snapshot_data` as JSON and `total_net_cashflow` as a column.
+- Legacy rows in `cashflow_baseline_snapshots` may already contain the old Analytic-shaped `snapshot_data["cashflow_items"]` payload. Because the table is unique by `as_of_date`, PR-A3-4 must preserve and archive those legacy rows before the new Baseline-owned shape can be created for the same date.
 - `docs/governance.md:131-159` already defines cashflow views and Projection-specific invariants after PR #47. PR-A3-4 does not need another constitutional change.
 
 The institutional issue is not that Baseline and Analytic share arithmetic. The issue is that Baseline is currently an alias of Analytic, and Scenario publishes a Baseline field that is literally the Analytic object. Ledger also exists as accounting evidence but Baseline does not persist any realized-ledger reconciliation evidence. That is a cashflow-boundary failure.
@@ -34,6 +35,7 @@ Close PR-A3-4 by making cashflow boundaries explicit and auditable:
 1. Baseline must be persisted by `cashflow_baseline_service` through a Baseline-owned builder. It must not import or call `compute_cashflow_analytic`, and it must not persist an Analytic response dump as its snapshot payload.
 2. Baseline snapshot data must include realized ledger evidence up to `as_of_date`, with a deterministic reconciliation block proving how the persisted `total_net_cashflow` was formed.
 3. Scenario must stop exposing a fake Baseline. `ScenarioCashflowSnapshot.baseline` is removed; What-if keeps its in-memory Analytic cashflow view only. If a future product needs Scenario-vs-Baseline comparison, it must be designed as a separate explicit contract, not by duplicating Analytic.
+4. Existing Analytic-shaped Baseline rows must be archived by migration, not silently rewritten and not deleted without evidence.
 
 After PR-A3-4:
 
@@ -61,6 +63,7 @@ After PR-A3-4:
 - `realized_total_usd` equals the sum of signed ledger entries where `IN` is positive and `OUT` is negative.
 - Baseline includes realized ledger entries with provenance fields already landed by Wave 1.
 - Scenario response schema no longer contains `cashflow_snapshot.baseline`.
+- Migration 039 preserves legacy Analytic-shaped baseline rows in an archive table and removes them from the active `cashflow_baseline_snapshots` table so the new Baseline shape can be created without permanent 409 lock.
 
 ---
 
@@ -79,6 +82,7 @@ After PR-A3-4:
 - `backend/app/services/cashflow_ledger_service.py:299-315` - `list_entries_by_contract()`, useful only as a ledger-query reference. Do not copy its `created_at` ordering into Baseline reconciliation.
 - `backend/app/models/cashflow.py:25-41` - Baseline snapshot model.
 - `backend/app/models/cashflow.py:44-90` - ledger event and entry model.
+- `backend/alembic/versions/038_a3_price_provenance.py` - prior A3 migration style.
 - `backend/app/schemas/cashflow.py:34-68` - `CashFlowItem`, `CashFlowAnalyticResponse`, `CashFlowBaselineSnapshotResponse`.
 - `backend/app/schemas/scenario.py:95-113` - scenario cashflow response schema.
 - `backend/app/services/scenario_whatif_service.py:510-530` - current duplicate Analytic/Baseline assignment.
@@ -335,11 +339,37 @@ rg -n "cashflow_snapshot.*baseline|baseline\\]" frontend-svelte backend/tests ba
 
 It returned no direct consumer of `cashflow_snapshot.baseline` in frontend code.
 
-### 3.5 No model migration
+### 3.5 Migration 039 - archive legacy Analytic-shaped baseline snapshots
 
-PR-A3-4 must not add a migration unless the executor finds a hard blocker. The existing `CashFlowBaselineSnapshot.snapshot_data JSON` and `total_net_cashflow Numeric` fields are sufficient for the new payload contract.
+PR-A3-4 must add a data-preserving migration because the payload shape changes under a table-level unique constraint on `as_of_date`.
 
-`alembic heads` must remain a single head at `038_a3_price_provenance`.
+Create `backend/alembic/versions/039_a3_cashflow_baseline_legacy_archive.py`.
+
+Migration requirements:
+
+- Create archive table `cashflow_baseline_snapshot_archives`.
+- Archive table columns:
+  - `id` UUID primary key, new archive row id.
+  - `original_snapshot_id` UUID not null.
+  - `as_of_date` Date not null.
+  - `snapshot_data` JSON not null.
+  - `total_net_cashflow` Numeric(18, 6) not null.
+  - `inputs_hash` String(64), nullable.
+  - `correlation_id` String(64) not null.
+  - `original_created_at` DateTime(timezone=True), nullable.
+  - `archived_at` DateTime(timezone=True), server default `func.now()`, not null.
+  - `archive_reason` String(128) not null.
+- Move only legacy Analytic-shaped rows:
+  - `snapshot_data` contains root key `cashflow_items`, OR
+  - `snapshot_data["view"]` is absent/not `"baseline"`.
+- Insert those rows into the archive table with `archive_reason="PR-A3-4 legacy analytic-shaped baseline payload"`.
+- Delete those moved rows from `cashflow_baseline_snapshots`.
+- Leave already-new rows with `snapshot_data["view"] == "baseline"` untouched.
+- Downgrade restores archived rows into `cashflow_baseline_snapshots` only when no active row exists for the same `as_of_date`; if an active row exists, downgrade must hard-fail with an explicit exception rather than silently overwrite.
+
+Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless the migration branches by dialect. This repo's migration tests run SQLite roundtrips.
+
+`alembic heads` must return one head: `039_a3_cashflow_baseline_legacy_archive`.
 
 ---
 
@@ -353,6 +383,7 @@ PR-A3-4 must not add a migration unless the executor finds a hard blocker. The e
 - Do not change settlement amount derivation rules from Wave 1.
 - Do not touch PR-A3-5 / J-A3-OPUS-09 partially-settled P&L lifecycle logic.
 - Do not relax hard-fail behavior for price lookup or unsupported ledger directions.
+- Do not add any migration beyond the legacy Baseline archive migration 039.
 
 ---
 
@@ -371,7 +402,9 @@ PR-A3-4 must not add a migration unless the executor finds a hard blocker. The e
 - [ ] `backend/app/services/scenario_whatif_service.py` no longer contains `baseline=cashflow_analytic`.
 - [ ] OpenAPI and `schema.d.ts` are regenerated and included if they change.
 - [ ] `docs/governance.md` has no diff.
-- [ ] `alembic heads` remains one head: `038_a3_price_provenance`.
+- [ ] Migration 039 archives legacy Analytic-shaped baseline snapshots before deleting active rows.
+- [ ] Migration 039 downgrade hard-fails rather than overwriting active Baseline rows for the same `as_of_date`.
+- [ ] `alembic heads` returns one head: `039_a3_cashflow_baseline_legacy_archive`.
 
 Mechanical grep checks:
 
@@ -492,6 +525,7 @@ The behavior must remain:
 
 - First create returns a persisted snapshot.
 - If persisted `snapshot_data` or `total_net_cashflow` is mutated, second create for same `as_of_date` raises HTTP 409.
+- Legacy Analytic-shaped snapshots are handled by migration 039 before service runtime. Do not add service-side silent rewrite of old `cashflow_items` payloads.
 
 Also add or extend a deterministic-hash test so it proves canonical ordering is
 part of the hash input for both payload arrays:
@@ -535,6 +569,20 @@ def test_scenario_cashflow_snapshot_has_no_fake_baseline(client) -> None:
 
 Update any existing tests that assume `cashflow_snapshot.baseline` exists. Do not replace it with another fake field.
 
+### 6.7 Migration archive coverage
+
+Add `backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py` or extend the migration roundtrip suite.
+
+Required tests:
+
+- Upgrade from revision 038 with one row in `cashflow_baseline_snapshots` whose `snapshot_data` root contains `cashflow_items`.
+- Assert upgrade creates `cashflow_baseline_snapshot_archives`.
+- Assert the legacy row is present in the archive table with the same `original_snapshot_id`, `as_of_date`, `snapshot_data`, `total_net_cashflow`, `inputs_hash`, and `correlation_id`.
+- Assert the legacy row is removed from `cashflow_baseline_snapshots`.
+- Assert a row whose `snapshot_data["view"] == "baseline"` remains active and is not archived.
+- Assert downgrade restores archived rows only when no active row exists for that `as_of_date`.
+- Assert downgrade hard-fails if restoring would overwrite an active row for the same `as_of_date`.
+
 ---
 
 ## 7. Verification commands
@@ -555,6 +603,7 @@ Run schema and migration checks:
 
 ```bash
 alembic heads
+pytest backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py -v
 ```
 
 Regenerate OpenAPI and frontend schema:
@@ -601,11 +650,12 @@ Known local baseline note: if the only failures are the existing Python 3.14 `ba
 7. Read the jury sections for J-A3-04 and J-A3-OPUS-08 in full.
 8. Implement Baseline-owned payload and reconciliation per sections 3.1-3.2.
 9. Remove fake Scenario Baseline per section 3.3.
-10. Regenerate OpenAPI/frontend schema per section 3.4.
-11. Run focused tests first, then adjacent cashflow tests, then full backend.
-12. Push normally. Do not use `--no-verify` unless explicitly authorized by the orchestrator.
-13. Open a PR against `main`. Do not auto-merge.
-14. Wait for Codex Connector review. Adjudicate every catch by direct code reading before accepting or rejecting it.
+10. Add migration 039 per section 3.5 and its migration roundtrip/archive tests.
+11. Regenerate OpenAPI/frontend schema per section 3.4.
+12. Run focused tests first, then adjacent cashflow tests, migration tests, then full backend.
+13. Push normally. Do not use `--no-verify` unless explicitly authorized by the orchestrator.
+14. Open a PR against `main`. Do not auto-merge.
+15. Wait for Codex Connector review. Adjudicate every catch by direct code reading before accepting or rejecting it.
 
 ---
 
@@ -627,6 +677,9 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
   `total_net_cashflow = unrealized_total_usd + realized_total_usd`.
 - Scenario no longer emits `cashflow_snapshot.baseline` as a duplicate
   Analytic object.
+- Migration 039 archives legacy Analytic-shaped baseline snapshots before
+  deleting them from the active table, avoiding permanent 409 lock under the
+  `as_of_date` unique constraint.
 - OpenAPI and frontend schema regenerated for the Scenario response change.
 
 ## Files changed
@@ -634,8 +687,10 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
 - `backend/app/services/cashflow_baseline_service.py`
 - `backend/app/schemas/scenario.py`
 - `backend/app/services/scenario_whatif_service.py`
+- `backend/alembic/versions/039_a3_cashflow_baseline_legacy_archive.py`
 - `backend/tests/test_cashflow_baseline_service.py`
 - `backend/tests/test_scenario_whatif_run.py`
+- `backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py`
 - `docs/api/openapi_v1.json`
 - `frontend-svelte/src/lib/api/schema.d.ts`
 
@@ -644,7 +699,8 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
 - [ ] Focused tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Adjacent cashflow tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Full backend: include the exact command and pass/fail counts; separate any known `test_ws.py` Python 3.14 baseline failures from regressions.
-- [ ] `alembic heads`: `038_a3_price_provenance`
+- [ ] `alembic heads`: `039_a3_cashflow_baseline_legacy_archive`
+- [ ] Migration 039 roundtrip/archive tests: include command and pass/fail counts
 - [ ] `git diff --check`: clean
 - [ ] `git diff -- docs/governance.md`: empty
 - [ ] grep `compute_cashflow_analytic|analytic.model_dump` in baseline service: zero matches
@@ -662,7 +718,7 @@ sections. No Constitution change in this PR.
 - P&L partially-settled lifecycle semantics (PR-A3-5 / J-A3-OPUS-09)
 - Scenario-vs-Baseline comparison feature
 - Ledger ingestion API changes
-- Model migration
+- Any migration beyond 039 legacy Baseline archive
 - Any change to `docs/governance.md`
 
 ## Closes
@@ -683,7 +739,9 @@ J-A3-04 + J-A3-OPUS-08.
 - Do not omit partially-settled contracts from Baseline unrealized items.
 - Do not mutate existing snapshots to the new shape; conflicting persisted snapshots must continue to return HTTP 409.
 - Do not modify `docs/governance.md`.
-- Do not add an Alembic migration unless a hard blocker is discovered and documented.
+- Do not omit migration 039; old Analytic-shaped Baseline rows must be preserved and removed from the active table before the new Baseline shape can be created for the same `as_of_date`.
+- Do not silently rewrite old `snapshot_data["cashflow_items"]` payloads into the new Baseline shape.
+- Do not delete legacy baseline rows without archiving them first.
 - Do not use `--no-verify` or `--force`.
 - Do not auto-merge.
 
@@ -702,5 +760,6 @@ When complete, report back with:
 - Grep evidence for the three zero-match boundary checks.
 - `docs/governance.md` zero-diff evidence.
 - OpenAPI/frontend schema regeneration evidence.
+- Migration 039 archive and downgrade evidence.
 
 Keep the report under 600 words.
