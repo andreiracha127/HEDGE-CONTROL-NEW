@@ -213,6 +213,15 @@ If `enqueue_message()` is refactored to accept a `delivery_message_id` parameter
 or otherwise expects the enriched `WhatsAppInboundMessage`, update all existing
 callers in `backend/app/api/routes/webhooks.py` and all direct tests in the same
 PR. This function signature/interface change is in scope for PR-A4-2.
+Before committing, run:
+
+```bash
+rg -n "enqueue_message" backend/app/api/routes/webhooks.py
+```
+
+At authoring time, the direct call sites are the Meta path at line 264 and the
+Twilio path at line 364. Both paths must attach the durable message identity
+after the `InboundWebhookMessage` row exists and before enqueue.
 
 In either case, provider redelivery after restart or local cache eviction must
 not enqueue/process the same provider message again.
@@ -294,6 +303,17 @@ __hash__ = None  # Explicitly unhashable; do not rely on Python's implicit rule.
 ```
 
 Do not make `WhatsAppInboundMessage` hashable in this PR.
+Confirm the local Pydantic version before finalizing the equality contract:
+
+```bash
+python -c "import pydantic; print(pydantic.VERSION)"
+```
+
+At authoring time this repo reports Pydantic `2.12.5`; explicit
+`__hash__ = None` is harmless documentation of the unhashable contract in v2
+and remains essential if the runtime ever changes to a hashable BaseModel
+regime.
+
 Confirm timestamp comparisons are timezone-consistent in existing constructors
 and extraction helpers before finalizing any equality override, and run:
 
@@ -359,6 +379,8 @@ not rely on Python locks or process-local sets for correctness.
 - Do not remove `InboundWebhookDelivery`; PR-A4-2 builds on it.
 - Do not introduce provider-specific behavior beyond Meta/Twilio.
 - Do not relax fail-closed signature behavior from PR-A4-1.
+- Do not remove the `delivery_message_id=None` legacy processing path in
+  PR-A4-2; removal is mandatory in PR-A4-3 after the deployment boundary.
 
 ---
 
@@ -378,7 +400,7 @@ not rely on Python locks or process-local sets for correctness.
 - [ ] `processing_result` records final orchestrator status and any RFQ/quote
   identifiers produced by processing.
 - [ ] Legacy `delivery_message_id=None` processing emits a structured warning in
-  PR-A4-2 and is removed no later than PR-A4-3.
+  PR-A4-2, is not removed in PR-A4-2, and is removed no later than PR-A4-3.
 - [ ] Current canonical RFQ correlation and phone consistency behavior remains
   unchanged.
 - [ ] PR-A4-3 LLM decision artifact persistence remains out of scope.
