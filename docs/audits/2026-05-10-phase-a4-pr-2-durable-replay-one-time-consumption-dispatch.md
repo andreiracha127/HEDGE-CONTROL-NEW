@@ -227,6 +227,10 @@ and keep the existing processing behavior. Post-PR-A4-2 webhook route enqueue
 paths must always set `delivery_message_id`; the nullable field exists only to
 avoid breaking direct test fixtures and pre-existing in-memory queue items during
 deployment.
+This legacy path must not be relied on beyond the deployment boundary. Any
+in-flight message processed without `delivery_message_id` must emit a structured
+log entry with `message_id`, `from_phone`, and final processing status so the
+exceptional path remains reconstructible.
 
 The processing result must capture enough to prove what happened:
 
@@ -334,16 +338,14 @@ Minimum expected coverage:
   - processing status/result is persisted for processed, skipped, and failed
     paths.
   - If migration 041 tests are added to
-    `backend/tests/test_inbound_webhook_delivery.py`, create a separate
-    `_load_migration_041()` helper pointing to
-    `041_a4_inbound_webhook_messages.py`; do not reuse the existing migration
-    helper for revision 040.
-  - Also create a parallel `_run_migration_041(connection, direction)` that
-    calls `_load_migration_041()` exclusively. Do not pass migration 041 tests
-    through the existing `_run_migration()` helper, which is hardcoded to load
-    revision 040.
-  - Add a one-line comment to the existing `_run_migration()` helper noting it
-    is intentionally scoped to migration 040 and must not be reused for 041.
+    `backend/tests/test_inbound_webhook_delivery.py`, rename the existing
+    migration helpers to `_load_migration_040()` and
+    `_run_migration_040(connection, direction)` and update their existing call
+    sites.
+  - Add sibling helpers `_load_migration_041()` and
+    `_run_migration_041(connection, direction)` pointing exclusively to
+    `041_a4_inbound_webhook_messages.py`. Do not run 041 assertions through the
+    040 helpers.
 - `backend/tests/test_rfq_orchestrator.py`
   - queue item with durable message ID updates `processing_status`;
   - auto-created quote stores `quote_id` on the durable message result;
