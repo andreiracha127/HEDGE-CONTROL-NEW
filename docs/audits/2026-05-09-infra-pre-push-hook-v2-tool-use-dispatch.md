@@ -513,7 +513,7 @@ New test file. 8 mechanical tests covering the 3 handlers + path-traversal prote
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
 - `test_handle_read_file_caps_at_500_lines` — fixture 1000-line file, assert excerpt has ≤ 500 lines.
-- `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `ok: False, error: "outside repo root"`.
+- `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
 - `test_handle_find_symbol_rejects_invalid_identifier` — `name="not a thing!"`, assert `ok: False, error: "invalid Python identifier"`.
@@ -567,13 +567,13 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 ## 6. Acceptance criteria
 
 - [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
-- [ ] `_resolve_within_repo` rejects path traversal (test asserts `ok: False, error: "outside repo root"` for `path="../../etc/passwd"`).
+- [ ] `_resolve_within_repo` rejects path traversal: `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for `path="../../etc/passwd"` (substring match — the full error includes the path prefix `path '...' resolves outside repo root`).
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
 - [ ] `client.messages.create` is called WITHOUT `tool_choice` (multi-turn requires the model to choose between investigation tools and `report_findings`).
 - [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
 - [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4 tool-use discipline block.
-- [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and forwards `tool_call_log` to `write_cache_artifact`.
+- [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
 - [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 8 mechanical tests.
