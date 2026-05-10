@@ -89,7 +89,7 @@ After PR-A3-4:
 - `backend/app/services/scenario_whatif_service.py:510-530` - current duplicate Analytic/Baseline assignment.
 - `backend/tests/test_cashflow_baseline_service.py` - existing baseline tests to extend.
 - `backend/tests/test_scenario_whatif_run.py` - scenario response tests to update.
-- `backend/app/core/precision.py:34-35` - `quantize_money()` canonical 6-decimal money normalization.
+- `backend/app/core/precision.py` - `quantize_money()` canonical 6-decimal money normalization.
 
 ---
 
