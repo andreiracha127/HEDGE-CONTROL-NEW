@@ -370,7 +370,11 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - [ ] `grep -n "or 0" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
 - [ ] `grep -n '"Al"' backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix (the hardcoded literal is gone).
 - [ ] `grep -n "except Exception" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
-- [ ] **Pre-fix test cleanup completed** (per §7.1): `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` returns ZERO matches (old symbol replaced everywhere). The `MARKET_PRICE_PATCH` constant points to `_get_market_price_quote`. Every `@patch(...)` site uses `PriceQuote` for success or `side_effect=PriceReferenceUnprovable(...)` for absence — never `return_value=None` or `return_value=Decimal(...)`. `test_variable_order_fallback_to_entry_price` and any other fallback-regime tests are DELETED.
+- [ ] **Pre-fix test cleanup completed** (per §7.1):
+  - `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` returns ZERO matches (old symbol replaced everywhere).
+  - `grep -n 'price_source.*"entry"' backend/tests/test_cashflow_projection_service.py` returns ZERO matches (every test asserting the removed `"entry"` fallback regime — orders AND contracts — is DELETED).
+  - `grep -n '\.commodity == "Al"' backend/tests/test_cashflow_projection_service.py` returns ZERO matches (hardcode regression tests removed).
+  - The `MARKET_PRICE_PATCH` constant points to `_get_market_price_quote`. Every `@patch(...)` site uses `PriceQuote` for success or `side_effect=PriceReferenceUnprovable(...)` for absence — never `return_value=None` or `return_value=Decimal(...)`.
 
 ---
 
@@ -390,8 +394,8 @@ After §3.1's rename (`_get_market_price` → `_get_market_price_quote`) and sig
 1. Update the patch constant: `MARKET_PRICE_PATCH = "app.services.cashflow_projection_service._get_market_price_quote"` (new name).
 2. Update every `@patch(MARKET_PRICE_PATCH, return_value=Decimal("..."))` call site: replace with `return_value=PriceQuote(value=Decimal("..."), source="westmetall", settlement_date=<prior_business_day>, symbol=resolve_symbol("<commodity>"))` for the market-available path. Verify via `find_symbol` that `PriceQuote` is constructible at the cited shape.
 3. Update every `@patch(MARKET_PRICE_PATCH, return_value=None)` call site: replace with `@patch(MARKET_PRICE_PATCH, side_effect=PriceReferenceUnprovable("..."))` — the new function raises, it does not return None.
-4. **DELETE** `test_variable_order_fallback_to_entry_price` (and any sibling test asserting `price_source == "entry"` or `price_source == "fixed"` for the variable path with market-unavailable). These tests pin the bug being removed — they do not represent new institutional invariants.
-5. **DELETE** any test that asserts `commodity == "Al"` on a non-aluminum order's projection item (the hardcode is gone).
+4. **DELETE every test that asserts `price_source == "entry"` regardless of instrument type (orders AND contracts).** The institutional fallback regime is removed for BOTH the order path (line ~170) AND the contract path (line ~294 in the existing test file). Mechanical procedure: run `grep -n 'price_source.*"entry"' backend/tests/test_cashflow_projection_service.py` and DELETE every test function whose body contains a matching assertion. After deletion, the grep MUST return ZERO matches. Note: tests asserting `price_source == "fixed"` on a fixed-price ORDER path are KEPT — `"fixed"` is the legitimate new sentinel for the fixed-price branch (§3.2 prescribes it). The institutional contract is "no fallback regime", not "no `price_source` literal" — `"fixed"` for fixed orders and `"market"` for variable rows are valid; only `"entry"` (the removed fallback) is forbidden.
+5. **DELETE** any test that asserts `commodity == "Al"` on a non-aluminum order's projection item (the hardcode is gone). Mechanical procedure: `grep -n '\.commodity == "Al"' backend/tests/test_cashflow_projection_service.py` — DELETE every matching test.
 
 After cleanup: `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` MUST return ZERO matches (old symbol fully replaced; the `[^_]` excludes matches inside `_get_market_price_quote`).
 
