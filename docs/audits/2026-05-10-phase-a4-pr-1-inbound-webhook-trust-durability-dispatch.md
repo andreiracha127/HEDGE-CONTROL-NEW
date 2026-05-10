@@ -133,11 +133,24 @@ Minimum required fields:
 
 Use JSON/JSONB-compatible column types consistent with existing repo patterns.
 The migration must be portable across PostgreSQL and SQLite tests.
+Use the existing `JSON().with_variant(JSONB(), "postgresql")` style for JSON
+payload columns in the SQLAlchemy model and Alembic migration rather than a
+PostgreSQL-only `JSONB` type.
 Both `raw_body` and `raw_form` must be present on every row; the
 non-applicable field is `NULL` (`raw_form` is `NULL` for Meta, `raw_body` is
 `NULL` for Twilio). The two status fields must be enforced by an Enum, CHECK
 constraint, or equivalent database-backed validation that is covered on both
 PostgreSQL and SQLite paths.
+The migration must also enforce the provider-exclusive raw capture invariant
+with a database-level CHECK constraint. The strongest acceptable form is:
+
+```sql
+CHECK (
+  (provider = 'meta' AND raw_body IS NOT NULL AND raw_form IS NULL)
+  OR
+  (provider = 'twilio' AND raw_body IS NULL AND raw_form IS NOT NULL)
+)
+```
 
 For invalid JSON/form extraction failures, preserve the inbound delivery record
 with a failed parse status before returning the controlled HTTP error.
@@ -224,8 +237,9 @@ registration for metadata creation in tests.
 - [ ] Production/staging with provider `twilio` and empty `TWILIO_AUTH_TOKEN`
   refuses inbound Twilio webhook processing before extraction/queueing.
 - [ ] Local/test bypass is gated on an explicit environment marker such as
-  `app_env in {"test", "local", "development"}`, emits a warning log, and is
-  covered by a test proving the bypass does not activate for `app_env=production`.
+  `app_env in {"test", "local", "development", "dev"}`, emits a warning log,
+  and is covered by a test proving the bypass does not activate for
+  `app_env=production`.
 - [ ] Meta requests with configured secret and missing signature return HTTP
   403 and do not enqueue messages.
 - [ ] Meta requests with configured secret and invalid signature return HTTP
@@ -244,6 +258,8 @@ registration for metadata creation in tests.
   listed in §3.2.
 - [ ] Meta rows populate `raw_body` and leave `raw_form` null; Twilio rows
   populate `raw_form` and leave `raw_body` null.
+- [ ] A database CHECK constraint enforces that the provider value matches the
+  applicable raw evidence column and rejects both-null/both-populated rows.
 - [ ] Malformed Meta JSON preserves a failed inbound delivery record before
   returning HTTP 400.
 - [ ] The existing canonical RFQ ID processing tests keep passing.
@@ -284,6 +300,14 @@ python -m pytest backend/tests/scripts/ -v
 cd backend && alembic heads
 git diff --check
 ```
+
+Do not preemptively rewrite existing `hmac.new(...)` helpers. The current local
+Python 3.14 runtime exposes `hmac.new`, and the existing
+`backend/tests/test_webhook_processor.py` and
+`backend/tests/test_phase5_whatsapp_llm.py` suites pass on Python 3.14. If a
+different executor runtime proves otherwise with a failing test, handle that
+runtime fix narrowly and report it as an environment compatibility correction,
+not as a dispatch prerequisite.
 
 If the executor adds a dedicated migration test file, include it in the focused
 test run explicitly. If broad backend tests are run, document the known local
