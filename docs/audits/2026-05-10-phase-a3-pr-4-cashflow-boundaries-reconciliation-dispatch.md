@@ -352,6 +352,8 @@ this keeps the sort key type-stable for both fresh payloads and JSON-loaded
 existing payloads.
 Use the explicit `is not None` form for `source_event_type` so an empty string,
 if ever present, is not silently conflated with null.
+This `source_event_type` guard is a JSON-deserialization defense only;
+`CashFlowLedgerEntry.source_event_type` is NOT NULL for live ORM data.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
@@ -364,6 +366,16 @@ Updated conflict-check shape:
 
 ```python
 if existing is not None:
+    if existing.snapshot_data is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="CashFlow baseline snapshot missing snapshot_data",
+        )
+    if existing.total_net_cashflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="CashFlow baseline snapshot missing total_net_cashflow",
+        )
     existing_payload = _canonicalize_snapshot_payload(dict(existing.snapshot_data))
     if existing_payload.get("view") != "baseline":
         raise HTTPException(
@@ -387,9 +399,9 @@ if existing is not None:
     return existing
 ```
 
-The `existing.inputs_hash != inputs_hash` comparison is reached only after the
-explicit `existing.inputs_hash is None` hard-fail above. Do not reintroduce an
-`is not None` guard in the hash comparison.
+The triple-condition comparison is reached only after the explicit
+`snapshot_data`, `total_net_cashflow`, and `inputs_hash` hard-fails above. Do
+not reintroduce an `is not None` guard in the hash comparison.
 
 Migration 039 must run before the new `cashflow_baseline_service.py` code is
 deployed. If a legacy active row with root `cashflow_items` remains in
@@ -548,7 +560,7 @@ The downgrade `correlation_id IS NULL` guard is defensive against corrupted arch
 - [ ] Baseline unrealized queries exclude rows with `deleted_at` set on both `HedgeContract` and `Order`.
 - [ ] Scenario response no longer includes `cashflow_snapshot.baseline`.
 - [ ] `backend/app/services/scenario_whatif_service.py` no longer contains `baseline=cashflow_analytic`.
-- [ ] `test_cashflow_baseline_per_row_provenance_quadruple_inside_snapshot_data` reads `snapshot.snapshot_data["unrealized_items"][0]`, not `snapshot.snapshot_data["cashflow_items"][0]`.
+- [ ] The old `test_cashflow_baseline_per_row_provenance_quadruple_inside_snapshot_data` is renamed to `test_cashflow_baseline_per_row_provenance_inside_unrealized_items` and reads `snapshot.snapshot_data["unrealized_items"][0]`, not `snapshot.snapshot_data["cashflow_items"][0]`.
 - [ ] OpenAPI and `schema.d.ts` are regenerated and included if they change.
 - [ ] `docs/governance.md` has no diff.
 - [ ] Migration 039 archives legacy Analytic-shaped baseline snapshots before deleting active rows.
@@ -587,6 +599,10 @@ Change it to read the new Baseline-owned key:
 ```python
 item = snapshot.snapshot_data["unrealized_items"][0]
 ```
+
+Rename the test to
+`test_cashflow_baseline_per_row_provenance_inside_unrealized_items` so the test
+name matches the new payload root.
 
 Keep the existing assertions for `price_source`, `price_symbol`,
 `price_settlement_date`, and `price_value`; those provenance fields remain
