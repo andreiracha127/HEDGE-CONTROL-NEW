@@ -115,6 +115,14 @@ def _persist_message_for_enqueue(
     provider: str,
     msg: Any,
 ) -> uuid.UUID | None:
+    if msg.timestamp is None:
+        logger.warning(
+            "webhook_message_missing_timestamp",
+            provider=provider,
+            provider_message_id=msg.message_id,
+        )
+        return None
+
     session = SessionLocal()
     try:
         row = InboundWebhookMessage(
