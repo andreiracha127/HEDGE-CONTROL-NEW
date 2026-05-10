@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
+from base64 import b64encode
+from collections import deque
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -15,11 +18,11 @@ from app.services.webhook_processor import (
     enqueue_message,
     extract_messages,
     extract_messages_twilio,
+    mark_message_finished,
     queue_depth,
     verify_signature,
     verify_twilio_signature,
-    _message_queue,
-    _seen_message_ids,
+    _active_durable_message_ids,
     _seen_set,
 )
 
@@ -32,13 +35,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_queue():
     """Reset the in-process queue between tests."""
-    _message_queue.clear()
-    _seen_message_ids.clear()
-    _seen_set.clear()
+    drain_queue()
     yield
-    _message_queue.clear()
-    _seen_message_ids.clear()
-    _seen_set.clear()
+    drain_queue()
 
 
 def _make_msg(
@@ -78,15 +77,123 @@ def test_enqueue_duplicate_ignored():
     assert queue_depth() == 1
 
 
+def test_enqueue_durable_duplicate_ignored_until_finished():
+    durable_id = uuid.uuid4()
+    msg = _make_msg("durable-dup").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+
+    assert enqueue_message(msg) is True
+    assert enqueue_message(msg) is False
+    assert queue_depth() == 1
+
+    mark_message_finished(msg)
+    assert enqueue_message(msg) is True
+    assert queue_depth() == 2
+
+
+def test_dequeued_durable_duplicate_ignored_until_finished():
+    durable_id = uuid.uuid4()
+    msg = _make_msg("durable-in-flight").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+    duplicate = _make_msg("durable-in-flight-redelivery").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+
+    assert enqueue_message(msg) is True
+    assert dequeue_message() == msg
+
+    assert enqueue_message(duplicate) is False
+    assert queue_depth() == 0
+
+    mark_message_finished(msg)
+    assert enqueue_message(duplicate) is True
+    assert queue_depth() == 1
+
+
+def test_mark_message_finished_noop_for_legacy_message():
+    mark_message_finished(_make_msg("legacy-finished"))
+    assert _active_durable_message_ids == set()
+
+
+def test_durable_eviction_clears_active_id(monkeypatch):
+    bounded_queue = deque(maxlen=2)
+    monkeypatch.setattr(
+        "app.services.webhook_processor._message_queue", bounded_queue
+    )
+
+    evicted_id = uuid.uuid4()
+    retained_id = uuid.uuid4()
+    incoming_id = uuid.uuid4()
+
+    evicted = _make_msg("durable-evicted").model_copy(
+        update={"delivery_message_id": evicted_id}
+    )
+    retained = _make_msg("durable-retained").model_copy(
+        update={"delivery_message_id": retained_id}
+    )
+    incoming = _make_msg("durable-incoming").model_copy(
+        update={"delivery_message_id": incoming_id}
+    )
+
+    assert enqueue_message(evicted) is True
+    assert enqueue_message(retained) is True
+    assert evicted_id in _active_durable_message_ids
+
+    assert enqueue_message(incoming) is True
+
+    assert [msg.message_id for msg in bounded_queue] == [
+        "durable-retained",
+        "durable-incoming",
+    ]
+    assert evicted_id not in _active_durable_message_ids
+    assert retained_id in _active_durable_message_ids
+    assert incoming_id in _active_durable_message_ids
+
+    redelivery = _make_msg("durable-evicted-redelivery").model_copy(
+        update={"delivery_message_id": evicted_id}
+    )
+    assert enqueue_message(redelivery) is True
+
+
+def test_legacy_eviction_does_not_corrupt_active_durable_ids(monkeypatch):
+    bounded_queue = deque(maxlen=2)
+    monkeypatch.setattr(
+        "app.services.webhook_processor._message_queue", bounded_queue
+    )
+
+    retained_id = uuid.uuid4()
+    incoming_id = uuid.uuid4()
+    retained = _make_msg("durable-retained").model_copy(
+        update={"delivery_message_id": retained_id}
+    )
+    incoming = _make_msg("durable-incoming").model_copy(
+        update={"delivery_message_id": incoming_id}
+    )
+
+    assert enqueue_message(_make_msg("legacy-evicted")) is True
+    assert enqueue_message(retained) is True
+    assert enqueue_message(incoming) is True
+
+    assert [msg.message_id for msg in bounded_queue] == [
+        "durable-retained",
+        "durable-incoming",
+    ]
+    assert _active_durable_message_ids == {retained_id, incoming_id}
+
+
 def test_drain_queue_returns_all():
     enqueue_message(_make_msg("a"))
     enqueue_message(_make_msg("b"))
     enqueue_message(_make_msg("c"))
     assert queue_depth() == 3
+    assert _seen_set == {"a", "b", "c"}
 
     drained = drain_queue()
     assert len(drained) == 3
     assert queue_depth() == 0
+    assert _seen_set == set()
 
 
 def test_fifo_ordering():
@@ -110,7 +217,7 @@ def test_queue_depth_updates():
 def test_verify_signature_valid():
     secret = "test-secret-123"
     body = b'{"entry": []}'
-    expected_hmac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    expected_hmac = hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
     sig_header = f"sha256={expected_hmac}"
 
     with patch.dict(os.environ, {"WHATSAPP_APP_SECRET": secret}):
@@ -138,7 +245,7 @@ def test_verify_signature_no_sha256_prefix():
 def test_verify_signature_tampered_body():
     secret = "test-secret-123"
     body = b'{"entry": []}'
-    expected_hmac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    expected_hmac = hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
     sig_header = f"sha256={expected_hmac}"
 
     with patch.dict(os.environ, {"WHATSAPP_APP_SECRET": secret}):
@@ -297,15 +404,11 @@ def test_extract_no_contacts():
 
 def _compute_twilio_signature(auth_token: str, url: str, params: dict[str, str]) -> str:
     """Compute a valid Twilio signature for test assertions."""
-    import hashlib
-    import hmac as _hmac
-    from base64 import b64encode as _b64
-
     data_str = url
     for key in sorted(params.keys()):
         data_str += key + params[key]
-    return _b64(
-        _hmac.new(
+    return b64encode(
+        hmac.HMAC(
             auth_token.encode("utf-8"),
             data_str.encode("utf-8"),
             hashlib.sha1,

@@ -19,11 +19,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
 from base64 import b64encode
 from collections import deque
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
-from urllib.parse import urlencode
 
 from app.core.logging import get_logger
 from app.schemas.whatsapp import WhatsAppInboundMessage
@@ -39,49 +40,98 @@ _message_queue: deque[WhatsAppInboundMessage] = deque(maxlen=10_000)
 _SEEN_IDS_MAX = 5_000
 _seen_message_ids: deque[str] = deque(maxlen=_SEEN_IDS_MAX)
 _seen_set: set[str] = set()
+_active_durable_message_ids: set[uuid.UUID] = set()
+_queue_state_lock = Lock()
 
 
-def enqueue_message(msg: WhatsAppInboundMessage) -> None:
+def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
     """Add a parsed inbound message to the processing queue.
 
-    Silently drops duplicates (WhatsApp may redeliver webhooks).
+    Legacy messages without a durable row retain the local duplicate guard.
+    Durable webhook paths set ``delivery_message_id`` and rely on database
+    uniqueness/status as the authority; the local durable-id set only prevents
+    duplicate queue copies while the row is already queued or in-flight.
+    When the bounded deque is full, the leftmost item is the one that
+    ``append`` will evict, so its durable active marker is cleared first.
     """
-    if msg.message_id in _seen_set:
-        logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
-        return
+    with _queue_state_lock:
+        if msg.delivery_message_id is None:
+            if msg.message_id in _seen_set:
+                logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
+                return False
 
-    if len(_seen_message_ids) >= _SEEN_IDS_MAX:
-        evicted = _seen_message_ids[0]
-        _seen_set.discard(evicted)
-    _seen_message_ids.append(msg.message_id)
-    _seen_set.add(msg.message_id)
+            if len(_seen_message_ids) == _seen_message_ids.maxlen:
+                evicted = _seen_message_ids[0]
+                _seen_set.discard(evicted)
+            _seen_message_ids.append(msg.message_id)
+            _seen_set.add(msg.message_id)
+        elif msg.delivery_message_id in _active_durable_message_ids:
+            logger.debug(
+                "webhook_durable_duplicate_queue_skipped",
+                message_id=msg.message_id,
+                delivery_message_id=str(msg.delivery_message_id),
+            )
+            return False
+        else:
+            _active_durable_message_ids.add(msg.delivery_message_id)
 
-    _message_queue.append(msg)
+        queue_maxlen = _message_queue.maxlen
+        if queue_maxlen is not None and len(_message_queue) >= queue_maxlen:
+            # deque(maxlen=N) evicts this leftmost item on the next append.
+            evicted = _message_queue[0]
+            if evicted.delivery_message_id is not None:
+                _active_durable_message_ids.discard(evicted.delivery_message_id)
+                logger.warning(
+                    "webhook_durable_message_evicted_from_queue",
+                    message_id=evicted.message_id,
+                    delivery_message_id=str(evicted.delivery_message_id),
+                    queue_depth=len(_message_queue),
+                )
+
+        _message_queue.append(msg)
+        queue_depth_value = len(_message_queue)
     logger.info(
         "webhook_message_enqueued",
         message_id=msg.message_id,
+        delivery_message_id=str(msg.delivery_message_id)
+        if msg.delivery_message_id
+        else None,
         from_phone=msg.from_phone,
-        queue_depth=len(_message_queue),
+        queue_depth=queue_depth_value,
     )
+    return True
+
+
+def mark_message_finished(msg: WhatsAppInboundMessage) -> None:
+    """Release local queue/in-flight tracking for a durable message."""
+    if msg.delivery_message_id is not None:
+        with _queue_state_lock:
+            _active_durable_message_ids.discard(msg.delivery_message_id)
 
 
 def dequeue_message() -> WhatsAppInboundMessage | None:
     """Pop the oldest message from the queue, or ``None`` if empty."""
-    try:
-        return _message_queue.popleft()
-    except IndexError:
-        return None
+    with _queue_state_lock:
+        try:
+            return _message_queue.popleft()
+        except IndexError:
+            return None
 
 
 def queue_depth() -> int:
     """Return the current number of messages waiting."""
-    return len(_message_queue)
+    with _queue_state_lock:
+        return len(_message_queue)
 
 
 def drain_queue() -> list[WhatsAppInboundMessage]:
-    """Remove and return all messages from the queue (useful in tests)."""
-    msgs = list(_message_queue)
-    _message_queue.clear()
+    """Remove queued messages and reset local dedupe state for test isolation."""
+    with _queue_state_lock:
+        msgs = list(_message_queue)
+        _message_queue.clear()
+        _active_durable_message_ids.clear()
+        _seen_message_ids.clear()
+        _seen_set.clear()
     return msgs
 
 
@@ -114,7 +164,7 @@ def verify_signature(payload_body: bytes, signature_header: str) -> bool:
         return False
 
     expected = signature_header[7:]  # strip 'sha256='
-    computed = hmac.new(
+    computed = hmac.HMAC(
         app_secret.encode("utf-8"),
         payload_body,
         hashlib.sha256,
@@ -224,7 +274,7 @@ def verify_twilio_signature(
         data_str += key + form_params[key]
 
     computed = b64encode(
-        hmac.new(
+        hmac.HMAC(
             auth_token.encode("utf-8"),
             data_str.encode("utf-8"),
             hashlib.sha1,

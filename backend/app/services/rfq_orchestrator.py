@@ -19,18 +19,20 @@ It does NOT replace the RFQ Service — it delegates to it.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
 from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.core.logging import get_logger
 from app.core.pricing import CANONICAL_PRICE_UNITS
 from app.core.utils import now_utc
+from app.models.inbound_webhook_message import InboundWebhookMessage
 from app.models.rfqs import (
     RFQ,
     RFQInvitation,
@@ -50,7 +52,7 @@ from app.services.rfq_service import (
     prefix_with_canonical_id,
 )
 from app.services.whatsapp_service import WhatsAppService
-from app.services.webhook_processor import dequeue_message
+from app.services.webhook_processor import dequeue_message, mark_message_finished
 
 logger = get_logger()
 
@@ -116,6 +118,9 @@ _MIN_QUOTE_LENGTH = 3
 _CANONICAL_ID_RE = re.compile(
     r"(?<!\w)RFQ#(?P<num>RFQ-\d{4}-\d{6})(?!\w)(?:\s+[—–]\s+)?"
 )
+_DURABLE_MESSAGE_TERMINAL_STATUSES = {"processed", "duplicate"}
+_DURABLE_MESSAGE_STALE_AFTER = timedelta(minutes=15)
+_DURABLE_FAILURE_STATUSES = {"llm_unavailable", "auto_quote_failed"}
 
 
 def _parse_canonical_ids(text: str | None) -> list[str]:
@@ -130,6 +135,39 @@ def _strip_canonical_id(text: str | None) -> str:
     if not text:
         return ""
     return _CANONICAL_ID_RE.sub("", text).strip()
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (Decimal, UUID, datetime)):
+        return str(value)
+    if hasattr(value, "value"):
+        return _json_safe(value.value)
+    return value
+
+
+def _parse_uuid(value: object) -> UUID | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _processing_started_at_is_stale(started_at: datetime | None) -> bool:
+    if started_at is None:
+        return True
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at <= now_utc() - _DURABLE_MESSAGE_STALE_AFTER
 
 
 class RFQOrchestrator:
@@ -270,10 +308,175 @@ class RFQOrchestrator:
             if msg is None:
                 break
 
-            result = RFQOrchestrator._process_single_message(session, msg)
-            results.append(result)
+            try:
+                claim = RFQOrchestrator._claim_durable_message(session, msg)
+                if claim is not None:
+                    results.append(claim)
+                    continue
+
+                try:
+                    result = RFQOrchestrator._process_single_message(session, msg)
+                except Exception as exc:
+                    RFQOrchestrator._finalize_durable_message(
+                        session,
+                        msg,
+                        {
+                            "message_id": msg.message_id,
+                            "status": "failed",
+                            "error": str(exc),
+                        },
+                        failed=True,
+                    )
+                    raise
+                RFQOrchestrator._finalize_durable_message(
+                    session,
+                    msg,
+                    result,
+                    failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
+                )
+                results.append(result)
+            finally:
+                mark_message_finished(msg)
 
         return results
+
+    @staticmethod
+    def _claim_durable_message(
+        session: Session,
+        msg: WhatsAppInboundMessage,
+    ) -> dict | None:
+        if msg.delivery_message_id is None:
+            logger.warning(
+                "orchestrator_legacy_inbound_without_delivery_message_id",
+                message_id=msg.message_id,
+                from_phone=msg.from_phone,
+            )
+            return None
+
+        durable_id = msg.delivery_message_id
+        durable = session.get(InboundWebhookMessage, durable_id)
+        if durable is None:
+            logger.warning(
+                "orchestrator_durable_message_missing",
+                message_id=msg.message_id,
+                delivery_message_id=str(durable_id),
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "durable_message_missing",
+                "delivery_message_id": str(durable_id),
+            }
+
+        if durable.processing_status in _DURABLE_MESSAGE_TERMINAL_STATUSES:
+            logger.info(
+                "orchestrator_durable_message_already_consumed",
+                message_id=msg.message_id,
+                delivery_message_id=str(durable.id),
+                processing_status=durable.processing_status,
+            )
+            return {"message_id": msg.message_id, "status": "already_consumed"}
+
+        stale_cutoff = now_utc() - _DURABLE_MESSAGE_STALE_AFTER
+        claimed = (
+            session.query(InboundWebhookMessage)
+            .filter(
+                InboundWebhookMessage.id == durable_id,
+                or_(
+                    InboundWebhookMessage.processing_status.in_(
+                        ["received", "failed"]
+                    ),
+                    and_(
+                        InboundWebhookMessage.processing_status == "processing",
+                        or_(
+                            InboundWebhookMessage.processing_started_at.is_(None),
+                            InboundWebhookMessage.processing_started_at <= stale_cutoff,
+                        ),
+                    ),
+                ),
+            )
+            .update(
+                {
+                    InboundWebhookMessage.processing_status: "processing",
+                    InboundWebhookMessage.processing_started_at: now_utc(),
+                    InboundWebhookMessage.processing_completed_at: None,
+                    InboundWebhookMessage.processing_result: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        session.commit()
+        if claimed == 1:
+            return None
+
+        session.refresh(durable)
+        if durable.processing_status in _DURABLE_MESSAGE_TERMINAL_STATUSES:
+            logger.info(
+                "orchestrator_durable_message_already_consumed_after_claim_race",
+                message_id=msg.message_id,
+                delivery_message_id=str(durable.id),
+                processing_status=durable.processing_status,
+            )
+            return {"message_id": msg.message_id, "status": "already_consumed"}
+
+        if durable.processing_status == "processing":
+            if _processing_started_at_is_stale(durable.processing_started_at):
+                logger.warning(
+                    "orchestrator_durable_message_stale_claim_race_recovered",
+                    message_id=msg.message_id,
+                    delivery_message_id=str(durable.id),
+                    processing_started_at=durable.processing_started_at.isoformat()
+                    if durable.processing_started_at
+                    else None,
+                )
+                return None
+
+            logger.info(
+                "orchestrator_durable_message_already_processing",
+                message_id=msg.message_id,
+                delivery_message_id=str(durable.id),
+            )
+            return {"message_id": msg.message_id, "status": "already_processing"}
+
+        logger.warning(
+            "orchestrator_durable_message_recoverable_claim_race_recovered",
+            message_id=msg.message_id,
+            delivery_message_id=str(durable.id),
+            processing_status=durable.processing_status,
+        )
+        return None
+
+    @staticmethod
+    def _finalize_durable_message(
+        session: Session,
+        msg: WhatsAppInboundMessage,
+        result: dict,
+        *,
+        failed: bool = False,
+    ) -> None:
+        if msg.delivery_message_id is None:
+            logger.warning(
+                "orchestrator_legacy_inbound_processed_without_delivery_message_id",
+                message_id=msg.message_id,
+                from_phone=msg.from_phone,
+                final_status=result.get("status"),
+            )
+            return
+
+        durable = session.get(InboundWebhookMessage, msg.delivery_message_id)
+        if durable is None:
+            return
+
+        durable.processing_status = "failed" if failed else "processed"
+        durable.processing_completed_at = now_utc()
+        durable.processing_result = _json_safe(result)
+        canonical_numbers = _parse_canonical_ids(msg.text)
+        durable.rfq_number = (
+            result.get("canonical_number")
+            or (canonical_numbers[0] if len(set(canonical_numbers)) == 1 else None)
+        )
+        durable.rfq_id = _parse_uuid(result.get("rfq_id"))
+        durable.quote_id = _parse_uuid(result.get("quote_id") or result.get("existing_quote_id"))
+        session.commit()
 
     @staticmethod
     def _process_single_message(

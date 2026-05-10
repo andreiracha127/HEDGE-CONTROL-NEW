@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from enum import Enum
 
@@ -49,13 +50,39 @@ class WhatsAppWebhookVerification(BaseModel):
 
 
 class WhatsAppInboundMessage(BaseModel):
-    """Parsed inbound message from WhatsApp webhook payload."""
+    """Parsed inbound message from WhatsApp webhook payload.
+
+    Explicitly unhashable; durable replay uses database identity, not object
+    set membership.
+    """
 
     message_id: str = Field(..., max_length=128)
     from_phone: str = Field(..., max_length=20)
     timestamp: datetime
     text: str = Field(..., max_length=4096)
     sender_name: str | None = Field(None, max_length=200)
+    delivery_message_id: uuid.UUID | None = Field(None)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, WhatsAppInboundMessage):
+            return NotImplemented
+        # delivery_message_id is intentionally excluded: redeliveries of the
+        # same provider message remain content-equal regardless of durable row.
+        return (
+            self.message_id,
+            self.from_phone,
+            self.timestamp,
+            self.text,
+            self.sender_name,
+        ) == (
+            other.message_id,
+            other.from_phone,
+            other.timestamp,
+            other.text,
+            other.sender_name,
+        )
+
+    __hash__ = None
 
 
 class WhatsAppWebhookPayload(BaseModel):
