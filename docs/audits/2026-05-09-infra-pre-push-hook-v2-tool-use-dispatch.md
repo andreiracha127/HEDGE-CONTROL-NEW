@@ -356,22 +356,6 @@ _MAX_CUMULATIVE_OUTPUT_TOKENS = 60_000
 _PER_TURN_MAX_TOKENS = 8_192
 
 
-def _create_with_retry(
-    client: Anthropic,
-    *,
-    model: str,
-    max_tokens: int,
-    cached_system_blocks: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-    messages: list[dict[str, Any]],
-):
-    """Network-retry wrapper around messages.create — preserves v1's
-    3-attempt exponential backoff on RateLimitError / APIConnectionError /
-    APIStatusError; AuthenticationError fails fast (no retry).
-    """
-    ...  # extracted verbatim from v1's inner retry loop
-
-
 def _summarize_for_log(result: dict[str, Any]) -> str:
     """Compact, redaction-safe summary of a tool result for the audit log.
 
@@ -388,6 +372,31 @@ def _summarize_for_log(result: dict[str, Any]) -> str:
         f"ok={ok} keys={keys} excerpt_chars={excerpt_chars} "
         f"matches_count={matches_count} truncated={truncated}"
     )
+
+
+def _create_with_retry(
+    client: Anthropic,
+    *,
+    model: str,
+    max_tokens: int,
+    cached_system_blocks: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+):
+    """Network-retry wrapper around messages.create — preserves v1's
+    3-attempt exponential backoff on RateLimitError / APIConnectionError /
+    APIStatusError; AuthenticationError fails fast (no retry).
+
+    NOTE: This wrapper uses ``tool_choice={"type": "any"}`` to guarantee
+    loop progress in the multi-turn caller. With Anthropic's default
+    ``auto`` setting, Sonnet may emit plain text without any tool_use
+    block, causing the multi-turn loop in ``call_review`` to abort with
+    "model emitted no tool_use block". The ``any`` setting still lets
+    the model choose between investigation tools and ``report_findings``;
+    it only requires SOME tool to be called per turn.
+    """
+    ...  # extracted from v1's inner retry loop, with tool_choice={"type": "any"}
+         # added to client.messages.create kwargs
 
 
 def call_review(
@@ -460,7 +469,7 @@ def call_review(
 
 **Critical design points**:
 
-- **No `tool_choice` forcing** in the multi-turn case. v1 forced `tool_choice={"type": "tool", "name": "report_findings"}` to guarantee structured output on a single turn. v2 lets the model choose between investigation tools and the final `report_findings` — forcing would prevent the model from calling `read_file`. The model is steered to call `report_findings` last via the system prompt instruction (§3.5).
+- **`tool_choice={"type": "any"}`** — guarantees that EVERY turn calls SOME tool. v1 forced the specific tool (`{"type": "tool", "name": "report_findings"}`); v2 cannot force a specific tool because the model needs to choose between investigation tools and the final `report_findings`. But omitting `tool_choice` (Anthropic default `auto`) lets the model emit plain text without any tool_use, which would hit the `if not executed_any` branch and abort the loop. `{"type": "any"}` is the correct middle ground: model picks any tool, but cannot opt out of tool-calling. The model is steered to call `report_findings` last via the system prompt instruction (§3.4).
 - **Retry/backoff** stays on the inner `_create_with_retry`. Network errors retry per turn; `MAX_ITERATIONS` caps the outer loop.
 - **`tool_results` content is JSON-serialized**. Anthropic accepts both string content and structured content for `tool_result`; JSON-string is the simplest portable shape.
 - **Response content history** is preserved (`messages.append({"role": "assistant", "content": response.content})`) so the model can reason across turns.
@@ -614,7 +623,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
-- [ ] `client.messages.create` is called WITHOUT `tool_choice` (multi-turn requires the model to choose between investigation tools and `report_findings`).
+- [ ] `client.messages.create` is called WITH `tool_choice={"type": "any"}` (guarantees a tool is called every turn — model picks between investigation tools and `report_findings`, but cannot emit plain-text-only response that would abort the loop).
 - [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
 - [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4 tool-use discipline block.
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
@@ -720,7 +729,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 
 ## 10. Constraints — what NOT to do
 
-- DO NOT enable `tool_choice` forcing in the multi-turn loop. Forcing the model to call only one tool prevents investigation; the model must be free to choose between investigation tools and `report_findings`.
+- DO NOT use `tool_choice={"type": "tool", "name": "report_findings"}` (v1's specific-forcing) in the multi-turn loop — it would prevent the model from calling investigation tools. DO use `tool_choice={"type": "any"}` (forces some tool but the model picks which) — required for loop progress.
 - DO NOT raise `_LINE_CAP` in `file_resolver.py`. Pre-inlining stays bounded at 200 lines/file; the new `read_file` tool covers gaps.
 - DO NOT add write tools, subprocess-execution tools, or tools that make HTTP requests. v2 is read-only.
 - DO NOT skip the `_resolve_within_repo` check in any handler that takes a path argument. Path-traversal rejection is enforced per handler, not centralized.
