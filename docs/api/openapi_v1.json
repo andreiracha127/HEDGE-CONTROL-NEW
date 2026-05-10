@@ -586,7 +586,7 @@
           },
           "commodity": {
             "default": "",
-            "maxLength": 20,
+            "maxLength": 64,
             "title": "Commodity",
             "type": "string"
           },
