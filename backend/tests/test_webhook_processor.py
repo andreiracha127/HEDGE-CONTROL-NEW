@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import uuid
+from base64 import b64encode
 from collections import deque
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -22,8 +23,6 @@ from app.services.webhook_processor import (
     verify_signature,
     verify_twilio_signature,
     _active_durable_message_ids,
-    _message_queue,
-    _seen_message_ids,
     _seen_set,
 )
 
@@ -36,15 +35,9 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_queue():
     """Reset the in-process queue between tests."""
-    _active_durable_message_ids.clear()
-    _message_queue.clear()
-    _seen_message_ids.clear()
-    _seen_set.clear()
+    drain_queue()
     yield
-    _active_durable_message_ids.clear()
-    _message_queue.clear()
-    _seen_message_ids.clear()
-    _seen_set.clear()
+    drain_queue()
 
 
 def _make_msg(
@@ -99,6 +92,11 @@ def test_enqueue_durable_duplicate_ignored_until_finished():
     assert queue_depth() == 2
 
 
+def test_mark_message_finished_noop_for_legacy_message():
+    mark_message_finished(_make_msg("legacy-finished"))
+    assert _active_durable_message_ids == set()
+
+
 def test_durable_eviction_clears_active_id(monkeypatch):
     bounded_queue = deque(maxlen=2)
     monkeypatch.setattr(
@@ -137,6 +135,32 @@ def test_durable_eviction_clears_active_id(monkeypatch):
         update={"delivery_message_id": evicted_id}
     )
     assert enqueue_message(redelivery) is True
+
+
+def test_legacy_eviction_does_not_corrupt_active_durable_ids(monkeypatch):
+    bounded_queue = deque(maxlen=2)
+    monkeypatch.setattr(
+        "app.services.webhook_processor._message_queue", bounded_queue
+    )
+
+    retained_id = uuid.uuid4()
+    incoming_id = uuid.uuid4()
+    retained = _make_msg("durable-retained").model_copy(
+        update={"delivery_message_id": retained_id}
+    )
+    incoming = _make_msg("durable-incoming").model_copy(
+        update={"delivery_message_id": incoming_id}
+    )
+
+    assert enqueue_message(_make_msg("legacy-evicted")) is True
+    assert enqueue_message(retained) is True
+    assert enqueue_message(incoming) is True
+
+    assert [msg.message_id for msg in bounded_queue] == [
+        "durable-retained",
+        "durable-incoming",
+    ]
+    assert _active_durable_message_ids == {retained_id, incoming_id}
 
 
 def test_drain_queue_returns_all():
@@ -360,15 +384,11 @@ def test_extract_no_contacts():
 
 def _compute_twilio_signature(auth_token: str, url: str, params: dict[str, str]) -> str:
     """Compute a valid Twilio signature for test assertions."""
-    import hashlib
-    import hmac as _hmac
-    from base64 import b64encode as _b64
-
     data_str = url
     for key in sorted(params.keys()):
         data_str += key + params[key]
-    return _b64(
-        _hmac.new(
+    return b64encode(
+        hmac.new(
             auth_token.encode("utf-8"),
             data_str.encode("utf-8"),
             hashlib.sha1,

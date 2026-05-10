@@ -25,7 +25,6 @@ from collections import deque
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
-from urllib.parse import urlencode
 
 from app.core.logging import get_logger
 from app.schemas.whatsapp import WhatsAppInboundMessage
@@ -52,6 +51,8 @@ def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
     Durable webhook paths set ``delivery_message_id`` and rely on database
     uniqueness/status as the authority; the local durable-id set only prevents
     duplicate queue copies while the row is already queued or in-flight.
+    When the bounded deque is full, the leftmost item is the one that
+    ``append`` will evict, so its durable active marker is cleared first.
     """
     with _queue_state_lock:
         if msg.delivery_message_id is None:
