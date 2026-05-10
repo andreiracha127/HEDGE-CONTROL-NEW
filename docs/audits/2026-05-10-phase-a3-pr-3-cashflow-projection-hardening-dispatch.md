@@ -174,7 +174,6 @@ for order in orders:
                     "is missing; cannot project."
                 ),
             )
-        price_quote = None
         price = Decimal(str(order.avg_entry_price))
         price_src = "fixed"
     else:
@@ -363,7 +362,7 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - [ ] All `else: price = avg_entry_price` / `else: est_variable = fixed_price` fallback regimes are REMOVED. The `price_src="entry"` literal no longer appears in the codebase under `cashflow_projection_service.py`.
 - [ ] `CashFlowProjectionItem.commodity` is `order.commodity` (NOT hardcoded `"Al"`) for orders. Contracts already emit `contract.commodity` correctly — verify unchanged.
 - [ ] `contract.settlement_date or as_of_date` substitution is REMOVED. Missing `settlement_date` raises 422.
-- [ ] `routes/cashflow.py:projection` wraps `compute_cashflow_projection` in `try/except PriceReferenceUnprovable as exc: raise HTTPException(424)`. `PriceReferenceUnprovable` import added to the route module.
+- [ ] Route function `get_cashflow_projection` in `routes/cashflow.py` wraps `compute_cashflow_projection` in `try/except PriceReferenceUnprovable as exc: raise HTTPException(424)`. `PriceReferenceUnprovable` import added to the route module via `from app.utils.price_reference import PriceReferenceUnprovable` (authoritative module per Wave 2 §0 declaration).
 - [ ] `alembic heads` continues to return `["038_a3_price_provenance"]` (no migration).
 - [ ] `test_alembic_chain.py` continues passing.
 - [ ] `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` show ZERO diff post-regen (no schema-impacting change).
