@@ -399,14 +399,18 @@ It returned no direct consumer of `cashflow_snapshot.baseline` in frontend code.
 
 PR-A3-4 must add a data-preserving migration because the payload shape changes under a table-level unique constraint on `as_of_date`.
 
-Create `backend/alembic/versions/039_a3_cashflow_baseline_legacy_archive.py`.
+Create `backend/alembic/versions/039_a3_cashflow_baseline_archive.py`.
 
 The migration identifiers must be:
 
 ```python
-revision = "039_a3_cashflow_baseline_legacy_archive"
+revision = "039_a3_cashflow_baseline_archive"
 down_revision = "038_a3_price_provenance"
 ```
+
+The revision id is exactly 32 characters. Do not lengthen it:
+Alembic 1.18.4 creates `alembic_version.version_num` as `String(32)`, so
+longer revision identifiers fail when PostgreSQL stamps the version table.
 
 Migration requirements:
 
@@ -444,7 +448,7 @@ Use `json_type` for `cashflow_baseline_snapshot_archives.snapshot_data` so Postg
 
 The downgrade `correlation_id IS NULL` guard is defensive against corrupted archive rows; live rows moved from `cashflow_baseline_snapshots` should already satisfy the source table's NOT NULL constraint.
 
-`cd backend && python -m alembic heads` must return one head: `039_a3_cashflow_baseline_legacy_archive`.
+`cd backend && python -m alembic heads` must return one head: `039_a3_cashflow_baseline_archive`.
 
 ---
 
@@ -481,7 +485,7 @@ The downgrade `correlation_id IS NULL` guard is defensive against corrupted arch
 - [ ] `docs/governance.md` has no diff.
 - [ ] Migration 039 archives legacy Analytic-shaped baseline snapshots before deleting active rows.
 - [ ] Migration 039 downgrade hard-fails rather than overwriting active Baseline rows for the same `as_of_date`.
-- [ ] `cd backend && python -m alembic heads` returns one head: `039_a3_cashflow_baseline_legacy_archive`.
+- [ ] `cd backend && python -m alembic heads` returns one head: `039_a3_cashflow_baseline_archive`.
 
 Mechanical grep checks:
 
@@ -657,7 +661,7 @@ Update any existing tests that assume `cashflow_snapshot.baseline` exists. Do no
 
 ### 6.7 Migration archive coverage
 
-Add `backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py` or extend the migration roundtrip suite.
+Add `backend/tests/test_039_cashflow_baseline_archive_migration.py` or extend the migration roundtrip suite.
 
 Required tests:
 
@@ -691,7 +695,7 @@ Run schema and migration checks:
 ```bash
 cd backend && python -m alembic heads
 cd ..
-pytest backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py -v
+pytest backend/tests/test_039_cashflow_baseline_archive_migration.py -v
 ```
 
 Regenerate OpenAPI and frontend schema:
@@ -775,10 +779,10 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
 - `backend/app/services/cashflow_baseline_service.py`
 - `backend/app/schemas/scenario.py`
 - `backend/app/services/scenario_whatif_service.py`
-- `backend/alembic/versions/039_a3_cashflow_baseline_legacy_archive.py`
+- `backend/alembic/versions/039_a3_cashflow_baseline_archive.py`
 - `backend/tests/test_cashflow_baseline_service.py`
 - `backend/tests/test_scenario_whatif_run.py`
-- `backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py`
+- `backend/tests/test_039_cashflow_baseline_archive_migration.py`
 - `docs/api/openapi_v1.json`
 - `frontend-svelte/src/lib/api/schema.d.ts`
 
@@ -787,7 +791,7 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
 - [ ] Focused tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Adjacent cashflow tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Full backend: include the exact command and pass/fail counts; separate any known `test_ws.py` Python 3.14 baseline failures from regressions.
-- [ ] `cd backend && python -m alembic heads`: `039_a3_cashflow_baseline_legacy_archive`
+- [ ] `cd backend && python -m alembic heads`: `039_a3_cashflow_baseline_archive`
 - [ ] Migration 039 roundtrip/archive tests: include command and pass/fail counts
 - [ ] `git diff --check`: clean
 - [ ] `git diff -- docs/governance.md`: empty
