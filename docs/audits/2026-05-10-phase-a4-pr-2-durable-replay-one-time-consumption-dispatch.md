@@ -186,16 +186,25 @@ Required behavior:
   - insert the durable message row with `processing_status="received"`;
   - enqueue a queue item that carries the durable message row ID;
   - do not enqueue before the durable message row exists.
-- For a duplicate provider message ID:
+- For an existing provider message ID whose durable row is already consumed
+  (`processed` or a terminal duplicate/skip result):
   - do not enqueue it again;
   - do not invoke LLM parsing;
   - do not create or mutate quotes;
   - record a deterministic duplicate result, either by returning the existing
     row or creating a rejected/duplicate audit trace linked to the new delivery.
+- For an existing provider message ID whose durable row is not yet consumed
+  (`received`, stale `processing`, or retryable `failed`):
+  - do not create a second row;
+  - recover processing of the existing durable row instead of treating the
+    message as consumed;
+  - ensure the same row ID is the only unit that can be claimed by workers, so a
+    retry cannot create two quotes.
 
-The unique constraint must be the final arbiter. Application-level pre-checks
-are allowed for clean logs, but they are not sufficient without the DB unique
-constraint.
+The unique constraint must be the final arbiter for message identity.
+Application-level pre-checks are allowed for clean logs, but they are not
+sufficient without the DB unique constraint and a status-aware claim/recovery
+path for rows that exist but have not reached a terminal consumed state.
 
 ### 3.4 Replace process-local duplicate suppression as the authority
 
@@ -224,7 +233,10 @@ Twilio path at line 364. Both paths must attach the durable message identity
 after the `InboundWebhookMessage` row exists and before enqueue.
 
 In either case, provider redelivery after restart or local cache eviction must
-not enqueue/process the same provider message again.
+not process a terminally consumed provider message again. If the restart left an
+existing durable row in `received` or stale `processing`, the implementation
+must recover that same row rather than skip it as a duplicate or create another
+row.
 
 ### 3.5 Carry durable message identity into the orchestrator
 
@@ -237,10 +249,15 @@ Preferred direction:
 - add `delivery_message_id: uuid.UUID | None = Field(None)` to
   `WhatsAppInboundMessage`;
 - load the `InboundWebhookMessage` row at processing start;
+- claim work with an atomic status check/update so only one worker can process a
+  row;
 - transition status:
   - `received` -> `processing`;
+  - stale `processing` -> `processing` only through an explicit recovery path;
   - `processing` -> `processed` with `processing_result`;
-  - `processing` -> `failed` with error detail on controlled failure.
+  - `processing` -> `failed` with error detail on controlled failure;
+- if the row is already terminal (`processed` or terminal duplicate/skip), skip
+  without invoking LLM parsing or mutating RFQ/quote state.
 
 If `delivery_message_id` is `None`, treat it as a deploy-boundary legacy
 in-flight message: log a warning, skip durable status transitions for that item,
@@ -388,9 +405,11 @@ not rely on Python locks or process-local sets for correctness.
 
 - [ ] Every extracted provider message is durably represented before enqueue.
 - [ ] `(provider, provider_message_id)` is database-unique.
-- [ ] Duplicate provider redelivery does not enqueue, parse with LLM, or mutate
-  RFQ/quote state.
-- [ ] Redelivery after process restart/cache eviction is duplicate-skipped.
+- [ ] Duplicate provider redelivery for a terminally consumed row does not
+  enqueue, parse with LLM, or mutate RFQ/quote state.
+- [ ] Redelivery after process restart/cache eviction is status-aware: consumed
+  rows are duplicate-skipped, while unconsumed durable rows are recovered using
+  the existing row ID rather than lost.
 - [ ] Redelivery after the originally created quote is rejected remains consumed
   and does not create a second active quote.
 - [ ] Concurrent duplicate insertion is deterministic: one row wins and the
@@ -418,10 +437,12 @@ Minimum expected coverage:
   `backend/tests/test_inbound_webhook_replay.py`
   - migration creates/drops `inbound_webhook_messages`;
   - unique `(provider, provider_message_id)` is enforced;
-  - duplicate redelivery does not enqueue;
-  - duplicate redelivery after restart/cache clear does not enqueue;
+  - duplicate redelivery for a terminally consumed row does not enqueue;
+  - duplicate redelivery after restart/cache clear recovers an unconsumed
+    durable row and duplicate-skips a consumed durable row;
   - duplicate redelivery after quote rejection does not create a second quote;
-  - concurrent duplicate insert handles `IntegrityError` deterministically;
+  - concurrent duplicate insert handles `IntegrityError` deterministically and
+    leaves exactly one claimable durable row;
   - processing status/result is persisted for processed, skipped, and failed
     paths.
   - If migration 041 tests are added to
