@@ -1,0 +1,1169 @@
+# Infra — Pre-push Hook v2: Tool-Use Enhancement — Dispatch
+
+**Track:** Infra (non-audit — extends `pre-push hook v1` with custom tool-use to eliminate the 3 FP classes documented in `reference_pre_push_hook_calibration`)
+**Authoring date:** 2026-05-09
+**Branch name:** `infra/pre-push-hook-v2-tool-use`
+**Base:** `main` (currently `bf021b837`, post-PR-#42 merge)
+**Findings covered:** none (this dispatch ships *tooling enhancement*; it does NOT touch any audit finding)
+**Depends on:** hook v1 (already in main since `57dd57d26`)
+
+---
+
+## 0. Motivation
+
+Hook v1 (landed in main 2026-05-09 across `57dd57d26..bf021b837`) reduced PR #42's Codex round count from a historic peak of ~18 to **2 Codex rounds** (~89% reduction). 8 real P1 catches were absorbed via 8 push iterations before reaching Codex, who then absorbed a further 4 catches the hook missed (HTTPException + resolve_symbol imports, LME_ALU canonical symbol, `/scenario/what-if/run` route path, OpenAPI runtime-vs-schema nullability scope).
+
+Hook v1 calibration evidence (`reference_pre_push_hook_calibration` memory, 2026-05-09):
+
+- ~70% catch rate on mechanically-detectable institutional violations Codex would also flag.
+- ~25% false-positive rate on emitted P1 (3 of ~12). FP root causes:
+  - **utils/ visibility gap**: Sonnet inferred `PriceQuote` was at `app.services.price_lookup_service` because cited files imported it from there — actually re-exported; canonical home is `app.utils.price_reference`. Sonnet had no visibility into `utils/` modules unless the dispatch backticks the path explicitly.
+  - **File-resolver 200-line cap**: `file_resolver.resolve_cited_files` truncates each cited file at 200 lines (`scripts/dispatch_review/file_resolver.py` `_LINE_CAP = 200`). Line numbers beyond ~200 (e.g. `:467, :480, :545, :590` for `_mtm_for_*` call sites in `scenario_whatif_service.py`) cannot be Tipo-I-verified against the inlined excerpt — Sonnet flagged them as unverifiable when they were actually correct.
+  - **Identifier mapping inference**: Sonnet's claim `"ALUMINUM"` was not in `COMMODITY_SYMBOL_MAP` was wrong — the map at `price_lookup_service.py:21-37` has both short codes (`LME_AL`) AND human aliases (`ALUMINUM`, `ALUMINIUM`). Sonnet inferred from a partial cited test file showing only short-code keys.
+
+All three FP classes share a structural cause: **the model can only see what `file_resolver.resolve_cited_files` pre-inlined**. It cannot dynamically read additional files, follow imports, search for symbol definitions, or grep for identifiers. When the truth lives outside the pre-inlined excerpts, Sonnet either invents an inference (FPs) or flags a verification gap (false P1).
+
+Two alternative fixes were considered:
+
+- **Aggressive pre-fetch** — `file_resolver` follows imports recursively and inlines all dependent files. Rejected: token budget grows unbounded, cache TTL behavior degrades, and the model still cannot dynamically search beyond what was inlined.
+- **MCP connector** — pass `mcp_servers` parameter to Anthropic API, expose Serena MCP server. Rejected at this surface: Serena ships in stdio mode (subprocess), not HTTP/SSE, so adapting requires either a port shim or a parallel HTTP-mode Serena instance — non-trivial setup with surface area beyond v2 scope.
+
+This dispatch ships **custom tool-use** via the native Anthropic Messages API: define a small set of read-only tools (`read_file`, `find_symbol`, `grep_pattern`), let Sonnet call them iteratively during review, terminate the loop when Sonnet calls the existing `report_findings` tool. This is the canonical Anthropic-supported pattern (`anthropic==0.100.0`, `from anthropic.types import ToolUseBlock, ToolResultBlockParam`), keeps the implementation in-tree (no external services), and surgically resolves the 3 FP classes:
+
+- `read_file(path)` lets Sonnet inspect any file in the repo (within an allowlist root) — resolves utils/ visibility gap and identifier mapping inference.
+- `find_symbol(name)` lets Sonnet grep for a class/function/dict definition — resolves identifier mapping inference at scale.
+- `grep_pattern(pattern, path_glob)` lets Sonnet search for arbitrary regex patterns — resolves line-number verification (Sonnet can grep for the call-site code, returning the actual line + matching context).
+
+After this dispatch ships, the hook executes a multi-turn conversation: each turn either (a) Sonnet emits one or more `tool_use` blocks → tool handlers execute and return `tool_result` blocks → next turn, OR (b) Sonnet emits the final `report_findings` tool_use → loop ends. A cap of N=12 iterations and 60,000 cumulative output tokens guards against runaway loops.
+
+The expected gain: FP rate drops from ~25% → <5% (Sonnet verifies before asserting). Catch rate may also rise slightly because Sonnet can now investigate paths the file_resolver didn't pre-inline. Cost increases ~3-4× per push (multi-turn = more API roundtrips + larger output token budget for tool_use blocks), landing around R$ 1.50-4.00/push triggered (vs v1's R$ 0.30-0.80). Worth the trade given hook is the difference between 2 and 18 Codex rounds.
+
+---
+
+## 1. Mission
+
+Extend hook v1 to support **custom tool-use** so Sonnet can dynamically read files, search for symbols, and grep for patterns during dispatch review — eliminating the 3 FP classes that limited v1's precision.
+
+After this PR ships:
+
+- `scripts/dispatch_review/tool_handlers.py` exposes 3 read-only tool handlers: `read_file`, `find_symbol`, `grep_pattern`.
+- `scripts/dispatch_review/tools.py` defines the corresponding Anthropic tool schemas + a dispatch table mapping tool name → handler.
+- `scripts/dispatch_review/client.py` runs a **multi-turn loop**: messages.create → if `stop_reason == "tool_use"` and at least one tool_use block is NOT `report_findings`, execute the tool(s), append `tool_result` blocks to messages, repeat. Loop terminates when Sonnet emits the `report_findings` tool_use.
+- Hard caps: max iterations = 12, max cumulative output tokens = 60000. Exceeding either raises with a clear error (no silent fallback per §5).
+- All tools are **read-only** and **scoped to the repo root** (no filesystem writes, no subprocess execution outside whitelisted operations, no path traversal beyond repo root).
+- Cache artifact (`.cache/dispatch_review/<branch>-<sha>.json`) gains a new `tool_calls` array logging each `(name, input, result_summary)` for post-hoc audit + calibration data collection.
+- Hook v1's `report_findings` schema (Pydantic `ReviewReport`) is unchanged — v2 only adds investigation tools, not output schema changes.
+
+**Persona reinforcement** for the LLM reviewer: same senior-institutional-engineer persona as hook v1, but with the explicit instruction that **identifier verification via tool calls is mandatory before raising P1 Tipo-I findings**. Inferring from cited files is acceptable for hypothesis generation; before emitting a P1, the model MUST verify via `read_file` or `find_symbol`.
+
+---
+
+## 2. Reference docs (read before coding)
+
+- **`docs/governance.md`** — full file (217 lines). Already loaded as cached system block in v1; no change to that loading.
+- **`docs/audit-protocol/dispatch-review-rules.md`** — 30 sub-rules. Already loaded; v2 prepends a small instruction section about tool-use discipline.
+- **`<memory>/reference_pre_push_hook_calibration.md`** — empirical data driving v2's design priorities.
+- **`<memory>/project_pre_push_hook_v1_landed.md`** — v1 architecture history.
+- **`docs/audits/2026-05-09-infra-pre-push-dispatch-review-hook-dispatch.md`** — v1 dispatch (already merged); reference for sectioning conventions.
+- **`scripts/pre_push_review.py`** — CLI entry; gains no signature changes but the underlying call_review acquires a multi-turn loop.
+- **`scripts/dispatch_review/client.py`** — current single-turn implementation (`call_review` function). The 30-line `for attempt in range(_MAX_RETRIES)` retry loop wraps `client.messages.create(...)`; this PR wraps that retry loop in an outer multi-turn loop.
+- **`scripts/dispatch_review/prompt_builder.py`** — current `build_cached_system_blocks` returns 4 system blocks; v2 augments block 4 (`_REVIEW_PROTOCOL_PROSE`) with tool-use instructions.
+- **`scripts/dispatch_review/file_resolver.py`** — `_LINE_CAP = 200`. v2 keeps this cap for pre-inlining (token budget protection); the new `read_file` tool can read up to 500 lines per call, with explicit start/end_line params.
+- **`scripts/dispatch_review/schema.py`** — `ReviewReport` and `build_report_findings_tool` UNCHANGED. New `build_review_tools` function added returning the 3 investigation tools + the existing `report_findings` tool, all in a single list passed to `client.messages.create`.
+- **`backend/tests/scripts/`** — existing test layout. v2 adds `test_tool_handlers.py`.
+- **Anthropic SDK tool-use API docs** — `anthropic==0.100.0` exports `ToolUseBlock`, `ToolResultBlockParam`. The Messages API documents `tools=[...]` parameter with `tool_use` `stop_reason` and message-history pattern (assistant `tool_use` block + user `tool_result` block). VERIFY-LATEST: confirm the typed-import paths against the pinned SDK version before authoring (current paths are `from anthropic.types import ToolUseBlock` and `from anthropic.types import ToolResultBlockParam`; both resolved successfully under SDK 0.100.0 at authoring time).
+
+---
+
+## 3. Scope IN — what this PR ships
+
+> **Verification disclaimer:** every prescribed identifier and module path was authored against `bf021b837` (post-PR-#42 merge). VERIFY-LATEST tags mark items where SDK or model behavior may have evolved.
+
+### 3.1 New module — `scripts/dispatch_review/tool_handlers.py`
+
+New file. Pure Python functions executing each tool's logic. Handlers receive a `dict` (the tool input) and a `Path` (the repo root) and return a `dict` (the structured tool result). All handlers are **read-only** and **scoped to `repo_root`** (path traversal outside repo root is rejected; file system writes are not implemented).
+
+```python
+"""Read-only tool handlers for the pre-push hook v2 multi-turn review."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+from pathlib import Path
+from typing import Any
+
+_MAX_LINES_PER_READ = 500
+_MAX_BYTES_PER_READ = 60_000
+_MAX_FILE_SIZE_BYTES = 2_000_000  # 2 MB — reject early; generated artifacts / source maps go above this
+_MAX_GREP_RESULTS = 80
+_MAX_FIND_SYMBOL_BYTES = 8000
+
+# Filenames whose contents may contain secrets even when in-repo.
+# pre_push_review.py loads ANTHROPIC_API_KEY from repo-root .env via
+# _load_repo_dotenv (scripts/pre_push_review.py:41-48). Without this
+# denylist, `read_file(path=".env")` would return the raw secret in
+# the tool_result excerpt and ship it to Anthropic in the next
+# messages.create call — exfiltration despite cache-log redaction.
+_SECRET_BEARING_BASENAME_PREFIXES = (".env",)
+_SECRET_BEARING_BASENAMES = frozenset({
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+})
+
+
+def _is_secret_bearing_path(path: Path) -> bool:
+    """Return True if this path's basename matches the secret denylist.
+
+    Conservative: matches `.env`, `.env.local`, `.env.production`,
+    `credentials.*`, `secrets.*`, SSH private keys. Does NOT match
+    arbitrary files containing the substrings; only literal denylist
+    basenames or `.env*` family.
+    """
+    name = path.name
+    if name in _SECRET_BEARING_BASENAMES:
+        return True
+    for prefix in _SECRET_BEARING_BASENAME_PREFIXES:
+        if name == prefix or name.startswith(prefix + "."):
+            return True
+    return False
+
+
+def _resolve_within_repo(repo_root: Path, raw_path: str) -> Path:
+    """Resolve a path under repo_root; reject any traversal outside.
+
+    Uses ``Path.relative_to`` for ancestry verification — NOT
+    ``str.startswith``. The string-prefix approach is vulnerable to
+    sibling-prefix escape: with repo at ``/workspace/HEDGE-CONTROL-NEW``,
+    a path like ``../HEDGE-CONTROL-NEW-secrets/file`` resolves outside
+    the repo yet starts with the repo-root string.
+    ``Path.relative_to`` enforces strict ancestry.
+    """
+    candidate = (repo_root / raw_path).resolve()
+    repo_root_resolved = repo_root.resolve()
+    try:
+        candidate.relative_to(repo_root_resolved)
+    except ValueError as exc:
+        raise ValueError(
+            f"path {raw_path!r} resolves outside repo root"
+        ) from exc
+    return candidate
+
+
+def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    path_str = payload["path"]
+    start_line = int(payload.get("start_line") or 1)
+    end_line = payload.get("end_line")
+    try:
+        target = _resolve_within_repo(repo_root, path_str)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not target.is_file():
+        return {"ok": False, "error": f"not a file: {path_str}"}
+    # Secret-denylist guard: reject before reading any file whose
+    # basename matches the secret-bearing list (.env, credentials.*,
+    # secrets.*, SSH keys). A successful read_file would return the
+    # raw contents in the excerpt, shipping the secret to Anthropic
+    # via messages.create — cache-log redaction does not protect the
+    # in-flight conversation. The model can adapt: it has find_symbol
+    # / grep_pattern for code investigation; it does not legitimately
+    # need to read .env to verify a dispatch.
+    if _is_secret_bearing_path(target):
+        return {
+            "ok": False,
+            "error": (
+                f"path {path_str!r} matches the secret-bearing denylist; "
+                "reads of .env / credentials.* / secrets.* / SSH key "
+                "files are refused. Use find_symbol or grep_pattern on "
+                "source files instead."
+            ),
+        }
+    # Fast reject for oversized files (generated artifacts, source maps,
+    # minified bundles, frontend chunks) before reading them into memory.
+    # A multi-MB single-line minified file would blow the per-turn token
+    # budget if its excerpt were returned to the model.
+    file_size = target.stat().st_size
+    if file_size > _MAX_FILE_SIZE_BYTES:
+        return {
+            "ok": False,
+            "error": (
+                f"file {path_str!r} is {file_size} bytes (>{_MAX_FILE_SIZE_BYTES}); "
+                "likely a generated artifact or source map. Use grep_pattern with "
+                "a narrower path or read a different file."
+            ),
+        }
+    text = target.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    # Out-of-range guard: an empty excerpt produced by start_line past
+    # EOF, or end_line < start_line, would still satisfy the
+    # verify-before-P1 guard's ok=True check while showing the model
+    # zero content. Mark ok=False UNLESS this is the legitimate empty-file
+    # + start_line=1 case (a 0-line file legitimately read at line 1).
+    is_empty_file_at_line_1 = (len(lines) == 0 and start_line == 1)
+    if not is_empty_file_at_line_1:
+        if start_line < 1:
+            return {
+                "ok": False,
+                "error": (
+                    f"start_line={start_line} must be >= 1; Python slicing "
+                    "with negative indices would return tail-of-file or "
+                    "empty excerpt and silently satisfy the verify-before-P1 "
+                    "guard without showing the requested evidence."
+                ),
+            }
+        if start_line > len(lines):
+            return {
+                "ok": False,
+                "error": (
+                    f"start_line={start_line} is past EOF (file has "
+                    f"{len(lines)} lines). Pass start_line in [1..{max(len(lines), 1)}]."
+                ),
+            }
+        if end_line is not None and int(end_line) < start_line:
+            return {
+                "ok": False,
+                "error": (
+                    f"end_line={end_line} < start_line={start_line}. "
+                    "end_line must be >= start_line (omit end_line for "
+                    "default start_line + 499)."
+                ),
+            }
+    end_clamped = int(end_line) if end_line is not None else min(start_line + _MAX_LINES_PER_READ - 1, max(len(lines), 1))
+    if end_clamped - start_line + 1 > _MAX_LINES_PER_READ:
+        end_clamped = start_line + _MAX_LINES_PER_READ - 1
+    excerpt = "\n".join(lines[start_line - 1 : end_clamped])
+    # Belt-and-suspenders: even within line cap, a single multi-MB line
+    # (no newlines) survives the line clamp. Hard-cap at byte size.
+    excerpt_truncated = False
+    if len(excerpt) > _MAX_BYTES_PER_READ:
+        excerpt = excerpt[:_MAX_BYTES_PER_READ]
+        excerpt_truncated = True
+    return {
+        "ok": True,
+        "path": path_str,
+        "start_line": start_line,
+        "end_line": end_clamped,
+        "total_lines": len(lines),
+        "excerpt": excerpt,
+        "excerpt_truncated": excerpt_truncated,
+    }
+
+
+def handle_find_symbol(payload: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    """Locate where a Python class/function/constant is DEFINED.
+
+    Implementation: regex grep across `backend/app/`, `backend/tests/`,
+    `scripts/` for `^(class|def)\\s+<name>\\b` or `^<NAME>\\s*[:=]`.
+    Returns first match's file:line + a context excerpt (15 lines each side).
+    """
+    name = payload["name"]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        return {"ok": False, "error": f"invalid Python identifier: {name!r}"}
+    # `^\s*` anchors to line-start but allows leading whitespace so
+    # indented method definitions match (e.g.,
+    # `    def create_deal(...)` inside `class DealEngine:`). Without
+    # leading-whitespace tolerance the regex only matches column-0
+    # `def`/`class` and silently misses every method on the codebase's
+    # service classes — re-introducing the v1 FP class v2 must
+    # eliminate. `(?:async\s+)?` covers `async def` route handlers
+    # under backend/app/api/routes/.
+    pattern = (
+        rf"^\s*(class\s+{re.escape(name)}\b|(?:async\s+)?def\s+{re.escape(name)}\b|{re.escape(name)}\s*[:=])"
+    )
+    return _grep_with_context(repo_root, pattern, ["backend/app", "backend/tests", "scripts"], context_lines=15, byte_cap=_MAX_FIND_SYMBOL_BYTES)
+
+
+def handle_grep_pattern(payload: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
+    pattern = payload["pattern"]
+    search_path = payload.get("search_path") or "backend/app"
+    return _grep_with_context(repo_root, pattern, [search_path], context_lines=int(payload.get("context_lines") or 0), byte_cap=_MAX_GREP_RESULTS * 200)
+
+
+def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *, context_lines: int, byte_cap: int) -> dict[str, Any]:
+    # Use Python's pathlib + re instead of subprocess.run('rg') for portability
+    # and to avoid pulling in ripgrep as an implicit dependency. For 100k+
+    # files this would be slow; for our repo (~few hundred Python files)
+    # it is acceptable.
+    matches: list[dict[str, Any]] = []
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        return {"ok": False, "error": f"invalid regex: {exc}"}
+    cumulative_bytes = 0
+    searched_count = 0  # search_paths that passed validation AND existed
+    inspected_files = 0  # files whose contents were actually read (post symlink/secret/OSError skips)
+    for sp in search_paths:
+        # MANDATORY: every search root must pass _resolve_within_repo
+        # before rglob, or model/operator-controlled `search_path` could
+        # walk outside the repo (e.g. `/`, `..`, `/etc`). Drop unresolvable
+        # entries silently — the model will see an empty match list and
+        # adapt; we do NOT raise on the first invalid search path because
+        # legitimate calls may pass several paths and one being invalid
+        # should not abort the whole search.
+        try:
+            root = _resolve_within_repo(repo_root, sp)
+        except ValueError:
+            continue
+        if not root.exists():
+            continue
+        searched_count += 1  # this search root WAS inspected (validated + exists)
+        files = root.rglob("*.py") if root.is_dir() else [root]
+        for f in files:
+            # Symlink + ancestry guard: rglob follows symlinks by default.
+            # A `backend/app/leak.py -> /etc/passwd` symlink (or any
+            # symlink whose target resolves outside the repo) would let
+            # `read_text()` return outside-repo contents to the model.
+            # Two defenses applied:
+            #   (1) skip symlinks entirely — the hook only consults
+            #       version-controlled source under the repo, never
+            #       resolves indirection;
+            #   (2) re-apply _resolve_within_repo on the resolved path
+            #       — belts AND suspenders for cases where rglob itself
+            #       returned a path that no longer lives under root.
+            if f.is_symlink():
+                continue
+            try:
+                _ = _resolve_within_repo(repo_root, str(f.relative_to(repo_root)))
+            except (ValueError, OSError):
+                continue
+            # Same secret-denylist guard as handle_read_file. Even though
+            # the find_symbol regex (`^\s*(class|def|...)`) would not
+            # match secret content syntactically, a developer could pass
+            # a custom grep_pattern that DOES match secret-shaped strings
+            # (e.g., `pattern=r"sk-[A-Za-z0-9]+"` to hunt for API keys).
+            # rglob's *.py scope already eliminates *.env from results;
+            # belt-and-suspenders for anyone extending the rglob filter.
+            if _is_secret_bearing_path(f):
+                continue
+            # Same _MAX_FILE_SIZE_BYTES gate as handle_read_file. Without
+            # it, grep_pattern at an exact file path (or rglob hitting a
+            # large generated artifact under a valid root) would
+            # read_text() a multi-MB file into memory before the
+            # match-byte_cap applies, blowing the per-turn cost / time
+            # budget. Cheap pre-check via stat() avoids the read.
+            try:
+                if f.stat().st_size > _MAX_FILE_SIZE_BYTES:
+                    continue
+            except OSError:
+                continue
+            try:
+                lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            inspected_files += 1  # file content was actually read
+            for idx, line in enumerate(lines, start=1):
+                if compiled.search(line):
+                    excerpt_start = max(1, idx - context_lines)
+                    excerpt_end = min(len(lines), idx + context_lines)
+                    excerpt = "\n".join(f"{n}: {lines[n - 1]}" for n in range(excerpt_start, excerpt_end + 1))
+                    rel = f.relative_to(repo_root).as_posix()
+                    entry = {"file": rel, "line": idx, "excerpt": excerpt}
+                    cumulative_bytes += len(excerpt) + len(rel) + 16
+                    if cumulative_bytes > byte_cap:
+                        # Byte-cap overflow on this entry. Two cases:
+                        #   (a) matches non-empty: return what we have
+                        #       (truncated). Caller still sees evidence.
+                        #   (b) matches empty AND this is the first
+                        #       candidate: a single oversized excerpt
+                        #       (e.g., a long minified line near a
+                        #       symbol definition) would otherwise
+                        #       return matches=[], indistinguishable
+                        #       from absence — verify-before-P1 guard
+                        #       would accept a later P1 as "evidence".
+                        #       Truncate the excerpt to the remaining
+                        #       budget and append so the model sees at
+                        #       least one match snippet.
+                        if matches:
+                            return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count, "inspected_files": inspected_files}
+                        # case (b): truncate this entry's excerpt
+                        available = max(0, byte_cap - len(rel) - 16)
+                        if available > 0:
+                            entry["excerpt"] = excerpt[:available] + "\n# ...[truncated]"
+                            matches.append(entry)
+                            return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count, "inspected_files": inspected_files}
+                        # No room even for path overhead — surface as
+                        # ok=False so the model doesn't read absence.
+                        return {
+                            "ok": False,
+                            "error": (
+                                "first matching excerpt exceeds byte_cap "
+                                "even after truncation. Try a narrower "
+                                "search_path or a more specific pattern."
+                            ),
+                            "matches": [],
+                            "searched_count": searched_count,
+                            "inspected_files": inspected_files,
+                            "truncated": True,
+                        }
+                    matches.append(entry)
+                    if len(matches) >= _MAX_GREP_RESULTS:
+                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count, "inspected_files": inspected_files}
+    # Two failure modes both trip ok=False so the verify-before-P1
+    # guard does NOT count this call as evidence:
+    #   (1) zero search roots passed _resolve_within_repo + exists()
+    #   (2) at least one root passed but every file underneath was
+    #       skipped (all symlinks, all secret-bearing basenames, all
+    #       OSError-on-read) — root.rglob('*.py') matched files but
+    #       none survived the per-file guards.
+    # Either way, no content was actually inspected. Per §3.4 "failures
+    # are absence of evidence", the model must adapt and try a different
+    # path / pattern, not have its empty grep silently count as proof.
+    if searched_count == 0:
+        return {
+            "ok": False,
+            "error": (
+                f"no requested search root could be inspected "
+                f"(received {len(search_paths)} path(s); 0 passed "
+                "_resolve_within_repo + exists() validation). "
+                "Pass an in-repo path like 'backend/app' or "
+                "'backend/app/services/foo.py'."
+            ),
+            "matches": [],
+            "searched_count": 0,
+            "inspected_files": 0,
+        }
+    if inspected_files == 0:
+        return {
+            "ok": False,
+            "error": (
+                f"all candidate files under {searched_count} validated "
+                "search root(s) were skipped (symlinks, secret-bearing "
+                "basenames, or OSError-on-read). Zero file contents "
+                "were actually inspected. Try a narrower in-repo path "
+                "or a different file/pattern."
+            ),
+            "matches": [],
+            "searched_count": searched_count,
+            "inspected_files": 0,
+        }
+    return {"ok": True, "matches": matches, "truncated": False, "searched_count": searched_count, "inspected_files": inspected_files}
+
+
+HANDLERS = {
+    "read_file": handle_read_file,
+    "find_symbol": handle_find_symbol,
+    "grep_pattern": handle_grep_pattern,
+}
+```
+
+**Why pure Python regex instead of `subprocess.run("rg")`**: ripgrep is not in the project's dependency closure (verify via `which rg` — not installed in CI runners). Pulling it in would add an installation step. The repo size (~few hundred Python files in `backend/app/`) is small enough that pure-Python regex completes in under 200 ms per call. If a future cycle measures grep latency dominating multi-turn loop time, swap the `_grep_with_context` body to subprocess+ripgrep.
+
+**Why no `subprocess.run('serena')` for `find_symbol`**: Serena MCP runs in stdio mode under Claude Code, not as a CLI invocable from a hook. Bridging would require the MCP-connector option (rejected per §0). The regex-based `find_symbol` is a deliberate downgrade from Serena's LSP-grade symbol resolution; it works for the institutional dispatch authoring patterns (class definitions, function definitions, constant assignments at module level) but does not handle method overrides or class-internal lookups. **In-scope identifiers cited in dispatches are nearly all module-level**, making this acceptable for v2.
+
+### 3.2 New module — `scripts/dispatch_review/tools.py`
+
+New file. Anthropic tool schemas + dispatch table.
+
+```python
+"""Anthropic tool definitions for the multi-turn dispatch review (hook v2)."""
+
+from __future__ import annotations
+
+from typing import Any
+
+READ_FILE_TOOL: dict[str, Any] = {
+    "name": "read_file",
+    "description": (
+        "Read a file in the repo (read-only). Use this to verify identifier "
+        "definitions, schema field names, line numbers, or any prescription "
+        "in concrete code blocks against the actual codebase. Returns up to "
+        "500 lines per call."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": (
+                    "Path relative to repo root. Examples: "
+                    "'backend/app/services/price_lookup_service.py', "
+                    "'backend/app/schemas/scenario.py'."
+                ),
+            },
+            "start_line": {"type": "integer", "minimum": 1, "description": "1-indexed start line. Default 1."},
+            "end_line": {"type": "integer", "minimum": 1, "description": "1-indexed end line (inclusive). Default = start_line + 499."},
+        },
+        "required": ["path"],
+    },
+}
+
+FIND_SYMBOL_TOOL: dict[str, Any] = {
+    "name": "find_symbol",
+    "description": (
+        "Find where a Python class, function, or module-level constant is "
+        "defined. Searches backend/app/, backend/tests/, scripts/. Returns "
+        "the first match's file:line plus a 30-line excerpt around the "
+        "definition. Use this to resolve identifier-location questions "
+        "(e.g., 'is PriceQuote in utils/ or services/?')."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "The Python identifier (class, function, or constant name).",
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+GREP_PATTERN_TOOL: dict[str, Any] = {
+    "name": "grep_pattern",
+    "description": (
+        "Search for a Python regex pattern within a directory or file. "
+        "Returns up to 80 matches with file:line and an N-line context "
+        "excerpt. Use this to verify line numbers in dispatch prescriptions, "
+        "find call sites, or audit existing test fixtures for the "
+        "pre-fix-cleanup directive."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Python re.compile-compatible regex."},
+            "search_path": {
+                "type": "string",
+                "description": (
+                    "Directory or exact file path under repo root. NO glob "
+                    "syntax (no `**`, `*`, `?`); pass a literal path. The "
+                    "handler walks the directory recursively for *.py files. "
+                    "Default 'backend/app'."
+                ),
+            },
+            "context_lines": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Lines of surrounding context. Default 0."},
+        },
+        "required": ["pattern"],
+    },
+}
+
+
+def build_review_tools() -> list[dict[str, Any]]:
+    """Return the 3 investigation tools + the report_findings tool.
+
+    The report_findings tool stays imported from `schema.build_report_findings_tool`
+    to keep the schema module the single source of truth for output shape.
+    """
+    from .schema import build_report_findings_tool
+    return [READ_FILE_TOOL, FIND_SYMBOL_TOOL, GREP_PATTERN_TOOL, build_report_findings_tool()]
+```
+
+### 3.3 Multi-turn loop — `scripts/dispatch_review/client.py`
+
+Update `call_review` to run the multi-turn loop. The single-turn `client.messages.create(...)` invocation becomes the body of a `for iteration in range(MAX_ITERATIONS)` loop; each iteration interprets the response.
+
+**Current** at `scripts/dispatch_review/client.py:23-71` (single-turn body inside retry loop):
+
+```python
+def call_review(
+    *,
+    model: str,
+    cached_system_blocks: list[dict[str, Any]],
+    user_payload: str,
+    max_tokens: int = 8192,
+) -> ReviewReport:
+    ...
+    response = client.messages.create(
+        model=model, max_tokens=max_tokens, system=cached_system_blocks,
+        tools=[tool], tool_choice={"type": "tool", "name": "report_findings"},
+        messages=[{"role": "user", "content": user_payload}],
+    )
+    ...
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "report_findings":
+            return ReviewReport.model_validate(_coerce_list_fields(dict(block.input)))
+```
+
+**Replacement** (truncated for the dispatch — full implementation in §11 step list):
+
+```python
+_MAX_ITERATIONS = 12
+_MAX_CUMULATIVE_OUTPUT_TOKENS = 60_000
+_PER_TURN_MAX_TOKENS = 8_192
+
+
+def _summarize_for_log(result: dict[str, Any]) -> str:
+    """Compact, redaction-safe summary of a tool result for the audit log.
+
+    Per §5 audit-trail rule + §10 DO NOT log full tool results that may
+    contain credentials: never embed file contents or grep excerpts in
+    the cache artifact. Logs only structural metadata: ok flag, top-level
+    keys, payload size.
+    """
+    ok = result.get("ok")
+    keys = sorted(k for k in result.keys() if k != "ok")
+    excerpt_chars = len(str(result.get("excerpt", "")))
+    matches_count = len(result.get("matches") or [])
+    truncated = result.get("truncated", False)
+    return (
+        f"ok={ok} keys={keys} excerpt_chars={excerpt_chars} "
+        f"matches_count={matches_count} truncated={truncated}"
+    )
+
+
+def _summarize_input_for_log(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Compact, redaction-safe summary of a tool INPUT for the audit log.
+
+    Per §5 + §10: tool inputs may contain secrets when the model
+    investigates a suspected credential leak (e.g., `grep_pattern(
+    pattern="ANTHROPIC_API_KEY=sk-...")`). Logging the raw input would
+    persist the secret in `.cache/dispatch_review/*.json`.
+
+    Whitelist-based redaction: safe fields (paths, line numbers,
+    identifier names, context_lines) are logged verbatim; potentially
+    sensitive fields (the ``pattern`` field of ``grep_pattern``) are
+    redacted to their length only.
+    """
+    safe: dict[str, Any] = {}
+    sensitive_fields_by_tool = {
+        "grep_pattern": {"pattern"},
+        # read_file, find_symbol have no secret-laden fields by design
+    }
+    sensitive = sensitive_fields_by_tool.get(tool_name, set())
+    for key, value in tool_input.items():
+        if key in sensitive:
+            value_str = str(value)
+            safe[key] = f"<redacted len={len(value_str)}>"
+        else:
+            safe[key] = value
+    return safe
+
+
+def _create_with_retry(
+    client: Anthropic,
+    *,
+    model: str,
+    max_tokens: int,
+    cached_system_blocks: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+):
+    """Network-retry wrapper around messages.create — preserves v1's
+    3-attempt exponential backoff on RateLimitError / APIConnectionError /
+    APIStatusError; AuthenticationError fails fast (no retry).
+
+    NOTE: This wrapper uses ``tool_choice={"type": "any",
+    "disable_parallel_tool_use": True}`` for two combined guarantees:
+
+    (1) ``"any"`` requires SOME tool to be called every turn — Anthropic's
+        default ``auto`` setting lets the model emit plain text, which
+        would abort ``call_review``'s multi-turn loop on the
+        ``"no tool_use block"`` raise.
+
+    (2) ``disable_parallel_tool_use=True`` forces a single tool_use per
+        turn. Anthropic's tool-use protocol requires every assistant
+        ``tool_use`` block to be matched by a ``tool_result`` block in
+        the next user message; if the model emits ``report_findings``
+        alongside an investigation tool in the same turn, the rejection
+        path (verify-before-P1 guard) would append a ``tool_result``
+        only for ``report_findings``, leaving the investigation
+        ``tool_use`` id orphaned — the next ``messages.create`` then
+        fails with 400. Sequential execution is also v2's stated
+        design intent (§4 Scope OUT defers parallel to v3).
+    """
+    ...  # extracted from v1's inner retry loop, with
+         # tool_choice={"type": "any", "disable_parallel_tool_use": True}
+         # added to client.messages.create kwargs
+
+
+def call_review(
+    *,
+    model: str,
+    cached_system_blocks: list[dict[str, Any]],
+    user_payload: str,
+    repo_root: Path,
+) -> tuple[ReviewReport, list[dict[str, Any]]]:
+    """Multi-turn review. Returns (report, tool_call_log)."""
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError("ANTHROPIC_API_KEY is not set...")
+
+    client = Anthropic()
+    tools = build_review_tools()
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_payload}]
+    tool_call_log: list[dict[str, Any]] = []
+    cumulative_output_tokens = 0
+
+    for iteration in range(_MAX_ITERATIONS):
+        response = _create_with_retry(
+            client, model=model, max_tokens=_PER_TURN_MAX_TOKENS,
+            cached_system_blocks=cached_system_blocks, tools=tools, messages=messages,
+        )
+        cumulative_output_tokens += getattr(response.usage, "output_tokens", 0)
+        if cumulative_output_tokens > _MAX_CUMULATIVE_OUTPUT_TOKENS:
+            raise RuntimeError(
+                f"cumulative output exceeded {_MAX_CUMULATIVE_OUTPUT_TOKENS} tokens; "
+                "loop terminated to prevent runaway cost"
+            )
+
+        # Did the model emit a final report?
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "report_findings":
+                candidate_report = ReviewReport.model_validate(
+                    _coerce_list_fields(dict(block.input))
+                )
+                # Verify-before-P1 guard: a clean report (no P1) is
+                # accepted immediately — the model's judgment that no
+                # investigation was needed is institutionally valid
+                # (the dispatch may simply not contain Tipo-I surface).
+                # But if P1 is non-empty AND no SUCCESSFUL investigation
+                # tool result is in the log, reject the report and
+                # continue the loop. Tool FAILURES (ok=False) do NOT
+                # count as evidence per §3.4: a bad path / invalid regex
+                # / unknown identifier returning ok=False is the absence
+                # of evidence, not its presence — accepting such a P1
+                # would regress to v1's FP class.
+                successful_calls = sum(1 for entry in tool_call_log if entry.get("ok"))
+                if candidate_report.p1_blocking and successful_calls == 0:
+                    failed_count = len(tool_call_log)
+                    rejection = (
+                        "Your report_findings call contains "
+                        f"{len(candidate_report.p1_blocking)} P1 finding(s) "
+                        "but no investigation tool returned ok=True this "
+                        f"review (tool_call_log has {failed_count} entries, "
+                        "all of which failed or were rejected — failures "
+                        "are the absence of evidence, not its presence, "
+                        "per §3.4). P1 Tipo-I emissions require at least "
+                        "one tool result with ok=True confirming the "
+                        "suspected mismatch. Try a different path / regex / "
+                        "identifier (paths must exist; identifiers must be "
+                        "valid Python names; search_path must be inside "
+                        "the repo), then re-call report_findings with "
+                        "verified P1 (or downgrade to P2/P3 if the "
+                        "evidence is weaker)."
+                    )
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": block.id, "content": rejection}
+                    ]})
+                    # break out of the for-block loop and continue the
+                    # outer iteration loop. Note: this consumes one of
+                    # the _MAX_ITERATIONS budget.
+                    break
+                else:
+                    return (candidate_report, tool_call_log)
+        else:
+            # for-else: only runs if the for-block loop did NOT break.
+            # Means no report_findings was emitted this turn — fall
+            # through to the investigation-tool execution branch below.
+            pass
+
+        # If we broke out of the for-block above (rejected unverified P1),
+        # skip the investigation-tool execution branch and start the next
+        # iteration with the rejection message in the conversation history.
+        if any(getattr(b, "name", None) == "report_findings" for b in response.content):
+            continue
+
+        # Otherwise, execute any investigation tool_use blocks.
+        tool_results: list[dict[str, Any]] = []
+        executed_any = False
+        for block in response.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            executed_any = True
+            handler = HANDLERS.get(block.name)
+            if handler is None:
+                tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps({"ok": False, "error": f"unknown tool: {block.name}"})})
+                continue
+            try:
+                result = handler(dict(block.input), repo_root=repo_root)
+            except Exception as exc:  # noqa: BLE001  -- we MUST surface tool errors to the model, not the hook
+                result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+            tool_call_log.append({
+                "iteration": iteration,
+                "name": block.name,
+                "input": _summarize_input_for_log(block.name, dict(block.input)),
+                "ok": bool(result.get("ok")),  # NEW — feeds verify-before-P1 guard
+                "result_summary": _summarize_for_log(result),
+            })
+            tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result)})
+
+        if not executed_any:
+            raise RuntimeError(
+                f"iteration {iteration}: model emitted no tool_use block and no report_findings; "
+                f"stop_reason={response.stop_reason!r}"
+            )
+
+        # Append assistant turn + tool results, continue.
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+    raise RuntimeError(f"review did not converge after {_MAX_ITERATIONS} iterations")
+```
+
+**Critical design points**:
+
+- **`tool_choice={"type": "any", "disable_parallel_tool_use": True}`** — combined guarantee: (1) some tool is called every turn (rules out plain-text turns that would abort the loop), AND (2) at most ONE tool_use block per turn (rules out parallel calls that would orphan tool_use ids when the verify-before-P1 guard rejects only a subset of the parallel block). v1 forced the specific tool (`{"type": "tool", "name": "report_findings"}`); v2 cannot force a specific tool because the model needs to choose between investigation tools and the final `report_findings`. The model is steered to call `report_findings` last via the system prompt instruction (§3.4); sequential execution matches §4 Scope OUT's "parallel deferred to v3".
+- **Retry/backoff** stays on the inner `_create_with_retry`. Network errors retry per turn; `MAX_ITERATIONS` caps the outer loop.
+- **`tool_results` content is JSON-serialized**. Anthropic accepts both string content and structured content for `tool_result`; JSON-string is the simplest portable shape.
+- **Response content history** is preserved (`messages.append({"role": "assistant", "content": response.content})`) so the model can reason across turns.
+- **`tool_call_log`** is a flat list of `(iteration, name, input, result_summary)` dicts written to the cache artifact (§3.6).
+
+### 3.4 prompt_builder — instruct Sonnet about tools
+
+Update `scripts/dispatch_review/prompt_builder.py` in TWO places:
+
+**(A) `_PERSONA_PREAMBLE` — REMOVE the v1 report-only directive.** The current persona block (committed in main during hook v1 landing) ends with:
+
+```
+Output via the `report_findings` tool only. Do NOT emit prose.
+```
+
+That instruction directly conflicts with v2's design: under `tool_choice={"type": "any"}`, the model can satisfy "any tool" by calling `report_findings` immediately, so the v1 prose actively steers Sonnet AWAY from `read_file` / `find_symbol` / `grep_pattern`. Verify-before-P1 rejections would then loop indefinitely (model reports → guard rejects → model re-reports). Replace the old line with:
+
+```
+Use the investigation tools (`read_file`, `find_symbol`, `grep_pattern`)
+to verify identifiers BEFORE emitting `report_findings`. P1 Tipo-I
+findings require at least one investigation tool result with ok=True.
+Call `report_findings` exactly once when your review is complete; do
+NOT emit prose-only responses (the loop guarantees tool-use every turn
+via `tool_choice={"type": "any"}`).
+```
+
+**(B) `_REVIEW_PROTOCOL_PROSE` (block 4) — append tool-use discipline.** The cached system blocks 1-3 (persona + governance + rule sheet) — block 1 (persona) DOES change per (A) above; blocks 2 and 3 are unchanged. Block 4 grows with the discipline subsection.
+
+New §"Tool-use discipline" appended to existing `_REVIEW_PROTOCOL_PROSE`:
+
+```
+# Tool-use discipline (v2)
+
+You have 3 read-only investigation tools (`read_file`, `find_symbol`,
+`grep_pattern`) plus the `report_findings` tool.
+
+When you have a hypothesis that a dispatch identifier (function name,
+schema field, dict key, file path, line number) is wrong, **VERIFY before
+flagging P1**. Use:
+- `find_symbol(name="X")` to locate where X is defined.
+- `read_file(path="...", start_line=, end_line=)` to inspect specific
+  ranges.
+- `grep_pattern(pattern="...", search_path="...")` to find call sites,
+  identifier mappings, or to verify line numbers in the cited code.
+
+Discipline rules:
+- Inferring from cited file excerpts is acceptable for HYPOTHESIS
+  GENERATION; before asserting P1 Tipo-I (identifier doesn't exist),
+  you MUST have a tool result confirming the identifier is missing.
+- A tool may return `{"ok": false, "error": ...}` — do NOT interpret
+  that as proof. It indicates the tool failed (bad input, not found at
+  the prescribed path); investigate further with a different tool call.
+- Be efficient — typical reviews need 3-8 tool calls. The hook caps at
+  12 iterations. Plan investigations: read the most authoritative source
+  first (e.g., for a class location, `find_symbol` once is better than
+  3 sequential `grep_pattern` searches).
+- When you are confident the review is complete, call `report_findings`
+  with your full ReviewReport. Do NOT call other tools after
+  `report_findings` — that call ends the loop.
+
+Severity tier reminder (unchanged from v1):
+- P1 (blocking): Tipo I fact mismatch, Tipo II self-defeat, governance
+  §2.x violation. P1 emission requires tool-verified evidence.
+- P2 (warning): sibling-bullet sweep miss, NULL-safety oversight,
+  decimal quantization, etc.
+- P3 (info): stylistic, redundant, minor unverified.
+```
+
+The `_REVIEW_PROTOCOL_PROSE` block stays uncached (4th system block; small, dispatch-specific). Caching it would not save much because it changes whenever the rule sheet changes, and the rule sheet is the cached block right before it.
+
+### 3.5 schema.py — minimal addition
+
+`ReviewReport` and `build_report_findings_tool` are UNCHANGED. The only addition is exporting (or importing inside `tools.py`) the existing `build_report_findings_tool` so `build_review_tools` can compose it. No schema field changes.
+
+### 3.6 Cache artifact extension
+
+Update `scripts/dispatch_review/cache.py::write_cache_artifact` to accept the optional `tool_call_log` parameter and write it under a `tool_calls` key in the JSON. Backward-compatible: artifacts without `tool_calls` (v1 outputs) still parse.
+
+```python
+def write_cache_artifact(
+    report: ReviewReport, *, repo_root: Path, branch: str, head_sha: str,
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> Path:
+    ...
+    payload = report.model_dump(mode="json")
+    if tool_calls is not None:
+        payload["tool_calls"] = tool_calls
+    ...
+```
+
+Why `tool_call_log`: post-hoc calibration data. After the next 5-10 cycles of v2 in production, the orchestrator will have N artifacts each containing `tool_calls`. Quick analysis of "which tool got called most often, on which dispatches, with which results" tells us whether the tools are well-designed. This is the v2 calibration evidence loop, mirroring how v1 calibration data drove v2's design priorities.
+
+### 3.7 file_resolver — UNCHANGED
+
+`scripts/dispatch_review/file_resolver.py` stays at the 200-line cap for pre-inlining. Pre-inlining gives Sonnet a fast first pass; the new `read_file` tool covers gaps. **Do NOT raise `_LINE_CAP`** beyond 200 — that re-inflates token budget on every call without the dynamic targeting that tool-use provides.
+
+### 3.8 pre_push_review.py — minor update
+
+Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review` and to receive `(report, tool_call_log)` instead of just `report`. Pass `tool_call_log` to `write_cache_artifact`. The CLI surface (args, exit codes) is unchanged.
+
+**Skip-guard placement is invariant**: the no-dispatch-paths early-exit (`if not dispatch_paths: print(...); return 0`) MUST stay ABOVE the `call_review` invocation in `main`. Moving it inside the multi-turn loop would break `backend/tests/scripts/test_pre_push_review_skip.py::test_main_exits_0_with_no_dispatch_paths`. The existing skip test is declared UNCHANGED in §7 — that contract is safe ONLY if the early-exit guard placement is preserved.
+
+**`call_review` callsite cleanup**: v1's `call_review` accepted `max_tokens=8192` as an explicit kwarg and `tools=[tool]` constructed at the callsite. v2 internalizes both — `_PER_TURN_MAX_TOKENS` is module-level in `client.py`, and `build_review_tools()` is called inside `call_review`. The executor MUST remove `max_tokens=` and `tools=` kwargs (if present) from the `main → call_review` invocation. Audit step: `grep -n 'call_review' scripts/pre_push_review.py` — confirm only `model=`, `cached_system_blocks=`, `user_payload=`, `repo_root=` kwargs are passed post-edit.
+
+### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
+
+New test file. 26 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+
+Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
+
+Test enumeration (mechanical):
+- `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
+- `test_handle_read_file_caps_at_500_lines` — fixture 1000-line file, assert excerpt has ≤ 500 lines.
+- `test_handle_read_file_rejects_secret_bearing_path_dotenv` — fixture: tmpdir as repo root with a `.env` file containing `ANTHROPIC_API_KEY=sk-fake-test-key`; pass `path=".env"`; assert `result["ok"] is False`, `"secret-bearing denylist" in result["error"]`, AND that `result` does NOT contain the literal `"sk-fake-test-key"` substring anywhere. Pins the API-exfiltration prevention contract.
+- `test_handle_read_file_rejects_secret_bearing_path_env_local` — same as above but for `.env.local` (verifies the `.env.*` family match, not just literal `.env`).
+- `test_handle_read_file_rejects_oversized_file` — fixture 3 MB file (single multi-MB line, simulating a source map / minified bundle); assert `result["ok"] is False` and `"likely a generated artifact" in result["error"]`. Verifies the `_MAX_FILE_SIZE_BYTES` early-reject prevents reading huge files into memory.
+- `test_handle_read_file_caps_excerpt_at_byte_limit` — fixture file with a single very long line (e.g., 100 KB on one line, file under 2 MB total so passes the size gate); assert `result["ok"] is True`, `result["excerpt_truncated"] is True`, `len(result["excerpt"]) <= _MAX_BYTES_PER_READ`. Verifies the belt-and-suspenders byte cap on the excerpt itself.
+- `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
+- `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
+- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is False`, `result["matches"] == []`, `result["searched_count"] == 0`, `result["inspected_files"] == 0`, and `"no requested search root could be inspected" in result["error"]`. Verifies the per-search-path `_resolve_within_repo` guard PLUS the searched_count contract.
+- `test_handle_grep_pattern_returns_ok_false_when_all_files_skipped` — fixture: in-repo dir containing only symlinked `*.py` files (all skip via the `f.is_symlink(): continue` guard) AND a `.env` file (skip via secret denylist); assert `result["ok"] is False`, `result["searched_count"] == 1` (root validated), `result["inspected_files"] == 0` (nothing actually read), and `"all candidate files... were skipped" in result["error"]`. Pins the inspected_files contract — searched_count alone is not sufficient evidence.
+- `test_handle_grep_pattern_skips_oversized_file` — fixture: in-repo dir with `legitimate.py` (~1 KB, contains the search pattern) and `huge.py` (>2 MB synthetic, single multi-MB line, also contains the pattern); assert `result["ok"] is True`, `result["matches"]` includes only `legitimate.py` (huge.py skipped via per-file size gate), `result["inspected_files"] == 1`. Pins the per-file `_MAX_FILE_SIZE_BYTES` gate in `_grep_with_context` matching `handle_read_file`.
+- `test_handle_grep_pattern_truncates_first_match_on_byte_cap_overflow` — fixture: in-repo file under 2 MB but containing one matching line whose context excerpt alone exceeds the byte_cap (e.g., a long minified line on the match line itself); assert `result["ok"] is True`, `len(result["matches"]) == 1`, the entry's `excerpt` ends with `"# ...[truncated]"`, `result["truncated"] is True`. Pins the contract that an oversized first match is TRUNCATED-AND-APPENDED rather than dropped (without this, the entry would be omitted, returning `matches=[]` indistinguishable from absence — re-introducing the FP class).
+- `test_handle_read_file_rejects_out_of_range_start_line` — fixture: 10-line file; pass `start_line=20`; assert `result["ok"] is False`, `"past EOF" in result["error"]`. Pins the out-of-range guard.
+- `test_handle_read_file_rejects_inverted_end_line` — fixture: 10-line file; pass `start_line=5, end_line=3`; assert `result["ok"] is False`, `"end_line=3 < start_line=5" in result["error"]`. Pins the inverted-range guard.
+- `test_handle_read_file_accepts_empty_file_at_line_1` — fixture: 0-byte file; pass `start_line=1` (default); assert `result["ok"] is True`, `result["excerpt"] == ""`, `result["total_lines"] == 0`. Pins the legitimate-empty-file exception.
+- `test_handle_grep_pattern_skips_symlink_outside_repo` — fixture: tmpdir as repo with `backend/app/legitimate.py` (real file with a known pattern) and `backend/app/leaked.py` symlinked to a file outside the repo whose contents contain the SAME pattern; call `grep_pattern(pattern=<known>)` and assert ONLY `legitimate.py` appears in `matches` (the symlinked path is skipped because `f.is_symlink()` returns True). Pins the symlink-skip + ancestry-guard contract.
+
+**Multi-turn loop tests** (NEW section, mocking the Anthropic client at the boundary):
+
+- `test_call_review_rejects_unverified_p1_on_turn_1` — mock the Anthropic client to return a `report_findings` tool_use on turn 1 with `p1_blocking` non-empty; assert that `call_review` does NOT return after turn 1, instead appends a rejection `tool_result` and continues the loop. Then mock turn 2 to return a `read_file` tool_use (returning `ok=True`), then turn 3 to return a `report_findings` with the same P1; assert the final return value matches turn 3's report. Pins the verify-before-P1 contract.
+- `test_call_review_accepts_clean_p1_empty_report_on_turn_1` — mock the client to return `report_findings` on turn 1 with `p1_blocking == []`; assert `call_review` returns immediately with that report (no rejection, no further iterations). Pins the institutional-valid-clean-report path.
+- `test_call_review_rejects_p1_with_only_failed_investigations` — mock turn 1 to return a `read_file` tool_use with a bad path (handler returns `ok=False`), turn 2 to return another failed tool call (e.g., `find_symbol(name="!invalid")` → `ok=False`), turn 3 to return `report_findings` with non-empty P1; assert the loop REJECTS turn 3's report (tool_call_log has 2 entries but 0 with ok=True). Then mock turn 4 to be a successful `read_file` (ok=True), turn 5 to be the same P1 report; assert turn 5 is accepted. Pins the "failures don't count as evidence" institutional rule.
+- `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
+- `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
+- `test_handle_find_symbol_locates_async_function_definition` — fixture with `async def cancel_rfq(...):` → assert `find_symbol(name="cancel_rfq")` returns matching line. Pins the `(?:async\s+)?` regex prefix; without it, every async route handler in `backend/app/api/routes/` would silently return `matches=[]` (re-introducing the v1 FP class v2 is designed to eliminate).
+- `test_handle_find_symbol_locates_indented_method_definition` — fixture with `class DealEngine:\n    def create_deal(...):\n        ...`; assert `find_symbol(name="create_deal")` returns matching line at the indented `def`. Pins the `^\s*` regex prefix; without it, every method on every service class in `backend/app/services/` (DealEngineService.create_deal, etc.) would silently return `matches=[]` — large share of the repo's service APIs invisible to the verifier.
+- `test_handle_find_symbol_rejects_invalid_identifier` — `name="not a thing!"`, assert `ok: False, error: "invalid Python identifier"`.
+- `test_handle_grep_pattern_returns_matches_with_context` — fixture file with known pattern + 2-line context, assert excerpt format.
+- `test_handle_grep_pattern_truncates_at_80_results` — fixture with 200 matches, assert response has `truncated: True` and ≤ 80 matches.
+
+`backend/tests/scripts/conftest.py` is unchanged (the `sys.path` insert covers the new test).
+
+### 3.10 Cost projection update
+
+Per-push cost grows from v1's R$ 0.30-0.80 (cache hit) / R$ 1.50-4.00 (cache miss) to v2's:
+
+- Cached read of system blocks: ~R$ 0.05 (unchanged)
+- 5-10 tool_use turns × ~3-8 k tokens output each: ~R$ 0.50-1.50 added
+- `report_findings` final turn: ~R$ 0.20
+- **Total cache hit**: ~R$ 0.75-1.75 per push
+- **Total cache miss**: ~R$ 2.00-5.00 per push
+
+vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate dropping 25% → <5% — every avoided FP-iteration saves ~R$ 0.30 + ~10 min orchestrator time.
+
+---
+
+## 4. Scope OUT — explicitly NOT in this PR
+
+- **Replace the v1 `report_findings` schema**: `ReviewReport` Pydantic model unchanged.
+- **MCP connector via `mcp_servers` parameter**: deferred to v3 if v2's catch rate plateaus or Serena LSP-grade resolution becomes essential.
+- **Multi-model ensemble** (Haiku first sieve → Sonnet second sieve → report): future iteration, not v2.
+- **Auto-fix mode** where the LLM proposes a patch via a `propose_edit` tool: rejected for v2; the orchestrator stays in the loop for fixes.
+- **Parallel tool calling**: v2 executes tool_use blocks sequentially within a single turn (Anthropic API supports parallel; the v2 implementation walks `response.content` one block at a time). v3 may add parallel for read_file fan-out.
+- **Subprocess-based ripgrep**: pure Python regex is the v2 implementation. If future calibration shows grep latency dominating, swap to `subprocess.run(["rg", ...])` then.
+- **Write tools** (any tool that mutates filesystem, runs subprocess, makes HTTP requests, or otherwise has side effects): v2 is read-only.
+- **Tools that wrap Serena MCP**: not in v2. Serena requires stdio adapter; out of scope.
+- **Pre-fetch via `file_resolver` recursive import-following**: rejected per §0.
+- **Calibration eval suite** (corpus of past Codex catches → measure recall against them): future dispatch.
+- **GitHub Action mirror**: still local-only.
+- **Frontend regen**: this PR ships no schemas / no API surface change.
+
+---
+
+## 5. Operational rules (institutional infra discipline)
+
+- **Hard caps are non-negotiable**: `MAX_ITERATIONS=12` and `MAX_CUMULATIVE_OUTPUT_TOKENS=60000` MUST raise non-zero exit when exceeded. No silent loop continuation. The cap protects against pathological cases (e.g., model loops on the same `find_symbol` call without converging).
+- **Tool errors do NOT silently skip**: a tool handler raising MUST return a structured `{"ok": False, "error": "..."}` to the model so it can adapt — but a hook-level exception in the multi-turn loop itself MUST exit non-zero with a clear error message (per `feedback_dispatch_self_consistency` no-silent-fallback rule).
+- **Read-only tools, scoped to repo root**: `_resolve_within_repo` rejection is enforced in every handler that touches the filesystem. Test coverage MUST include path-traversal rejection.
+- **Audit trail**: cache artifact's `tool_calls` log is the canonical record. Never log credentials or API keys; the log records `(name, input, result_summary)` only.
+- **Reproducibility**: model identifier still pinned (no `latest` aliases). Tool definitions in `tools.py` are versioned in git so any historical review run can be reproduced from `(git SHA, model ID, dispatch SHA)`.
+- **Bypass discipline**: `git push --no-verify` continues to be the only escape valve. v2 expanding tool surface should NOT make bypass more attractive — calibration data shows v2 reduces FPs, so bypass should become rarer, not more frequent.
+
+---
+
+## 6. Acceptance criteria
+
+- [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
+- [ ] `_is_secret_bearing_path` is defined in `tool_handlers.py` per §3.1: returns True for basenames matching `.env`, `.env.*`, `credentials.json/yaml/yml`, `secrets.json/yaml/yml`, `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`. `handle_read_file` calls this BEFORE reading and returns structured rejection if matched — prevents Anthropic API exfiltration of repo-root `.env` (which holds `ANTHROPIC_API_KEY` per `scripts/pre_push_review.py:41-48`). `_grep_with_context` skips matching files in the per-file loop (defense-in-depth alongside the rglob `*.py` filter that already excludes `.env`).
+- [ ] `handle_read_file` rejects files larger than `_MAX_FILE_SIZE_BYTES` (2 MB) BEFORE reading them into memory (early `target.stat().st_size` check). Returns structured `{"ok": False, "error": "...likely a generated artifact..."}`. Required to prevent multi-MB minified bundles / source maps / generated frontend chunks from blowing the per-turn token budget.
+- [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
+- [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
+- [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
+- [ ] `_grep_with_context` applies the same `_MAX_FILE_SIZE_BYTES` (2 MB) gate as `handle_read_file` BEFORE `read_text()` per-file (cheap `f.stat().st_size` pre-check; OSError on stat() also skips). Without this, grep_pattern at an exact file path or under a directory with a large generated artifact would read multi-MB content into memory before the result byte cap could apply.
+- [ ] `_grep_with_context` byte-cap overflow on the FIRST match truncates the entry's excerpt (appending `"# ...[truncated]"`) and appends it rather than returning `matches=[]`. An empty matches list is reserved for genuine absence; an oversized-first-excerpt case must surface AT LEAST one truncated match snippet so the model can see the file/line. If even truncated to zero `available` bytes (path overhead alone exceeds byte_cap), return `ok=False` with explicit "first matching excerpt exceeds byte_cap" message — never `ok=True, matches=[]` from this path.
+- [ ] `_grep_with_context` tracks BOTH `searched_count` (search_paths passing validation AND existing) AND `inspected_files` (files whose contents were actually read post symlink/secret/size/OSError skips). Returns `ok=False` when `searched_count == 0` OR `inspected_files == 0` — even if `searched_count > 0` but every file under the validated roots was skipped (all-symlinks, all-secret-bearing, or all-OSError directories). Without the second guard, a valid in-repo root containing only symlinked or secret-bearing files would return `ok=True, matches=[]` and the verify-before-P1 guard would count zero-content-inspected calls as evidence.
+- [ ] `handle_read_file` returns `ok=False` when the requested range is out of bounds: `start_line < 1` (negative or zero — Python slicing would return tail-of-file), `start_line > len(lines)` (past EOF), or `end_line < start_line` (inverted range). Empty excerpts are NOT marked `ok=True`. Exception: a legitimately empty 0-line file with `start_line=1` is `ok=True` (excerpt empty but the file IS what was requested). Without these guards, line-number verification on a typo'd or stale range would silently count as evidence.
+- [ ] `_grep_with_context` skips symlinks (`if f.is_symlink(): continue`) AND re-applies `_resolve_within_repo` per file before `read_text()`. Without these defenses, a `backend/app/leak.py -> /etc/passwd` symlink (or any symlink whose target resolves outside the repo) would let the hook send outside-repo contents back to the model. Defense-in-depth: skip symlinks first (simple and correct for institutional source code; the codebase has no legitimate in-repo symlinks), then ancestry-check the resolved path as belts-and-suspenders.
+- [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
+- [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
+- [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
+- [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
+- [ ] `client.messages.create` is called WITH `tool_choice={"type": "any", "disable_parallel_tool_use": True}` — combined guarantee: (a) a tool is called every turn (no plain-text-only responses), (b) only ONE tool_use per turn (sequential execution; matches §4 Scope OUT). Without `disable_parallel_tool_use`, the model could emit `report_findings` AND `read_file` in the same turn; the verify-before-P1 rejection path would tool_result only `report_findings`, orphaning the `read_file` tool_use id, and the next `messages.create` would 400 on protocol violation.
+- [ ] **Verify-before-P1 guard**: when `report_findings` is called AND `p1_blocking` is non-empty AND **no `tool_call_log` entry has `ok=True`** (i.e., zero SUCCESSFUL investigations), the loop REJECTS the report via a `tool_result` rejection message and continues. Tool failures (`ok=False`) do NOT count as evidence per §3.4 — a bad path / invalid regex / unknown identifier is the absence of evidence, not its presence. Clean reports (`p1_blocking == []`) are accepted immediately. The `tool_call_log[].ok` boolean field is populated from `bool(result.get("ok"))` on every tool dispatch.
+- [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
+- [ ] `scripts/dispatch_review/prompt_builder.py::_PERSONA_PREAMBLE` updated per §3.4(A) — the v1 line `Output via the report_findings tool only. Do NOT emit prose.` is REMOVED and replaced with a tool-use-aware instruction that allows investigation before reporting. Without this, the model's persona system block actively contradicts the v2 multi-turn loop and the verify-before-P1 guard would loop indefinitely.
+- [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4(B) tool-use discipline block.
+- [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
+- [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
+- [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 26 mechanical tests.
+- [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
+- [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
+
+---
+
+## 7. Test coverage required
+
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 26 tests per §3.9 enumeration: 23 handler tests (read_file: returns excerpt, caps at 500 lines, rejects path traversal, rejects sibling-prefix escape, rejects secret-bearing dotenv, rejects secret-bearing env_local, rejects oversized file, caps excerpt at byte limit, rejects out-of-range start_line, rejects inverted end_line, accepts empty file at line 1, returns error on missing; find_symbol: locates class def, locates async function def, locates indented method, rejects invalid identifier; grep_pattern: returns matches with context, truncates at 80 results, rejects outside-repo search_path, returns ok=False when all files skipped, skips oversized file, skips symlink outside repo, truncates first match on byte-cap overflow) + 3 multi-turn loop tests for the verify-before-P1 guard (mocked Anthropic client). **Single source of truth for the count is the §3.9 enumeration**; if §6 / §7 / this line drift from the §3.9 list count, the executor MUST treat §3.9 as authoritative. The total is verifiable: `grep -c '^- \`test_' docs/audits/2026-05-09-infra-pre-push-hook-v2-tool-use-dispatch.md` within the §3.9 enumeration block.
+- `backend/tests/scripts/test_file_resolver.py` (existing) — UNCHANGED. The `_LINE_CAP=200` test continues to assert the cap.
+- `backend/tests/scripts/test_schema.py` (existing) — UNCHANGED.
+- `backend/tests/scripts/test_install_git_hooks.py` (existing) — UNCHANGED.
+- `backend/tests/scripts/test_pre_push_review_skip.py` (existing) — UNCHANGED.
+
+**Manual end-to-end smoke test** (NOT pytest; documented in §11): invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke` from the worktree. Inspect the JSON artifact under `.cache/dispatch_review/test-v2-v2smoke.json`. Verify:
+
+1. `tool_calls` array exists and has ≥ 1 entry
+2. At least one `read_file` or `find_symbol` call targeted `backend/app/utils/price_reference.py` or `backend/app/services/price_lookup_service.py` (the FP class 1 + 3 surfaces from v1)
+3. The `p1_blocking` array does NOT contain the v1 FPs (e.g., "PriceQuote location mismatch" should not appear; the model should have verified via tool call)
+4. Total cumulative_output_tokens (computable from sum of per-turn outputs) < 60000
+
+Document the smoke test result in the PR body's "Acceptance evidence" section.
+
+---
+
+## 8. Critical sequencing
+
+This PR ships against `main` at `bf021b837` (post-PR-#42 merge). It depends on hook v1 being in place; without v1, there is no `scripts/dispatch_review/` package to extend.
+
+- **Branch base**: `origin/main` at `bf021b837` or later.
+- **Migration chain**: untouched.
+- **Downstream dependency**: Wave 3 dispatch (PR-A3-3, J-A3-OPUS-02/06/07) benefits from this hook v2 — but does NOT block on it. If v2 is delayed, Wave 3 authors against v1 with known FP classes.
+- **Recommended merge order**: (a) This infra PR (v2) lands first; (b) Wave 3 dispatch authors against v2 with reduced FP load; (c) PR-A3-2 implementation runs in parallel (executor session, separate worktree, independent of v2 timing).
+
+The hook v2 is a **productivity multiplier**, not a prerequisite for any audit-cycle correctness invariant.
+
+---
+
+## 9. PR shape
+
+**Title:** `infra: pre-push hook v2 — tool-use enhancement (Sonnet investigates before asserting)`
+
+**Body skeleton:**
+
+```markdown
+## Summary
+
+Hook v2 extends v1 with custom tool-use so Sonnet 4.6 can dynamically
+read files, search symbols, and grep for patterns during dispatch
+review. Eliminates the 3 false-positive classes documented in
+`reference_pre_push_hook_calibration` (utils/ visibility gap, 200-line
+file_resolver cap, identifier-mapping inference).
+
+Tools added (read-only, scoped to repo root):
+- `read_file(path, start_line?, end_line?)` — up to 500 lines
+- `find_symbol(name)` — locate Python class/function/constant definition
+- `grep_pattern(pattern, path_glob?, context_lines?)` — regex search
+
+Multi-turn loop in `call_review` with hard caps:
+- MAX_ITERATIONS = 12
+- MAX_CUMULATIVE_OUTPUT_TOKENS = 60000
+
+Cache artifact gains `tool_calls` array for post-hoc calibration.
+
+## Files changed
+
+- `scripts/dispatch_review/tool_handlers.py` (NEW) — handler functions
+- `scripts/dispatch_review/tools.py` (NEW) — Anthropic tool schemas
+- `scripts/dispatch_review/client.py` — multi-turn loop, caps, `tool_choice={"type": "any"}` (forces some tool per turn, model picks which)
+- `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
+- `scripts/dispatch_review/cache.py` — `tool_calls` field
+- `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 26 mechanical tests
+
+## Acceptance evidence
+
+- [ ] All criteria from dispatch §6 met
+- [ ] Manual e2e smoke test on merged Wave-2 dispatch produced expected `tool_calls` evidence (see §7)
+- [ ] No P1 FPs from the 3 known v1 FP classes (utils/ visibility, line numbers, identifier mapping inference)
+
+## Constitutional impact
+
+None — this PR ships tooling that complements the existing audit
+review pipeline. No production code path touched.
+
+## Out of scope
+
+See dispatch §4 — schema changes, MCP connector, multi-model ensemble,
+auto-fix, parallel tool calling, write tools, frontend regen.
+
+## Cost projection
+
+~R$ 0.75-1.75 per push that triggers review (cache hit; multi-turn).
+~2-3× v1's cost. Justified by FP rate dropping 25% → <5%.
+```
+
+---
+
+## 10. Constraints — what NOT to do
+
+- DO NOT use `tool_choice={"type": "tool", "name": "report_findings"}` (v1's specific-forcing) in the multi-turn loop — it would prevent the model from calling investigation tools. DO use `tool_choice={"type": "any", "disable_parallel_tool_use": True}` — `any` forces some tool per turn (loop-progress guarantee), `disable_parallel_tool_use` forces sequential one-at-a-time (avoids orphaned tool_use ids when the verify-before-P1 guard rejects only the report_findings block in a parallel turn).
+- DO NOT accept a `report_findings` call with non-empty `p1_blocking` unless `tool_call_log` contains at least one entry with `ok=True`. Counting raw entries is INSUFFICIENT: failed investigations (bad path, invalid regex, unknown identifier returning `ok=False`) are not evidence per §3.4 — they are the absence of evidence. The guard MUST count successful entries only. Clean reports (no P1) on turn 1 are acceptable — the model's judgment that no investigation was needed is institutionally valid when nothing flagged Tipo-I.
+- DO NOT raise `_LINE_CAP` in `file_resolver.py`. Pre-inlining stays bounded at 200 lines/file; the new `read_file` tool covers gaps.
+- DO NOT add write tools, subprocess-execution tools, or tools that make HTTP requests. v2 is read-only.
+- DO NOT skip the `_resolve_within_repo` check in any handler that takes a path argument. Path-traversal rejection is enforced per handler, not centralized.
+- DO NOT use ripgrep / `subprocess.run(["rg", ...])`. Pure Python regex is the v2 implementation; swap only after measured calibration evidence.
+- DO NOT log API keys, full tool inputs that may contain secrets, or full tool results that may contain credentials. The `tool_calls[].input` field MUST be passed through `_summarize_input_for_log` (whitelist redaction; `grep_pattern.pattern` is redacted to length only). The `tool_calls[].result_summary` field MUST be passed through `_summarize_for_log` (structural metadata only).
+- DO NOT remove the `report_findings` tool from `build_review_tools`. It is the loop-termination signal.
+- DO NOT pin a `claude-sonnet-latest`-style alias. Pin the same dated/versioned identifier as v1 (`claude-sonnet-4-6` or successor).
+- DO NOT use `--no-verify` during this PR's own implementation cycle UNLESS the hook v1 itself produces a runaway FP cycle on the v2 dispatch. The hook v1 SHOULD review this dispatch — that's the institutional integrity check.
+- DO NOT auto-merge — wait for Codex review.
+
+---
+
+## 11. Workflow
+
+1. `git fetch origin && git worktree add D:/Projetos/Hedge-Control-New-hook-v2 origin/main && cd D:/Projetos/Hedge-Control-New-hook-v2 && git checkout -b infra/pre-push-hook-v2-tool-use`.
+2. Configure `.claude/settings.local.json` per the worktree pattern (allow git/gh/pytest/python/pip; deny `--force` raw, `--auto`, `--no-verify`, push to main).
+3. Read references in §2 — especially `reference_pre_push_hook_calibration` for the empirical FP classes v2 targets.
+4. Verify Anthropic SDK current pinned version + tool-use API surface: `python -c "from anthropic.types import ToolUseBlock, ToolResultBlockParam; print('OK')"`. Update §2 if the type-import paths changed in a newer SDK.
+5. Create `scripts/dispatch_review/tool_handlers.py` per §3.1. Pure Python regex; no ripgrep dependency.
+6. Implement `_resolve_within_repo` first; it's the security-critical helper used by every path-taking handler.
+7. Implement `handle_read_file` per §3.1. Enforce `_MAX_LINES_PER_READ=500`.
+8. Implement `_grep_with_context` (shared by `handle_find_symbol` and `handle_grep_pattern`). Enforce `_MAX_GREP_RESULTS=80` and byte cap.
+9. Implement `handle_find_symbol` and `handle_grep_pattern` per §3.1.
+10. Create `scripts/dispatch_review/tools.py` per §3.2. Tool schemas + `build_review_tools()`.
+11. Update `scripts/dispatch_review/client.py::call_review` per §3.3. Multi-turn loop, no `tool_choice` forcing, hard caps, tool dispatch, `tool_call_log`. Add `_create_with_retry` helper if extracting the inner network retry from the existing body keeps the code clean.
+12. Update `scripts/dispatch_review/prompt_builder.py` per §3.4: (A) replace the v1 `_PERSONA_PREAMBLE` last line `Output via the report_findings tool only. Do NOT emit prose.` with the tool-use-aware instruction (without this, the v1 cached persona block contradicts the v2 multi-turn design and traps the model in a verify-before-P1 rejection loop), AND (B) append the tool-use discipline subsection to `_REVIEW_PROTOCOL_PROSE`.
+13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
+14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
+15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (26 mechanical tests).
+17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
+18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
+19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
+20. `git push -u origin infra/pre-push-hook-v2-tool-use && gh pr create --base main --title "<§9 title>" --body-file <body>` — DO NOT use `--draft`.
+21. **Hook v1 will review this PR's dispatch** when pushed. Absorb any P1 returns; treat hook v1 self-review of v2 dispatch as institutional integrity check.
+22. **STOP. Wait for Codex review.** Address each catch as a new commit. Expected catch count: 3-7 (broader surface than a typical wave dispatch — Python, multi-turn protocol, regex security).
+23. Report back to orchestrator with PR URL, final SHA, Codex review state, files-touched grouping, test counts, and the manual e2e log.
+
+---
+
+## 12. Final report shape
+
+When complete, report to orchestrator:
+- Branch + PR URL + final SHA.
+- Files touched (grouped: scripts/dispatch_review/ / scripts/ / tests / docs).
+- Test pass/fail counts vs main baseline.
+- Codex review status + catches absorbed (per round).
+- Hook v1 self-review JSON artifact path + summary.
+- Manual e2e log: `pre_push_review.py` JSON artifact for the Wave-2 dispatch, with annotated comparison against v1's findings on the same dispatch.
+- Anthropic SDK pinned version + dated model identifier used.
+- Cumulative API spend observed during smoke + manual tests (Anthropic Console usage page).
+
+Keep report under 800 words.
+
+Boa caça.
