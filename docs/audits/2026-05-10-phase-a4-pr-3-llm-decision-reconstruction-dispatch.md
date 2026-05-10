@@ -120,6 +120,15 @@ Recommended table:
 llm_decision_artifacts
 ```
 
+Register the model explicitly in `backend/app/models/__init__.py`, mirroring the
+existing inbound models:
+
+```python
+from app.models.llm_decision_artifact import LLMDecisionArtifact
+```
+
+and add `"LLMDecisionArtifact"` to `__all__`.
+
 The table must be durable, queryable, and linked to the inbound evidence chain.
 At minimum it must include:
 
@@ -148,6 +157,25 @@ At minimum it must include:
 - `final_decision`;
 - `final_status`;
 - `created_at` timezone-aware timestamp.
+
+`final_decision` domain:
+
+- `allow_mutation`;
+- `deny_no_mutation`.
+
+`final_status` is the granular orchestrator outcome code. It must mirror the
+status string returned in `processing_result`, for example:
+
+- `auto_quote_created`;
+- `counterparty_declined`;
+- `counterparty_question`;
+- `needs_human_review`;
+- `llm_unavailable`;
+- `hallucinated_price_blocked`;
+- `duplicate_quote_skipped`;
+- `auto_quote_skipped_incomplete`;
+- `auto_quote_skipped_invalid_payload`;
+- `auto_quote_failed`.
 
 Use `json_payload_type` from `backend/app/models/inbound_webhook_delivery.py`
 for JSON columns, matching PR-A4-1/2.
@@ -259,8 +287,8 @@ Required cases:
   - `needs_human_review`;
 - hallucinated price blocked;
 - duplicate active quote skipped;
-- incomplete auto-quote payload skipped;
-- invalid auto-quote payload skipped;
+- incomplete auto-quote payload skipped (`auto_quote_skipped_incomplete`);
+- invalid auto-quote payload skipped (`auto_quote_skipped_invalid_payload`);
 - auto-quote creation failed;
 - auto-quote created.
 
@@ -328,6 +356,18 @@ Required behavior:
 `RFQService.submit_quote()` currently flushes the quote before the orchestrator
 commits. Use that boundary to link the artifact to `quote.id` inside the same
 transaction.
+
+Concrete placement requirement:
+
+- call `RFQService.submit_quote(session, rfq.id, quote_payload)`;
+- after it returns, `quote.id` is available because `submit_quote()` flushes;
+- insert the `LLMDecisionArtifact` row into the same `session` after that flush
+  and before `session.commit()`;
+- call the single existing `session.commit()` only after both quote and artifact
+  are staged;
+- if artifact construction or insertion raises, do not call `session.commit()`;
+  the existing exception path must `session.rollback()` so the flushed quote and
+  artifact are both rolled back.
 
 ### 3.6 Remove PR-A4-2 legacy inbound path
 
