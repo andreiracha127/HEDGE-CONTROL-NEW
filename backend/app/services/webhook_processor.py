@@ -128,6 +128,8 @@ def drain_queue() -> list[WhatsAppInboundMessage]:
         msgs = list(_message_queue)
         _message_queue.clear()
         _active_durable_message_ids.clear()
+        _seen_message_ids.clear()
+        _seen_set.clear()
     return msgs
 
 

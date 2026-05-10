@@ -144,10 +144,12 @@ def test_drain_queue_returns_all():
     enqueue_message(_make_msg("b"))
     enqueue_message(_make_msg("c"))
     assert queue_depth() == 3
+    assert _seen_set == {"a", "b", "c"}
 
     drained = drain_queue()
     assert len(drained) == 3
     assert queue_depth() == 0
+    assert _seen_set == set()
 
 
 def test_fifo_ordering():
