@@ -6,8 +6,9 @@
 #   args  : <remote_name> <remote_url>
 #   stdin : one line per pushed ref — `<local_ref> <local_sha> <remote_ref> <remote_sha>`
 #
-# We invoke the LLM reviewer only when a `docs/**/*-dispatch.md` file
-# is in the push range. Bypass with `git push --no-verify` (consciously).
+# We invoke the LLM reviewer whenever the pushed range contains changed
+# files. Dispatch markdown files are passed as optional canonical context,
+# but they are not required to trigger review.
 
 set -e
 
@@ -37,15 +38,15 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # No `|| true` fallback: if `git diff` itself fails (corrupt repo,
     # invalid range), `set -e` aborts the hook. Empty result on no
     # matches is normal exit-0 — silent fallback would hide real errors.
-    DISPATCH_FILES=$(git diff --name-only "$DIFF_RANGE" -- 'docs/**/*-dispatch.md')
+    CHANGED_FILES=$(git diff --name-only "$DIFF_RANGE")
 
-    if [ -z "$DISPATCH_FILES" ]; then
+    if [ -z "$CHANGED_FILES" ]; then
         continue
     fi
 
     BRANCH_NAME=$(git rev-parse --abbrev-ref HEAD)
 
-    echo "[pre-push] dispatch file(s) in push range — invoking LLM reviewer..."
+    echo "[pre-push] changed file(s) in push range - invoking LLM reviewer..."
 
     if ! command -v python >/dev/null 2>&1; then
         echo "[pre-push] ERROR: python not found on PATH; cannot run reviewer." >&2
@@ -53,7 +54,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         exit 1
     fi
 
-    echo "$DISPATCH_FILES" | python scripts/pre_push_review.py \
+    echo "$CHANGED_FILES" | python scripts/pre_push_review.py \
         --branch "$BRANCH_NAME" \
         --head-sha "$local_sha" \
         --remote-name "$REMOTE_NAME"

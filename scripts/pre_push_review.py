@@ -1,8 +1,9 @@
-"""CLI entrypoint for the pre-push dispatch review hook.
+"""CLI entrypoint for the pre-push review hook.
 
-Invoked by ``.githooks/pre-push`` with one or more dispatch markdown
-paths (via ``--dispatch-paths`` or stdin). Calls the Anthropic API,
-writes a JSON cache artifact, and decides exit code:
+Invoked by ``.githooks/pre-push`` with changed paths from the pushed
+range (via ``--changed-paths`` or stdin). Dispatch markdown files can be
+passed via ``--dispatch-paths`` as optional canonical context. Calls the
+Anthropic API, writes a JSON cache artifact, and decides exit code:
 
 * P1 finding(s): exit 1 (block the push)
 * P2 / P3 only or none: exit 0 (warn / continue)
@@ -64,22 +65,60 @@ def _load_repo_dotenv(repo_root: Path) -> None:
         pass
 
 
-def _read_dispatch_paths_from_stdin() -> list[str]:
+def _read_paths_from_stdin() -> list[str]:
     if sys.stdin.isatty():
         return []
     return [line.strip() for line in sys.stdin if line.strip()]
 
 
+def _normalize_changed_path(raw: str, repo_root: Path) -> str | None:
+    raw = raw.strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        try:
+            return candidate.resolve().relative_to(repo_root).as_posix()
+        except ValueError:
+            return candidate.as_posix()
+    return candidate.as_posix()
+
+
+def _is_dispatch_path(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return normalized.startswith("docs/") and normalized.endswith("-dispatch.md")
+
+
+def _resolve_existing_dispatch_paths(raw_paths: list[str], repo_root: Path) -> list[Path]:
+    dispatch_paths: list[Path] = []
+    for raw in raw_paths:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (repo_root / candidate).resolve()
+        if candidate.is_file():
+            dispatch_paths.append(candidate)
+    return dispatch_paths
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="pre_push_review",
-        description="Pre-push LLM review of dispatch markdown files (Sonnet 4.6 first sieve before Codex).",
+        description="Pre-push LLM review of changed files (Sonnet 4.6 first sieve before Codex).",
+    )
+    parser.add_argument(
+        "--changed-paths",
+        nargs="*",
+        default=None,
+        help="Explicit list of changed paths in the pushed range. If omitted, paths are read from stdin.",
     )
     parser.add_argument(
         "--dispatch-paths",
         nargs="*",
         default=None,
-        help="Explicit list of dispatch markdown paths. If omitted, paths are read from stdin (one per line).",
+        help=(
+            "Optional list of dispatch markdown paths to include as canonical context. "
+            "If omitted, dispatch paths are derived from changed paths."
+        ),
     )
     parser.add_argument("--branch", default="unknown")
     parser.add_argument("--head-sha", default="unknown")
@@ -115,27 +154,42 @@ def main(argv: list[str] | None = None) -> int:
 
     _load_repo_dotenv(repo_root)
 
-    raw_paths = args.dispatch_paths if args.dispatch_paths is not None else _read_dispatch_paths_from_stdin()
-    dispatch_paths: list[Path] = []
-    for raw in raw_paths:
-        candidate = Path(raw)
-        if not candidate.is_absolute():
-            candidate = (repo_root / candidate).resolve()
-        if candidate.is_file():
-            dispatch_paths.append(candidate)
+    if args.changed_paths is not None:
+        raw_changed_paths = args.changed_paths
+    elif args.dispatch_paths is not None:
+        # Backward-compatible direct invocation: old callers only supplied
+        # dispatch paths, which are also changed paths for review purposes.
+        raw_changed_paths = args.dispatch_paths
+    else:
+        raw_changed_paths = _read_paths_from_stdin()
 
-    if not dispatch_paths:
-        print("[pre-push-review] no dispatch files in push range -skipping")
+    changed_paths = [
+        normalized
+        for raw in raw_changed_paths
+        if (normalized := _normalize_changed_path(raw, repo_root)) is not None
+    ]
+
+    if not changed_paths:
+        print("[pre-push-review] no changed files in push range -skipping")
         return 0
 
+    raw_dispatch_paths = (
+        args.dispatch_paths
+        if args.dispatch_paths is not None
+        else [path for path in changed_paths if _is_dispatch_path(path)]
+    )
+    dispatch_paths = _resolve_existing_dispatch_paths(raw_dispatch_paths, repo_root)
+
     print(
-        f"[pre-push-review] reviewing {len(dispatch_paths)} dispatch file(s) "
+        f"[pre-push-review] reviewing {len(changed_paths)} changed file(s) "
+        f"with {len(dispatch_paths)} dispatch context file(s) "
         f"on branch {args.branch} @ {args.head_sha[:12]}..."
     )
 
     cached_system = build_cached_system_blocks(repo_root)
     user_payload = build_user_payload(
         dispatch_paths=dispatch_paths,
+        changed_paths=changed_paths,
         repo_root=repo_root,
         branch=args.branch,
         head_sha=args.head_sha,

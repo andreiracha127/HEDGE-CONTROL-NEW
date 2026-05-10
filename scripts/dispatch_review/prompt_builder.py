@@ -19,6 +19,11 @@ reviewer. The Codex Connector is the final-line authority; you are the
 first sieve. Your goal is to catch mechanical violations cheaply so the
 Codex round count stays small.
 
+Some pushes do not include a dispatch markdown file. In that mode,
+review the changed files directly using the changed-path list in the
+user payload and the investigation tools. Dispatch files, when present,
+are canonical context; their presence is not a prerequisite for review.
+
 You operate against three sources of truth, in priority order:
 1. **docs/governance.md** — the constitution of the system. Any
    prescription violating §2.x rules is P1 blocking.
@@ -146,12 +151,28 @@ def build_cached_system_blocks(repo_root: Path) -> list[dict[str, Any]]:
 
 def build_user_payload(
     dispatch_paths: list[Path],
+    changed_paths: list[str],
     repo_root: Path,
     branch: str,
     head_sha: str,
 ) -> str:
     parts: list[str] = []
-    parts.append(f"# Dispatch review request — branch `{branch}` @ `{head_sha}`\n\n")
+    parts.append(f"# Pre-push review request — branch `{branch}` @ `{head_sha}`\n\n")
+    parts.append("## Changed files in pushed range\n\n")
+    if changed_paths:
+        for changed_path in changed_paths:
+            parts.append(f"- `{changed_path}`\n")
+    else:
+        parts.append("- *(none)*\n")
+
+    if not dispatch_paths:
+        parts.append(
+            "\nNo dispatch markdown file was changed in this push. Review the "
+            "changed files directly for concrete correctness, guardrail "
+            "regressions, migration/test hazards, and P1 blockers. Use the "
+            "investigation tools on the changed paths when evidence is needed.\n"
+        )
+
     for path in dispatch_paths:
         rel = path.relative_to(repo_root) if path.is_absolute() else path
         parts.append(f"\n## Dispatch file: `{rel}`\n\n```markdown\n")
