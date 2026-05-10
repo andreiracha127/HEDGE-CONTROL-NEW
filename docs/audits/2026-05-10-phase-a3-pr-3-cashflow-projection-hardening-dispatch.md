@@ -522,11 +522,13 @@ Phase A3 jury verdict (FAIL-WITH-CRITICAL-CAVEATS @ commit
 `bbd0908d0`) — addresses Tier 1 findings J-A3-OPUS-02 + J-A3-OPUS-06
 and Tier 2 finding J-A3-OPUS-07. Constitution §2.1, §2.6, §2.7.
 
-OPUS-07 (Projection-as-5th-view): the `/cashflow/projection` route
-stays; this PR's §5 declares its constitutional invariants at the
-dispatch layer. Phase A5 audit-trail dispatch may later decide
-whether to propagate to `governance.md`. governance.md is NOT
-modified in this PR (constitution stable).
+OPUS-07 (Projection-as-5th-view): governance.md IS modified in this
+PR — Projection added as 5th view + Projection-invariants subsection
+under VALUATION/MTM/CASHFLOW per §3.4 (per Andrei's institutional
+decision selecting the jury verdict's "define" alternative; this is
+the ONE constitutional change explicitly authorized by the verdict).
+The route `/cashflow/projection` stays; its body is hardened per
+§3.1–§3.3.
 
 ## Files changed
 
@@ -559,8 +561,8 @@ settlement_date).
 ## Out of scope
 
 - Wave 4-5 of Phase A3
-- Removing `/cashflow/projection` route (Phase A5 audit-trail concern)
-- Modifying governance.md (constitution stable)
+- Removing `/cashflow/projection` route (the verdict's other alternative; this PR selects "define")
+- Other governance.md changes beyond §3.4's prescribed Projection additions
 - inputs_hash provenance for projection (projection is forward-looking estimate)
 
 ## Closes
