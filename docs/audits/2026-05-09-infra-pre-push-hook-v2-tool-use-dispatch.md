@@ -34,7 +34,7 @@ This dispatch ships **custom tool-use** via the native Anthropic Messages API: d
 - `find_symbol(name)` lets Sonnet grep for a class/function/dict definition — resolves identifier mapping inference at scale.
 - `grep_pattern(pattern, path_glob)` lets Sonnet search for arbitrary regex patterns — resolves line-number verification (Sonnet can grep for the call-site code, returning the actual line + matching context).
 
-After this dispatch ships, the hook executes a multi-turn conversation: each turn either (a) Sonnet emits one or more `tool_use` blocks → tool handlers execute and return `tool_result` blocks → next turn, OR (b) Sonnet emits the final `report_findings` tool_use → loop ends. A cap of N=12 iterations and ~150k cumulative tokens guards against runaway loops.
+After this dispatch ships, the hook executes a multi-turn conversation: each turn either (a) Sonnet emits one or more `tool_use` blocks → tool handlers execute and return `tool_result` blocks → next turn, OR (b) Sonnet emits the final `report_findings` tool_use → loop ends. A cap of N=12 iterations and 60,000 cumulative output tokens guards against runaway loops.
 
 The expected gain: FP rate drops from ~25% → <5% (Sonnet verifies before asserting). Catch rate may also rise slightly because Sonnet can now investigate paths the file_resolver didn't pre-inline. Cost increases ~3-4× per push (multi-turn = more API roundtrips + larger output token budget for tool_use blocks), landing around R$ 1.50-4.00/push triggered (vs v1's R$ 0.30-0.80). Worth the trade given hook is the difference between 2 and 18 Codex rounds.
 
@@ -444,7 +444,7 @@ flagging P1**. Use:
 - `find_symbol(name="X")` to locate where X is defined.
 - `read_file(path="...", start_line=, end_line=)` to inspect specific
   ranges.
-- `grep_pattern(pattern="...", path_glob="...")` to find call sites,
+- `grep_pattern(pattern="...", search_path="...")` to find call sites,
   identifier mappings, or to verify line numbers in the cited code.
 
 Discipline rules:
@@ -503,6 +503,8 @@ Why `tool_call_log`: post-hoc calibration data. After the next 5-10 cycles of v2
 Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review` and to receive `(report, tool_call_log)` instead of just `report`. Pass `tool_call_log` to `write_cache_artifact`. The CLI surface (args, exit codes) is unchanged.
 
 **Skip-guard placement is invariant**: the no-dispatch-paths early-exit (`if not dispatch_paths: print(...); return 0`) MUST stay ABOVE the `call_review` invocation in `main`. Moving it inside the multi-turn loop would break `backend/tests/scripts/test_pre_push_review_skip.py::test_main_exits_0_with_no_dispatch_paths`. The existing skip test is declared UNCHANGED in §7 — that contract is safe ONLY if the early-exit guard placement is preserved.
+
+**`call_review` callsite cleanup**: v1's `call_review` accepted `max_tokens=8192` as an explicit kwarg and `tools=[tool]` constructed at the callsite. v2 internalizes both — `_PER_TURN_MAX_TOKENS` is module-level in `client.py`, and `build_review_tools()` is called inside `call_review`. The executor MUST remove `max_tokens=` and `tools=` kwargs (if present) from the `main → call_review` invocation. Audit step: `grep -n 'call_review' scripts/pre_push_review.py` — confirm only `model=`, `cached_system_blocks=`, `user_payload=`, `repo_root=` kwargs are passed post-edit.
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
