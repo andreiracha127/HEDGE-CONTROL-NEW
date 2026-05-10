@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,27 @@ MIGRATION_PATH = (
     / "versions"
     / "039_a3_cashflow_baseline_archive.py"
 )
+
+LEGACY_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+BASELINE_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
+ACTIVE_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
+
+
+def _pre_039_table(metadata: sa.MetaData) -> sa.Table:
+    return sa.Table(
+        "cashflow_baseline_snapshots",
+        metadata,
+        sa.Column("id", sa.Uuid(), primary_key=True),
+        sa.Column("as_of_date", sa.Date(), nullable=False),
+        sa.Column("snapshot_data", sa.JSON(), nullable=False),
+        sa.Column("total_net_cashflow", sa.Numeric(18, 6), nullable=False),
+        sa.Column("inputs_hash", sa.String(length=64), nullable=True),
+        sa.Column("correlation_id", sa.String(length=64), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
+        sa.UniqueConstraint(
+            "as_of_date", name="uq_cashflow_baseline_snapshots_as_of_date"
+        ),
+    )
 
 
 def _load_migration():
@@ -37,36 +59,21 @@ def _run_migration(connection: sa.Connection, direction: str) -> None:
 
 def _create_pre_039_schema(connection: sa.Connection) -> None:
     metadata = sa.MetaData()
-    sa.Table(
-        "cashflow_baseline_snapshots",
-        metadata,
-        sa.Column("id", sa.String(length=64), primary_key=True),
-        sa.Column("as_of_date", sa.Date(), nullable=False),
-        sa.Column("snapshot_data", sa.JSON(), nullable=False),
-        sa.Column("total_net_cashflow", sa.Numeric(18, 6), nullable=False),
-        sa.Column("inputs_hash", sa.String(length=64), nullable=True),
-        sa.Column("correlation_id", sa.String(length=64), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=True),
-        sa.UniqueConstraint(
-            "as_of_date", name="uq_cashflow_baseline_snapshots_as_of_date"
-        ),
-    )
+    _pre_039_table(metadata)
     metadata.create_all(connection)
 
 
 def _insert_snapshot(
     connection: sa.Connection,
     *,
-    row_id: str,
+    row_id: uuid.UUID,
     as_of_date: date,
     snapshot_data: dict,
     total: str = "10.000000",
     inputs_hash: str | None = "a" * 64,
     correlation_id: str = "corr-1",
 ) -> None:
-    table = sa.Table(
-        "cashflow_baseline_snapshots", sa.MetaData(), autoload_with=connection
-    )
+    table = _pre_039_table(sa.MetaData())
     connection.execute(
         table.insert(),
         {
@@ -85,6 +92,23 @@ def test_039_revision_metadata_chains_from_038() -> None:
     migration = _load_migration()
     assert migration.revision == "039_a3_cashflow_baseline_archive"
     assert migration.down_revision == "038_a3_price_provenance"
+
+
+def test_039_sqlite_uuid_values_are_serialized_at_archive_boundary() -> None:
+    migration = _load_migration()
+
+    archive_id = migration._archive_snapshot_id(LEGACY_ID, "sqlite")
+    restored_char_id = migration._source_snapshot_id(
+        str(LEGACY_ID), sa.String(length=32), "sqlite"
+    )
+    restored_uuid_id = migration._source_snapshot_id(
+        str(LEGACY_ID), sa.Uuid(), "sqlite"
+    )
+
+    assert archive_id == str(LEGACY_ID)
+    assert isinstance(archive_id, str)
+    assert restored_char_id == LEGACY_ID.hex
+    assert restored_uuid_id == LEGACY_ID
 
 
 def test_039_upgrade_archives_legacy_and_leaves_new_baseline_active() -> None:
@@ -111,7 +135,7 @@ def test_039_upgrade_archives_legacy_and_leaves_new_baseline_active() -> None:
         }
         _insert_snapshot(
             connection,
-            row_id="legacy-1",
+            row_id=LEGACY_ID,
             as_of_date=date(2026, 2, 1),
             snapshot_data=legacy_payload,
             total="10.000000",
@@ -119,7 +143,7 @@ def test_039_upgrade_archives_legacy_and_leaves_new_baseline_active() -> None:
         )
         _insert_snapshot(
             connection,
-            row_id="baseline-1",
+            row_id=BASELINE_ID,
             as_of_date=date(2026, 2, 2),
             snapshot_data=baseline_payload,
             total="0.000000",
@@ -146,7 +170,7 @@ def test_039_upgrade_archives_legacy_and_leaves_new_baseline_active() -> None:
                 archive_table.c.archive_reason,
             )
         ).mappings().one()
-        assert archive["original_snapshot_id"] == "legacy-1"
+        assert archive["original_snapshot_id"] == str(LEGACY_ID)
         assert archive["as_of_date"] == date(2026, 2, 1)
         assert archive["snapshot_data"] == legacy_payload
         assert archive["total_net_cashflow"] == Decimal("10.000000")
@@ -164,7 +188,7 @@ def test_039_upgrade_archives_legacy_and_leaves_new_baseline_active() -> None:
                 sa.text("SELECT id FROM cashflow_baseline_snapshots")
             ).all()
         }
-        assert active_ids == {"baseline-1"}
+        assert active_ids == {BASELINE_ID.hex}
 
 
 def test_039_downgrade_restores_archived_rows_when_no_active_conflict() -> None:
@@ -177,7 +201,7 @@ def test_039_downgrade_restores_archived_rows_when_no_active_conflict() -> None:
         }
         _insert_snapshot(
             connection,
-            row_id="legacy-1",
+            row_id=LEGACY_ID,
             as_of_date=date(2026, 2, 1),
             snapshot_data=legacy_payload,
             correlation_id="legacy-corr",
@@ -196,7 +220,7 @@ def test_039_downgrade_restores_archived_rows_when_no_active_conflict() -> None:
                 snapshot_table.c.correlation_id,
             )
         ).mappings().one()
-        assert restored["id"] == "legacy-1"
+        assert restored["id"] == LEGACY_ID.hex
         assert restored["as_of_date"] == date(2026, 2, 1)
         assert restored["snapshot_data"] == legacy_payload
         assert restored["correlation_id"] == "legacy-corr"
@@ -209,14 +233,14 @@ def test_039_downgrade_hard_fails_on_active_as_of_conflict() -> None:
         _create_pre_039_schema(connection)
         _insert_snapshot(
             connection,
-            row_id="legacy-1",
+            row_id=LEGACY_ID,
             as_of_date=date(2026, 2, 1),
             snapshot_data={"cashflow_items": []},
         )
         _run_migration(connection, "upgrade")
         _insert_snapshot(
             connection,
-            row_id="active-1",
+            row_id=ACTIVE_ID,
             as_of_date=date(2026, 2, 1),
             snapshot_data={"view": "baseline"},
         )
@@ -281,7 +305,7 @@ def test_039_downgrade_hard_fails_on_archive_null_correlation_id() -> None:
             archive_table.insert(),
             {
                 "id": "archive-1",
-                "original_snapshot_id": "legacy-1",
+                "original_snapshot_id": str(LEGACY_ID),
                 "as_of_date": date(2026, 2, 1),
                 "snapshot_data": {"cashflow_items": []},
                 "total_net_cashflow": Decimal("10.000000"),
@@ -326,7 +350,7 @@ def test_039_downgrade_hard_fails_on_archive_null_original_created_at() -> None:
             archive_table.insert(),
             {
                 "id": "archive-1",
-                "original_snapshot_id": "legacy-1",
+                "original_snapshot_id": str(LEGACY_ID),
                 "as_of_date": date(2026, 2, 1),
                 "snapshot_data": {"cashflow_items": []},
                 "total_net_cashflow": Decimal("10.000000"),

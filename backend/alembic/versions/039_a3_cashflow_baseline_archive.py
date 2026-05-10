@@ -36,6 +36,32 @@ def _new_archive_id(dialect_name: str):
     return str(value)
 
 
+def _to_uuid(value: Any) -> uuid.UUID:
+    if isinstance(value, uuid.UUID):
+        return value
+    return uuid.UUID(str(value))
+
+
+def _archive_snapshot_id(value: Any, dialect_name: str):
+    snapshot_id = _to_uuid(value)
+    if dialect_name == "postgresql":
+        return snapshot_id
+    return str(snapshot_id)
+
+
+def _source_snapshot_id(
+    value: Any,
+    source_id_type: sa.types.TypeEngine,
+    dialect_name: str,
+):
+    snapshot_id = _to_uuid(value)
+    if dialect_name == "postgresql" or isinstance(source_id_type, sa.Uuid):
+        return snapshot_id
+    if isinstance(source_id_type, sa.String) and source_id_type.length == 32:
+        return snapshot_id.hex
+    return str(snapshot_id)
+
+
 def _is_legacy_payload(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return True
@@ -108,7 +134,9 @@ def upgrade() -> None:
             [
                 {
                     "id": _new_archive_id(dialect_name),
-                    "original_snapshot_id": row["id"],
+                    "original_snapshot_id": _archive_snapshot_id(
+                        row["id"], dialect_name
+                    ),
                     "as_of_date": row["as_of_date"],
                     "snapshot_data": row["snapshot_data"],
                     "total_net_cashflow": row["total_net_cashflow"],
@@ -121,12 +149,22 @@ def upgrade() -> None:
             ],
         )
         bind.execute(
-            source.delete().where(source.c.id.in_([row["id"] for row in legacy_rows]))
+            source.delete().where(
+                source.c.id.in_(
+                    [
+                        _source_snapshot_id(
+                            row["id"], source.c.id.type, dialect_name
+                        )
+                        for row in legacy_rows
+                    ]
+                )
+            )
         )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
+    dialect_name = bind.dialect.name
     inspector = sa.inspect(bind)
     if not inspector.has_table("cashflow_baseline_snapshot_archives"):
         return
@@ -162,7 +200,11 @@ def downgrade() -> None:
             source.insert(),
             [
                 {
-                    "id": row["original_snapshot_id"],
+                    "id": _source_snapshot_id(
+                        row["original_snapshot_id"],
+                        source.c.id.type,
+                        dialect_name,
+                    ),
                     "as_of_date": row["as_of_date"],
                     "snapshot_data": row["snapshot_data"],
                     "total_net_cashflow": row["total_net_cashflow"],
