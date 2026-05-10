@@ -84,6 +84,7 @@ After PR-A3-4:
 - `backend/app/services/scenario_whatif_service.py:510-530` - current duplicate Analytic/Baseline assignment.
 - `backend/tests/test_cashflow_baseline_service.py` - existing baseline tests to extend.
 - `backend/tests/test_scenario_whatif_run.py` - scenario response tests to update.
+- `backend/app/core/precision.py:34-35` - `quantize_money()` canonical 6-decimal money normalization.
 
 ---
 
@@ -104,8 +105,12 @@ Do not replace it with a wrapper around Analytic. Baseline owns its own snapshot
 Add helpers in `cashflow_baseline_service.py`:
 
 ```python
+from app.core.precision import quantize_money
+```
+
+```python
 def _signed_ledger_amount(entry: CashFlowLedgerEntry) -> Decimal:
-    amount = Decimal(str(entry.amount))
+    amount = quantize_money(entry.amount)
     if entry.direction == "IN":
         return amount
     if entry.direction == "OUT":
@@ -153,7 +158,7 @@ def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlo
             CashFlowLedgerEntry.cashflow_date.asc(),
             CashFlowLedgerEntry.hedge_contract_id.asc(),
             CashFlowLedgerEntry.leg_id.asc(),
-            CashFlowLedgerEntry.created_at.asc(),
+            CashFlowLedgerEntry.source_event_id.asc(),
         )
         .all()
     )
@@ -166,11 +171,17 @@ Contracts:
 - Include `HedgeContractStatus.active` and `HedgeContractStatus.partially_settled`.
 - Skip `settled` contracts for unrealized items; their realized flows belong in ledger entries.
 - Preserve price provenance fields in each `CashFlowItem`.
+- Set `amount_usd=quantize_money(mtm.mtm_value)` and
+  `mtm_value=quantize_money(mtm.mtm_value)` so persisted Baseline totals match
+  the `Numeric(18, 6)` storage contract and idempotency does not false-409 on
+  precision drift.
 
 Orders:
 
 - Include variable orders with MTM-eligible conventions, mirroring Analytic eligibility.
 - Preserve price provenance fields in each `CashFlowItem`.
+- Set `amount_usd=quantize_money(mtm.mtm_value)` and
+  `mtm_value=quantize_money(mtm.mtm_value)`.
 
 Acceptable implementation shape:
 
@@ -202,13 +213,15 @@ with Baseline-owned payload creation:
 unrealized_items = _build_unrealized_items(db, as_of_date)
 realized_entries = _load_realized_ledger_entries(db, as_of_date)
 
-unrealized_total = sum((item.amount_usd for item in unrealized_items), Decimal("0"))
-realized_payload = [_ledger_entry_payload(entry) for entry in realized_entries]
-realized_total = sum(
-    (Decimal(item["signed_amount_usd"]) for item in realized_payload),
-    Decimal("0"),
+unrealized_total = quantize_money(
+    sum((item.amount_usd for item in unrealized_items), Decimal("0"))
 )
-total = unrealized_total + realized_total
+realized_amounts = [_signed_ledger_amount(entry) for entry in realized_entries]
+realized_payload = [_ledger_entry_payload(entry) for entry in realized_entries]
+realized_total = quantize_money(
+    sum(realized_amounts, Decimal("0"))
+)
+total = quantize_money(unrealized_total + realized_total)
 
 payload = _canonicalize_snapshot_payload(
     {
@@ -234,6 +247,11 @@ Update `_canonicalize_snapshot_payload()` so it sorts both:
 
 - `unrealized_items` by `(object_type, object_id)`.
 - `realized_ledger_entries` by `(cashflow_date, hedge_contract_id, leg_id, source_event_id or "")`.
+
+The database query order and canonical payload order must use the same stable
+four-field realized-ledger key. Do not use `created_at` as a reconciliation
+tiebreaker; it is not serialized into `snapshot_data` and therefore cannot be
+part of the persisted hash contract.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
@@ -282,6 +300,14 @@ Because `ScenarioCashflowSnapshot` changes, regenerate API artifacts:
 - `frontend-svelte/src/lib/api/schema.d.ts`
 
 No frontend component change is expected unless the generated type change exposes a real consumer. Current search on `main = 40aa682d6` found no direct frontend read of `cashflow_snapshot.baseline`.
+
+Evidence command used during dispatch authoring:
+
+```bash
+rg -n "cashflow_snapshot.*baseline|baseline\\]" frontend-svelte backend/tests backend/app
+```
+
+It returned no direct consumer of `cashflow_snapshot.baseline` in frontend code.
 
 ### 3.5 No model migration
 
@@ -387,7 +413,8 @@ Also add a static boundary test if the project accepts source-inspection tests:
 
 ```python
 def test_cashflow_baseline_service_does_not_import_analytic() -> None:
-    source = Path("backend/app/services/cashflow_baseline_service.py").read_text()
+    source_path = Path(__file__).resolve().parents[1] / "app" / "services" / "cashflow_baseline_service.py"
+    source = source_path.read_text()
     assert "compute_cashflow_analytic" not in source
     assert "analytic.model_dump" not in source
 ```
