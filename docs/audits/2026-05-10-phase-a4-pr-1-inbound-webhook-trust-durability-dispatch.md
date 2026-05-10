@@ -264,6 +264,21 @@ Specifically, add
 because `backend/tests/conftest.py` imports `app.models` before
 `Base.metadata.create_all()`.
 
+Concrete registration template:
+
+```python
+# backend/app/models/__init__.py
+from app.models.inbound_webhook_delivery import InboundWebhookDelivery
+
+__all__ = [
+    # keep the existing list stable and add:
+    "InboundWebhookDelivery",
+]
+```
+
+The module-body import is required. Adding only the `__all__` entry is not
+sufficient to register the table with `Base.metadata`.
+
 ---
 
 ## 4. Scope OUT
@@ -282,6 +297,11 @@ because `backend/tests/conftest.py` imports `app.models` before
 - Do not change outbound WhatsApp provider behavior except where tests need
   setup updates.
 - Do not relax hard-fail behavior for invalid signatures or malformed payloads.
+- Do not rewrite existing HMAC helper call sites unless the executor environment
+  surfaces a concrete runtime failure in focused tests. If a compatibility fix
+  is required, limit it to the failing helper call and use
+  `hmac.HMAC(key=secret.encode(), msg=body, digestmod=hashlib.sha256)` or an
+  equivalent form without changing signature test logic.
 
 ---
 
@@ -360,13 +380,6 @@ python -m pytest backend/tests/scripts/ -v
 cd backend && alembic heads
 git diff --check
 ```
-
-Do not rewrite existing `hmac.new(...)` helpers unless the executor runtime
-raises a concrete failure on the current call form. If a compatibility fix is
-required, change only the call signature, for example to
-`hmac.new(key=secret.encode(), msg=body, digestmod=hashlib.sha256)` or an
-equivalent `hmac.HMAC(...)` form. Report it as an environment compatibility
-correction and do not alter signature test logic.
 
 If the executor adds a dedicated migration test file, include it in the focused
 test run explicitly. If broad backend tests are run, document the known local
