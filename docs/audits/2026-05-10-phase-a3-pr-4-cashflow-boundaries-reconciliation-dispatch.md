@@ -89,7 +89,7 @@ After PR-A3-4:
 - `backend/app/services/scenario_whatif_service.py:510-530` - current duplicate Analytic/Baseline assignment.
 - `backend/tests/test_cashflow_baseline_service.py` - existing baseline tests to extend.
 - `backend/tests/test_scenario_whatif_run.py` - scenario response tests to update.
-- `backend/app/core/precision.py` - `quantize_money()` canonical 6-decimal money normalization.
+- `backend/app/core/precision.py` - `quantize_money()` and `quantize_price()` canonical 6-decimal normalization.
 
 ---
 
@@ -110,7 +110,7 @@ Do not replace it with a wrapper around Analytic. Baseline owns its own snapshot
 Add helpers in `cashflow_baseline_service.py`:
 
 ```python
-from app.core.precision import quantize_money
+from app.core.precision import quantize_money, quantize_price
 from app.models.cashflow import CashFlowBaselineSnapshot, CashFlowLedgerEntry
 ```
 
@@ -218,7 +218,7 @@ def _cashflow_item_from_mtm(mtm: MTMResultResponse, as_of_date: date) -> CashFlo
         price_source=mtm.price_quote.source,
         price_symbol=mtm.price_quote.symbol,
         price_settlement_date=mtm.price_quote.settlement_date,
-        price_value=mtm.price_quote.value,
+        price_value=quantize_price(mtm.price_quote.value),
     )
 
 
@@ -346,6 +346,11 @@ Updated conflict-check shape:
 ```python
 if existing is not None:
     existing_payload = _canonicalize_snapshot_payload(dict(existing.snapshot_data))
+    if existing_payload.get("view") == "baseline" and existing.inputs_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="CashFlow baseline snapshot missing inputs_hash",
+        )
     if (
         existing_payload != payload
         or Decimal(str(existing.total_net_cashflow)) != total
@@ -433,9 +438,10 @@ revision = "039_a3_cashflow_baseline_archive"
 down_revision = "038_a3_price_provenance"
 ```
 
-The revision id is exactly 32 characters. Do not lengthen it:
-Alembic 1.18.4 creates `alembic_version.version_num` as `String(32)`, so
-longer revision identifiers fail when PostgreSQL stamps the version table.
+The revision id must not exceed 32 characters; this value is exactly 32
+characters. Do not lengthen it: Alembic 1.18.4 creates
+`alembic_version.version_num` as `String(32)`, so longer revision identifiers
+fail when PostgreSQL stamps the version table.
 
 Migration requirements:
 
@@ -546,7 +552,10 @@ item = snapshot.snapshot_data["unrealized_items"][0]
 
 Keep the existing assertions for `price_source`, `price_symbol`,
 `price_settlement_date`, and `price_value`; those provenance fields remain
-inside each unrealized item. Do not leave any test that indexes
+inside each unrealized item. The implementation must quantize `price_value`
+with `quantize_price()` before serializing the item, so the existing
+6-decimal provenance assertion remains deterministic. Do not leave any test
+that indexes
 `snapshot_data["cashflow_items"]`, because PR-A3-4 explicitly removes that
 Analytic-shaped root key from Baseline.
 
