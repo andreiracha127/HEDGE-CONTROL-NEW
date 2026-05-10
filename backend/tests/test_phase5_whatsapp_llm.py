@@ -335,7 +335,7 @@ class TestWebhookProcessor:
 
         assert verify_signature(body, sig) is False
 
-    @patch.dict(os.environ, {"WHATSAPP_APP_SECRET": ""})
+    @patch.dict(os.environ, {"APP_ENV": "test", "WHATSAPP_APP_SECRET": ""})
     def test_verify_signature_no_secret(self) -> None:
         from app.services.webhook_processor import verify_signature
 
@@ -387,7 +387,7 @@ class TestWebhookRoutes:
         )
         assert resp.status_code == 403
 
-    @patch.dict(os.environ, {"WHATSAPP_APP_SECRET": ""})
+    @patch.dict(os.environ, {"APP_ENV": "test", "WHATSAPP_APP_SECRET": ""})
     @patch("app.api.routes.webhooks._process_queue_in_background")
     def test_post_webhook_enqueues_messages(
         self, _mock_bg: MagicMock, client: TestClient

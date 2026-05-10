@@ -32,6 +32,7 @@ from app.models.finance_pipeline import (
     PipelineRunStatus,
     PipelineStepStatus,
 )
+from app.models.inbound_webhook_delivery import InboundWebhookDelivery
 from app.models.exposure import (
     ContractExposure,
     Exposure,
@@ -95,6 +96,7 @@ __all__ = [
     "HedgeTask",
     "HedgeTaskAction",
     "HedgeTaskStatus",
+    "InboundWebhookDelivery",
     "KycStatus",
     "SanctionsStatus",
     "RiskRating",
