@@ -264,6 +264,7 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
     except re.error as exc:
         return {"ok": False, "error": f"invalid regex: {exc}"}
     cumulative_bytes = 0
+    searched_count = 0  # number of search_paths that passed validation AND existed
     for sp in search_paths:
         # MANDATORY: every search root must pass _resolve_within_repo
         # before rglob, or model/operator-controlled `search_path` could
@@ -278,6 +279,7 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
             continue
         if not root.exists():
             continue
+        searched_count += 1  # this search root WAS inspected (validated + exists)
         files = root.rglob("*.py") if root.is_dir() else [root]
         for f in files:
             # Symlink + ancestry guard: rglob follows symlinks by default.
@@ -319,11 +321,31 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
                     entry = {"file": rel, "line": idx, "excerpt": excerpt}
                     cumulative_bytes += len(excerpt) + len(rel) + 16
                     if cumulative_bytes > byte_cap:
-                        return {"ok": True, "matches": matches, "truncated": True}
+                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count}
                     matches.append(entry)
                     if len(matches) >= _MAX_GREP_RESULTS:
-                        return {"ok": True, "matches": matches, "truncated": True}
-    return {"ok": True, "matches": matches, "truncated": False}
+                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count}
+    # Zero search roots inspected = no evidence gathered.
+    # Returning ok=True here would mislead the verify-before-P1 guard
+    # (every entry with ok=True counts as "successful investigation"),
+    # so a P1 reported after a typo-only grep would be accepted. Mark
+    # ok=False so the guard treats this as the absence of evidence —
+    # consistent with §3.4 ("failures are not proof"). The model can
+    # then adapt by passing a valid in-repo search_path.
+    if searched_count == 0:
+        return {
+            "ok": False,
+            "error": (
+                f"no requested search root could be inspected "
+                f"(received {len(search_paths)} path(s); 0 passed "
+                "_resolve_within_repo + exists() validation). "
+                "Pass an in-repo path like 'backend/app' or "
+                "'backend/app/services/foo.py'."
+            ),
+            "matches": [],
+            "searched_count": 0,
+        }
+    return {"ok": True, "matches": matches, "truncated": False, "searched_count": searched_count}
 
 
 HANDLERS = {
@@ -798,7 +820,7 @@ Test enumeration (mechanical):
 - `test_handle_read_file_caps_excerpt_at_byte_limit` — fixture file with a single very long line (e.g., 100 KB on one line, file under 2 MB total so passes the size gate); assert `result["ok"] is True`, `result["excerpt_truncated"] is True`, `len(result["excerpt"]) <= _MAX_BYTES_PER_READ`. Verifies the belt-and-suspenders byte cap on the excerpt itself.
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
 - `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
-- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
+- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is False`, `result["matches"] == []`, `result["searched_count"] == 0`, and `"no requested search root could be inspected" in result["error"]`. Verifies the per-search-path `_resolve_within_repo` guard PLUS the searched_count contract that prevents the verify-before-P1 guard from accepting zero-search invocations as evidence.
 - `test_handle_grep_pattern_skips_symlink_outside_repo` — fixture: tmpdir as repo with `backend/app/legitimate.py` (real file with a known pattern) and `backend/app/leaked.py` symlinked to a file outside the repo whose contents contain the SAME pattern; call `grep_pattern(pattern=<known>)` and assert ONLY `legitimate.py` appears in `matches` (the symlinked path is skipped because `f.is_symlink()` returns True). Pins the symlink-skip + ancestry-guard contract.
 
 **Multi-turn loop tests** (NEW section, mocking the Anthropic client at the boundary):
@@ -866,6 +888,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
 - [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
+- [ ] `_grep_with_context` tracks `searched_count` (number of search_paths that passed validation AND existed). When `searched_count == 0` (every path was rejected or missing), the result is `{"ok": False, "error": "no requested search root could be inspected", "matches": [], "searched_count": 0}` — NOT `ok: True` with empty matches. Required so the verify-before-P1 guard does not accept zero-actual-search invocations as "successful investigation" (a typo'd or escape-attempting search_path would otherwise count as evidence).
 - [ ] `_grep_with_context` skips symlinks (`if f.is_symlink(): continue`) AND re-applies `_resolve_within_repo` per file before `read_text()`. Without these defenses, a `backend/app/leak.py -> /etc/passwd` symlink (or any symlink whose target resolves outside the repo) would let the hook send outside-repo contents back to the model. Defense-in-depth: skip symlinks first (simple and correct for institutional source code; the codebase has no legitimate in-repo symlinks), then ancestry-check the resolved path as belts-and-suspenders.
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
