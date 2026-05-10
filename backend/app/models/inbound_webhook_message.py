@@ -35,10 +35,6 @@ class InboundWebhookMessage(Base):
             "provider_message_id IS NOT NULL AND length(provider_message_id) > 0",
             name="ck_inbound_webhook_messages_provider_message_id_nonempty",
         ),
-        CheckConstraint(
-            "processing_status IN ('received', 'processing', 'processed', 'duplicate', 'failed')",
-            name="ck_inbound_webhook_messages_processing_status",
-        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

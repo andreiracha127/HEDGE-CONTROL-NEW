@@ -50,7 +50,11 @@ class WhatsAppWebhookVerification(BaseModel):
 
 
 class WhatsAppInboundMessage(BaseModel):
-    """Parsed inbound message from WhatsApp webhook payload."""
+    """Parsed inbound message from WhatsApp webhook payload.
+
+    Explicitly unhashable; durable replay uses database identity, not object
+    set membership.
+    """
 
     message_id: str = Field(..., max_length=128)
     from_phone: str = Field(..., max_length=20)

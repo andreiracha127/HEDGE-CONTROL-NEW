@@ -125,6 +125,7 @@ def _persist_message_for_enqueue(
             timestamp=msg.timestamp,
             text=msg.text,
             processing_status="received",
+            created_at=datetime.now(timezone.utc),
         )
         session.add(row)
         try:
@@ -140,8 +141,15 @@ def _persist_message_for_enqueue(
                 InboundWebhookMessage.provider == provider,
                 InboundWebhookMessage.provider_message_id == msg.message_id,
             )
-            .one()
+            .one_or_none()
         )
+        if existing is None:
+            logger.warning(
+                "webhook_message_insert_conflict_without_existing_row",
+                provider=provider,
+                provider_message_id=msg.message_id,
+            )
+            return None
         if existing.processing_status in _TERMINAL_MESSAGE_STATUSES:
             logger.info(
                 "webhook_message_redelivery_already_consumed",
@@ -162,8 +170,8 @@ def _persist_message_for_enqueue(
             )
             return None
 
-        # received and failed are both recoverable: return the existing row id
-        # so the orchestrator can claim the same durable message record.
+        # received and failed are recoverable; the orchestrator claim predicate
+        # explicitly includes both statuses for retry on the same durable row.
         logger.info(
             "webhook_message_redelivery_recovered",
             provider=provider,
