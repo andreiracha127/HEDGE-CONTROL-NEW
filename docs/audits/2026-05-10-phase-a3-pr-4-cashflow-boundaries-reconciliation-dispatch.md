@@ -222,6 +222,14 @@ def _cashflow_item_from_mtm(mtm: MTMResultResponse, as_of_date: date) -> CashFlo
     )
 
 
+```
+
+`_cashflow_item_from_mtm()` is a Baseline-only helper called from
+`_build_unrealized_items()` in `cashflow_baseline_service.py`. Do not call it
+from `scenario_whatif_service.py`; the Scenario in-memory cashflow path does
+not carry `price_quote` and would correctly hard-fail at the 424 guard.
+
+```python
 def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]:
     items: list[CashFlowItem] = []
     # Query active + partially_settled, non-deleted contracts and variable
@@ -317,7 +325,7 @@ def _canonicalize_snapshot_payload(payload: dict) -> dict:
                 item.get("source_event_type") or "",
                 (0, "")
                 if item.get("source_event_id") is None
-                else (1, item.get("source_event_id")),
+                else (1, str(item.get("source_event_id"))),
                 item.get("id") or "",
             ),
         )
@@ -333,6 +341,10 @@ part of the persisted hash contract.
 `.nulls_first()` so it matches the Python canonicalization tuple
 `(0, "") if source_event_id is None else (1, source_event_id)`. Without
 explicit NULL placement, PostgreSQL and SQLite sort NULLs differently.
+The non-NULL canonicalization branch must coerce `source_event_id` through
+`str(...)` even though `_ledger_entry_payload()` already serializes ORM UUIDs;
+this keeps the sort key type-stable for both fresh payloads and JSON-loaded
+existing payloads.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
@@ -362,6 +374,12 @@ if existing is not None:
         )
     return existing
 ```
+
+Migration 039 must run before the new `cashflow_baseline_service.py` code is
+deployed. If a legacy active row with root `cashflow_items` remains in
+`cashflow_baseline_snapshots`, this conflict check should return HTTP 409. That
+is the expected hard-fail signal that migration 039 did not archive legacy rows;
+do not suppress it in service code.
 
 This call-site already exists in the current service; keep it and ensure it uses
 the updated `_canonicalize_snapshot_payload()` replacement shown above.
@@ -608,7 +626,11 @@ Add a test that:
 6. Asserts `realized_total_usd` equals signed ledger sum.
 7. Asserts `total_net_cashflow` equals realized plus unrealized.
 
-Use existing ledger tests in `backend/tests/test_cashflow_ledger_settlement.py` as fixture guidance. Do not duplicate an end-to-end settlement suite; this test only proves Baseline consumes ledger evidence and stores reconciliation.
+Import `ingest_hedge_contract_settlement` from
+`app.services.cashflow_ledger_service`. Use existing ledger tests in
+`backend/tests/test_cashflow_ledger_settlement.py` as fixture guidance. Do not
+duplicate an end-to-end settlement suite; this test only proves Baseline
+consumes ledger evidence and stores reconciliation.
 
 ### 6.3 Partially settled unrealized tail is included by Baseline
 
