@@ -175,6 +175,7 @@ Add a Baseline-owned unrealized item builder. It may call MTM services directly 
 Contracts:
 
 - Include `HedgeContractStatus.active` and `HedgeContractStatus.partially_settled`.
+- Exclude archived/soft-deleted contracts with `HedgeContract.deleted_at.is_(None)`.
 - Skip `settled` contracts for unrealized items; their realized flows belong in ledger entries.
 - Preserve price provenance fields in each `CashFlowItem`.
 - Set `amount_usd=quantize_money(mtm.mtm_value)` and
@@ -185,6 +186,7 @@ Contracts:
 Orders:
 
 - Include variable orders with MTM-eligible conventions, mirroring Analytic eligibility.
+- Exclude archived/soft-deleted orders with `Order.deleted_at.is_(None)`.
 - Preserve price provenance fields in each `CashFlowItem`.
 - Set `amount_usd=quantize_money(mtm.mtm_value)` and
   `mtm_value=quantize_money(mtm.mtm_value)`.
@@ -194,7 +196,8 @@ Acceptable implementation shape:
 ```python
 def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]:
     items: list[CashFlowItem] = []
-    # Query active + partially_settled contracts and variable MTM-eligible orders.
+    # Query active + partially_settled, non-deleted contracts and variable
+    # MTM-eligible, non-deleted orders.
     # Call compute_mtm_for_contract / compute_mtm_for_order directly.
     # Convert MTMResultResponse to CashFlowItem with price provenance.
     return items
@@ -369,7 +372,7 @@ Migration requirements:
 
 Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless the migration branches by dialect. This repo's migration tests run SQLite roundtrips.
 
-`alembic heads` must return one head: `039_a3_cashflow_baseline_legacy_archive`.
+`cd backend && python -m alembic heads` must return one head: `039_a3_cashflow_baseline_legacy_archive`.
 
 ---
 
@@ -398,13 +401,14 @@ Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless th
 - [ ] Realized ledger reconciliation signs `IN` as positive and `OUT` as negative.
 - [ ] Unsupported ledger direction hard-fails with HTTP 422; no silent ignore.
 - [ ] Baseline unrealized items include `active` and `partially_settled` contracts; `settled` contracts are represented only through realized ledger entries.
+- [ ] Baseline unrealized queries exclude rows with `deleted_at` set on both `HedgeContract` and `Order`.
 - [ ] Scenario response no longer includes `cashflow_snapshot.baseline`.
 - [ ] `backend/app/services/scenario_whatif_service.py` no longer contains `baseline=cashflow_analytic`.
 - [ ] OpenAPI and `schema.d.ts` are regenerated and included if they change.
 - [ ] `docs/governance.md` has no diff.
 - [ ] Migration 039 archives legacy Analytic-shaped baseline snapshots before deleting active rows.
 - [ ] Migration 039 downgrade hard-fails rather than overwriting active Baseline rows for the same `as_of_date`.
-- [ ] `alembic heads` returns one head: `039_a3_cashflow_baseline_legacy_archive`.
+- [ ] `cd backend && python -m alembic heads` returns one head: `039_a3_cashflow_baseline_legacy_archive`.
 
 Mechanical grep checks:
 
@@ -506,6 +510,14 @@ Assert:
 
 This closes the OPUS-08 edge where Analytic excludes non-active contracts while MTM supports partially-settled contracts.
 
+Also add a deleted-row exclusion test:
+
+- Create one active non-deleted contract/order that should appear in `unrealized_items`.
+- Create one otherwise-eligible contract with `deleted_at` set.
+- Create one otherwise-eligible variable order with `deleted_at` set.
+- Create a Baseline snapshot.
+- Assert only the non-deleted rows appear in `unrealized_items` and the deleted rows do not affect `reconciliation["unrealized_total_usd"]`.
+
 ### 6.4 Unsupported ledger direction hard-fails
 
 Add a focused service test that inserts a `CashFlowLedgerEntry(direction="SIDEWAYS")` directly, then calls `create_cashflow_baseline_snapshot()`.
@@ -602,7 +614,8 @@ pytest backend/tests/test_cashflow_analytic_service.py backend/tests/test_cashfl
 Run schema and migration checks:
 
 ```bash
-alembic heads
+cd backend && python -m alembic heads
+cd ..
 pytest backend/tests/test_039_cashflow_baseline_legacy_archive_migration.py -v
 ```
 
@@ -699,7 +712,7 @@ Wave 4 of Phase A3 remediation. Closes J-A3-04 and J-A3-OPUS-08.
 - [ ] Focused tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Adjacent cashflow tests: include the exact command and pass/fail counts from this PR run.
 - [ ] Full backend: include the exact command and pass/fail counts; separate any known `test_ws.py` Python 3.14 baseline failures from regressions.
-- [ ] `alembic heads`: `039_a3_cashflow_baseline_legacy_archive`
+- [ ] `cd backend && python -m alembic heads`: `039_a3_cashflow_baseline_legacy_archive`
 - [ ] Migration 039 roundtrip/archive tests: include command and pass/fail counts
 - [ ] `git diff --check`: clean
 - [ ] `git diff -- docs/governance.md`: empty
