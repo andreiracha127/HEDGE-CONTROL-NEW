@@ -44,6 +44,7 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rfq-inbound")
 _LOCAL_WEBHOOK_AUTH_ENVS = {"test", "local", "development", "dev"}
 _PROCESSING_STALE_AFTER = timedelta(minutes=15)
 _TERMINAL_MESSAGE_STATUSES = {"processed", "duplicate"}
+_RECOVERABLE_MESSAGE_STATUSES = {"received", "failed"}
 
 
 def _webhook_auth_bypass_allowed() -> bool:
@@ -170,16 +171,24 @@ def _persist_message_for_enqueue(
             )
             return None
 
-        # received and failed are recoverable; the orchestrator claim predicate
-        # explicitly includes both statuses for retry on the same durable row.
-        logger.info(
-            "webhook_message_redelivery_recovered",
+        if existing.processing_status in _RECOVERABLE_MESSAGE_STATUSES:
+            logger.info(
+                "webhook_message_redelivery_recovered",
+                provider=provider,
+                provider_message_id=msg.message_id,
+                delivery_message_id=str(existing.id),
+                processing_status=existing.processing_status,
+            )
+            return existing.id
+
+        logger.warning(
+            "webhook_message_redelivery_unexpected_status",
             provider=provider,
             provider_message_id=msg.message_id,
             delivery_message_id=str(existing.id),
             processing_status=existing.processing_status,
         )
-        return existing.id
+        return None
     finally:
         session.close()
 
