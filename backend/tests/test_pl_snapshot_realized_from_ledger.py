@@ -218,3 +218,43 @@ def test_create_pl_snapshot_idempotency_no_op_on_identical_rerun() -> None:
         )
         assert second.id == first.id
         assert second.inputs_hash == first.inputs_hash
+
+
+def test_partially_settled_snapshot_persists_remaining_mtm_and_is_idempotent() -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol=symbol, settlement_date=date(2026, 1, 30), price_usd=112.0)
+    contract = _insert_contract(
+        quantity_mt=5.0,
+        entry_price=100.0,
+        status=HedgeContractStatus.partially_settled,
+    )
+
+    with SessionLocal() as session:
+        first = create_pl_snapshot(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert first.unrealized_mtm == Decimal("60.000000")
+        assert first.price_references == [
+            {
+                "symbol": symbol,
+                "source": "westmetall",
+                "settlement_date": "2026-01-30",
+                "value": "112.000000",
+            }
+        ]
+        assert first.inputs_hash is not None
+        assert len(first.inputs_hash) == 64
+
+        second = create_pl_snapshot(
+            session,
+            entity_type="hedge_contract",
+            entity_id=contract.id,
+            period_start=date(2026, 1, 1),
+            period_end=date(2026, 1, 31),
+        )
+        assert second.id == first.id
+        assert second.inputs_hash == first.inputs_hash
