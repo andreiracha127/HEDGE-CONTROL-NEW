@@ -141,6 +141,11 @@ def downgrade() -> None:
                 "Refusing to restore archived baseline snapshots with NULL correlation_id; "
                 "manual remediation required before downgrade can proceed."
             )
+        if row["original_created_at"] is None:
+            raise RuntimeError(
+                "Refusing to restore archived baseline snapshots with NULL original_created_at; "
+                "manual remediation required before downgrade can proceed."
+            )
         active_count = bind.execute(
             sa.select(sa.func.count())
             .select_from(source)

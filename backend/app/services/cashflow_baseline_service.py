@@ -249,7 +249,7 @@ def create_cashflow_baseline_snapshot(
             )
         if (
             existing_payload != payload
-            or Decimal(str(existing.total_net_cashflow)) != total
+            or quantize_money(Decimal(str(existing.total_net_cashflow))) != total
             or existing.inputs_hash != inputs_hash
         ):
             raise HTTPException(

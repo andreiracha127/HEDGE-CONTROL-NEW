@@ -295,3 +295,50 @@ def test_039_downgrade_hard_fails_on_archive_null_correlation_id() -> None:
 
         with pytest.raises(RuntimeError, match="archived baseline snapshots with NULL correlation_id"):
             _run_migration(connection, "downgrade")
+
+
+def test_039_downgrade_hard_fails_on_archive_null_original_created_at() -> None:
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        _create_pre_039_schema(connection)
+        metadata = sa.MetaData()
+        sa.Table(
+            "cashflow_baseline_snapshot_archives",
+            metadata,
+            sa.Column("id", sa.String(length=64), primary_key=True),
+            sa.Column("original_snapshot_id", sa.String(length=64), nullable=False),
+            sa.Column("as_of_date", sa.Date(), nullable=False),
+            sa.Column("snapshot_data", sa.JSON(), nullable=False),
+            sa.Column("total_net_cashflow", sa.Numeric(18, 6), nullable=False),
+            sa.Column("inputs_hash", sa.String(length=64), nullable=True),
+            sa.Column("correlation_id", sa.String(length=64), nullable=True),
+            sa.Column("original_created_at", sa.DateTime(timezone=True), nullable=True),
+            sa.Column("archived_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("archive_reason", sa.String(length=128), nullable=False),
+        )
+        metadata.create_all(connection)
+        archive_table = sa.Table(
+            "cashflow_baseline_snapshot_archives",
+            sa.MetaData(),
+            autoload_with=connection,
+        )
+        connection.execute(
+            archive_table.insert(),
+            {
+                "id": "archive-1",
+                "original_snapshot_id": "legacy-1",
+                "as_of_date": date(2026, 2, 1),
+                "snapshot_data": {"cashflow_items": []},
+                "total_net_cashflow": Decimal("10.000000"),
+                "inputs_hash": "a" * 64,
+                "correlation_id": "legacy-corr",
+                "original_created_at": None,
+                "archived_at": datetime(2026, 2, 1, tzinfo=timezone.utc),
+                "archive_reason": "PR-A3-4 legacy analytic-shaped baseline payload",
+            },
+        )
+
+        with pytest.raises(
+            RuntimeError, match="archived baseline snapshots with NULL original_created_at"
+        ):
+            _run_migration(connection, "downgrade")
