@@ -42,7 +42,7 @@ After PR-A3-3:
 - The "entry" / "fixed" fallback when market price is unprovable is REMOVED. If price is unprovable, the row is unprovable; the entire endpoint surfaces 424.
 - The hardcoded `commodity="Al"` is replaced with `order.commodity`.
 - `contract.settlement_date or as_of_date` substitution is replaced with explicit absence check: missing `settlement_date` raises 422.
-- **OPUS-07 (5th view)**: Projection stays as an exposed view; this dispatch enumerates its constitutional invariants in §5 (inheriting §2.1 + §2.6 + §2.7), making the institutional contract explicit at the dispatch layer. A separate Phase A5 audit-trail follow-up may decide whether to propagate to `governance.md`; that decision is OUT OF SCOPE for PR-A3-3.
+- **OPUS-07 (5th view)**: Projection stays as an exposed view; this PR closes the finding at the constitutional layer per §3.4 — `docs/governance.md` is updated to list Projection as the 5th view + a Projection-invariants subsection inheriting §2.1 + §2.6 + §2.7. Per Andrei's institutional decision selecting the jury verdict's "define" alternative over "remove" (Projection is in production; route stays).
 
 **Persona:** Senior software engineer building an institutional trading platform. Constitution `docs/governance.md` is supreme authority. Pricing-domain awareness obligatory.
 
