@@ -123,8 +123,9 @@ Minimum required fields:
   metadata needed for reconstruction;
 - `signature_present`;
 - `signature_verified`;
-- `signature_status` or equivalent explicit enum/string;
-- `parse_status` (`received`, `parsed`, `parse_failed`, or equivalent);
+- `signature_status` constrained to `missing`, `verified`, `invalid`, or
+  `bypassed`;
+- `parse_status` constrained to `received`, `parsed`, or `parse_failed`;
 - `messages_extracted` count;
 - `received_at`;
 - `acknowledged_at` or an equivalent timestamp proving acknowledgement happened
@@ -132,6 +133,11 @@ Minimum required fields:
 
 Use JSON/JSONB-compatible column types consistent with existing repo patterns.
 The migration must be portable across PostgreSQL and SQLite tests.
+Both `raw_body` and `raw_form` must be present on every row; the
+non-applicable field is `NULL` (`raw_form` is `NULL` for Meta, `raw_body` is
+`NULL` for Twilio). The two status fields must be enforced by an Enum, CHECK
+constraint, or equivalent database-backed validation that is covered on both
+PostgreSQL and SQLite paths.
 
 For invalid JSON/form extraction failures, preserve the inbound delivery record
 with a failed parse status before returning the controlled HTTP error.
@@ -182,6 +188,10 @@ Expected revision:
 
 Keep the revision id at or below Alembic's 32-character `version_num` limit.
 `040_a4_inbound_webhook_delivery` is 31 characters and acceptable.
+Before creating the migration file, run `cd backend && alembic heads` to confirm
+the current head and that `040` is still the correct next sequential prefix. If
+another migration has landed first, choose the correct next prefix while keeping
+the revision id at or below 32 characters.
 
 Ensure the model is imported/registered wherever this repo requires model
 registration for metadata creation in tests.
@@ -213,7 +223,9 @@ registration for metadata creation in tests.
   refuses inbound Meta webhook processing before extraction/queueing.
 - [ ] Production/staging with provider `twilio` and empty `TWILIO_AUTH_TOKEN`
   refuses inbound Twilio webhook processing before extraction/queueing.
-- [ ] Local/test bypass remains explicit and covered by tests.
+- [ ] Local/test bypass is gated on an explicit environment marker such as
+  `app_env in {"test", "local", "development"}`, emits a warning log, and is
+  covered by a test proving the bypass does not activate for `app_env=production`.
 - [ ] Meta requests with configured secret and missing signature return HTTP
   403 and do not enqueue messages.
 - [ ] Meta requests with configured secret and invalid signature return HTTP
@@ -228,6 +240,10 @@ registration for metadata creation in tests.
   before messages are enqueued.
 - [ ] Durable delivery records include enough raw input and signature metadata
   to reconstruct what was received and how authenticity was evaluated.
+- [ ] `signature_status` and `parse_status` are constrained to the exact values
+  listed in §3.2.
+- [ ] Meta rows populate `raw_body` and leave `raw_form` null; Twilio rows
+  populate `raw_form` and leave `raw_body` null.
 - [ ] Malformed Meta JSON preserves a failed inbound delivery record before
   returning HTTP 400.
 - [ ] The existing canonical RFQ ID processing tests keep passing.
@@ -263,7 +279,7 @@ Run at minimum:
 ```bash
 python -m pytest backend/tests/test_webhook_processor.py -q
 python -m pytest backend/tests/test_phase5_whatsapp_llm.py -q
-python -m pytest backend/tests/test_inbound_canonical_id.py -q
+python -m pytest backend/tests/test_rfq_orchestrator.py -q
 python -m pytest backend/tests/scripts/ -v
 cd backend && alembic heads
 git diff --check
