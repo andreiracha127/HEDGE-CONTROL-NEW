@@ -151,8 +151,8 @@ def handle_find_symbol(payload: dict[str, Any], *, repo_root: Path) -> dict[str,
 
 def handle_grep_pattern(payload: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
     pattern = payload["pattern"]
-    path_glob = payload.get("path_glob") or "backend/app"
-    return _grep_with_context(repo_root, pattern, [path_glob], context_lines=int(payload.get("context_lines") or 0), byte_cap=_MAX_GREP_RESULTS * 200)
+    search_path = payload.get("search_path") or "backend/app"
+    return _grep_with_context(repo_root, pattern, [search_path], context_lines=int(payload.get("context_lines") or 0), byte_cap=_MAX_GREP_RESULTS * 200)
 
 
 def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *, context_lines: int, byte_cap: int) -> dict[str, Any]:
@@ -264,18 +264,24 @@ FIND_SYMBOL_TOOL: dict[str, Any] = {
 GREP_PATTERN_TOOL: dict[str, Any] = {
     "name": "grep_pattern",
     "description": (
-        "Search for a Python regex pattern within a path glob. Returns up to "
-        "80 matches with file:line and an N-line context excerpt. Use this "
-        "to verify line numbers in dispatch prescriptions, find call sites, "
-        "or audit existing test fixtures for the pre-fix-cleanup directive."
+        "Search for a Python regex pattern within a directory or file. "
+        "Returns up to 80 matches with file:line and an N-line context "
+        "excerpt. Use this to verify line numbers in dispatch prescriptions, "
+        "find call sites, or audit existing test fixtures for the "
+        "pre-fix-cleanup directive."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Python re.compile-compatible regex."},
-            "path_glob": {
+            "search_path": {
                 "type": "string",
-                "description": "Path under repo root to search (file or directory). Default 'backend/app'.",
+                "description": (
+                    "Directory or exact file path under repo root. NO glob "
+                    "syntax (no `**`, `*`, `?`); pass a literal path. The "
+                    "handler walks the directory recursively for *.py files. "
+                    "Default 'backend/app'."
+                ),
             },
             "context_lines": {"type": "integer", "minimum": 0, "maximum": 20, "description": "Lines of surrounding context. Default 0."},
         },
@@ -326,6 +332,22 @@ def call_review(
 _MAX_ITERATIONS = 12
 _MAX_CUMULATIVE_OUTPUT_TOKENS = 60_000
 _PER_TURN_MAX_TOKENS = 8_192
+
+
+def _create_with_retry(
+    client: Anthropic,
+    *,
+    model: str,
+    max_tokens: int,
+    cached_system_blocks: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+):
+    """Network-retry wrapper around messages.create — preserves v1's
+    3-attempt exponential backoff on RateLimitError / APIConnectionError /
+    APIStatusError; AuthenticationError fails fast (no retry).
+    """
+    ...  # extracted verbatim from v1's inner retry loop
 
 
 def call_review(
@@ -479,6 +501,8 @@ Why `tool_call_log`: post-hoc calibration data. After the next 5-10 cycles of v2
 ### 3.8 pre_push_review.py — minor update
 
 Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review` and to receive `(report, tool_call_log)` instead of just `report`. Pass `tool_call_log` to `write_cache_artifact`. The CLI surface (args, exit codes) is unchanged.
+
+**Skip-guard placement is invariant**: the no-dispatch-paths early-exit (`if not dispatch_paths: print(...); return 0`) MUST stay ABOVE the `call_review` invocation in `main`. Moving it inside the multi-turn loop would break `backend/tests/scripts/test_pre_push_review_skip.py::test_main_exits_0_with_no_dispatch_paths`. The existing skip test is declared UNCHANGED in §7 — that contract is safe ONLY if the early-exit guard placement is preserved.
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
