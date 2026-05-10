@@ -153,6 +153,9 @@ def _ledger_entry_payload(entry: CashFlowLedgerEntry) -> dict:
     }
 ```
 
+The realized ledger payload must include `currency`. It is part of
+`CashFlowLedgerEntry` and is required for accounting reconciliation evidence.
+
 ```python
 def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlowLedgerEntry]:
     return (
@@ -232,6 +235,8 @@ def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]
 `settlement_date=as_of_date` is the Baseline snapshot date for the unrealized
 MTM item. The actual D-1 price evidence date must be carried separately in
 `price_settlement_date=mtm.price_quote.settlement_date`.
+`CashFlowItem` has both fields: `settlement_date` for the item date and
+`price_settlement_date` for the price-evidence date.
 
 This intentionally shares the same pricing primitives as Analytic without making Baseline a proxy for Analytic.
 
