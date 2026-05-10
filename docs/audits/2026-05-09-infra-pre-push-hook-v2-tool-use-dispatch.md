@@ -155,8 +155,12 @@ def handle_find_symbol(payload: dict[str, Any], *, repo_root: Path) -> dict[str,
     name = payload["name"]
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         return {"ok": False, "error": f"invalid Python identifier: {name!r}"}
+    # `(?:async\s+)?` matches both `def` and `async def` — backend/app/api/routes/
+    # has many `async def cancel_rfq(...)`, `async def run_what_if_scenario(...)`
+    # style handlers that the v1 regex would have missed (silent FN —
+    # exactly the FP-class v2 is designed to eliminate).
     pattern = (
-        rf"^(class\s+{re.escape(name)}\b|def\s+{re.escape(name)}\b|{re.escape(name)}\s*[:=])"
+        rf"^(class\s+{re.escape(name)}\b|(?:async\s+)?def\s+{re.escape(name)}\b|{re.escape(name)}\s*[:=])"
     )
     return _grep_with_context(repo_root, pattern, ["backend/app", "backend/tests", "scripts"], context_lines=15, byte_cap=_MAX_FIND_SYMBOL_BYTES)
 
@@ -601,6 +605,7 @@ Test enumeration (mechanical):
 - `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
+- `test_handle_find_symbol_locates_async_function_definition` — fixture with `async def cancel_rfq(...):` → assert `find_symbol(name="cancel_rfq")` returns matching line. Pins the `(?:async\s+)?` regex prefix; without it, every async route handler in `backend/app/api/routes/` would silently return `matches=[]` (re-introducing the v1 FP class v2 is designed to eliminate).
 - `test_handle_find_symbol_rejects_invalid_identifier` — `name="not a thing!"`, assert `ok: False, error: "invalid Python identifier"`.
 - `test_handle_grep_pattern_returns_matches_with_context` — fixture file with known pattern + 2-line context, assert excerpt format.
 - `test_handle_grep_pattern_truncates_at_80_results` — fixture with 200 matches, assert response has `truncated: True` and ≤ 80 matches.
