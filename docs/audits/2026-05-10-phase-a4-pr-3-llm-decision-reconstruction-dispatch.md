@@ -177,8 +177,24 @@ status string returned in `processing_result`, for example:
 - `auto_quote_skipped_invalid_payload`;
 - `auto_quote_failed`.
 
+Enforce both domains in code and, where portable, in DDL:
+
+- add SQLAlchemy `@validates("final_decision")`;
+- add SQLAlchemy `@validates("final_status")`;
+- add `CheckConstraint` for `final_decision`;
+- add `CheckConstraint` for `final_status`;
+- if a CHECK shape is not portable in Alembic for SQLite, guard it by dialect
+  and keep the model validators as the SQLite/test enforcement layer.
+
 Use `json_payload_type` from `backend/app/models/inbound_webhook_delivery.py`
 for JSON columns, matching PR-A4-1/2.
+The SQLAlchemy model class must import and use that shared type directly for
+all JSON columns. The inline `with_variant` fallback below applies only to the
+Alembic migration, where application imports may be less reliable.
+
+`counterparty_id` is intentionally stored both as a relational FK and inside
+`input_snapshot`: the FK supports joins, while the JSON snapshot preserves the
+point-in-time audit input independently of later relational changes.
 
 Do not add these fields to `RFQQuote` as nullable metadata columns. A dedicated
 artifact table is required so non-mutating LLM decisions are also reconstructible
@@ -366,8 +382,15 @@ Concrete placement requirement:
 - call the single existing `session.commit()` only after both quote and artifact
   are staged;
 - if artifact construction or insertion raises, do not call `session.commit()`;
-  the existing exception path must `session.rollback()` so the flushed quote and
-  artifact are both rolled back.
+  the transaction path must `session.rollback()` so the flushed quote and
+  artifact are both rolled back;
+- widen the rollback coverage around this transaction path to include artifact
+  construction/insertion failures such as `SQLAlchemyError`, `TypeError`, and
+  `ValueError`, not only the current `HTTPException`, `IntegrityError`, and
+  `OperationalError` cases;
+- do not add a second post-commit artifact write. The current `_auto_create_quote`
+  shape must be restructured only enough to stage the artifact before the
+  existing commit.
 
 ### 3.6 Remove PR-A4-2 legacy inbound path
 
@@ -395,10 +418,12 @@ In PR-A4-3:
 
   - do not leave the current `return None` behavior for the legacy case, because
     `None` means "continue into processing" in the caller;
-  - `process_inbound_queue()` must append that result via its existing
-    `if claim is not None` branch and then `continue`;
-  - do not call `_finalize_durable_message()` for the legacy case, because there
-    is no durable inbound message row to finalize;
+  - the `if claim is not None: results.append(claim); continue` branch already
+    exists in `process_inbound_queue()`; do not duplicate it;
+  - `_finalize_durable_message()` already has an early-return guard for missing
+    `delivery_message_id`; do not add a finalize call for the legacy case;
+  - the required code change is specifically to make the legacy branch in
+    `_claim_durable_message()` return the structured result instead of `None`;
   - `mark_message_finished(msg)` must still run via the existing `finally`;
 - tests that still enqueue bare `WhatsAppInboundMessage` objects must be updated
   to create durable inbound message rows and set `delivery_message_id`;
