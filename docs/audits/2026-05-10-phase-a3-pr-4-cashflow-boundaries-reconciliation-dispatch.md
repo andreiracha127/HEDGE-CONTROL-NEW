@@ -82,6 +82,7 @@ After PR-A3-4:
 - `backend/app/services/cashflow_ledger_service.py:299-315` - `list_entries_by_contract()`, useful only as a ledger-query reference. Do not copy its `created_at` ordering into Baseline reconciliation.
 - `backend/app/models/cashflow.py:25-41` - Baseline snapshot model.
 - `backend/app/models/cashflow.py:44-90` - ledger event and entry model.
+- `backend/app/utils/price_reference.py` - `PriceQuote` fields `source`, `symbol`, `settlement_date`, `value`.
 - `backend/alembic/versions/038_a3_price_provenance.py` - prior A3 migration style.
 - `backend/app/schemas/cashflow.py:34-68` - `CashFlowItem`, `CashFlowAnalyticResponse`, `CashFlowBaselineSnapshotResponse`.
 - `backend/app/schemas/scenario.py:95-113` - scenario cashflow response schema.
@@ -287,7 +288,9 @@ def _canonicalize_snapshot_payload(payload: dict) -> dict:
                 item.get("cashflow_date"),
                 item.get("hedge_contract_id"),
                 item.get("leg_id"),
-                item.get("source_event_id") or "",
+                (0, "")
+                if item.get("source_event_id") is None
+                else (1, item.get("source_event_id")),
             ),
         )
     return payload
@@ -299,9 +302,9 @@ tiebreaker; it is not serialized into `snapshot_data` and therefore cannot be
 part of the persisted hash contract.
 
 `source_event_id` is nullable in the model. The SQL order must use
-`.nulls_first()` so it matches the Python canonicalization sentinel
-`item.get("source_event_id") or ""`. Without explicit NULL placement,
-PostgreSQL and SQLite sort NULLs differently.
+`.nulls_first()` so it matches the Python canonicalization tuple
+`(0, "") if source_event_id is None else (1, source_event_id)`. Without
+explicit NULL placement, PostgreSQL and SQLite sort NULLs differently.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
@@ -394,6 +397,7 @@ Migration requirements:
 - Move only legacy Analytic-shaped rows:
   - `snapshot_data` contains root key `cashflow_items`, OR
   - `snapshot_data["view"]` is absent/not `"baseline"`.
+- Before archive insert, run a portable pre-check for selected legacy rows with `correlation_id IS NULL`; if any exist, hard-fail upgrade with an explicit exception requiring manual remediation. Do not let the archive insert fail later through an opaque NOT NULL constraint error.
 - Insert those rows into the archive table with `archive_reason="PR-A3-4 legacy analytic-shaped baseline payload"`.
 - Delete those moved rows from `cashflow_baseline_snapshots`.
 - Leave already-new rows with `snapshot_data["view"] == "baseline"` untouched.
@@ -565,8 +569,9 @@ Add a focused service test that inserts a `CashFlowLedgerEntry(direction="SIDEWA
 
 Assert:
 
-- HTTP 422.
-- Detail contains `Unsupported ledger direction`.
+- `pytest.raises(HTTPException)` catches the service exception.
+- `exc.value.status_code == 422`.
+- `exc.value.detail` contains `Unsupported ledger direction`.
 
 This protects the reconciliation invariant from silently dropping bad accounting rows.
 
@@ -584,10 +589,10 @@ Also add or extend a deterministic-hash test so it proves canonical ordering is
 part of the hash input for both payload arrays:
 
 - `unrealized_items` sorted by `(object_type, object_id)`.
-- `realized_ledger_entries` sorted by `(cashflow_date, hedge_contract_id, leg_id, source_event_id or "")`.
+- `realized_ledger_entries` sorted by `(cashflow_date, hedge_contract_id, leg_id, NULL-first source_event_id tuple)`.
 
 If a test inserts a direct ledger row with `source_event_id=None`, it must prove
-the `source_event_id or ""` sort key is deterministic. Normal settlement-ledger
+the NULL-first source-event sort key is deterministic. Normal settlement-ledger
 rows created by `ingest_hedge_contract_settlement()` should still carry a
 non-null `source_event_id`.
 
