@@ -145,7 +145,10 @@ def test_model_rejects_provider_raw_and_signature_base_url_invariants() -> None:
             parse_status="received",
         )
 
-    with pytest.raises(ValueError, match="Twilio deliveries require raw_form"):
+    with pytest.raises(
+        ValueError,
+        match="Twilio deliveries require raw_form and must not set raw_body",
+    ):
         InboundWebhookDelivery(
             provider="twilio",
             raw_body="{}",
@@ -640,6 +643,8 @@ def test_terminal_consumed_redelivery_does_not_enqueue(
     ):
         assert client.post("/webhooks/whatsapp", json=payload).status_code == 200
 
+    # Background processing is mocked in this test, so any queued item would
+    # remain observable here.
     assert drain_queue() == []
     with SessionLocal() as session:
         rows = (
@@ -764,6 +769,8 @@ def test_completed_processing_redelivery_is_not_reopened(
     ):
         assert client.post("/webhooks/whatsapp", json=payload).status_code == 200
 
+    # Background processing is mocked in this test, so any queued item would
+    # remain observable here.
     assert drain_queue() == []
     with SessionLocal() as session:
         durable = session.get(InboundWebhookMessage, first.id)

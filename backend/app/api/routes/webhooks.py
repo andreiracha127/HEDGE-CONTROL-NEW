@@ -185,6 +185,7 @@ def _persist_message_for_enqueue(
             recovered = (
                 session.query(InboundWebhookMessage)
                 .filter(
+                    InboundWebhookMessage.id == existing.id,
                     InboundWebhookMessage.provider == provider,
                     InboundWebhookMessage.provider_message_id == msg.message_id,
                     InboundWebhookMessage.processing_status == "processing",
