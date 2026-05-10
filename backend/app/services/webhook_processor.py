@@ -60,7 +60,7 @@ def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
                 logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
                 return False
 
-            if len(_seen_message_ids) >= _SEEN_IDS_MAX:
+            if len(_seen_message_ids) == _seen_message_ids.maxlen:
                 evicted = _seen_message_ids[0]
                 _seen_set.discard(evicted)
             _seen_message_ids.append(msg.message_id)
