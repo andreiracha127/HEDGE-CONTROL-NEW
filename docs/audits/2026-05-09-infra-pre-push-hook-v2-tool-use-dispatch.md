@@ -209,6 +209,16 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
     # + start_line=1 case (a 0-line file legitimately read at line 1).
     is_empty_file_at_line_1 = (len(lines) == 0 and start_line == 1)
     if not is_empty_file_at_line_1:
+        if start_line < 1:
+            return {
+                "ok": False,
+                "error": (
+                    f"start_line={start_line} must be >= 1; Python slicing "
+                    "with negative indices would return tail-of-file or "
+                    "empty excerpt and silently satisfy the verify-before-P1 "
+                    "guard without showing the requested evidence."
+                ),
+            }
         if start_line > len(lines):
             return {
                 "ok": False,
@@ -986,7 +996,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `_grep_with_context` applies the same `_MAX_FILE_SIZE_BYTES` (2 MB) gate as `handle_read_file` BEFORE `read_text()` per-file (cheap `f.stat().st_size` pre-check; OSError on stat() also skips). Without this, grep_pattern at an exact file path or under a directory with a large generated artifact would read multi-MB content into memory before the result byte cap could apply.
 - [ ] `_grep_with_context` byte-cap overflow on the FIRST match truncates the entry's excerpt (appending `"# ...[truncated]"`) and appends it rather than returning `matches=[]`. An empty matches list is reserved for genuine absence; an oversized-first-excerpt case must surface AT LEAST one truncated match snippet so the model can see the file/line. If even truncated to zero `available` bytes (path overhead alone exceeds byte_cap), return `ok=False` with explicit "first matching excerpt exceeds byte_cap" message — never `ok=True, matches=[]` from this path.
 - [ ] `_grep_with_context` tracks BOTH `searched_count` (search_paths passing validation AND existing) AND `inspected_files` (files whose contents were actually read post symlink/secret/size/OSError skips). Returns `ok=False` when `searched_count == 0` OR `inspected_files == 0` — even if `searched_count > 0` but every file under the validated roots was skipped (all-symlinks, all-secret-bearing, or all-OSError directories). Without the second guard, a valid in-repo root containing only symlinked or secret-bearing files would return `ok=True, matches=[]` and the verify-before-P1 guard would count zero-content-inspected calls as evidence.
-- [ ] `handle_read_file` returns `ok=False` when the requested range is out of bounds: `start_line > len(lines)` (past EOF) or `end_line < start_line` (inverted range). Empty excerpts are NOT marked `ok=True`. Exception: a legitimately empty 0-line file with `start_line=1` is `ok=True` (excerpt empty but the file IS what was requested). Without these guards, line-number verification on a typo'd or stale range would silently count as evidence.
+- [ ] `handle_read_file` returns `ok=False` when the requested range is out of bounds: `start_line < 1` (negative or zero — Python slicing would return tail-of-file), `start_line > len(lines)` (past EOF), or `end_line < start_line` (inverted range). Empty excerpts are NOT marked `ok=True`. Exception: a legitimately empty 0-line file with `start_line=1` is `ok=True` (excerpt empty but the file IS what was requested). Without these guards, line-number verification on a typo'd or stale range would silently count as evidence.
 - [ ] `_grep_with_context` skips symlinks (`if f.is_symlink(): continue`) AND re-applies `_resolve_within_repo` per file before `read_text()`. Without these defenses, a `backend/app/leak.py -> /etc/passwd` symlink (or any symlink whose target resolves outside the repo) would let the hook send outside-repo contents back to the model. Defense-in-depth: skip symlinks first (simple and correct for institutional source code; the codebase has no legitimate in-repo symlinks), then ancestry-check the resolved path as belts-and-suspenders.
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
