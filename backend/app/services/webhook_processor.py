@@ -74,6 +74,18 @@ def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
         else:
             _active_durable_message_ids.add(msg.delivery_message_id)
 
+        queue_maxlen = _message_queue.maxlen
+        if queue_maxlen is not None and len(_message_queue) >= queue_maxlen:
+            evicted = _message_queue[0]
+            if evicted.delivery_message_id is not None:
+                _active_durable_message_ids.discard(evicted.delivery_message_id)
+                logger.warning(
+                    "webhook_durable_message_evicted_from_queue",
+                    message_id=evicted.message_id,
+                    delivery_message_id=str(evicted.delivery_message_id),
+                    queue_depth=len(_message_queue),
+                )
+
         _message_queue.append(msg)
         queue_depth_value = len(_message_queue)
     logger.info(

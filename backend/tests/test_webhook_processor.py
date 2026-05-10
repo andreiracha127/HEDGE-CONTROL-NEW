@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import os
 import uuid
+from collections import deque
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -96,6 +97,46 @@ def test_enqueue_durable_duplicate_ignored_until_finished():
     mark_message_finished(msg)
     assert enqueue_message(msg) is True
     assert queue_depth() == 2
+
+
+def test_durable_eviction_clears_active_id(monkeypatch):
+    bounded_queue = deque(maxlen=2)
+    monkeypatch.setattr(
+        "app.services.webhook_processor._message_queue", bounded_queue
+    )
+
+    evicted_id = uuid.uuid4()
+    retained_id = uuid.uuid4()
+    incoming_id = uuid.uuid4()
+
+    evicted = _make_msg("durable-evicted").model_copy(
+        update={"delivery_message_id": evicted_id}
+    )
+    retained = _make_msg("durable-retained").model_copy(
+        update={"delivery_message_id": retained_id}
+    )
+    incoming = _make_msg("durable-incoming").model_copy(
+        update={"delivery_message_id": incoming_id}
+    )
+
+    assert enqueue_message(evicted) is True
+    assert enqueue_message(retained) is True
+    assert evicted_id in _active_durable_message_ids
+
+    assert enqueue_message(incoming) is True
+
+    assert [msg.message_id for msg in bounded_queue] == [
+        "durable-retained",
+        "durable-incoming",
+    ]
+    assert evicted_id not in _active_durable_message_ids
+    assert retained_id in _active_durable_message_ids
+    assert incoming_id in _active_durable_message_ids
+
+    redelivery = _make_msg("durable-evicted-redelivery").model_copy(
+        update={"delivery_message_id": evicted_id}
+    )
+    assert enqueue_message(redelivery) is True
 
 
 def test_drain_queue_returns_all():
