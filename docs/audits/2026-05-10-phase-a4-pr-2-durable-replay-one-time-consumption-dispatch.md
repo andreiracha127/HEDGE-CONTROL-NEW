@@ -221,6 +221,13 @@ Preferred direction:
   - `processing` -> `processed` with `processing_result`;
   - `processing` -> `failed` with error detail on controlled failure.
 
+If `delivery_message_id` is `None`, treat it as a deploy-boundary legacy
+in-flight message: log a warning, skip durable status transitions for that item,
+and keep the existing processing behavior. Post-PR-A4-2 webhook route enqueue
+paths must always set `delivery_message_id`; the nullable field exists only to
+avoid breaking direct test fixtures and pre-existing in-memory queue items during
+deployment.
+
 The processing result must capture enough to prove what happened:
 
 - final orchestrator status;
@@ -230,6 +237,12 @@ The processing result must capture enough to prove what happened:
 - skip/failure reason otherwise.
 
 Do not add LLM prompt/raw-response storage here. That is PR-A4-3.
+
+After adding the nullable field, grep for `WhatsAppInboundMessage`, `__eq__`,
+`__hash__`, and direct field comparisons to confirm no comparator/idempotency
+logic changes meaning. Existing direct constructors such as `_make_inbound()` in
+`backend/tests/test_rfq_orchestrator.py` must remain valid with
+`delivery_message_id=None`.
 
 ### 3.6 Preserve rejected quote semantics while preventing stale replay
 
@@ -329,6 +342,8 @@ Minimum expected coverage:
     calls `_load_migration_041()` exclusively. Do not pass migration 041 tests
     through the existing `_run_migration()` helper, which is hardcoded to load
     revision 040.
+  - Add a one-line comment to the existing `_run_migration()` helper noting it
+    is intentionally scoped to migration 040 and must not be reused for 041.
 - `backend/tests/test_rfq_orchestrator.py`
   - queue item with durable message ID updates `processing_status`;
   - auto-created quote stores `quote_id` on the durable message result;
