@@ -62,6 +62,10 @@ Read these before coding:
     active quotes.
 - `backend/app/models/quotes.py:17-26`
   - Rejected quotes are preserved and excluded from active duplicate checks.
+  - Current enum excerpt:
+    - `class QuoteState(enum.Enum):`
+    - `active = "active"`
+    - `rejected = "rejected"`
 - `backend/tests/test_inbound_webhook_delivery.py`
   - Existing PR-A4-1 persistence, signature, migration, and delivery tests.
 - `backend/tests/test_rfq_orchestrator.py`
@@ -243,6 +247,11 @@ The processing result must capture enough to prove what happened:
 - quote ID if a quote was created;
 - skip/failure reason otherwise.
 
+All values written to `processing_result` must be JSON-serializable primitives:
+`str`, `int`, `float`, `bool`, or `None`. Convert `Decimal`, UUID, datetime, and
+enum values to strings before insertion. Do not pass raw `Decimal` or UUID
+objects into the JSON blob.
+
 Do not add LLM prompt/raw-response storage here. That is PR-A4-3.
 
 After adding the nullable field, grep for `WhatsAppInboundMessage`, `__eq__`,
@@ -256,6 +265,14 @@ test that compares `WhatsAppInboundMessage` objects directly. If such assertions
 exist, either make equality intentionally ignore `delivery_message_id` through
 model configuration or update the affected tests to compare only the relevant
 fields explicitly.
+At authoring time, `backend/tests/test_rfq_orchestrator.py` constructs inbound
+messages via `_make_inbound()` at lines 106-111 and uses those objects in many
+tests, but the grep sweep did not find direct `WhatsAppInboundMessage` object
+equality assertions. Re-run the sweep after edits:
+
+```bash
+rg -n "WhatsAppInboundMessage|_make_inbound|==|assert .*msg|assert .*message" backend/tests/test_rfq_orchestrator.py
+```
 
 ### 3.6 Preserve rejected quote semantics while preventing stale replay
 
