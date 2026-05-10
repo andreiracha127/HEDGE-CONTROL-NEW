@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date
 from decimal import Decimal
 from uuid import UUID
@@ -12,6 +13,49 @@ from app.models.contracts import HedgeContract, HedgeContractStatus
 from app.schemas.pl import PLResultResponse, PriceReferenceEntry
 from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 from app.services.mtm_contract_service import compute_mtm_for_contract
+
+
+def _compute_unrealized_mtm_for_contract(
+    db: Session,
+    contract: HedgeContract,
+    period_end: date,
+    append_reference: Callable[[PriceReferenceEntry], None],
+) -> Decimal:
+    if contract.status in (
+        HedgeContractStatus.active,
+        HedgeContractStatus.partially_settled,
+    ):
+        mtm = compute_mtm_for_contract(
+            db, contract_id=contract.id, as_of_date=period_end
+        )
+        if mtm.price_quote is None:
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=f"MTM result for {contract.id} has no price provenance",
+            )
+        append_reference(
+            PriceReferenceEntry(
+                symbol=mtm.price_quote.symbol,
+                source=mtm.price_quote.source,
+                settlement_date=mtm.price_quote.settlement_date,
+                value=mtm.price_quote.value,
+            )
+        )
+        return Decimal(mtm.mtm_value)
+
+    if contract.status == HedgeContractStatus.settled:
+        return Decimal("0")
+
+    if contract.status == HedgeContractStatus.cancelled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="P&L is not defined for cancelled hedge contracts",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail=f"Unsupported hedge contract status for P&L: {contract.status}",
+    )
 
 
 def compute_pl(
@@ -104,19 +148,12 @@ def compute_pl(
     if not contract:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hedge contract not found")
 
-    if contract.status != HedgeContractStatus.active:
-        unrealized_mtm = Decimal("0")
-    else:
-        mtm = compute_mtm_for_contract(db, contract_id=entity_id, as_of_date=period_end)
-        unrealized_mtm = Decimal(mtm.mtm_value)
-        _append_reference(
-            PriceReferenceEntry(
-                symbol=mtm.price_quote.symbol,
-                source=mtm.price_quote.source,
-                settlement_date=mtm.price_quote.settlement_date,
-                value=mtm.price_quote.value,
-            )
-        )
+    unrealized_mtm = _compute_unrealized_mtm_for_contract(
+        db=db,
+        contract=contract,
+        period_end=period_end,
+        append_reference=_append_reference,
+    )
 
     return PLResultResponse(
         realized_pl=realized_pl,
