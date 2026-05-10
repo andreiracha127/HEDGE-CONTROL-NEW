@@ -112,6 +112,8 @@ Add helpers in `cashflow_baseline_service.py`:
 ```python
 from app.core.precision import quantize_money, quantize_price
 from app.models.cashflow import CashFlowBaselineSnapshot, CashFlowLedgerEntry
+from app.services.mtm_contract_service import compute_mtm_for_contract
+from app.services.mtm_order_service import compute_mtm_for_order
 ```
 
 ```python
@@ -546,6 +548,7 @@ The downgrade `correlation_id IS NULL` guard is defensive against corrupted arch
 - [ ] Baseline unrealized queries exclude rows with `deleted_at` set on both `HedgeContract` and `Order`.
 - [ ] Scenario response no longer includes `cashflow_snapshot.baseline`.
 - [ ] `backend/app/services/scenario_whatif_service.py` no longer contains `baseline=cashflow_analytic`.
+- [ ] `test_cashflow_baseline_per_row_provenance_quadruple_inside_snapshot_data` reads `snapshot.snapshot_data["unrealized_items"][0]`, not `snapshot.snapshot_data["cashflow_items"][0]`.
 - [ ] OpenAPI and `schema.d.ts` are regenerated and included if they change.
 - [ ] `docs/governance.md` has no diff.
 - [ ] Migration 039 archives legacy Analytic-shaped baseline snapshots before deleting active rows.
@@ -559,9 +562,10 @@ grep -n "compute_cashflow_analytic\|analytic.model_dump" backend/app/services/ca
 grep -n "baseline=cashflow_analytic" backend/app/services/scenario_whatif_service.py
 grep -n "baseline: CashFlowAnalyticResponse" backend/app/schemas/scenario.py
 rg -n "\.baseline" frontend-svelte/src
+grep -n "cashflow_items" backend/tests/test_cashflow_baseline_service.py
 ```
 
-All four commands must return zero matches after the fix.
+All five commands must return zero matches after the fix.
 
 ---
 
@@ -793,6 +797,8 @@ git diff -- docs/governance.md
 grep -n "compute_cashflow_analytic\|analytic.model_dump" backend/app/services/cashflow_baseline_service.py
 grep -n "baseline=cashflow_analytic" backend/app/services/scenario_whatif_service.py
 grep -n "baseline: CashFlowAnalyticResponse" backend/app/schemas/scenario.py
+rg -n "\.baseline" frontend-svelte/src
+grep -n "cashflow_items" backend/tests/test_cashflow_baseline_service.py
 ```
 
 Expected:
