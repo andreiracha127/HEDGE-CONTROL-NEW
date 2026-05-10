@@ -44,22 +44,28 @@ _seen_set: set[str] = set()
 def enqueue_message(msg: WhatsAppInboundMessage) -> None:
     """Add a parsed inbound message to the processing queue.
 
-    Silently drops duplicates (WhatsApp may redeliver webhooks).
+    Legacy messages without a durable row retain the local duplicate guard.
+    Durable webhook paths set ``delivery_message_id`` and rely on database
+    uniqueness/status as the authority.
     """
-    if msg.message_id in _seen_set:
-        logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
-        return
+    if msg.delivery_message_id is None:
+        if msg.message_id in _seen_set:
+            logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
+            return
 
-    if len(_seen_message_ids) >= _SEEN_IDS_MAX:
-        evicted = _seen_message_ids[0]
-        _seen_set.discard(evicted)
-    _seen_message_ids.append(msg.message_id)
-    _seen_set.add(msg.message_id)
+        if len(_seen_message_ids) >= _SEEN_IDS_MAX:
+            evicted = _seen_message_ids[0]
+            _seen_set.discard(evicted)
+        _seen_message_ids.append(msg.message_id)
+        _seen_set.add(msg.message_id)
 
     _message_queue.append(msg)
     logger.info(
         "webhook_message_enqueued",
         message_id=msg.message_id,
+        delivery_message_id=str(msg.delivery_message_id)
+        if msg.delivery_message_id
+        else None,
         from_phone=msg.from_phone,
         queue_depth=len(_message_queue),
     )

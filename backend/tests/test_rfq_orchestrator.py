@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
 from app.models.counterparty import Counterparty, CounterpartyType
-from app.models.quotes import RFQQuote
+from app.models.quotes import QuoteState, RFQQuote
 from app.models.rfqs import (
     RFQ,
     RFQDirection,
@@ -107,6 +107,7 @@ def _make_inbound(
     phone: str = "+5511999990001",
     text: str = "I can offer 2550 USD/MT",
     msg_id: str | None = None,
+    delivery_message_id: uuid.UUID | None = None,
 ) -> WhatsAppInboundMessage:
     return WhatsAppInboundMessage(
         message_id=msg_id or f"wamid.{uuid.uuid4().hex[:8]}",
@@ -114,6 +115,7 @@ def _make_inbound(
         timestamp=now_utc(),
         text=text,
         sender_name="Test Sender",
+        delivery_message_id=delivery_message_id,
     )
 
 
@@ -154,6 +156,43 @@ def _auto_quote_context(session: Session) -> tuple[RFQ, RFQInvitation]:
     invitation = _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
     session.commit()
     return rfq, invitation
+
+
+def _durable_message(
+    session: Session,
+    *,
+    provider_message_id: str = "wamid.durable",
+    text: str = "RFQ#RFQ-2026-000001 — 2550 USD/MT avg",
+):
+    from app.models.inbound_webhook_delivery import InboundWebhookDelivery
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+
+    delivery = InboundWebhookDelivery(
+        provider="meta",
+        raw_body="{}",
+        raw_form=None,
+        headers={},
+        signature_present=False,
+        signature_verified=False,
+        signature_status="bypassed",
+        parse_status="parsed",
+        messages_extracted=1,
+    )
+    session.add(delivery)
+    session.flush()
+    message = InboundWebhookMessage(
+        delivery_id=delivery.id,
+        provider="meta",
+        provider_message_id=provider_message_id,
+        sender_phone="+5511999990001",
+        sender_name="Test Sender",
+        timestamp=now_utc(),
+        text=text,
+        processing_status="received",
+    )
+    session.add(message)
+    session.flush()
+    return message
 
 
 # ── dispatch_whatsapp_invitations ────────────────────────────────────────
@@ -578,6 +617,236 @@ def test_process_inbound_drains_queue(mock_dequeue, mock_process):
 
     assert len(results) == 3
     assert mock_process.call_count == 3
+
+
+def test_whatsapp_inbound_message_equality_ignores_delivery_message_id():
+    timestamp = now_utc()
+    left = WhatsAppInboundMessage(
+        message_id="wamid.eq",
+        from_phone="+5511999990001",
+        timestamp=timestamp,
+        text="RFQ#RFQ-2026-000001 2550 USD/MT",
+        sender_name="Trader",
+        delivery_message_id=uuid.uuid4(),
+    )
+    right = WhatsAppInboundMessage(
+        message_id="wamid.eq",
+        from_phone="+5511999990001",
+        timestamp=timestamp,
+        text="RFQ#RFQ-2026-000001 2550 USD/MT",
+        sender_name="Trader",
+        delivery_message_id=uuid.uuid4(),
+    )
+
+    assert left == right
+    with pytest.raises(TypeError):
+        hash(left)
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_process_inbound_queue_updates_durable_message_processed(
+    mock_classify, mock_parse, mock_auto, mock_submit
+):
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.quote, confidence=0.95, raw_reasoning=None
+    )
+    mock_parse.return_value = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_auto.return_value = True
+    mock_quote = MagicMock()
+    mock_quote.id = uuid.uuid4()
+    mock_submit.return_value = mock_quote
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        rfq_id = rfq.id
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.durable",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        durable = session.get(InboundWebhookMessage, durable_id)
+        assert durable is not None
+        assert durable.processing_status == "processed"
+        assert durable.processing_completed_at is not None
+        assert durable.processing_result["status"] == "auto_quote_created"
+        assert durable.rfq_id == rfq_id
+        assert durable.quote_id == mock_quote.id
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_process_inbound_queue_updates_durable_message_failed(mock_classify, mock_parse):
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.side_effect = LLMUnavailableError("LLM down")
+    mock_parse.side_effect = LLMUnavailableError("LLM down")
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.failed",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.failed",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "llm_unavailable"
+    with SessionLocal() as session:
+        durable = session.get(InboundWebhookMessage, durable_id)
+        assert durable is not None
+        assert durable.processing_status == "failed"
+        assert durable.processing_result["status"] == "llm_unavailable"
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_processed_durable_message_is_not_reprocessed(mock_classify):
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+    from app.services.webhook_processor import enqueue_message
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.processed",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable.processing_status = "processed"
+        durable.processing_result = {"status": "auto_quote_created"}
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.processed",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results == [{"message_id": "wamid.processed", "status": "already_consumed"}]
+    mock_classify.assert_not_called()
+    with SessionLocal() as session:
+        assert session.get(InboundWebhookMessage, durable_id).processing_status == "processed"
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_recent_processing_durable_message_is_not_claimed_twice(mock_classify):
+    from app.services.webhook_processor import enqueue_message
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.processing",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable.processing_status = "processing"
+        durable.processing_started_at = now_utc()
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.processing",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results == [{"message_id": "wamid.processing", "status": "already_processing"}]
+    mock_classify.assert_not_called()
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_rejected_quote_does_not_make_same_provider_message_replayable(mock_classify):
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+    from app.services.webhook_processor import enqueue_message
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.quoted)
+        invitation = _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        quote = RFQQuote(
+            rfq_id=rfq.id,
+            counterparty_id=invitation.counterparty_id,
+            fixed_price_value=Decimal("2550.0"),
+            fixed_price_unit="USD/MT",
+            float_pricing_convention="avg",
+            received_at=now_utc(),
+            state=QuoteState.rejected,
+            rejected_at=now_utc(),
+            rejected_reason="manual_reject",
+            rejected_by="trader",
+        )
+        session.add(quote)
+        session.flush()
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.rejected",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable.processing_status = "processed"
+        durable.processing_result = {
+            "status": "auto_quote_created",
+            "quote_id": str(quote.id),
+        }
+        durable.rfq_id = rfq.id
+        durable.quote_id = quote.id
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.rejected",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+        quote_count = session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq.id).count()
+
+    assert results == [{"message_id": "wamid.rejected", "status": "already_consumed"}]
+    assert quote_count == 1
+    mock_classify.assert_not_called()
+    with SessionLocal() as session:
+        durable = session.get(InboundWebhookMessage, durable_id)
+        assert durable is not None
+        assert durable.processing_status == "processed"
 
 
 # ── notify_award / notify_reject ─────────────────────────────────────────

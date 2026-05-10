@@ -17,14 +17,16 @@ import json
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.inbound_webhook_delivery import InboundWebhookDelivery
+from app.models.inbound_webhook_message import InboundWebhookMessage
 from app.services.whatsapp_providers import get_provider_name
 from app.services.webhook_processor import (
     enqueue_message,
@@ -40,6 +42,8 @@ router = APIRouter()
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="rfq-inbound")
 
 _LOCAL_WEBHOOK_AUTH_ENVS = {"test", "local", "development", "dev"}
+_PROCESSING_STALE_AFTER = timedelta(minutes=15)
+_TERMINAL_MESSAGE_STATUSES = {"processed", "duplicate"}
 
 
 def _webhook_auth_bypass_allowed() -> bool:
@@ -94,6 +98,100 @@ def _first_provider_message(messages: list[Any]) -> tuple[str | None, str | None
         return None, None
     first = messages[0]
     return first.message_id or None, first.from_phone or None
+
+
+def _processing_is_stale(started_at: datetime | None) -> bool:
+    if started_at is None:
+        return True
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return started_at <= datetime.now(timezone.utc) - _PROCESSING_STALE_AFTER
+
+
+def _persist_message_for_enqueue(
+    *,
+    delivery_id: uuid.UUID,
+    provider: str,
+    msg: Any,
+) -> uuid.UUID | None:
+    session = SessionLocal()
+    try:
+        row = InboundWebhookMessage(
+            delivery_id=delivery_id,
+            provider=provider,
+            provider_message_id=msg.message_id,
+            sender_phone=msg.from_phone,
+            sender_name=msg.sender_name,
+            timestamp=msg.timestamp,
+            text=msg.text,
+            processing_status="received",
+        )
+        session.add(row)
+        try:
+            session.commit()
+            session.refresh(row)
+            return row.id
+        except IntegrityError:
+            session.rollback()
+
+        existing = (
+            session.query(InboundWebhookMessage)
+            .filter(
+                InboundWebhookMessage.provider == provider,
+                InboundWebhookMessage.provider_message_id == msg.message_id,
+            )
+            .one()
+        )
+        if existing.processing_status in _TERMINAL_MESSAGE_STATUSES:
+            logger.info(
+                "webhook_message_redelivery_already_consumed",
+                provider=provider,
+                provider_message_id=msg.message_id,
+                delivery_message_id=str(existing.id),
+                processing_status=existing.processing_status,
+            )
+            return None
+        if existing.processing_status == "processing" and not _processing_is_stale(
+            existing.processing_started_at
+        ):
+            logger.info(
+                "webhook_message_redelivery_already_processing",
+                provider=provider,
+                provider_message_id=msg.message_id,
+                delivery_message_id=str(existing.id),
+            )
+            return None
+
+        logger.info(
+            "webhook_message_redelivery_recovered",
+            provider=provider,
+            provider_message_id=msg.message_id,
+            delivery_message_id=str(existing.id),
+            processing_status=existing.processing_status,
+        )
+        return existing.id
+    finally:
+        session.close()
+
+
+def _persist_and_enqueue_messages(
+    *,
+    delivery_id: uuid.UUID,
+    provider: str,
+    messages: list[Any],
+) -> int:
+    enqueued = 0
+    for msg in messages:
+        durable_id = _persist_message_for_enqueue(
+            delivery_id=delivery_id,
+            provider=provider,
+            msg=msg,
+        )
+        if durable_id is None:
+            continue
+        enqueue_message(msg.model_copy(update={"delivery_message_id": durable_id}))
+        enqueued += 1
+    return enqueued
 
 
 def _process_queue_in_background() -> None:
@@ -260,10 +358,13 @@ async def _receive_meta(request: Request) -> dict[str, str]:
         parse_status="parsed",
         messages_extracted=len(messages),
     )
-    for msg in messages:
-        enqueue_message(msg)
+    enqueued = _persist_and_enqueue_messages(
+        delivery_id=delivery.id,
+        provider="meta",
+        messages=messages,
+    )
 
-    if messages:
+    if enqueued:
         _executor.submit(_process_queue_in_background)
 
     _update_delivery(delivery.id, acknowledged_at=datetime.now(timezone.utc))
@@ -360,10 +461,13 @@ async def _receive_twilio(request: Request) -> dict[str, str]:
         parse_status="parsed",
         messages_extracted=len(messages),
     )
-    for msg in messages:
-        enqueue_message(msg)
+    enqueued = _persist_and_enqueue_messages(
+        delivery_id=delivery.id,
+        provider="twilio",
+        messages=messages,
+    )
 
-    if messages:
+    if enqueued:
         _executor.submit(_process_queue_in_background)
 
     _update_delivery(delivery.id, acknowledged_at=datetime.now(timezone.utc))
