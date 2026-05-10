@@ -94,6 +94,8 @@ from pathlib import Path
 from typing import Any
 
 _MAX_LINES_PER_READ = 500
+_MAX_BYTES_PER_READ = 60_000
+_MAX_FILE_SIZE_BYTES = 2_000_000  # 2 MB — reject early; generated artifacts / source maps go above this
 _MAX_GREP_RESULTS = 80
 _MAX_FIND_SYMBOL_BYTES = 8000
 
@@ -129,12 +131,32 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
         return {"ok": False, "error": str(exc)}
     if not target.is_file():
         return {"ok": False, "error": f"not a file: {path_str}"}
+    # Fast reject for oversized files (generated artifacts, source maps,
+    # minified bundles, frontend chunks) before reading them into memory.
+    # A multi-MB single-line minified file would blow the per-turn token
+    # budget if its excerpt were returned to the model.
+    file_size = target.stat().st_size
+    if file_size > _MAX_FILE_SIZE_BYTES:
+        return {
+            "ok": False,
+            "error": (
+                f"file {path_str!r} is {file_size} bytes (>{_MAX_FILE_SIZE_BYTES}); "
+                "likely a generated artifact or source map. Use grep_pattern with "
+                "a narrower path or read a different file."
+            ),
+        }
     text = target.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
     end_clamped = int(end_line) if end_line is not None else min(start_line + _MAX_LINES_PER_READ - 1, len(lines))
     if end_clamped - start_line + 1 > _MAX_LINES_PER_READ:
         end_clamped = start_line + _MAX_LINES_PER_READ - 1
     excerpt = "\n".join(lines[start_line - 1 : end_clamped])
+    # Belt-and-suspenders: even within line cap, a single multi-MB line
+    # (no newlines) survives the line clamp. Hard-cap at byte size.
+    excerpt_truncated = False
+    if len(excerpt) > _MAX_BYTES_PER_READ:
+        excerpt = excerpt[:_MAX_BYTES_PER_READ]
+        excerpt_truncated = True
     return {
         "ok": True,
         "path": path_str,
@@ -142,6 +164,7 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
         "end_line": end_clamped,
         "total_lines": len(lines),
         "excerpt": excerpt,
+        "excerpt_truncated": excerpt_truncated,
     }
 
 
@@ -595,11 +618,13 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 10 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
+New test file. 12 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
 
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
 - `test_handle_read_file_caps_at_500_lines` — fixture 1000-line file, assert excerpt has ≤ 500 lines.
+- `test_handle_read_file_rejects_oversized_file` — fixture 3 MB file (single multi-MB line, simulating a source map / minified bundle); assert `result["ok"] is False` and `"likely a generated artifact" in result["error"]`. Verifies the `_MAX_FILE_SIZE_BYTES` early-reject prevents reading huge files into memory.
+- `test_handle_read_file_caps_excerpt_at_byte_limit` — fixture file with a single very long line (e.g., 100 KB on one line, file under 2 MB total so passes the size gate); assert `result["ok"] is True`, `result["excerpt_truncated"] is True`, `len(result["excerpt"]) <= _MAX_BYTES_PER_READ`. Verifies the belt-and-suspenders byte cap on the excerpt itself.
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
 - `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
 - `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
@@ -657,6 +682,8 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 ## 6. Acceptance criteria
 
 - [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
+- [ ] `handle_read_file` rejects files larger than `_MAX_FILE_SIZE_BYTES` (2 MB) BEFORE reading them into memory (early `target.stat().st_size` check). Returns structured `{"ok": False, "error": "...likely a generated artifact..."}`. Required to prevent multi-MB minified bundles / source maps / generated frontend chunks from blowing the per-turn token budget.
+- [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
 - [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
@@ -669,7 +696,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 10 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 12 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -741,7 +768,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 10 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 12 mechanical tests
 
 ## Acceptance evidence
 
@@ -799,7 +826,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (10 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (12 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
