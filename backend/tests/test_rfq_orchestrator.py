@@ -730,6 +730,45 @@ def test_process_inbound_queue_updates_durable_message_failed(mock_classify, moc
         assert durable.processing_result["status"] == "llm_unavailable"
 
 
+@patch("app.services.rfq_orchestrator.RFQOrchestrator._finalize_durable_message")
+@patch("app.services.rfq_orchestrator.RFQOrchestrator._process_single_message")
+def test_process_inbound_queue_releases_durable_id_when_finalize_fails(
+    mock_process, mock_finalize
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_process.return_value = {"message_id": "wamid.finalize-fails", "status": "processed"}
+    mock_finalize.side_effect = RuntimeError("commit failed")
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.finalize-fails",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        session.commit()
+
+        inbound = _make_inbound(
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+            msg_id="wamid.finalize-fails",
+            delivery_message_id=durable_id,
+        )
+        assert enqueue_message(inbound) is True
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            RFQOrchestrator.process_inbound_queue(session)
+
+        redelivery = _make_inbound(
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+            msg_id="wamid.finalize-fails-redelivery",
+            delivery_message_id=durable_id,
+        )
+        assert enqueue_message(redelivery) is True
+
+
 @patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
 def test_processed_durable_message_is_not_reprocessed(mock_classify):
     from app.models.inbound_webhook_message import InboundWebhookMessage

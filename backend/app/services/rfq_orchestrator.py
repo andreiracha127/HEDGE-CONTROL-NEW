@@ -308,35 +308,35 @@ class RFQOrchestrator:
             if msg is None:
                 break
 
-            claim = RFQOrchestrator._claim_durable_message(session, msg)
-            if claim is not None:
-                results.append(claim)
-                mark_message_finished(msg)
-                continue
-
             try:
-                result = RFQOrchestrator._process_single_message(session, msg)
-            except Exception as exc:
+                claim = RFQOrchestrator._claim_durable_message(session, msg)
+                if claim is not None:
+                    results.append(claim)
+                    continue
+
+                try:
+                    result = RFQOrchestrator._process_single_message(session, msg)
+                except Exception as exc:
+                    RFQOrchestrator._finalize_durable_message(
+                        session,
+                        msg,
+                        {
+                            "message_id": msg.message_id,
+                            "status": "failed",
+                            "error": str(exc),
+                        },
+                        failed=True,
+                    )
+                    raise
                 RFQOrchestrator._finalize_durable_message(
                     session,
                     msg,
-                    {
-                        "message_id": msg.message_id,
-                        "status": "failed",
-                        "error": str(exc),
-                    },
-                    failed=True,
+                    result,
+                    failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
                 )
+                results.append(result)
+            finally:
                 mark_message_finished(msg)
-                raise
-            RFQOrchestrator._finalize_durable_message(
-                session,
-                msg,
-                result,
-                failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
-            )
-            mark_message_finished(msg)
-            results.append(result)
 
         return results
 
