@@ -289,22 +289,6 @@ __all__ = [
 The module-body import is required. Adding only the `__all__` entry is not
 sufficient to register the table with `Base.metadata`.
 
-### 3.6 Test helper compatibility
-
-If the executor touches signed webhook tests in
-`backend/tests/test_phase5_whatsapp_llm.py` or
-`backend/tests/test_webhook_processor.py`, normalize their HMAC helper calls to
-the stable constructor form:
-
-```python
-h = hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
-```
-
-Keep this limited to test helper compatibility. Do not change production HMAC
-verification semantics in `backend/app/services/webhook_processor.py` unless a
-focused production test fails and proves the same compatibility issue there.
-Do not alter signature test logic or expected signatures.
-
 ---
 
 ## 4. Scope OUT
@@ -323,9 +307,6 @@ Do not alter signature test logic or expected signatures.
 - Do not change outbound WhatsApp provider behavior except where tests need
   setup updates.
 - Do not relax hard-fail behavior for invalid signatures or malformed payloads.
-- Do not rewrite production HMAC verification code unless a focused production
-  test proves a runtime compatibility failure; signed webhook test helper
-  compatibility is explicitly allowed by §3.6.
 
 ---
 
