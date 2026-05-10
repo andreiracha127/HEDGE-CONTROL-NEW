@@ -103,6 +103,28 @@ def test_scenario_run_returns_outputs(client) -> None:
     assert any(item["object_id"] == str(contract_id) for item in data["mtm_snapshot"])
 
 
+def test_scenario_cashflow_snapshot_has_no_fake_baseline(client) -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
+    _insert_contract(quantity_mt=5.0, entry_price=100.0)
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [],
+        },
+    )
+
+    assert response.status_code == 200
+    cashflow = response.json()["cashflow_snapshot"]
+    assert set(cashflow) == {"analytic"}
+    assert "baseline" not in cashflow
+
+
 def test_price_override_changes_mtm(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
     _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)

@@ -3804,7 +3804,6 @@ export interface components {
         /** ScenarioCashflowSnapshot */
         ScenarioCashflowSnapshot: {
             analytic: components["schemas"]["CashFlowAnalyticResponse"];
-            baseline: components["schemas"]["CashFlowAnalyticResponse"];
         };
         /** ScenarioPLSnapshotItem */
         ScenarioPLSnapshotItem: {

@@ -525,9 +525,7 @@ def run_what_if(
         cashflow_items=cashflow_items,
         total_net_cashflow=total_cashflow,
     )
-    cashflow_snapshot = ScenarioCashflowSnapshot(
-        analytic=cashflow_analytic, baseline=cashflow_analytic
-    )
+    cashflow_snapshot = ScenarioCashflowSnapshot(analytic=cashflow_analytic)
 
     calculation_timestamp = datetime.combine(
         req.as_of_date, time.min, tzinfo=timezone.utc
