@@ -45,16 +45,21 @@ class _ToolUse:
 class _FakeMessages:
     def __init__(self, responses: list[Any]) -> None:
         self.responses = responses
+        self.calls: list[dict[str, Any]] = []
 
-    def create(self, **_kwargs: Any) -> Any:
+    def create(self, **kwargs: Any) -> Any:
+        self.calls.append({**kwargs, "messages": list(kwargs["messages"])})
         if not self.responses:
             raise AssertionError("unexpected messages.create call")
         return self.responses.pop(0)
 
 
 class _FakeAnthropic:
+    last_messages: _FakeMessages | None = None
+
     def __init__(self, responses: list[Any]) -> None:
         self.messages = _FakeMessages(responses)
+        _FakeAnthropic.last_messages = self.messages
 
 
 def _response(block: _ToolUse) -> Any:
@@ -98,6 +103,91 @@ def test_call_review_accepts_p1_blocking_json_string_and_preserves_blocking_sema
     )
 
     assert len(report.p1_blocking) == 1
+
+
+def test_call_review_repairs_missing_summary_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invalid_report = _report_input()
+    invalid_report.pop("summary")
+    responses = [
+        _response(_ToolUse("report_findings", invalid_report, "report-1")),
+        _response(_ToolUse("report_findings", _report_input(), "report-2")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert report.summary == "stub summary"
+    assert tool_log == []
+    assert _FakeAnthropic.last_messages is not None
+    calls = _FakeAnthropic.last_messages.calls
+    assert len(calls) == 2
+    repair_content = calls[1]["messages"][-1]["content"][0]["content"]
+    assert "ReviewReport payload is invalid" in repair_content
+    assert "summary" in repair_content
+
+
+def test_call_review_repairs_invalid_p1_finding_and_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "evidence.py").write_text("class Evidence:\n    pass\n", encoding="utf-8")
+    invalid_finding = _finding()
+    invalid_finding.pop("why")
+    responses = [
+        _response(_ToolUse("read_file", {"path": "evidence.py"}, "read-1")),
+        _response(_ToolUse("report_findings", _report_input(p1_blocking=[invalid_finding]), "report-1")),
+        _response(_ToolUse("report_findings", _report_input(p1_blocking=[_finding()]), "report-2")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert len(report.p1_blocking) == 1
+    assert len(tool_log) == 1
+    assert _FakeAnthropic.last_messages is not None
+    calls = _FakeAnthropic.last_messages.calls
+    assert len(calls) == 3
+    repair_content = calls[2]["messages"][-1]["content"][0]["content"]
+    assert "p1_blocking.0.why" in repair_content
+
+
+def test_call_review_fails_after_second_invalid_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invalid_report = _report_input()
+    invalid_report.pop("summary")
+    responses = [
+        _response(_ToolUse("report_findings", invalid_report, "report-1")),
+        _response(_ToolUse("report_findings", invalid_report, "report-2")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    with pytest.raises(review_client.ReviewReportParseError) as exc_info:
+        review_client.call_review(
+            model="claude-sonnet-4-6",
+            cached_system_blocks=[],
+            user_payload="payload",
+            repo_root=tmp_path,
+        )
+
+    assert "summary" in str(exc_info.value)
+    assert exc_info.value.raw_report_input == invalid_report
+    assert _FakeAnthropic.last_messages is not None
+    assert len(_FakeAnthropic.last_messages.calls) == 2
 
 
 def test_coerce_list_fields_normalizes_empty_string_to_empty_p3_info() -> None:

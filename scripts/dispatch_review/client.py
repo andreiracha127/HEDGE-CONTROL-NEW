@@ -31,10 +31,12 @@ class ReviewReportParseError(RuntimeError):
         *,
         raw_report_input: dict[str, Any] | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.raw_report_input = raw_report_input
         self.tool_calls = tool_calls or []
+        self.retryable = retryable
 
 
 def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -86,10 +88,28 @@ def _parse_review_report(
     except ValidationError as exc:
         raise ReviewReportParseError(
             "invalid ReviewReport payload after list-field normalization: "
-            f"{exc.errors(include_url=False)}",
+            f"{_format_validation_errors(exc)}",
             raw_report_input=raw_payload,
             tool_calls=tool_call_log,
+            retryable=True,
         ) from None
+
+
+def _format_validation_errors(exc: ValidationError) -> str:
+    errors: list[str] = []
+    for error in exc.errors(include_url=False):
+        loc = ".".join(str(part) for part in error.get("loc", ())) or "<root>"
+        errors.append(f"{loc}: {error.get('msg', 'invalid value')}")
+    return "; ".join(errors)
+
+
+def _build_report_repair_message(exc: ReviewReportParseError) -> str:
+    return (
+        f"ReviewReport payload is invalid: {exc}. Call `report_findings` again "
+        "exactly once with a complete ReviewReport. Preserve every valid "
+        "P1/P2/P3 finding from the invalid payload; fill missing fields from "
+        "verified evidence; do not downgrade, bypass, or suppress findings."
+    )
 
 
 _MAX_RETRIES = 3
@@ -202,6 +222,7 @@ def call_review(
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_payload}]
     tool_call_log: list[dict[str, Any]] = []
     cumulative_output_tokens = 0
+    report_repair_requested = False
 
     for iteration in range(_MAX_ITERATIONS):
         response = _create_with_retry(
@@ -226,10 +247,30 @@ def call_review(
             if getattr(block, "type", None) != "tool_use" or getattr(block, "name", None) != "report_findings":
                 continue
             report_was_present = True
-            candidate_report = _parse_review_report(
-                dict(block.input),
-                tool_call_log=tool_call_log,
-            )
+            try:
+                candidate_report = _parse_review_report(
+                    dict(block.input),
+                    tool_call_log=tool_call_log,
+                )
+            except ReviewReportParseError as exc:
+                if exc.retryable and not report_repair_requested:
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "tool_result",
+                                    "tool_use_id": block.id,
+                                    "content": _build_report_repair_message(exc),
+                                }
+                            ],
+                        }
+                    )
+                    report_repair_requested = True
+                    report_was_rejected = True
+                    break
+                raise
             successful_investigations = sum(
                 1
                 for entry in tool_call_log
