@@ -1,6 +1,6 @@
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_any_role, require_role
@@ -19,6 +19,7 @@ from app.services.cashflow_baseline_service import (
     get_cashflow_baseline_snapshot,
 )
 from app.services.cashflow_projection_service import compute_cashflow_projection
+from app.utils.price_reference import PriceReferenceUnprovable
 
 
 router = APIRouter()
@@ -65,7 +66,12 @@ def get_cashflow_projection(
     _: None = Depends(require_any_role("risk_manager", "auditor", "trader")),
     session: Session = Depends(get_session),
 ) -> CashFlowProjectionResponse:
-    return compute_cashflow_projection(session, as_of_date=as_of_date)
+    try:
+        return compute_cashflow_projection(session, as_of_date=as_of_date)
+    except PriceReferenceUnprovable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc),
+        ) from exc
 
 
 @router.get("/baseline/snapshots", response_model=CashFlowBaselineSnapshotResponse)

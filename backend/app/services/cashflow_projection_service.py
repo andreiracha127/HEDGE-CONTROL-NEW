@@ -16,6 +16,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus
@@ -27,32 +28,33 @@ from app.schemas.cashflow import (
     CashFlowProjectionSummary,
     ProjectionInstrumentType,
 )
+from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable
+from app.services.price_lookup_service import (
+    get_cash_settlement_price_d1_with_provenance,
+    resolve_symbol,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _get_market_price(
+def _get_market_price_quote(
     session: Session, commodity: str, as_of_date: date
-) -> Decimal | None:
+) -> PriceQuote:
+    """Per-row price lookup. Raises PriceReferenceUnprovable on missing
+    settlement; the route boundary translates to HTTP 424. NEVER returns
+    None; absence of evidence is institutionally a hard-fail per §2.6.
+    """
     try:
-        from app.services.price_lookup_service import (
-            get_cash_settlement_price_d1,
-            resolve_symbol,
-        )
-
         symbol = resolve_symbol(commodity)
-        return Decimal(
-            str(
-                get_cash_settlement_price_d1(
-                    session, symbol=symbol, as_of_date=as_of_date
-                )
-            )
-        )
-    except Exception:
-        logger.debug(
-            "market_price_unavailable commodity=%s date=%s", commodity, as_of_date
-        )
-        return None
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST:
+            raise PriceReferenceUnprovable(
+                f"Cannot project: no price-symbol mapping for commodity '{commodity}'"
+            ) from exc
+        raise
+    return get_cash_settlement_price_d1_with_provenance(
+        session, symbol=symbol, as_of_date=as_of_date
+    )
 
 
 def _resolve_deal_id(
@@ -89,7 +91,10 @@ def compute_cashflow_projection(
     as_of_date: date,
 ) -> CashFlowProjectionResponse:
     items: list[CashFlowProjectionItem] = []
-    market_price = _get_market_price(session, "LME_AL", as_of_date)
+    # Per-row commodity pricing — no global LME_AL lookup. Each
+    # variable-priced row resolves its own commodity via
+    # _get_market_price_quote, which raises PriceReferenceUnprovable
+    # on absence. The route handler translates to 424.
 
     # ── Orders (SO + PO) ──
     orders = session.query(Order).filter(Order.deleted_at.is_(None)).all()
@@ -100,14 +105,21 @@ def compute_cashflow_projection(
 
         qty = Decimal(str(order.quantity_mt))
         if order.price_type == PriceType.fixed:
-            price = Decimal(str(order.avg_entry_price or 0))
+            if order.avg_entry_price is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        f"Order {order.id} is fixed-price but avg_entry_price "
+                        "is missing; cannot project."
+                    ),
+                )
+            price = Decimal(str(order.avg_entry_price))
             price_src = "fixed"
-        elif market_price is not None:
-            price = market_price
-            price_src = "market"
         else:
-            price = Decimal(str(order.avg_entry_price or 0))
-            price_src = "entry"
+            # Variable-price: hard-fail on unprovable, no fallback.
+            price_quote = _get_market_price_quote(session, order.commodity, as_of_date)
+            price = price_quote.value
+            price_src = "market"
 
         amount = qty * price
         is_so = order.order_type == OrderType.sales
@@ -126,7 +138,7 @@ def compute_cashflow_projection(
                 instrument_id=str(order.id),
                 reference="",
                 counterparty="",
-                commodity="Al",
+                commodity=order.commodity,
                 settlement_date=settle_dt,
                 quantity_mt=qty,
                 price_per_mt=price,
@@ -151,19 +163,34 @@ def compute_cashflow_projection(
         .all()
     )
     for contract in contracts:
-        settle_dt = contract.settlement_date or as_of_date
+        if contract.settlement_date is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Contract {contract.id} has no settlement_date; "
+                    "cannot project (no inventing as_of_date)."
+                ),
+            )
+        settle_dt = contract.settlement_date
         if settle_dt < as_of_date:
             continue
 
-        qty = Decimal(str(contract.quantity_mt))
-        fixed_price = Decimal(str(contract.fixed_price_value or 0))
+        if contract.fixed_price_value is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Contract {contract.id} has no fixed_price_value; "
+                    "cannot project."
+                ),
+            )
 
-        if market_price is not None:
-            est_variable = market_price
-            price_src = "market"
-        else:
-            est_variable = fixed_price
-            price_src = "entry"
+        qty = Decimal(str(contract.quantity_mt))
+        fixed_price = Decimal(str(contract.fixed_price_value))
+
+        # Hard-fail on unprovable variable leg; no fallback to fixed_price.
+        variable_quote = _get_market_price_quote(session, contract.commodity, as_of_date)
+        est_variable = variable_quote.value
+        price_src = "market"
 
         fixed_side = contract.fixed_leg_side.value
         if fixed_side == "buy":

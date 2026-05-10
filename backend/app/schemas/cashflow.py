@@ -162,7 +162,7 @@ class CashFlowProjectionItem(BaseModel):
     instrument_id: str = Field(..., max_length=64)
     reference: str = Field("", max_length=100)
     counterparty: str = Field("", max_length=200)
-    commodity: str = Field("", max_length=20)
+    commodity: str = Field("", max_length=64)
     settlement_date: date
     quantity_mt: Decimal
     price_per_mt: Decimal
