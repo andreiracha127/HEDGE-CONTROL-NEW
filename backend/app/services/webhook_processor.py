@@ -77,6 +77,7 @@ def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
 
         queue_maxlen = _message_queue.maxlen
         if queue_maxlen is not None and len(_message_queue) >= queue_maxlen:
+            # deque(maxlen=N) evicts this leftmost item on the next append.
             evicted = _message_queue[0]
             if evicted.delivery_message_id is not None:
                 _active_durable_message_ids.discard(evicted.delivery_message_id)
@@ -124,7 +125,7 @@ def queue_depth() -> int:
 
 
 def drain_queue() -> list[WhatsAppInboundMessage]:
-    """Remove and return all messages from the queue (useful in tests)."""
+    """Remove queued messages and reset local dedupe state for test isolation."""
     with _queue_state_lock:
         msgs = list(_message_queue)
         _message_queue.clear()

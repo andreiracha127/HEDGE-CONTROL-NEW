@@ -92,6 +92,26 @@ def test_enqueue_durable_duplicate_ignored_until_finished():
     assert queue_depth() == 2
 
 
+def test_dequeued_durable_duplicate_ignored_until_finished():
+    durable_id = uuid.uuid4()
+    msg = _make_msg("durable-in-flight").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+    duplicate = _make_msg("durable-in-flight-redelivery").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+
+    assert enqueue_message(msg) is True
+    assert dequeue_message() == msg
+
+    assert enqueue_message(duplicate) is False
+    assert queue_depth() == 0
+
+    mark_message_finished(msg)
+    assert enqueue_message(duplicate) is True
+    assert queue_depth() == 1
+
+
 def test_mark_message_finished_noop_for_legacy_message():
     mark_message_finished(_make_msg("legacy-finished"))
     assert _active_durable_message_ids == set()
