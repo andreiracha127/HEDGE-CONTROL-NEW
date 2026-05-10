@@ -274,6 +274,15 @@ Replace `_canonicalize_snapshot_payload()` with:
 
 ```python
 def _canonicalize_snapshot_payload(payload: dict) -> dict:
+    if "cashflow_items" in payload and isinstance(payload["cashflow_items"], list):
+        # Legacy Analytic-shaped Baseline rows are archived by migration 039.
+        # Keep deterministic ordering for conflict checks during any
+        # pre-migration/runtime overlap, but do not rewrite this shape into
+        # the new Baseline payload.
+        payload["cashflow_items"] = sorted(
+            payload["cashflow_items"],
+            key=lambda item: (item.get("object_type"), item.get("object_id")),
+        )
     if "unrealized_items" in payload and isinstance(payload["unrealized_items"], list):
         payload["unrealized_items"] = sorted(
             payload["unrealized_items"],
@@ -312,6 +321,11 @@ The conflict check must use the replacement `_canonicalize_snapshot_payload()`
 for both the newly computed payload and `existing.snapshot_data`; otherwise
 persisted rows with new `unrealized_items` / `realized_ledger_entries` arrays
 may false-conflict because only the old `cashflow_items` array is sorted.
+
+The legacy `cashflow_items` branch remains only to make conflict checks
+deterministic during any pre-migration/runtime overlap. It must not be used to
+transform legacy Analytic-shaped snapshots into the new Baseline shape; migration
+039 owns archival/removal of those rows.
 
 ### 3.3 Scenario response boundary
 
