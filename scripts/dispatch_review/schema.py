@@ -69,7 +69,7 @@ class ReviewReport(BaseModel):
     )
     summary: str = Field(
         ...,
-        max_length=2000,
+        max_length=5000,
         description=(
             "One-paragraph summary of the dispatch's overall self-consistency "
             "state. Mention key strengths and the most important catch if any."

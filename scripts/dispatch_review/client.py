@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any
@@ -15,6 +16,26 @@ from anthropic import (
 )
 
 from .schema import ReviewReport, build_report_findings_tool
+
+
+def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Sonnet sometimes emits a list-typed finding field as a JSON-encoded string.
+
+    Forced tool_use should produce typed structures, but in practice the
+    model occasionally inlines an array as a string when the array is
+    long. Be permissive on inbound shape: if a field expected to be a
+    list arrives as a string that parses as JSON list, accept it.
+    """
+    for key in ("p1_blocking", "p2_warn", "p3_info"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(parsed, list):
+                payload[key] = parsed
+    return payload
 
 _MAX_RETRIES = 3
 _BACKOFF_BASE_SECONDS = 4.0
@@ -59,7 +80,7 @@ def call_review(
         else:
             for block in response.content:
                 if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "report_findings":
-                    return ReviewReport.model_validate(block.input)
+                    return ReviewReport.model_validate(_coerce_list_fields(dict(block.input)))
             raise RuntimeError(
                 "Model response did not contain a `report_findings` tool_use block. "
                 f"stop_reason={response.stop_reason!r}, content_types={[getattr(b, 'type', None) for b in response.content]}"

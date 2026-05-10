@@ -17,6 +17,14 @@ import os
 import sys
 from pathlib import Path
 
+# Windows console default cp1252 cannot encode characters Sonnet routinely
+# emits in finding text (em-dash, arrows, smart quotes). Force UTF-8 with
+# replacement-on-error before any print so the hook never crashes mid-report.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+
 from anthropic import APIError as _AnthropicAPIError
 
 from dispatch_review.cache import write_cache_artifact
