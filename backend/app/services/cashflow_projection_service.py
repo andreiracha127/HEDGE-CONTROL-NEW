@@ -44,7 +44,14 @@ def _get_market_price_quote(
     settlement; the route boundary translates to HTTP 424. NEVER returns
     None; absence of evidence is institutionally a hard-fail per §2.6.
     """
-    symbol = resolve_symbol(commodity)
+    try:
+        symbol = resolve_symbol(commodity)
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_400_BAD_REQUEST:
+            raise PriceReferenceUnprovable(
+                f"Cannot project: no price-symbol mapping for commodity '{commodity}'"
+            ) from exc
+        raise
     return get_cash_settlement_price_d1_with_provenance(
         session, symbol=symbol, as_of_date=as_of_date
     )
