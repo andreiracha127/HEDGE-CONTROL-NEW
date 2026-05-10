@@ -15,10 +15,26 @@ from anthropic import (
     AuthenticationError,
     RateLimitError,
 )
+from pydantic import ValidationError
 
 from .schema import ReviewReport
 from .tool_handlers import HANDLERS
 from .tools import build_review_tools
+
+
+class ReviewReportParseError(RuntimeError):
+    """Controlled failure for malformed report_findings payloads."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_report_input: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.raw_report_input = raw_report_input
+        self.tool_calls = tool_calls or []
 
 
 def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -27,18 +43,54 @@ def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
     Forced tool_use should produce typed structures, but in practice the
     model occasionally inlines an array as a string when the array is
     long. Be permissive on inbound shape: if a field expected to be a
-    list arrives as a string that parses as JSON list, accept it.
+    list arrives as a string that parses as JSON list, accept it. Empty
+    strings, nulls, and missing fields normalize to [].
     """
-    for key in ("p1_blocking", "p2_warn", "p3_info"):
+    raw_payload = dict(payload)
+    for key in ("p1_blocking", "p2_warn", "p3_info", "tool_calls"):
         value = payload.get(key)
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if isinstance(parsed, list):
-                payload[key] = parsed
+        if value is None or value == "":
+            payload[key] = []
+            continue
+        if not isinstance(value, str):
+            continue
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            raise ReviewReportParseError(
+                f"invalid ReviewReport list field {key}: expected JSON list string",
+                raw_report_input=raw_payload,
+            ) from None
+        if not isinstance(parsed, list):
+            raise ReviewReportParseError(
+                f"invalid ReviewReport list field {key}: expected JSON list string",
+                raw_report_input=raw_payload,
+            )
+        payload[key] = parsed
     return payload
+
+
+def _parse_review_report(
+    raw_input: dict[str, Any],
+    *,
+    tool_call_log: list[dict[str, Any]],
+) -> ReviewReport:
+    raw_payload = dict(raw_input)
+    try:
+        normalized = _coerce_list_fields(dict(raw_payload))
+        return ReviewReport.model_validate(normalized)
+    except ReviewReportParseError as exc:
+        exc.raw_report_input = exc.raw_report_input or raw_payload
+        exc.tool_calls = tool_call_log
+        raise
+    except ValidationError as exc:
+        raise ReviewReportParseError(
+            "invalid ReviewReport payload after list-field normalization: "
+            f"{exc.errors(include_url=False)}",
+            raw_report_input=raw_payload,
+            tool_calls=tool_call_log,
+        ) from None
+
 
 _MAX_RETRIES = 3
 _BACKOFF_BASE_SECONDS = 4.0
@@ -174,7 +226,10 @@ def call_review(
             if getattr(block, "type", None) != "tool_use" or getattr(block, "name", None) != "report_findings":
                 continue
             report_was_present = True
-            candidate_report = ReviewReport.model_validate(_coerce_list_fields(dict(block.input)))
+            candidate_report = _parse_review_report(
+                dict(block.input),
+                tool_call_log=tool_call_log,
+            )
             successful_investigations = sum(
                 1
                 for entry in tool_call_log
