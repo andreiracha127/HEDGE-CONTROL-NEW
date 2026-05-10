@@ -832,6 +832,33 @@ def test_recent_processing_durable_message_is_not_claimed_twice(mock_classify):
     mock_classify.assert_not_called()
 
 
+@patch("app.services.rfq_orchestrator._processing_started_at_is_stale")
+def test_stale_processing_claim_race_is_recovered(mock_is_stale):
+    mock_is_stale.return_value = True
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.processing-stale-race",
+            text=_canonical_text(rfq, "not a quote"),
+        )
+        durable.processing_status = "processing"
+        durable.processing_started_at = now_utc()
+        durable_id = durable.id
+        session.commit()
+
+        msg = _make_inbound(
+            text=_canonical_text(rfq, "not a quote"),
+            msg_id="wamid.processing-stale-race",
+            delivery_message_id=durable_id,
+        )
+        result = RFQOrchestrator._claim_durable_message(session, msg)
+
+    assert result is None
+
+
 @patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
 def test_rejected_quote_does_not_make_same_provider_message_replayable(mock_classify):
     from app.models.inbound_webhook_message import InboundWebhookMessage

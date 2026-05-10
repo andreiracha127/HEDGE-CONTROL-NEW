@@ -409,9 +409,18 @@ class RFQOrchestrator:
             return None
 
         session.refresh(durable)
-        if durable.processing_status == "processing" and not _processing_started_at_is_stale(
-            durable.processing_started_at
-        ):
+        if durable.processing_status == "processing":
+            if _processing_started_at_is_stale(durable.processing_started_at):
+                logger.warning(
+                    "orchestrator_durable_message_stale_claim_race_recovered",
+                    message_id=msg.message_id,
+                    delivery_message_id=str(durable.id),
+                    processing_started_at=durable.processing_started_at.isoformat()
+                    if durable.processing_started_at
+                    else None,
+                )
+                return None
+
             logger.info(
                 "orchestrator_durable_message_already_processing",
                 message_id=msg.message_id,
