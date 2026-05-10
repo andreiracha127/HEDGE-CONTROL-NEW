@@ -106,6 +106,8 @@ Add helpers in `cashflow_baseline_service.py`:
 
 ```python
 from app.core.precision import quantize_money
+from app.models.cashflow import CashFlowBaselineSnapshot, CashFlowLedgerEntry
+from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 ```
 
 ```python
@@ -243,10 +245,29 @@ payload = _canonicalize_snapshot_payload(
 inputs_hash = _compute_inputs_hash(as_of_date, payload, total)
 ```
 
-Update `_canonicalize_snapshot_payload()` so it sorts both:
+Replace `_canonicalize_snapshot_payload()` with:
 
-- `unrealized_items` by `(object_type, object_id)`.
-- `realized_ledger_entries` by `(cashflow_date, hedge_contract_id, leg_id, source_event_id or "")`.
+```python
+def _canonicalize_snapshot_payload(payload: dict) -> dict:
+    if "unrealized_items" in payload and isinstance(payload["unrealized_items"], list):
+        payload["unrealized_items"] = sorted(
+            payload["unrealized_items"],
+            key=lambda item: (item.get("object_type"), item.get("object_id")),
+        )
+    if "realized_ledger_entries" in payload and isinstance(
+        payload["realized_ledger_entries"], list
+    ):
+        payload["realized_ledger_entries"] = sorted(
+            payload["realized_ledger_entries"],
+            key=lambda item: (
+                item.get("cashflow_date"),
+                item.get("hedge_contract_id"),
+                item.get("leg_id"),
+                item.get("source_event_id") or "",
+            ),
+        )
+    return payload
+```
 
 The database query order and canonical payload order must use the same stable
 four-field realized-ledger key. Do not use `created_at` as a reconciliation
