@@ -504,10 +504,51 @@ def call_review(
         # Did the model emit a final report?
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "report_findings":
-                return (
-                    ReviewReport.model_validate(_coerce_list_fields(dict(block.input))),
-                    tool_call_log,
+                candidate_report = ReviewReport.model_validate(
+                    _coerce_list_fields(dict(block.input))
                 )
+                # Verify-before-P1 guard: a clean report (no P1) is
+                # accepted immediately — the model's judgment that no
+                # investigation was needed is institutionally valid
+                # (the dispatch may simply not contain Tipo-I surface).
+                # But if P1 is non-empty AND no investigation tool was
+                # called yet, reject the report and continue the loop:
+                # the model must verify identifiers via read_file /
+                # find_symbol / grep_pattern before emitting blocking
+                # findings — otherwise v2 regresses to v1's FP class.
+                if candidate_report.p1_blocking and not tool_call_log:
+                    rejection = (
+                        "Your report_findings call contains "
+                        f"{len(candidate_report.p1_blocking)} P1 finding(s) "
+                        "but no investigation tool (read_file, find_symbol, "
+                        "or grep_pattern) was called this review. P1 "
+                        "Tipo-I emissions require tool-verified evidence "
+                        "per the §3.4 tool-use discipline. Investigate "
+                        "the suspected mismatch via the appropriate tool, "
+                        "then re-call report_findings with verified P1 "
+                        "(or downgrade to P2/P3 if the evidence is weaker)."
+                    )
+                    messages.append({"role": "assistant", "content": response.content})
+                    messages.append({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": block.id, "content": rejection}
+                    ]})
+                    # break out of the for-block loop and continue the
+                    # outer iteration loop. Note: this consumes one of
+                    # the _MAX_ITERATIONS budget.
+                    break
+                else:
+                    return (candidate_report, tool_call_log)
+        else:
+            # for-else: only runs if the for-block loop did NOT break.
+            # Means no report_findings was emitted this turn — fall
+            # through to the investigation-tool execution branch below.
+            pass
+
+        # If we broke out of the for-block above (rejected unverified P1),
+        # skip the investigation-tool execution branch and start the next
+        # iteration with the rejection message in the conversation history.
+        if any(getattr(b, "name", None) == "report_findings" for b in response.content):
+            continue
 
         # Otherwise, execute any investigation tool_use blocks.
         tool_results: list[dict[str, Any]] = []
@@ -635,7 +676,7 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 13 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
+New test file. 15 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
 
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
@@ -646,6 +687,11 @@ Test enumeration (mechanical):
 - `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
 - `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
 - `test_handle_grep_pattern_skips_symlink_outside_repo` — fixture: tmpdir as repo with `backend/app/legitimate.py` (real file with a known pattern) and `backend/app/leaked.py` symlinked to a file outside the repo whose contents contain the SAME pattern; call `grep_pattern(pattern=<known>)` and assert ONLY `legitimate.py` appears in `matches` (the symlinked path is skipped because `f.is_symlink()` returns True). Pins the symlink-skip + ancestry-guard contract.
+
+**Multi-turn loop tests** (NEW section, mocking the Anthropic client at the boundary):
+
+- `test_call_review_rejects_unverified_p1_on_turn_1` — mock the Anthropic client to return a `report_findings` tool_use on turn 1 with `p1_blocking` non-empty; assert that `call_review` does NOT return after turn 1, instead appends a rejection `tool_result` and continues the loop. Then mock turn 2 to return a `read_file` tool_use, then turn 3 to return a clean `report_findings`; assert the final return value matches turn 3's report. Pins the verify-before-P1 contract.
+- `test_call_review_accepts_clean_p1_empty_report_on_turn_1` — mock the client to return `report_findings` on turn 1 with `p1_blocking == []`; assert `call_review` returns immediately with that report (no rejection, no further iterations). Pins the institutional-valid-clean-report path.
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
 - `test_handle_find_symbol_locates_async_function_definition` — fixture with `async def cancel_rfq(...):` → assert `find_symbol(name="cancel_rfq")` returns matching line. Pins the `(?:async\s+)?` regex prefix; without it, every async route handler in `backend/app/api/routes/` would silently return `matches=[]` (re-introducing the v1 FP class v2 is designed to eliminate).
@@ -710,12 +756,13 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
 - [ ] `client.messages.create` is called WITH `tool_choice={"type": "any"}` (guarantees a tool is called every turn — model picks between investigation tools and `report_findings`, but cannot emit plain-text-only response that would abort the loop).
+- [ ] **Verify-before-P1 guard**: when `report_findings` is called AND `p1_blocking` is non-empty AND `tool_call_log` is empty (no prior investigation), the loop REJECTS the report via a `tool_result` rejection message and continues. Clean reports (`p1_blocking == []`) are accepted immediately even on turn 1. This prevents the model from short-circuiting to an unverified P1 emission on the first turn — which would re-introduce the exact FP class v2 is designed to eliminate (`tool_choice={"type": "any"}` allows `report_findings` as a valid first-turn pick, so the guard is necessary at the loop level).
 - [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
 - [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4 tool-use discipline block.
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 13 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 15 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -787,7 +834,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 13 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 15 mechanical tests
 
 ## Acceptance evidence
 
@@ -816,6 +863,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 ## 10. Constraints — what NOT to do
 
 - DO NOT use `tool_choice={"type": "tool", "name": "report_findings"}` (v1's specific-forcing) in the multi-turn loop — it would prevent the model from calling investigation tools. DO use `tool_choice={"type": "any"}` (forces some tool but the model picks which) — required for loop progress.
+- DO NOT accept a `report_findings` call with non-empty `p1_blocking` if `tool_call_log` is empty. The verify-before-P1 guard MUST reject and continue the loop. Clean reports (no P1) on turn 1 are acceptable — the model's judgment that no investigation was needed is institutionally valid when nothing flagged Tipo-I.
 - DO NOT raise `_LINE_CAP` in `file_resolver.py`. Pre-inlining stays bounded at 200 lines/file; the new `read_file` tool covers gaps.
 - DO NOT add write tools, subprocess-execution tools, or tools that make HTTP requests. v2 is read-only.
 - DO NOT skip the `_resolve_within_repo` check in any handler that takes a path argument. Path-traversal rejection is enforced per handler, not centralized.
@@ -845,7 +893,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (13 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (15 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
