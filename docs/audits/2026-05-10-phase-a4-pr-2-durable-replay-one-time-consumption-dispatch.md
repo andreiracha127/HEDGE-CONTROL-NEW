@@ -165,6 +165,10 @@ Migration requirements:
 - create `inbound_webhook_messages`;
 - add unique constraint on `(provider, provider_message_id)`;
 - add processing-status constraint;
+  - create the migration-level CHECK under an explicit PostgreSQL dialect guard,
+    for example `if connection.dialect.name == "postgresql":`;
+  - rely on the model-level `@validates("processing_status")` guard as the
+    SQLite-backed test enforcement layer;
 - create useful indexes for `delivery_id`, `processing_status`, and
   `provider_message_id`;
 - downgrade removes all introduced objects cleanly.
@@ -288,6 +292,14 @@ def __eq__(self, other: object) -> bool:
 ```
 
 Do not make `WhatsAppInboundMessage` hashable in this PR.
+Confirm timestamp comparisons are timezone-consistent in existing constructors
+and extraction helpers before finalizing any equality override, and run:
+
+```bash
+rg -n "set\\(|dict.*WhatsApp|\\{.*msg" backend
+```
+
+to confirm no set/dict usage relies on `WhatsAppInboundMessage` hashability.
 At authoring time, `backend/tests/test_rfq_orchestrator.py` constructs inbound
 messages via `_make_inbound()` at lines 106-111 and uses those objects in many
 tests, but the grep sweep did not find direct `WhatsAppInboundMessage` object
@@ -393,8 +405,9 @@ Minimum expected coverage:
     sites.
   - Before renaming, run
     `rg -n "_load_migration|_run_migration" backend/tests/test_inbound_webhook_delivery.py`
-    and update every resulting line. At authoring time the relevant lines are
-    74, 82, 83, 407, 413, and 435.
+    and update every resulting line. At authoring time the helper definitions
+    and internal body references are at lines 74, 82, and 83; external call
+    sites are at lines 407, 413, and 435.
   - Add sibling helpers `_load_migration_041()` and
     `_run_migration_041(connection, direction)` pointing exclusively to
     `041_a4_inbound_webhook_messages.py`. Do not run 041 assertions through the
