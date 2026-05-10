@@ -198,6 +198,11 @@ Acceptable implementation shape:
 ```python
 def _cashflow_item_from_mtm(mtm: MTMResultResponse, as_of_date: date) -> CashFlowItem:
     mtm_value = quantize_money(mtm.mtm_value)
+    if mtm.price_quote is None:
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"MTM result for {mtm.object_id} has no price provenance",
+        )
     return CashFlowItem(
         object_type=mtm.object_type.value,
         object_id=mtm.object_id,
@@ -220,6 +225,10 @@ def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]
     # every unrealized item carries price_quote provenance.
     return items
 ```
+
+`settlement_date=as_of_date` is the Baseline snapshot date for the unrealized
+MTM item. The actual D-1 price evidence date must be carried separately in
+`price_settlement_date=mtm.price_quote.settlement_date`.
 
 This intentionally shares the same pricing primitives as Analytic without making Baseline a proxy for Analytic.
 
