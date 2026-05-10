@@ -52,7 +52,68 @@ Severity:
 - **P3 (info)**: stylistic inconsistencies, redundant prescriptions,
   minor unverified claims that don't undermine the PR's purpose.
 
-Output via the `report_findings` tool only. Do NOT emit prose.
+Use the investigation tools (`read_file`, `find_symbol`, `grep_pattern`)
+to verify identifiers BEFORE emitting `report_findings`. P1 Tipo-I
+findings require at least one investigation tool result with ok=True.
+Call `report_findings` exactly once when your review is complete; do
+NOT emit prose-only responses (the loop guarantees tool-use every turn
+via `tool_choice={"type": "any"}`).
+"""
+
+_REVIEW_PROTOCOL_PROSE = """\
+# Review protocol
+
+For each dispatch file in the user payload, perform an 8-section sweep:
+§3.X concrete-code blocks, §4 Scope OUT, §5 Constitutional rules,
+§6 Acceptance criteria, §7 Test names, §9 PR body skeleton, §10 DO NOTs,
+§11 Workflow.
+
+For every identifier in concrete-code blocks (function names, schema
+fields, enum members, dict keys, file paths, line numbers), verify
+against the inlined cited file excerpts. If the cited excerpt contradicts
+the dispatch, raise a P1 Tipo-I-fact-mismatch finding.
+
+For every prohibition in §10, scan §3 for in-scope work that crosses the
+prohibited line - that's the out-of-scope-forbid-trap pattern.
+
+For every list of sibling bullets in §6 / §7 / §10, verify identifier and
+shape consistency across the list. Inconsistencies are P2
+sibling-bullet-sweep-miss findings.
+
+# Tool-use discipline (v2)
+
+You have 3 read-only investigation tools (`read_file`, `find_symbol`,
+`grep_pattern`) plus the `report_findings` tool.
+
+When you have a hypothesis that a dispatch identifier (function name,
+schema field, dict key, file path, line number) is wrong, VERIFY before
+flagging P1. Use:
+- `find_symbol(name="X")` to locate where X is defined.
+- `read_file(path="...", start_line=, end_line=)` to inspect specific
+  ranges.
+- `grep_pattern(pattern="...", search_path="...")` to find call sites,
+  identifier mappings, or to verify line numbers in the cited code.
+
+Discipline rules:
+- Inferring from cited file excerpts is acceptable for hypothesis
+  generation; before asserting P1 Tipo-I (identifier doesn't exist), you
+  MUST have a tool result confirming the identifier is missing.
+- A tool may return `{"ok": false, "error": ...}` - do NOT interpret
+  that as proof. It indicates the tool failed; investigate further with a
+  different tool call.
+- Be efficient - typical reviews need 3-8 tool calls. The hook caps at
+  12 iterations. Plan investigations: read the most authoritative source
+  first.
+- When you are confident the review is complete, call `report_findings`
+  with your full ReviewReport. Do NOT call other tools after
+  `report_findings` - that call ends the loop.
+
+Severity tier reminder (unchanged from v1):
+- P1 (blocking): Tipo I fact mismatch, Tipo II self-defeat, governance
+  §2.x violation. P1 emission requires tool-verified evidence.
+- P2 (warning): sibling-bullet sweep miss, NULL-safety oversight,
+  decimal quantization, etc.
+- P3 (info): stylistic, redundant, minor unverified.
 """
 
 
@@ -78,24 +139,7 @@ def build_cached_system_blocks(repo_root: Path) -> list[dict[str, Any]]:
         },
         {
             "type": "text",
-            "text": (
-                "# Review protocol\n\n"
-                "For each dispatch file in the user payload, perform an "
-                "8-section sweep: §3.X concrete-code blocks, §4 Scope OUT, "
-                "§5 Constitutional rules, §6 Acceptance criteria, §7 Test "
-                "names, §9 PR body skeleton, §10 DO NOTs, §11 Workflow.\n\n"
-                "For every identifier in concrete-code blocks (function "
-                "names, schema fields, enum members, dict keys, file paths, "
-                "line numbers), verify against the inlined cited file "
-                "excerpts. If the cited excerpt contradicts the dispatch, "
-                "raise a P1 Tipo-I-fact-mismatch finding.\n\n"
-                "For every prohibition in §10, scan §3 for in-scope work "
-                "that crosses the prohibited line — that's the "
-                "out-of-scope-forbid-trap pattern.\n\n"
-                "For every list of sibling bullets in §6 / §7 / §10, "
-                "verify identifier and shape consistency across the list. "
-                "Inconsistencies are P2 sibling-bullet-sweep-miss findings."
-            ),
+            "text": _REVIEW_PROTOCOL_PROSE,
         },
     ]
 
@@ -120,6 +164,7 @@ def build_user_payload(
                 parts.append(f"\n#### `{cited_rel}`\n\n```\n{excerpt}\n```\n")
     parts.append(
         "\n---\n\nApply the 8-section sweep and the 14+ self-consistency rules. "
-        "Call `report_findings` exactly once with the full review."
+        "Use investigation tools when needed, then call `report_findings` "
+        "exactly once with the full review."
     )
     return "".join(parts)

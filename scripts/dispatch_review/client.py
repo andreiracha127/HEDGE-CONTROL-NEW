@@ -1,10 +1,11 @@
-"""Anthropic API call with retry/backoff and forced tool-use output."""
+"""Anthropic API call with retry/backoff and multi-turn tool use."""
 
 from __future__ import annotations
 
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any
 
 from anthropic import (
@@ -15,7 +16,9 @@ from anthropic import (
     RateLimitError,
 )
 
-from .schema import ReviewReport, build_report_findings_tool
+from .schema import ReviewReport
+from .tool_handlers import HANDLERS
+from .tools import build_review_tools
 
 
 def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
@@ -39,34 +42,58 @@ def _coerce_list_fields(payload: dict[str, Any]) -> dict[str, Any]:
 
 _MAX_RETRIES = 3
 _BACKOFF_BASE_SECONDS = 4.0
+_MAX_ITERATIONS = 12
+_MAX_CUMULATIVE_OUTPUT_TOKENS = 60_000
+_PER_TURN_MAX_TOKENS = 8192
+_SOFT_TOOL_BUDGET = 8
 
 
-def call_review(
+def _summarize_for_log(result: dict[str, Any]) -> str:
+    """Return a redaction-safe structural summary of a tool result."""
+    ok = result.get("ok")
+    keys = sorted(k for k in result if k != "ok")
+    excerpt_chars = len(str(result.get("excerpt", "")))
+    matches_count = len(result.get("matches") or [])
+    truncated = result.get("truncated", result.get("excerpt_truncated", False))
+    return (
+        f"ok={ok} keys={keys} excerpt_chars={excerpt_chars} "
+        f"matches_count={matches_count} truncated={truncated}"
+    )
+
+
+def _summarize_input_for_log(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Return a redaction-safe summary of tool input."""
+    sensitive_fields_by_tool = {"grep_pattern": {"pattern"}}
+    sensitive_fields = sensitive_fields_by_tool.get(tool_name, set())
+    safe: dict[str, Any] = {}
+    for key, value in tool_input.items():
+        if key in sensitive_fields:
+            value_str = str(value)
+            safe[key] = f"<redacted len={len(value_str)}>"
+        else:
+            safe[key] = value
+    return safe
+
+
+def _create_with_retry(
+    client: Anthropic,
     *,
     model: str,
+    max_tokens: int,
     cached_system_blocks: list[dict[str, Any]],
-    user_payload: str,
-    max_tokens: int = 8192,
-) -> ReviewReport:
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError(
-            "ANTHROPIC_API_KEY is not set. Configure it in your environment "
-            "(e.g. via the repo .env loaded before invoking the hook)."
-        )
-
-    client = Anthropic()
-    tool = build_report_findings_tool()
-
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+):
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
-            response = client.messages.create(
+            return client.messages.create(
                 model=model,
                 max_tokens=max_tokens,
                 system=cached_system_blocks,
-                tools=[tool],
-                tool_choice={"type": "tool", "name": "report_findings"},
-                messages=[{"role": "user", "content": user_payload}],
+                tools=tools,
+                tool_choice={"type": "any", "disable_parallel_tool_use": True},
+                messages=messages,
             )
         except AuthenticationError:
             raise
@@ -77,16 +104,159 @@ def call_review(
             sleep_for = _BACKOFF_BASE_SECONDS ** attempt
             time.sleep(sleep_for)
             continue
-        else:
-            for block in response.content:
-                if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == "report_findings":
-                    return ReviewReport.model_validate(_coerce_list_fields(dict(block.input)))
-            raise RuntimeError(
-                "Model response did not contain a `report_findings` tool_use block. "
-                f"stop_reason={response.stop_reason!r}, content_types={[getattr(b, 'type', None) for b in response.content]}"
-            )
 
     assert last_exc is not None
     raise RuntimeError(
-        f"Anthropic API call failed after {_MAX_RETRIES} attempts: {type(last_exc).__name__}: {last_exc}"
+        f"Anthropic API call failed after {_MAX_RETRIES} attempts: "
+        f"{type(last_exc).__name__}: {last_exc}"
     ) from last_exc
+
+
+def _tool_budget_nudge(iteration: int, tool_call_log: list[dict[str, Any]]) -> str | None:
+    """Return a concise convergence nudge for the next model turn."""
+    successful_calls = sum(1 for entry in tool_call_log if entry.get("ok"))
+    if iteration >= _MAX_ITERATIONS - 2:
+        return (
+            "Tool budget warning: the next assistant turn is the final allowed "
+            "turn before the hard cap. Call `report_findings` now with your "
+            "best verified ReviewReport unless the current tool result proves "
+            "a single P1-critical unknown that cannot be classified without one "
+            "more read."
+        )
+    if successful_calls >= _SOFT_TOOL_BUDGET:
+        return (
+            f"Tool budget guidance: {successful_calls} investigation tools have "
+            "already returned ok=True. Stop broad exploration. If no single "
+            "P1-critical unknown remains, call `report_findings` now."
+        )
+    return None
+
+
+def call_review(
+    *,
+    model: str,
+    cached_system_blocks: list[dict[str, Any]],
+    user_payload: str,
+    repo_root: Path,
+) -> tuple[ReviewReport, list[dict[str, Any]]]:
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set. Configure it in your environment "
+            "(e.g. via the repo .env loaded before invoking the hook)."
+        )
+
+    client = Anthropic()
+    tools = build_review_tools()
+    messages: list[dict[str, Any]] = [{"role": "user", "content": user_payload}]
+    tool_call_log: list[dict[str, Any]] = []
+    cumulative_output_tokens = 0
+
+    for iteration in range(_MAX_ITERATIONS):
+        response = _create_with_retry(
+            client,
+            model=model,
+            max_tokens=_PER_TURN_MAX_TOKENS,
+            cached_system_blocks=cached_system_blocks,
+            tools=tools,
+            messages=messages,
+        )
+        output_tokens = int(getattr(getattr(response, "usage", None), "output_tokens", 0) or 0)
+        cumulative_output_tokens += output_tokens
+        if cumulative_output_tokens > _MAX_CUMULATIVE_OUTPUT_TOKENS:
+            raise RuntimeError(
+                f"cumulative output exceeded {_MAX_CUMULATIVE_OUTPUT_TOKENS} tokens; "
+                "loop terminated to prevent runaway cost"
+            )
+
+        report_was_rejected = False
+        report_was_present = False
+        for block in response.content:
+            if getattr(block, "type", None) != "tool_use" or getattr(block, "name", None) != "report_findings":
+                continue
+            report_was_present = True
+            candidate_report = ReviewReport.model_validate(_coerce_list_fields(dict(block.input)))
+            successful_investigations = sum(
+                1
+                for entry in tool_call_log
+                if entry.get("ok") and entry.get("name") in HANDLERS
+            )
+            if candidate_report.p1_blocking and successful_investigations == 0:
+                rejection = (
+                    "Your report_findings call contains "
+                    f"{len(candidate_report.p1_blocking)} P1 finding(s) but no "
+                    "investigation tool returned ok=True this review. Tool failures "
+                    "are absence of evidence, not proof. Use read_file, find_symbol, "
+                    "or grep_pattern successfully before emitting P1 Tipo-I findings."
+                )
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": block.id,
+                                "content": rejection,
+                            }
+                        ],
+                    }
+                )
+                report_was_rejected = True
+                break
+            return candidate_report, tool_call_log
+
+        if report_was_rejected:
+            continue
+        if report_was_present:
+            continue
+
+        tool_results: list[dict[str, Any]] = []
+        executed_any = False
+        for block in response.content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            executed_any = True
+            tool_name = getattr(block, "name", "")
+            tool_input = dict(getattr(block, "input", {}) or {})
+            handler = HANDLERS.get(tool_name)
+            if handler is None:
+                result = {"ok": False, "error": f"unknown tool: {tool_name}"}
+            else:
+                try:
+                    result = handler(tool_input, repo_root=repo_root)
+                except Exception as exc:  # noqa: BLE001 - model needs structured failure
+                    result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+            tool_call_log.append(
+                {
+                    "iteration": iteration,
+                    "name": tool_name,
+                    "input": _summarize_input_for_log(tool_name, tool_input),
+                    "ok": bool(result.get("ok")),
+                    "result_summary": _summarize_for_log(result),
+                    "response_output_tokens": output_tokens,
+                    "cumulative_output_tokens": cumulative_output_tokens,
+                }
+            )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+
+        if not executed_any:
+            raise RuntimeError(
+                f"iteration {iteration}: model emitted no tool_use block and no report_findings; "
+                f"stop_reason={getattr(response, 'stop_reason', None)!r}"
+            )
+
+        nudge = _tool_budget_nudge(iteration, tool_call_log)
+        if nudge:
+            tool_results.append({"type": "text", "text": nudge})
+
+        messages.append({"role": "assistant", "content": response.content})
+        messages.append({"role": "user", "content": tool_results})
+
+    raise RuntimeError(f"review did not converge after {_MAX_ITERATIONS} iterations")

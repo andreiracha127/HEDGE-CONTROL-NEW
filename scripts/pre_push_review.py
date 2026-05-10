@@ -142,10 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        report: ReviewReport = call_review(
+        report, tool_call_log = call_review(
             model=args.model,
             cached_system_blocks=cached_system,
             user_payload=user_payload,
+            repo_root=repo_root,
         )
     except (RuntimeError, _AnthropicAPIError) as exc:
         print(
@@ -159,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=repo_root,
         branch=args.branch,
         head_sha=args.head_sha,
+        tool_calls=tool_call_log,
     )
     print(f"[pre-push-review] artifact written: {artifact_path.relative_to(repo_root)}")
     print(f"[pre-push-review] summary: {report.summary}")
