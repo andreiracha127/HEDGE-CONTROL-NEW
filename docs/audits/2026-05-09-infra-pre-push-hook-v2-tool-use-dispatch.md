@@ -202,7 +202,31 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
         }
     text = target.read_text(encoding="utf-8", errors="replace")
     lines = text.splitlines()
-    end_clamped = int(end_line) if end_line is not None else min(start_line + _MAX_LINES_PER_READ - 1, len(lines))
+    # Out-of-range guard: an empty excerpt produced by start_line past
+    # EOF, or end_line < start_line, would still satisfy the
+    # verify-before-P1 guard's ok=True check while showing the model
+    # zero content. Mark ok=False UNLESS this is the legitimate empty-file
+    # + start_line=1 case (a 0-line file legitimately read at line 1).
+    is_empty_file_at_line_1 = (len(lines) == 0 and start_line == 1)
+    if not is_empty_file_at_line_1:
+        if start_line > len(lines):
+            return {
+                "ok": False,
+                "error": (
+                    f"start_line={start_line} is past EOF (file has "
+                    f"{len(lines)} lines). Pass start_line in [1..{max(len(lines), 1)}]."
+                ),
+            }
+        if end_line is not None and int(end_line) < start_line:
+            return {
+                "ok": False,
+                "error": (
+                    f"end_line={end_line} < start_line={start_line}. "
+                    "end_line must be >= start_line (omit end_line for "
+                    "default start_line + 499)."
+                ),
+            }
+    end_clamped = int(end_line) if end_line is not None else min(start_line + _MAX_LINES_PER_READ - 1, max(len(lines), 1))
     if end_clamped - start_line + 1 > _MAX_LINES_PER_READ:
         end_clamped = start_line + _MAX_LINES_PER_READ - 1
     excerpt = "\n".join(lines[start_line - 1 : end_clamped])
@@ -264,7 +288,8 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
     except re.error as exc:
         return {"ok": False, "error": f"invalid regex: {exc}"}
     cumulative_bytes = 0
-    searched_count = 0  # number of search_paths that passed validation AND existed
+    searched_count = 0  # search_paths that passed validation AND existed
+    inspected_files = 0  # files whose contents were actually read (post symlink/secret/OSError skips)
     for sp in search_paths:
         # MANDATORY: every search root must pass _resolve_within_repo
         # before rglob, or model/operator-controlled `search_path` could
@@ -312,6 +337,7 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
                 lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
+            inspected_files += 1  # file content was actually read
             for idx, line in enumerate(lines, start=1):
                 if compiled.search(line):
                     excerpt_start = max(1, idx - context_lines)
@@ -321,17 +347,20 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
                     entry = {"file": rel, "line": idx, "excerpt": excerpt}
                     cumulative_bytes += len(excerpt) + len(rel) + 16
                     if cumulative_bytes > byte_cap:
-                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count}
+                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count, "inspected_files": inspected_files}
                     matches.append(entry)
                     if len(matches) >= _MAX_GREP_RESULTS:
-                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count}
-    # Zero search roots inspected = no evidence gathered.
-    # Returning ok=True here would mislead the verify-before-P1 guard
-    # (every entry with ok=True counts as "successful investigation"),
-    # so a P1 reported after a typo-only grep would be accepted. Mark
-    # ok=False so the guard treats this as the absence of evidence —
-    # consistent with §3.4 ("failures are not proof"). The model can
-    # then adapt by passing a valid in-repo search_path.
+                        return {"ok": True, "matches": matches, "truncated": True, "searched_count": searched_count, "inspected_files": inspected_files}
+    # Two failure modes both trip ok=False so the verify-before-P1
+    # guard does NOT count this call as evidence:
+    #   (1) zero search roots passed _resolve_within_repo + exists()
+    #   (2) at least one root passed but every file underneath was
+    #       skipped (all symlinks, all secret-bearing basenames, all
+    #       OSError-on-read) — root.rglob('*.py') matched files but
+    #       none survived the per-file guards.
+    # Either way, no content was actually inspected. Per §3.4 "failures
+    # are absence of evidence", the model must adapt and try a different
+    # path / pattern, not have its empty grep silently count as proof.
     if searched_count == 0:
         return {
             "ok": False,
@@ -344,8 +373,23 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
             ),
             "matches": [],
             "searched_count": 0,
+            "inspected_files": 0,
         }
-    return {"ok": True, "matches": matches, "truncated": False, "searched_count": searched_count}
+    if inspected_files == 0:
+        return {
+            "ok": False,
+            "error": (
+                f"all candidate files under {searched_count} validated "
+                "search root(s) were skipped (symlinks, secret-bearing "
+                "basenames, or OSError-on-read). Zero file contents "
+                "were actually inspected. Try a narrower in-repo path "
+                "or a different file/pattern."
+            ),
+            "matches": [],
+            "searched_count": searched_count,
+            "inspected_files": 0,
+        }
+    return {"ok": True, "matches": matches, "truncated": False, "searched_count": searched_count, "inspected_files": inspected_files}
 
 
 HANDLERS = {
@@ -807,7 +851,7 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 19 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+New test file. 23 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
 
 Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
 
@@ -820,7 +864,11 @@ Test enumeration (mechanical):
 - `test_handle_read_file_caps_excerpt_at_byte_limit` — fixture file with a single very long line (e.g., 100 KB on one line, file under 2 MB total so passes the size gate); assert `result["ok"] is True`, `result["excerpt_truncated"] is True`, `len(result["excerpt"]) <= _MAX_BYTES_PER_READ`. Verifies the belt-and-suspenders byte cap on the excerpt itself.
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
 - `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
-- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is False`, `result["matches"] == []`, `result["searched_count"] == 0`, and `"no requested search root could be inspected" in result["error"]`. Verifies the per-search-path `_resolve_within_repo` guard PLUS the searched_count contract that prevents the verify-before-P1 guard from accepting zero-search invocations as evidence.
+- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is False`, `result["matches"] == []`, `result["searched_count"] == 0`, `result["inspected_files"] == 0`, and `"no requested search root could be inspected" in result["error"]`. Verifies the per-search-path `_resolve_within_repo` guard PLUS the searched_count contract.
+- `test_handle_grep_pattern_returns_ok_false_when_all_files_skipped` — fixture: in-repo dir containing only symlinked `*.py` files (all skip via the `f.is_symlink(): continue` guard) AND a `.env` file (skip via secret denylist); assert `result["ok"] is False`, `result["searched_count"] == 1` (root validated), `result["inspected_files"] == 0` (nothing actually read), and `"all candidate files... were skipped" in result["error"]`. Pins the inspected_files contract — searched_count alone is not sufficient evidence.
+- `test_handle_read_file_rejects_out_of_range_start_line` — fixture: 10-line file; pass `start_line=20`; assert `result["ok"] is False`, `"past EOF" in result["error"]`. Pins the out-of-range guard.
+- `test_handle_read_file_rejects_inverted_end_line` — fixture: 10-line file; pass `start_line=5, end_line=3`; assert `result["ok"] is False`, `"end_line=3 < start_line=5" in result["error"]`. Pins the inverted-range guard.
+- `test_handle_read_file_accepts_empty_file_at_line_1` — fixture: 0-byte file; pass `start_line=1` (default); assert `result["ok"] is True`, `result["excerpt"] == ""`, `result["total_lines"] == 0`. Pins the legitimate-empty-file exception.
 - `test_handle_grep_pattern_skips_symlink_outside_repo` — fixture: tmpdir as repo with `backend/app/legitimate.py` (real file with a known pattern) and `backend/app/leaked.py` symlinked to a file outside the repo whose contents contain the SAME pattern; call `grep_pattern(pattern=<known>)` and assert ONLY `legitimate.py` appears in `matches` (the symlinked path is skipped because `f.is_symlink()` returns True). Pins the symlink-skip + ancestry-guard contract.
 
 **Multi-turn loop tests** (NEW section, mocking the Anthropic client at the boundary):
@@ -888,7 +936,8 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
 - [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
-- [ ] `_grep_with_context` tracks `searched_count` (number of search_paths that passed validation AND existed). When `searched_count == 0` (every path was rejected or missing), the result is `{"ok": False, "error": "no requested search root could be inspected", "matches": [], "searched_count": 0}` — NOT `ok: True` with empty matches. Required so the verify-before-P1 guard does not accept zero-actual-search invocations as "successful investigation" (a typo'd or escape-attempting search_path would otherwise count as evidence).
+- [ ] `_grep_with_context` tracks BOTH `searched_count` (search_paths passing validation AND existing) AND `inspected_files` (files whose contents were actually read post symlink/secret/OSError skips). Returns `ok=False` when `searched_count == 0` OR `inspected_files == 0` — even if `searched_count > 0` but every file under the validated roots was skipped (all-symlinks, all-secret-bearing, or all-OSError directories). Without the second guard, a valid in-repo root containing only symlinked or secret-bearing files would return `ok=True, matches=[]` and the verify-before-P1 guard would count zero-content-inspected calls as evidence.
+- [ ] `handle_read_file` returns `ok=False` when the requested range is out of bounds: `start_line > len(lines)` (past EOF) or `end_line < start_line` (inverted range). Empty excerpts are NOT marked `ok=True`. Exception: a legitimately empty 0-line file with `start_line=1` is `ok=True` (excerpt empty but the file IS what was requested). Without these guards, line-number verification on a typo'd or stale range would silently count as evidence.
 - [ ] `_grep_with_context` skips symlinks (`if f.is_symlink(): continue`) AND re-applies `_resolve_within_repo` per file before `read_text()`. Without these defenses, a `backend/app/leak.py -> /etc/passwd` symlink (or any symlink whose target resolves outside the repo) would let the hook send outside-repo contents back to the model. Defense-in-depth: skip symlinks first (simple and correct for institutional source code; the codebase has no legitimate in-repo symlinks), then ancestry-check the resolved path as belts-and-suspenders.
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
@@ -902,7 +951,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 19 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 23 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -974,7 +1023,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 19 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 23 mechanical tests
 
 ## Acceptance evidence
 
@@ -1033,7 +1082,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (19 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (23 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
