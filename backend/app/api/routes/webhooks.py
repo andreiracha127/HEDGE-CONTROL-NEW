@@ -186,8 +186,14 @@ def _persist_message_for_enqueue(
             existing.processing_status == "processing"
             and existing.processing_completed_at is not None
         ):
+            existing.processing_status = "processed"
+            if existing.processing_result is None:
+                existing.processing_result = {
+                    "status": "completed_processing_reconciled"
+                }
+            session.commit()
             logger.info(
-                "webhook_message_redelivery_already_completed",
+                "webhook_message_redelivery_completed_processing_reconciled",
                 provider=provider,
                 provider_message_id=msg.message_id,
                 delivery_message_id=str(existing.id),
@@ -273,8 +279,8 @@ def _persist_and_enqueue_messages(
             continue
         # Durable rows stay "received" while queued. RFQOrchestrator claims the
         # row with an atomic status update before invoking LLM/quote mutation.
-        enqueue_message(msg.model_copy(update={"delivery_message_id": durable_id}))
-        enqueued += 1
+        if enqueue_message(msg.model_copy(update={"delivery_message_id": durable_id})):
+            enqueued += 1
     return enqueued
 
 

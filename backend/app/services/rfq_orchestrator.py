@@ -52,7 +52,7 @@ from app.services.rfq_service import (
     prefix_with_canonical_id,
 )
 from app.services.whatsapp_service import WhatsAppService
-from app.services.webhook_processor import dequeue_message
+from app.services.webhook_processor import dequeue_message, mark_message_finished
 
 logger = get_logger()
 
@@ -311,6 +311,7 @@ class RFQOrchestrator:
             claim = RFQOrchestrator._claim_durable_message(session, msg)
             if claim is not None:
                 results.append(claim)
+                mark_message_finished(msg)
                 continue
 
             try:
@@ -326,6 +327,7 @@ class RFQOrchestrator:
                     },
                     failed=True,
                 )
+                mark_message_finished(msg)
                 raise
             RFQOrchestrator._finalize_durable_message(
                 session,
@@ -333,6 +335,7 @@ class RFQOrchestrator:
                 result,
                 failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
             )
+            mark_message_finished(msg)
             results.append(result)
 
         return results

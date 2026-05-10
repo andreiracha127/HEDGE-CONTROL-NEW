@@ -19,9 +19,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
 from base64 import b64encode
 from collections import deque
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
 from urllib.parse import urlencode
 
@@ -39,27 +41,41 @@ _message_queue: deque[WhatsAppInboundMessage] = deque(maxlen=10_000)
 _SEEN_IDS_MAX = 5_000
 _seen_message_ids: deque[str] = deque(maxlen=_SEEN_IDS_MAX)
 _seen_set: set[str] = set()
+_active_durable_message_ids: set[uuid.UUID] = set()
+_queue_state_lock = Lock()
 
 
-def enqueue_message(msg: WhatsAppInboundMessage) -> None:
+def enqueue_message(msg: WhatsAppInboundMessage) -> bool:
     """Add a parsed inbound message to the processing queue.
 
     Legacy messages without a durable row retain the local duplicate guard.
     Durable webhook paths set ``delivery_message_id`` and rely on database
-    uniqueness/status as the authority.
+    uniqueness/status as the authority; the local durable-id set only prevents
+    duplicate queue copies while the row is already queued or in-flight.
     """
-    if msg.delivery_message_id is None:
-        if msg.message_id in _seen_set:
-            logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
-            return
+    with _queue_state_lock:
+        if msg.delivery_message_id is None:
+            if msg.message_id in _seen_set:
+                logger.debug("webhook_duplicate_skipped", message_id=msg.message_id)
+                return False
 
-        if len(_seen_message_ids) >= _SEEN_IDS_MAX:
-            evicted = _seen_message_ids[0]
-            _seen_set.discard(evicted)
-        _seen_message_ids.append(msg.message_id)
-        _seen_set.add(msg.message_id)
+            if len(_seen_message_ids) >= _SEEN_IDS_MAX:
+                evicted = _seen_message_ids[0]
+                _seen_set.discard(evicted)
+            _seen_message_ids.append(msg.message_id)
+            _seen_set.add(msg.message_id)
+        elif msg.delivery_message_id in _active_durable_message_ids:
+            logger.debug(
+                "webhook_durable_duplicate_queue_skipped",
+                message_id=msg.message_id,
+                delivery_message_id=str(msg.delivery_message_id),
+            )
+            return False
+        else:
+            _active_durable_message_ids.add(msg.delivery_message_id)
 
-    _message_queue.append(msg)
+        _message_queue.append(msg)
+        queue_depth_value = len(_message_queue)
     logger.info(
         "webhook_message_enqueued",
         message_id=msg.message_id,
@@ -67,27 +83,39 @@ def enqueue_message(msg: WhatsAppInboundMessage) -> None:
         if msg.delivery_message_id
         else None,
         from_phone=msg.from_phone,
-        queue_depth=len(_message_queue),
+        queue_depth=queue_depth_value,
     )
+    return True
+
+
+def mark_message_finished(msg: WhatsAppInboundMessage) -> None:
+    """Release local queue/in-flight tracking for a durable message."""
+    if msg.delivery_message_id is not None:
+        with _queue_state_lock:
+            _active_durable_message_ids.discard(msg.delivery_message_id)
 
 
 def dequeue_message() -> WhatsAppInboundMessage | None:
     """Pop the oldest message from the queue, or ``None`` if empty."""
-    try:
-        return _message_queue.popleft()
-    except IndexError:
-        return None
+    with _queue_state_lock:
+        try:
+            return _message_queue.popleft()
+        except IndexError:
+            return None
 
 
 def queue_depth() -> int:
     """Return the current number of messages waiting."""
-    return len(_message_queue)
+    with _queue_state_lock:
+        return len(_message_queue)
 
 
 def drain_queue() -> list[WhatsAppInboundMessage]:
     """Remove and return all messages from the queue (useful in tests)."""
-    msgs = list(_message_queue)
-    _message_queue.clear()
+    with _queue_state_lock:
+        msgs = list(_message_queue)
+        _message_queue.clear()
+        _active_durable_message_ids.clear()
     return msgs
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import uuid
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -15,9 +16,11 @@ from app.services.webhook_processor import (
     enqueue_message,
     extract_messages,
     extract_messages_twilio,
+    mark_message_finished,
     queue_depth,
     verify_signature,
     verify_twilio_signature,
+    _active_durable_message_ids,
     _message_queue,
     _seen_message_ids,
     _seen_set,
@@ -32,10 +35,12 @@ import pytest
 @pytest.fixture(autouse=True)
 def _clear_queue():
     """Reset the in-process queue between tests."""
+    _active_durable_message_ids.clear()
     _message_queue.clear()
     _seen_message_ids.clear()
     _seen_set.clear()
     yield
+    _active_durable_message_ids.clear()
     _message_queue.clear()
     _seen_message_ids.clear()
     _seen_set.clear()
@@ -76,6 +81,21 @@ def test_enqueue_duplicate_ignored():
     enqueue_message(msg)
     enqueue_message(msg)  # duplicate
     assert queue_depth() == 1
+
+
+def test_enqueue_durable_duplicate_ignored_until_finished():
+    durable_id = uuid.uuid4()
+    msg = _make_msg("durable-dup").model_copy(
+        update={"delivery_message_id": durable_id}
+    )
+
+    assert enqueue_message(msg) is True
+    assert enqueue_message(msg) is False
+    assert queue_depth() == 1
+
+    mark_message_finished(msg)
+    assert enqueue_message(msg) is True
+    assert queue_depth() == 2
 
 
 def test_drain_queue_returns_all():

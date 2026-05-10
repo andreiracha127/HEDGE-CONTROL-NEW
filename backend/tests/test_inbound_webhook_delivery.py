@@ -698,6 +698,35 @@ def test_unconsumed_redelivery_recovers_existing_durable_message(
 
 
 @patch("app.api.routes.webhooks._process_queue_in_background")
+def test_received_redelivery_does_not_enqueue_duplicate_queue_copy(
+    _mock_bg: MagicMock, client: TestClient
+) -> None:
+    from app.models.inbound_webhook_message import InboundWebhookMessage
+
+    drain_queue()
+    payload = _meta_payload(message_id="wamid.received-queued")
+    with patch.dict(
+        "os.environ",
+        {"APP_ENV": "test", "WHATSAPP_PROVIDER": "meta", "WHATSAPP_APP_SECRET": ""},
+    ):
+        assert client.post("/webhooks/whatsapp", json=payload).status_code == 200
+        assert client.post("/webhooks/whatsapp", json=payload).status_code == 200
+
+    queued = drain_queue()
+    assert len(queued) == 1
+    with SessionLocal() as session:
+        assert (
+            session.query(InboundWebhookMessage)
+            .filter(
+                InboundWebhookMessage.provider == "meta",
+                InboundWebhookMessage.provider_message_id == "wamid.received-queued",
+            )
+            .count()
+            == 1
+        )
+
+
+@patch("app.api.routes.webhooks._process_queue_in_background")
 def test_stale_processing_redelivery_recovers_existing_durable_message(
     _mock_bg: MagicMock, client: TestClient
 ) -> None:
@@ -775,5 +804,8 @@ def test_completed_processing_redelivery_is_not_reopened(
     with SessionLocal() as session:
         durable = session.get(InboundWebhookMessage, first.id)
         assert durable is not None
-        assert durable.processing_status == "processing"
+        assert durable.processing_status == "processed"
         assert durable.processing_completed_at is not None
+        assert durable.processing_result == {
+            "status": "completed_processing_reconciled"
+        }

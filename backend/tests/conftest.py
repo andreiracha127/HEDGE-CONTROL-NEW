@@ -94,15 +94,18 @@ def _clear_webhook_dedup():
     like ``wamid.test123``.
     """
     from app.services.webhook_processor import (
+        _active_durable_message_ids,
         _message_queue,
         _seen_message_ids,
         _seen_set,
     )
 
+    _active_durable_message_ids.clear()
     _seen_set.clear()
     _seen_message_ids.clear()
     _message_queue.clear()
     yield
+    _active_durable_message_ids.clear()
     _seen_set.clear()
     _seen_message_ids.clear()
     _message_queue.clear()
