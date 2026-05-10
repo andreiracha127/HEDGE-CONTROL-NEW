@@ -27,8 +27,8 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from anthropic import APIError as _AnthropicAPIError
 
-from dispatch_review.cache import write_cache_artifact
-from dispatch_review.client import call_review
+from dispatch_review.cache import write_cache_artifact, write_parse_error_artifact
+from dispatch_review.client import ReviewReportParseError, call_review
 from dispatch_review.prompt_builder import (
     build_cached_system_blocks,
     build_user_payload,
@@ -148,6 +148,25 @@ def main(argv: list[str] | None = None) -> int:
             user_payload=user_payload,
             repo_root=repo_root,
         )
+    except ReviewReportParseError as exc:
+        artifact_path = write_parse_error_artifact(
+            repo_root=repo_root,
+            branch=args.branch,
+            head_sha=args.head_sha,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            raw_report_input=exc.raw_report_input,
+            tool_calls=exc.tool_calls,
+        )
+        print(
+            f"[pre-push-review] review report parse failed: {exc}",
+            file=sys.stderr,
+        )
+        print(
+            f"[pre-push-review] artifact written: {artifact_path.relative_to(repo_root)}",
+            file=sys.stderr,
+        )
+        return 1
     except (RuntimeError, _AnthropicAPIError) as exc:
         print(
             f"[pre-push-review] API call failed: {type(exc).__name__}: {exc}",

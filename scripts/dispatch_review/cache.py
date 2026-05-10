@@ -33,3 +33,30 @@ def write_cache_artifact(
         payload["tool_calls"] = tool_calls
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return out_path
+
+
+def write_parse_error_artifact(
+    *,
+    repo_root: Path,
+    branch: str,
+    head_sha: str,
+    error_type: str,
+    error_message: str,
+    raw_report_input: dict[str, Any] | None,
+    tool_calls: list[dict[str, Any]] | None = None,
+) -> Path:
+    cache_dir = repo_root / _CACHE_RELATIVE
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    short_sha = head_sha[:12] if head_sha else "no-sha"
+    out_path = cache_dir / f"{_slugify_branch(branch)}-{short_sha}.parse-error.json"
+    payload: dict[str, Any] = {
+        "error": {
+            "type": error_type,
+            "message": error_message,
+        },
+        "raw_report_input": raw_report_input,
+    }
+    if tool_calls is not None:
+        payload["tool_calls"] = tool_calls
+    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return out_path
