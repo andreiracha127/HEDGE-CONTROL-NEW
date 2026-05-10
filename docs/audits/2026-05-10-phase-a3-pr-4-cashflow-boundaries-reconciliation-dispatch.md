@@ -16,7 +16,7 @@ This is the first PR-A3-4 dispatch. It is intentionally narrower than "cashflow 
 Verified against `main = 40aa682d6`:
 
 - `backend/app/services/cashflow_baseline_service.py:10` imports `compute_cashflow_analytic`.
-- `backend/app/services/cashflow_baseline_service.py:42-44` computes Baseline by calling Analytic, then persists `analytic.model_dump(mode="json")`.
+- `backend/app/services/cashflow_baseline_service.py:42-45` computes Baseline by calling Analytic, then persists `analytic.model_dump(mode="json")`.
 - `backend/app/schemas/scenario.py:95-98` declares `ScenarioCashflowSnapshot.analytic` and `.baseline` with the same `CashFlowAnalyticResponse` type.
 - `backend/app/services/scenario_whatif_service.py:523-530` builds one `cashflow_analytic` object and assigns it to both `analytic` and `baseline`.
 - `backend/app/services/cashflow_ledger_service.py:77-157` now derives ledger rows server-side and persists price provenance for the floating leg.
@@ -117,9 +117,10 @@ from app.models.cashflow import CashFlowBaselineSnapshot, CashFlowLedgerEntry
 ```python
 def _signed_ledger_amount(entry: CashFlowLedgerEntry) -> Decimal:
     amount = quantize_money(entry.amount)
-    if entry.direction == "IN":
+    direction = str(entry.direction).upper()
+    if direction == "IN":
         return amount
-    if entry.direction == "OUT":
+    if direction == "OUT":
         return -amount
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -187,7 +188,7 @@ Contracts:
 
 Orders:
 
-- Include variable orders with MTM-eligible conventions, mirroring Analytic eligibility.
+- Include variable orders with the same MTM-eligible pricing conventions used by Analytic.
 - Exclude archived/soft-deleted orders with `Order.deleted_at.is_(None)`.
 - Preserve price provenance fields in each `CashFlowItem`.
 - Set `amount_usd=quantize_money(mtm.mtm_value)` and
