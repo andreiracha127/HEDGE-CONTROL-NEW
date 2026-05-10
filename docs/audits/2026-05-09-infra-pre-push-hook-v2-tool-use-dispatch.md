@@ -359,9 +359,10 @@ _PER_TURN_MAX_TOKENS = 8_192
 def _summarize_for_log(result: dict[str, Any]) -> str:
     """Compact, redaction-safe summary of a tool result for the audit log.
 
-    Per §5 audit-trail rule: never embed full file contents or grep
-    excerpts in the cache artifact (potential credential exposure).
-    Logs only structural metadata: ok flag, top-level keys, payload size.
+    Per §5 audit-trail rule + §10 DO NOT log full tool results that may
+    contain credentials: never embed file contents or grep excerpts in
+    the cache artifact. Logs only structural metadata: ok flag, top-level
+    keys, payload size.
     """
     ok = result.get("ok")
     keys = sorted(k for k in result.keys() if k != "ok")
@@ -372,6 +373,34 @@ def _summarize_for_log(result: dict[str, Any]) -> str:
         f"ok={ok} keys={keys} excerpt_chars={excerpt_chars} "
         f"matches_count={matches_count} truncated={truncated}"
     )
+
+
+def _summarize_input_for_log(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any]:
+    """Compact, redaction-safe summary of a tool INPUT for the audit log.
+
+    Per §5 + §10: tool inputs may contain secrets when the model
+    investigates a suspected credential leak (e.g., `grep_pattern(
+    pattern="ANTHROPIC_API_KEY=sk-...")`). Logging the raw input would
+    persist the secret in `.cache/dispatch_review/*.json`.
+
+    Whitelist-based redaction: safe fields (paths, line numbers,
+    identifier names, context_lines) are logged verbatim; potentially
+    sensitive fields (the ``pattern`` field of ``grep_pattern``) are
+    redacted to their length only.
+    """
+    safe: dict[str, Any] = {}
+    sensitive_fields_by_tool = {
+        "grep_pattern": {"pattern"},
+        # read_file, find_symbol have no secret-laden fields by design
+    }
+    sensitive = sensitive_fields_by_tool.get(tool_name, set())
+    for key, value in tool_input.items():
+        if key in sensitive:
+            value_str = str(value)
+            safe[key] = f"<redacted len={len(value_str)}>"
+        else:
+            safe[key] = value
+    return safe
 
 
 def _create_with_retry(
@@ -451,7 +480,12 @@ def call_review(
                 result = handler(dict(block.input), repo_root=repo_root)
             except Exception as exc:  # noqa: BLE001  -- we MUST surface tool errors to the model, not the hook
                 result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-            tool_call_log.append({"iteration": iteration, "name": block.name, "input": dict(block.input), "result_summary": _summarize_for_log(result)})
+            tool_call_log.append({
+                "iteration": iteration,
+                "name": block.name,
+                "input": _summarize_input_for_log(block.name, dict(block.input)),
+                "result_summary": _summarize_for_log(result),
+            })
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": json.dumps(result)})
 
         if not executed_any:
@@ -620,7 +654,8 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
 - [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
-- [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
+- [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
+- [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
 - [ ] `client.messages.create` is called WITH `tool_choice={"type": "any"}` (guarantees a tool is called every turn — model picks between investigation tools and `report_findings`, but cannot emit plain-text-only response that would abort the loop).
@@ -734,7 +769,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 - DO NOT add write tools, subprocess-execution tools, or tools that make HTTP requests. v2 is read-only.
 - DO NOT skip the `_resolve_within_repo` check in any handler that takes a path argument. Path-traversal rejection is enforced per handler, not centralized.
 - DO NOT use ripgrep / `subprocess.run(["rg", ...])`. Pure Python regex is the v2 implementation; swap only after measured calibration evidence.
-- DO NOT log API keys, full tool inputs that may contain secrets, or full tool results that may contain credentials. The `result_summary` field is a redacted summary, not a verbatim copy.
+- DO NOT log API keys, full tool inputs that may contain secrets, or full tool results that may contain credentials. The `tool_calls[].input` field MUST be passed through `_summarize_input_for_log` (whitelist redaction; `grep_pattern.pattern` is redacted to length only). The `tool_calls[].result_summary` field MUST be passed through `_summarize_for_log` (structural metadata only).
 - DO NOT remove the `report_findings` tool from `build_review_tools`. It is the loop-termination signal.
 - DO NOT pin a `claude-sonnet-latest`-style alias. Pin the same dated/versioned identifier as v1 (`claude-sonnet-4-6` or successor).
 - DO NOT use `--no-verify` during this PR's own implementation cycle UNLESS the hook v1 itself produces a runaway FP cycle on the v2 dispatch. The hook v1 SHOULD review this dispatch — that's the institutional integrity check.
