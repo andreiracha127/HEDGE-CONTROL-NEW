@@ -324,6 +324,68 @@ from app.utils.price_reference import PriceReferenceUnprovable  # NEW — caught
 
 PR-A3-3 is a service-body + route-boundary fix. No alembic migration. No `CashFlowProjectionItem` schema change. `alembic heads` continues to return `["038_a3_price_provenance"]`.
 
+### 3.4 Governance.md — declare Projection as 5th view (closes OPUS-07 institucionalmente)
+
+**Override of the default "constitution stable" rule**: The Phase A3 jury verdict for OPUS-07 explicitly authorizes (in fact requires) modifying `governance.md` to either define Projection as an allowed view OR remove it. Per Andrei's institutional decision: **define**, not remove (Projection is in production; users depend on it).
+
+**Current** at `docs/governance.md:130-146` (verified via `read_file`):
+
+```
+────────────────────────────────────────
+VALUATION, MTM & CASHFLOW
+────────────────────────────────────────
+
+- CashFlow is always derived, never manually input
+- Views:
+  - Analytic (non-persistent)
+  - Baseline (persistent)
+  - Ledger (accounting)
+  - What-if (simulation only)
+
+Rules:
+
+- MTM uses D-1 settlement
+- One methodology per endpoint
+- No fallback pricing regimes
+- Premium pricing is explicitly excluded
+```
+
+**Replacement** — add Projection to the views list + add a Projection-specific invariants subsection AFTER the existing Rules block, BEFORE the SCENARIO / WHAT-IF RULES section:
+
+```
+────────────────────────────────────────
+VALUATION, MTM & CASHFLOW
+────────────────────────────────────────
+
+- CashFlow is always derived, never manually input
+- Views:
+  - Analytic (non-persistent)
+  - Baseline (persistent)
+  - Ledger (accounting)
+  - What-if (simulation only)
+  - Projection (forward-looking estimate, non-persistent)
+
+Rules:
+
+- MTM uses D-1 settlement
+- One methodology per endpoint
+- No fallback pricing regimes
+- Premium pricing is explicitly excluded
+
+Projection invariants:
+
+- Per-row commodity pricing (no global single-curve lookup)
+- Hard-fail propagation: price reference unprovable → HTTP 424
+- No fallback regimes: missing market price for a variable row
+  is unprovable, never substituted from entry/fixed values
+- No zero-defaults: missing required economics (avg_entry_price,
+  fixed_price_value) → HTTP 422
+- No date substitution: missing settlement_date → HTTP 422
+- Emitted commodity matches the source row's commodity field
+```
+
+**Scope justification for this constitutional change**: the `governance.md` modification is the institutional resolution required by the jury verdict's binary "define OR remove" mandate. Without it, OPUS-07 stays open. The change ADDS to the constitution (declares an existing-but-undeclared view); it does NOT contradict or weaken any §2.x rule. Projection's invariants are derivative of §2.1 (no fallback), §2.6 (hard fails), §2.7 (free of speculation) — the invariants block makes the inheritance explicit.
+
 ### 3.5 Frontend / OpenAPI regen — none required
 
 The `CashFlowProjectionResponse` shape is unchanged. The route's success path returns the same fields. The new 424 error path is already representable in the existing FastAPI 4xx schema. **No `docs/api/openapi_v1.json` regen needed**; no `frontend-svelte/src/lib/api/schema.d.ts` regen needed.
@@ -337,7 +399,7 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - **Cashflow boundary fix** (J-A3-04 Baseline reads Analytic; J-A3-OPUS-08 reconciliation) — Wave 4 (PR-A3-4).
 - **P&L lifecycle** (J-A3-OPUS-09 partially-settled zeroes unrealized MTM) — Wave 5 (PR-A3-5).
 - **Cross-A1 deferred** (X-A3-J-01 deal_engine; X-A3-J-02 scenario duplicates A1 exposure) — future Phase A1 follow-up audit.
-- **Removing `/cashflow/projection` route entirely** — out of scope. The route stays; this dispatch enforces invariants on its body. A future Phase A5 audit-trail dispatch may decide to remove or to propagate the invariants to `governance.md`. PR-A3-3 does NOT modify `governance.md` (constitution stable per `feedback_dispatch_self_consistency`).
+- **Removing `/cashflow/projection` route entirely** — out of scope. The route stays; this dispatch enforces invariants on its body AND declares them in `governance.md` per §3.4 (per Andrei's institutional decision selecting the jury verdict's "define" alternative over "remove").
 - **`inputs_hash` provenance for projection rows** — out of scope. Projection is a forward-looking *estimate* surface; persisting hashes would imply replay reconstruction, which is not the projection's institutional purpose. Add to OPUS-08 reconciliation surface in Wave 4 if needed there.
 - **Backfilling stale projection responses** — there is no persistence; projection is computed on demand. No backfill applies.
 - **Caching the projection response** — out of scope; today the route is recomputed every call.
@@ -351,7 +413,7 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - **§2.6 — Hard Fails** (continuation): "Evidence missing" must hard-fail, not zero-default. Today projection's `or 0` shapes (lines 103, 109, 159) silently substitute zero for missing economics. PR-A3-3 raises 422 explicitly.
 - **§2.7 — Output Contract** (`governance.md:208-217`): "Free of speculation." Today projection emits `commodity="Al"` for every order regardless of `order.commodity` (line 129) — institutional speculation about which commodity the row represents. PR-A3-3 emits `order.commodity`.
 - **§2.7 — Output Contract** (continuation): The substitution `contract.settlement_date or as_of_date` (line 154) emits `as_of_date` as the projected flow date when the contract has no settlement date — speculation about future flow timing. PR-A3-3 raises 422.
-- **OPUS-07 institutional contract — Projection's invariants** (declared HERE at the dispatch layer, NOT in `governance.md`): the `/cashflow/projection` view inherits §2.1, §2.6, §2.7. Per-row commodity pricing; no fallback regimes; no `or 0` defaults; absent economics → 422; unprovable price → 424. A Phase A5 audit-trail dispatch may later decide whether to propagate these invariants into `governance.md` formally; until then the dispatch layer is the binding contract for Projection.
+- **OPUS-07 institutional contract — Projection's invariants** (declared in `governance.md` per §3.4): the `/cashflow/projection` view is now formally listed as the 5th cashflow view in `governance.md` VALUATION/MTM/CASHFLOW section. Its invariants (per-row commodity pricing, hard-fail propagation, no fallback regimes, no zero-defaults, no date substitution, commodity matches source row) are declared as a Projection-specific subsection inheriting §2.1 / §2.6 / §2.7. Closes OPUS-07 institucionalmente — constitutional source now matches the audit verdict's "allowed view with strict invariants" alternative.
 
 ---
 
@@ -370,6 +432,7 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - [ ] `grep -n "or 0" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
 - [ ] `grep -n '"Al"' backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix (the hardcoded literal is gone).
 - [ ] `grep -n "except Exception" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
+- [ ] `docs/governance.md` updated per §3.4: Projection added as 5th view in VALUATION/MTM/CASHFLOW section views list (between What-if and the Rules block), AND a "Projection invariants" subsection added after the Rules block declaring per-row commodity pricing, hard-fail propagation, no fallback, no zero-defaults, no date substitution, commodity-matches-source-row. Closes OPUS-07 at the constitutional layer.
 - [ ] **Pre-fix test cleanup completed** (per §7.1):
   - `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` returns ZERO matches (old symbol replaced everywhere).
   - `grep -n 'price_source.*"entry"' backend/tests/test_cashflow_projection_service.py` returns ZERO matches (every test asserting the removed `"entry"` fallback regime — orders AND contracts — is DELETED).
@@ -467,13 +530,14 @@ modified in this PR (constitution stable).
 
 ## Files changed
 
+- `docs/governance.md` — Projection added as 5th view + Projection invariants subsection (closes OPUS-07 at constitutional layer per jury verdict)
 - `backend/app/services/cashflow_projection_service.py` — `_get_market_price` →
   `_get_market_price_quote` (signature, body, raises); per-row pricing in
   `compute_cashflow_projection`; remove `or 0` and fallbacks; remove
   hardcoded `"Al"`; module-level imports replace dynamic in-function imports
 - `backend/app/api/routes/cashflow.py` — `try/except PriceReferenceUnprovable`
   translation to HTTP 424 around `compute_cashflow_projection` call; new
-  import of `PriceReferenceUnprovable`
+  imports of `HTTPException` (currently absent) and `PriceReferenceUnprovable`
 - Tests: `test_cashflow_projection_service.py` (~8 new tests),
   `test_cashflow_projection_routes.py` (1 new route test)
 
@@ -514,7 +578,7 @@ J-A3-OPUS-02 + J-A3-OPUS-06 + J-A3-OPUS-07.
 - DO NOT keep `commodity="Al"` hardcoded on orders' `CashFlowProjectionItem`. Use `order.commodity`.
 - DO NOT keep the `contract.settlement_date or as_of_date` substitution. Missing `settlement_date` raises 422.
 - DO NOT compute a global `_get_market_price_quote(session, "LME_AL", ...)` at the top of `compute_cashflow_projection`. Per-row pricing is the only acceptable pattern.
-- DO NOT modify `docs/governance.md`. The OPUS-07 invariants live in this dispatch's §5; a Phase A5 audit-trail dispatch may decide whether to propagate.
+- DO modify `docs/governance.md` per §3.4 — this is the ONE constitutional change explicitly authorized by the jury verdict for OPUS-07 ("define as allowed view with strict invariants" alternative). The change ADDS to the constitution (Projection as 5th view + invariants); do NOT remove or weaken any existing §2.x rule. Do NOT add OTHER changes to governance.md beyond §3.4's prescribed edits.
 - DO NOT remove the `/cashflow/projection` route. It stays; the body is hardened.
 - DO NOT add `inputs_hash` / provenance fields to `CashFlowProjectionItem`. Projection is forward-looking estimate, not replay-persisted evidence.
 - DO NOT introduce caching of the projection response. The endpoint is recomputed per call.
@@ -531,6 +595,7 @@ J-A3-OPUS-02 + J-A3-OPUS-06 + J-A3-OPUS-07.
 3. `python scripts/install_git_hooks.py` — confirm hook v2 active (`git config core.hooksPath` returns `.githooks`).
 4. Read jury §J-A3-OPUS-02, J-A3-OPUS-06, J-A3-OPUS-07 in full.
 5. Read Wave 1 dispatch §3.1-§3.4 (the `_with_provenance` machinery + `PriceReferenceUnprovable` translation pattern). Read Wave 2 dispatch §3.7.1 (the per-row commodity + try/except translation pattern). PR-A3-3 mirrors both.
+5.5. Update `docs/governance.md` per §3.4: add `Projection (forward-looking estimate, non-persistent)` to the views list; append the "Projection invariants" subsection after the existing Rules block (before SCENARIO/WHAT-IF RULES). Verify the diff is exactly the prescribed addition — no other lines touched.
 6. Update `cashflow_projection_service.py` imports (top of file): add `from fastapi import HTTPException, status`; add **two** import lines per §3.1 (split for the `utils/price_reference` authoritative-location convention): `from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable` AND `from app.services.price_lookup_service import get_cash_settlement_price_d1_with_provenance, resolve_symbol`. Remove the dynamic in-function imports inside `_get_market_price`.
 7. Rename `_get_market_price` → `_get_market_price_quote`; replace body per §3.1. The function now raises `PriceReferenceUnprovable` (it does NOT return `None`).
 8. Update `compute_cashflow_projection` per §3.2: remove the global `market_price = _get_market_price(...)` line; resolve per-row inside the order and contract loops; emit `order.commodity` (not `"Al"`); raise 422 on missing `avg_entry_price` / `fixed_price_value` / `settlement_date`; remove all "entry" fallback paths.
