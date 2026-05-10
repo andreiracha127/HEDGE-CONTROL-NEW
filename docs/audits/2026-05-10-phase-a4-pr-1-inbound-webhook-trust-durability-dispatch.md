@@ -66,7 +66,7 @@ Read these before coding:
 - `backend/app/core/config.py:110-122`
   - WhatsApp/Twilio integration settings are currently plain optional fields.
 - `backend/tests/test_phase5_whatsapp_llm.py`
-  - Existing `TestWebhookRoute.test_post_webhook_enqueues_messages` documents
+  - Existing `TestWebhookRoutes.test_post_webhook_enqueues_messages` documents
     the no-secret Meta webhook path returning HTTP 200.
 - `backend/tests/test_webhook_processor.py`
   - Existing signature verification and extraction coverage.
@@ -197,6 +197,16 @@ CHECK (
   (parse_status = 'parsed' AND messages_extracted IS NOT NULL)
 )
 ```
+
+Add a parallel SQLAlchemy `@validates("parse_status", "messages_extracted")`
+guard, or equivalent model-level validation hook, enforcing the same
+message-count invariant. The guard must raise `ValueError` with a descriptive
+message on violation. Cover it by constructing an `InboundWebhookDelivery`
+object outside a session and asserting:
+
+- `parse_status in {"received", "parse_failed"}` rejects non-null
+  `messages_extracted`;
+- `parse_status == "parsed"` rejects null `messages_extracted`.
 
 For invalid JSON/form extraction failures, preserve the inbound delivery record
 with a failed parse status before returning the controlled HTTP error.
