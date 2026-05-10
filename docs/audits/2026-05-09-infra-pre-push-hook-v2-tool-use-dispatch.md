@@ -111,7 +111,10 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
     path_str = payload["path"]
     start_line = int(payload.get("start_line") or 1)
     end_line = payload.get("end_line")
-    target = _resolve_within_repo(repo_root, path_str)
+    try:
+        target = _resolve_within_repo(repo_root, path_str)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     if not target.is_file():
         return {"ok": False, "error": f"not a file: {path_str}"}
     text = target.read_text(encoding="utf-8", errors="replace")
