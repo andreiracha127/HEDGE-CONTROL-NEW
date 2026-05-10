@@ -76,7 +76,7 @@ After PR-A3-4:
 - `backend/app/services/cashflow_baseline_service.py:1-86` - target Baseline service.
 - `backend/app/services/cashflow_analytic_service.py:15-68` - current Analytic implementation. Read it to understand current arithmetic, but do not make Baseline call it.
 - `backend/app/services/cashflow_ledger_service.py:77-157` - derived ledger entry and provenance contract.
-- `backend/app/services/cashflow_ledger_service.py:299-315` - `list_entries_by_contract()`, useful reference for deterministic ledger ordering.
+- `backend/app/services/cashflow_ledger_service.py:299-315` - `list_entries_by_contract()`, useful only as a ledger-query reference. Do not copy its `created_at` ordering into Baseline reconciliation.
 - `backend/app/models/cashflow.py:25-41` - Baseline snapshot model.
 - `backend/app/models/cashflow.py:44-90` - ledger event and entry model.
 - `backend/app/schemas/cashflow.py:34-68` - `CashFlowItem`, `CashFlowAnalyticResponse`, `CashFlowBaselineSnapshotResponse`.
@@ -160,7 +160,7 @@ def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlo
             CashFlowLedgerEntry.cashflow_date.asc(),
             CashFlowLedgerEntry.hedge_contract_id.asc(),
             CashFlowLedgerEntry.leg_id.asc(),
-            CashFlowLedgerEntry.source_event_id.asc(),
+            CashFlowLedgerEntry.source_event_id.asc().nulls_first(),
         )
         .all()
     )
@@ -273,6 +273,11 @@ The database query order and canonical payload order must use the same stable
 four-field realized-ledger key. Do not use `created_at` as a reconciliation
 tiebreaker; it is not serialized into `snapshot_data` and therefore cannot be
 part of the persisted hash contract.
+
+`source_event_id` is nullable in the model. The SQL order must use
+`.nulls_first()` so it matches the Python canonicalization sentinel
+`item.get("source_event_id") or ""`. Without explicit NULL placement,
+PostgreSQL and SQLite sort NULLs differently.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
