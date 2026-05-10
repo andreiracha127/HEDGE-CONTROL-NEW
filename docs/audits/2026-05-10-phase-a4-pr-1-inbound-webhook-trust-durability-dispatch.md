@@ -122,6 +122,8 @@ Minimum required fields:
 - `raw_form` for Twilio form params or equivalent exact form representation;
 - `headers` containing the relevant webhook signature headers and delivery
   metadata needed for reconstruction;
+- `signature_base_url` for the exact URL string used during provider signature
+  verification, required for Twilio deliveries;
 - `signature_present`;
 - `signature_verified`;
 - `signature_status` constrained to `missing`, `verified`, `invalid`, or
@@ -146,6 +148,9 @@ Concrete expected model/migration type mapping:
 - `raw_form`: nullable `JSON().with_variant(JSONB(), "postgresql")`,
   populated for Twilio exact form parameters.
 - `headers`: non-null `JSON().with_variant(JSONB(), "postgresql")`.
+- `signature_base_url`: nullable `Text`; non-null for Twilio and equal to the
+  exact URL passed to `verify_twilio_signature()` (`TWILIO_WEBHOOK_URL` override
+  when configured, otherwise `str(request.url)`).
 - `signature_present`: non-null `Boolean`.
 - `signature_verified`: non-null `Boolean`.
 - `signature_status`: constrained string/enum with values `missing`,
@@ -163,6 +168,10 @@ non-applicable field is `NULL` (`raw_form` is `NULL` for Meta, `raw_body` is
 `NULL` for Twilio). The two status fields must be enforced by an Enum, CHECK
 constraint, or equivalent database-backed validation that is covered on both
 PostgreSQL and SQLite paths.
+For Twilio, `signature_base_url` is part of the signature evidence. Persisting
+only `raw_form` and headers is insufficient because the verifier signs
+`TWILIO_WEBHOOK_URL` when configured, otherwise `str(request.url)`. For Meta,
+`signature_base_url` may be `NULL`.
 The migration must also enforce the provider-exclusive raw capture invariant
 with a database-level CHECK constraint. The strongest acceptable form is:
 
@@ -178,6 +187,10 @@ CHECK (
 )
 ```
 
+Add a database CHECK, or fold into the provider CHECK, enforcing
+`signature_base_url IS NULL` for Meta rows and `signature_base_url IS NOT NULL`
+for Twilio rows.
+
 Add a SQLAlchemy `@validates("provider", "raw_body", "raw_form")` guard, or an
 equivalent model-level validation hook, enforcing the same provider-exclusive
 raw capture invariant independently of the database CHECK. This is required so
@@ -187,6 +200,9 @@ The model-level guard must raise `ValueError` with a descriptive message on
 constraint violation. Cover it by constructing an `InboundWebhookDelivery`
 object outside a session and asserting the `ValueError` is raised before any DB
 flush.
+The same model-level validation must enforce Twilio `signature_base_url`
+presence and Meta `signature_base_url` absence, raising `ValueError` on
+violation.
 
 Add a CHECK or equivalent database-backed validation for message count semantics:
 
@@ -228,6 +244,9 @@ order:
 
 1. Read raw request input required for signature validation.
 2. Determine provider and signature metadata.
+   - For Twilio, compute and persist the exact `signature_base_url` used for
+     verification: `TWILIO_WEBHOOK_URL` when configured, otherwise
+     `str(request.url)`.
 3. Enforce fail-closed secret/signature policy for the active environment.
 4. Persist inbound delivery evidence before extraction and queueing.
 5. Extract parsed `WhatsAppInboundMessage` values.
@@ -336,6 +355,8 @@ sufficient to register the table with `Base.metadata`.
   before messages are enqueued.
 - [ ] Durable delivery records include enough raw input and signature metadata
   to reconstruct what was received and how authenticity was evaluated.
+- [ ] Twilio delivery records persist the exact signature base URL used during
+  verification, including the `TWILIO_WEBHOOK_URL` override path when present.
 - [ ] `signature_status` and `parse_status` are constrained to the exact values
   listed in §3.2.
 - [ ] Meta rows populate `raw_body` and leave `raw_form` null; Twilio rows
@@ -372,6 +393,8 @@ Minimum expected coverage:
   - production/staging Twilio no-token request hard-fails;
   - valid signed Meta request persists delivery before enqueue;
   - valid signed Twilio request persists delivery before enqueue;
+  - valid signed Twilio request with `TWILIO_WEBHOOK_URL` override persists that
+    override as `signature_base_url`, not the inbound ASGI `request.url`;
   - malformed Meta JSON creates a failed delivery record.
 - Migration test:
   - upgrade creates the inbound delivery table with expected columns;
