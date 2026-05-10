@@ -17,7 +17,7 @@ Verified against `main = 40aa682d6`:
 
 - `backend/app/services/cashflow_baseline_service.py:10` imports `compute_cashflow_analytic`.
 - `backend/app/services/cashflow_baseline_service.py:42-44` computes Baseline by calling Analytic, then persists `analytic.model_dump(mode="json")`.
-- `backend/app/schemas/scenario.py:95-97` declares `ScenarioCashflowSnapshot.analytic` and `.baseline` with the same `CashFlowAnalyticResponse` type.
+- `backend/app/schemas/scenario.py:95-98` declares `ScenarioCashflowSnapshot.analytic` and `.baseline` with the same `CashFlowAnalyticResponse` type.
 - `backend/app/services/scenario_whatif_service.py:523-530` builds one `cashflow_analytic` object and assigns it to both `analytic` and `baseline`.
 - `backend/app/services/cashflow_ledger_service.py:77-157` now derives ledger rows server-side and persists price provenance for the floating leg.
 - `backend/app/models/cashflow.py:25-41` stores `CashFlowBaselineSnapshot.snapshot_data` as JSON and `total_net_cashflow` as a column.
@@ -111,7 +111,6 @@ Add helpers in `cashflow_baseline_service.py`:
 ```python
 from app.core.precision import quantize_money
 from app.models.cashflow import CashFlowBaselineSnapshot, CashFlowLedgerEntry
-from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 ```
 
 ```python
@@ -139,7 +138,7 @@ def _ledger_entry_payload(entry: CashFlowLedgerEntry) -> dict:
         "cashflow_date": entry.cashflow_date.isoformat(),
         "currency": entry.currency,
         "direction": entry.direction,
-        "amount": str(Decimal(str(entry.amount))),
+        "amount": str(quantize_money(entry.amount)),
         "signed_amount_usd": str(signed_amount),
         "price_source": entry.price_source,
         "price_symbol": entry.price_symbol,
@@ -156,10 +155,7 @@ def _ledger_entry_payload(entry: CashFlowLedgerEntry) -> dict:
 def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlowLedgerEntry]:
     return (
         db.query(CashFlowLedgerEntry)
-        .filter(
-            CashFlowLedgerEntry.source_event_type == SOURCE_EVENT_TYPE,
-            CashFlowLedgerEntry.cashflow_date <= as_of_date,
-        )
+        .filter(CashFlowLedgerEntry.cashflow_date <= as_of_date)
         .order_by(
             CashFlowLedgerEntry.cashflow_date.asc(),
             CashFlowLedgerEntry.hedge_contract_id.asc(),
@@ -169,6 +165,11 @@ def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlo
         .all()
     )
 ```
+
+Do not filter realized ledger entries by `source_event_type`. Baseline
+reconciliation consumes accounting ledger evidence; future ledger source types
+must not be silently excluded from realized totals. Preserve
+`source_event_type` in each payload row for auditability.
 
 Add a Baseline-owned unrealized item builder. It may call MTM services directly because MTM is the valuation primitive; it must not call Analytic.
 
@@ -348,6 +349,13 @@ PR-A3-4 must add a data-preserving migration because the payload shape changes u
 
 Create `backend/alembic/versions/039_a3_cashflow_baseline_legacy_archive.py`.
 
+The migration identifiers must be:
+
+```python
+revision = "039_a3_cashflow_baseline_legacy_archive"
+down_revision = "038_a3_price_provenance"
+```
+
 Migration requirements:
 
 - Create archive table `cashflow_baseline_snapshot_archives`.
@@ -369,6 +377,7 @@ Migration requirements:
 - Delete those moved rows from `cashflow_baseline_snapshots`.
 - Leave already-new rows with `snapshot_data["view"] == "baseline"` untouched.
 - Downgrade restores archived rows into `cashflow_baseline_snapshots` only when no active row exists for the same `as_of_date`; if an active row exists, downgrade must hard-fail with an explicit exception rather than silently overwrite.
+- Restored rows must satisfy the `cashflow_baseline_snapshots.correlation_id` NOT NULL contract. If archived data has `correlation_id IS NULL`, downgrade must hard-fail with an explicit exception rather than inserting invalid data.
 
 Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless the migration branches by dialect. This repo's migration tests run SQLite roundtrips.
 
@@ -399,6 +408,7 @@ Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless th
 - [ ] `snapshot_data["reconciliation"]["total_net_cashflow"] == snapshot.total_net_cashflow` after Decimal normalization.
 - [ ] `snapshot_data["reconciliation"]["total_net_cashflow"] == realized_total_usd + unrealized_total_usd`.
 - [ ] Realized ledger reconciliation signs `IN` as positive and `OUT` as negative.
+- [ ] Realized ledger reconciliation includes all `CashFlowLedgerEntry` rows with `cashflow_date <= as_of_date`, regardless of `source_event_type`, and carries `source_event_type` into each payload row.
 - [ ] Unsupported ledger direction hard-fails with HTTP 422; no silent ignore.
 - [ ] Baseline unrealized items include `active` and `partially_settled` contracts; `settled` contracts are represented only through realized ledger entries.
 - [ ] Baseline unrealized queries exclude rows with `deleted_at` set on both `HedgeContract` and `Order`.
@@ -594,6 +604,7 @@ Required tests:
 - Assert a row whose `snapshot_data["view"] == "baseline"` remains active and is not archived.
 - Assert downgrade restores archived rows only when no active row exists for that `as_of_date`.
 - Assert downgrade hard-fails if restoring would overwrite an active row for the same `as_of_date`.
+- Assert downgrade hard-fails if an archived row has `correlation_id IS NULL`.
 
 ---
 
