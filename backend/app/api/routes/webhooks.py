@@ -171,6 +171,18 @@ def _persist_message_for_enqueue(
             )
             return None
 
+        if existing.processing_status == "processing":
+            existing.processing_status = "received"
+            existing.processing_started_at = None
+            session.commit()
+            logger.info(
+                "webhook_message_redelivery_recovered_stale_processing",
+                provider=provider,
+                provider_message_id=msg.message_id,
+                delivery_message_id=str(existing.id),
+            )
+            return existing.id
+
         if existing.processing_status in _RECOVERABLE_MESSAGE_STATUSES:
             logger.info(
                 "webhook_message_redelivery_recovered",
