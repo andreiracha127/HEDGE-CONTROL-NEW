@@ -337,6 +337,27 @@ All three commands must return zero matches after the fix.
 
 Extend `backend/tests/test_cashflow_baseline_service.py`.
 
+Before adding new tests, update existing Baseline tests that assume the old
+Analytic-shaped payload. In particular,
+`test_cashflow_baseline_per_row_provenance_quadruple_inside_snapshot_data`
+currently reads:
+
+```python
+item = snapshot.snapshot_data["cashflow_items"][0]
+```
+
+Change it to read the new Baseline-owned key:
+
+```python
+item = snapshot.snapshot_data["unrealized_items"][0]
+```
+
+Keep the existing assertions for `price_source`, `price_symbol`,
+`price_settlement_date`, and `price_value`; those provenance fields remain
+inside each unrealized item. Do not leave any test that indexes
+`snapshot_data["cashflow_items"]`, because PR-A3-4 explicitly removes that
+Analytic-shaped root key from Baseline.
+
 ### 6.1 Baseline no longer proxies Analytic
 
 Add a test that creates a baseline snapshot and asserts the new payload shape:
@@ -418,6 +439,17 @@ The behavior must remain:
 
 - First create returns a persisted snapshot.
 - If persisted `snapshot_data` or `total_net_cashflow` is mutated, second create for same `as_of_date` raises HTTP 409.
+
+Also add or extend a deterministic-hash test so it proves canonical ordering is
+part of the hash input for both payload arrays:
+
+- `unrealized_items` sorted by `(object_type, object_id)`.
+- `realized_ledger_entries` sorted by `(cashflow_date, hedge_contract_id, leg_id, source_event_id or "")`.
+
+If a test inserts a direct ledger row with `source_event_id=None`, it must prove
+the `source_event_id or ""` sort key is deterministic. Normal settlement-ledger
+rows created by `ingest_hedge_contract_settlement()` should still carry a
+non-null `source_event_id`.
 
 ### 6.6 Scenario no longer emits fake Baseline
 
