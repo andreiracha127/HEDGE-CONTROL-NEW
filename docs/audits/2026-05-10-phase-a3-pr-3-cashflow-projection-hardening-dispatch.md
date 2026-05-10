@@ -311,13 +311,14 @@ def get_cashflow_projection(
         ) from exc
 ```
 
-**Imports to add** at `routes/cashflow.py` top — use the authoritative module per the Wave 2 §0 declaration:
+**Imports to add** at `routes/cashflow.py` top — use the authoritative module per the Wave 2 §0 declaration. Verified via `read_file` against `5e25f8bd8`: the current import line is `from fastapi import APIRouter, Depends, Query, Request, status` — **`HTTPException` is NOT currently imported**, despite being used in other routes; it must be added here:
 
 ```python
-from app.utils.price_reference import PriceReferenceUnprovable
+from fastapi import HTTPException                          # NEW — required by the 424 raise; not currently imported in this module
+from app.utils.price_reference import PriceReferenceUnprovable  # NEW — caught and translated to HTTP 424
 ```
 
-`HTTPException` and `status` are already imported in the route module.
+`status` is already imported. Without the `HTTPException` add, the first request reaching an unprovable price would execute `raise HTTPException(...)` and fail with `NameError` instead of returning 424.
 
 ### 3.4 No model / migration / schema changes
 
