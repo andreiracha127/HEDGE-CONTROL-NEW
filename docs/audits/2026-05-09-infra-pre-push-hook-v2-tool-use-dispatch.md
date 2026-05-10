@@ -221,6 +221,23 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
             continue
         files = root.rglob("*.py") if root.is_dir() else [root]
         for f in files:
+            # Symlink + ancestry guard: rglob follows symlinks by default.
+            # A `backend/app/leak.py -> /etc/passwd` symlink (or any
+            # symlink whose target resolves outside the repo) would let
+            # `read_text()` return outside-repo contents to the model.
+            # Two defenses applied:
+            #   (1) skip symlinks entirely — the hook only consults
+            #       version-controlled source under the repo, never
+            #       resolves indirection;
+            #   (2) re-apply _resolve_within_repo on the resolved path
+            #       — belts AND suspenders for cases where rglob itself
+            #       returned a path that no longer lives under root.
+            if f.is_symlink():
+                continue
+            try:
+                _ = _resolve_within_repo(repo_root, str(f.relative_to(repo_root)))
+            except (ValueError, OSError):
+                continue
             try:
                 lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
@@ -618,7 +635,7 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 12 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
+New test file. 13 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
 
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
@@ -628,6 +645,7 @@ Test enumeration (mechanical):
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
 - `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
 - `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
+- `test_handle_grep_pattern_skips_symlink_outside_repo` — fixture: tmpdir as repo with `backend/app/legitimate.py` (real file with a known pattern) and `backend/app/leaked.py` symlinked to a file outside the repo whose contents contain the SAME pattern; call `grep_pattern(pattern=<known>)` and assert ONLY `legitimate.py` appears in `matches` (the symlinked path is skipped because `f.is_symlink()` returns True). Pins the symlink-skip + ancestry-guard contract.
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
 - `test_handle_find_symbol_locates_async_function_definition` — fixture with `async def cancel_rfq(...):` → assert `find_symbol(name="cancel_rfq")` returns matching line. Pins the `(?:async\s+)?` regex prefix; without it, every async route handler in `backend/app/api/routes/` would silently return `matches=[]` (re-introducing the v1 FP class v2 is designed to eliminate).
@@ -686,6 +704,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
 - [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
+- [ ] `_grep_with_context` skips symlinks (`if f.is_symlink(): continue`) AND re-applies `_resolve_within_repo` per file before `read_text()`. Without these defenses, a `backend/app/leak.py -> /etc/passwd` symlink (or any symlink whose target resolves outside the repo) would let the hook send outside-repo contents back to the model. Defense-in-depth: skip symlinks first (simple and correct for institutional source code; the codebase has no legitimate in-repo symlinks), then ancestry-check the resolved path as belts-and-suspenders.
 - [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool RESULT returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
@@ -696,7 +715,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 12 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 13 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -768,7 +787,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 12 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 13 mechanical tests
 
 ## Acceptance evidence
 
@@ -826,7 +845,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (12 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (13 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
