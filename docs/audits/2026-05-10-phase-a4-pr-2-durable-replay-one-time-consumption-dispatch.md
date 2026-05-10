@@ -115,7 +115,10 @@ Required constraints:
   - `failed`.
 
 Use JSON/JSONB-compatible column types for `processing_result` using the repo's
-portable `JSON().with_variant(JSONB(), "postgresql")` pattern.
+portable `JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")`
+pattern. Mirror or import the `json_payload_type` helper already defined in
+`backend/app/models/inbound_webhook_delivery.py`; do not introduce a JSON null
+boundary that behaves differently between SQLite tests and PostgreSQL.
 
 Add a SQLAlchemy `@validates("processing_status")` guard, mirroring the status
 validators in `InboundWebhookDelivery`, so invalid processing status values are
@@ -247,6 +250,12 @@ After adding the nullable field, grep for `WhatsAppInboundMessage`, `__eq__`,
 logic changes meaning. Existing direct constructors such as `_make_inbound()` in
 `backend/tests/test_rfq_orchestrator.py` must remain valid with
 `delivery_message_id=None`.
+Because `WhatsAppInboundMessage` is a Pydantic `BaseModel`, adding
+`delivery_message_id` changes the auto-generated equality surface. Audit every
+test that compares `WhatsAppInboundMessage` objects directly. If such assertions
+exist, either make equality intentionally ignore `delivery_message_id` through
+model configuration or update the affected tests to compare only the relevant
+fields explicitly.
 
 ### 3.6 Preserve rejected quote semantics while preventing stale replay
 
@@ -342,6 +351,10 @@ Minimum expected coverage:
     migration helpers to `_load_migration_040()` and
     `_run_migration_040(connection, direction)` and update their existing call
     sites.
+  - Before renaming, run
+    `rg -n "_load_migration|_run_migration" backend/tests/test_inbound_webhook_delivery.py`
+    and update every resulting line. At authoring time the relevant lines are
+    74, 82, 83, 407, 413, and 435.
   - Add sibling helpers `_load_migration_041()` and
     `_run_migration_041(connection, direction)` pointing exclusively to
     `041_a4_inbound_webhook_messages.py`. Do not run 041 assertions through the
