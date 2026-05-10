@@ -376,7 +376,7 @@ if existing is not None:
     if (
         existing_payload != payload
         or Decimal(str(existing.total_net_cashflow)) != total
-        or (existing.inputs_hash is not None and existing.inputs_hash != inputs_hash)
+        or existing.inputs_hash != inputs_hash
     ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -384,6 +384,10 @@ if existing is not None:
         )
     return existing
 ```
+
+The `existing.inputs_hash != inputs_hash` comparison is reached only after the
+explicit `existing.inputs_hash is None` hard-fail above. Do not reintroduce an
+`is not None` guard in the hash comparison.
 
 Migration 039 must run before the new `cashflow_baseline_service.py` code is
 deployed. If a legacy active row with root `cashflow_items` remains in
@@ -689,6 +693,7 @@ The behavior must remain:
 
 - First create returns a persisted snapshot.
 - If persisted `snapshot_data` or `total_net_cashflow` is mutated, second create for same `as_of_date` raises HTTP 409.
+- If a persisted new-shape Baseline row has `inputs_hash = NULL`, second create for same `as_of_date` raises HTTP 409 with the missing-hash guard before any hash comparison.
 - Legacy Analytic-shaped snapshots are handled by migration 039 before service runtime. Do not add service-side silent rewrite of old `cashflow_items` payloads.
 
 Also add or extend a deterministic-hash test so it proves canonical ordering is
