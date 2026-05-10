@@ -83,33 +83,12 @@ def compute_mtm_for_order(
     order = db.get(Order, order_id)
 ```
 
-**Replacement** (drop the `commodity` parameter entirely; resolve from `order.commodity`):
+**The real delta is exactly two line edits**, NOT a function-body rewrite. Wave 1 (PR #41) already migrated the body to use `get_cash_settlement_price_d1_with_provenance` and populate `price_quote=price_quote` on the return — verified in the cited `mtm_order_service.py` excerpt at `030a49bff`. The only changes for PR-A3-2 are:
 
-```python
-def compute_mtm_for_order(
-    db: Session,
-    order_id: UUID,
-    as_of_date: date,
-) -> MTMResultResponse:
-    order = db.get(Order, order_id)
-    if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
-        )
-    # ... existing pricing-eligibility checks at :33-54 unchanged ...
+1. **Line 26**: drop `commodity: str = DEFAULT_COMMODITY,` from the signature.
+2. **Line 58**: change `resolve_symbol(commodity)` → `resolve_symbol(order.commodity)`.
 
-    try:
-        price_quote = get_cash_settlement_price_d1_with_provenance(
-            db, symbol=resolve_symbol(order.commodity), as_of_date=as_of_date
-        )
-    except PriceReferenceUnprovable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc),
-        ) from exc
-    # ... rest of the function unchanged ...
-```
-
-The change is exactly two edits inside the function: drop the `commodity: str = DEFAULT_COMMODITY` parameter (line 26) and replace `resolve_symbol(commodity)` with `resolve_symbol(order.commodity)` (line 58, verified via Serena against `030a49bff`). The rest of the function — pricing-eligibility checks, exception translation, return shape — is untouched.
+Everything else in the function — the 4 pricing-eligibility guards, the `try/except PriceReferenceUnprovable` translation, the `MTMResultResponse(..., price_quote=price_quote)` return — is **already in the post-Wave-1 codebase** and stays untouched. Do NOT re-prescribe it as if new; that would mislead the executor into rewriting code that already exists.
 
 **Why drop the parameter rather than make it `None`-default**: a `commodity` parameter that callers can override would re-create the bug at the caller layer (any caller forgetting to pass it gets aluminum). Resolving from `order.commodity` directly inside the function makes the data-flow contract explicit: the order knows its commodity; the function asks the order, not the caller.
 
@@ -232,7 +211,7 @@ virtual_contracts.append(
 
 **Remove the `DEFAULT_COMMODITY = "LME_AL"` constant** at `scenario_whatif_service.py:43`. After this commit, the constant is unreferenced.
 
-**Remove the `_resolve_price_d1` default** at `scenario_whatif_service.py:79`: change `commodity: str = DEFAULT_COMMODITY` to a required argument `commodity: str`. Walk every caller of `_resolve_price_d1` and ensure it passes the commodity explicitly. Verified via Serena against `030a49bff`: `_resolve_price_d1` is called from **5 call sites** within `scenario_whatif_service.py`. The line numbers in this section (`:472, :485, :499, :550, :595`) reference the lines where the **`_resolve_price_d1(...)` text appears** — these are the kwarg positions inside the enclosing `_mtm_for_contract(...)` / `_mtm_for_order(...)` invocations whose call lines (`:467, :480, :495, :545, :590`) are listed in §3.7.5 / §6. Both line-number sets describe the SAME 5 logical call sites at different syntactic positions; they are NOT contradictory. Each of these already passes `commodity` explicitly today (`contract.commodity`, `order.commodity`); removing the default is a defensive lockdown so future call sites cannot rely on the implicit aluminum default.
+**`_resolve_price_d1` default removal is consolidated into §3.7.2** (the rename + signature overhaul handles it as part of one transformation). Verified via Serena against `030a49bff`: `_resolve_price_d1` is called from **5 call sites** within `scenario_whatif_service.py`. The line numbers (`:472, :485, :499, :550, :595`) reference the lines where the **`_resolve_price_d1(...)` text appears** — these are the kwarg positions inside the enclosing `_mtm_for_contract(...)` / `_mtm_for_order(...)` invocations whose call lines (`:467, :480, :495, :545, :590`) are listed in §3.7.5 / §6. Both line-number sets describe the SAME 5 logical call sites at different syntactic positions; they are NOT contradictory. Each call already passes `commodity` explicitly today (`contract.commodity`, `order.commodity`); the default removal happens as part of §3.7.2's rename to `_resolve_price_quote`, in lockstep with the `Decimal` → `PriceQuote` return-type change.
 
 ### 3.7 Scenario MTM provenance plumbing (parallel-persistence-symmetry with Wave 1)
 
@@ -316,20 +295,20 @@ def _resolve_price_d1(
     return lookup(db, symbol, as_of_date)
 ```
 
-**Replacement** (drop default per §3.6; change return type):
+**Replacement** — three transformations in lockstep: rename the function, change return type, drop the `commodity` default:
 
 ```python
 def _resolve_price_quote(
     db: Session,
     as_of_date: date,
     lookup: Callable[[Session, str, date], PriceQuote],
-    commodity: str,
+    commodity: str,                           # no default — required arg
 ) -> PriceQuote:
     symbol = resolve_symbol(commodity)
     return lookup(db, symbol, as_of_date)
 ```
 
-**Rename mandate**: the function now returns a `PriceQuote`, not a `price_d1` Decimal. Rename `_resolve_price_d1` → `_resolve_price_quote` — the new name IS the API contract. The 5 call sites (4 in `_mtm_for_contract` + 1 in `_mtm_for_order`) are updated in lockstep with the signature changes in §3.7.3 / §3.7.4. The old name is deleted; no aliasing.
+**Rename mandate**: the function now returns a `PriceQuote`, not a `price_d1` Decimal. Rename `_resolve_price_d1` → `_resolve_price_quote` — the new name IS the API contract. The 5 call sites (4 in `_mtm_for_contract` + 1 in `_mtm_for_order`) are updated in lockstep with the signature changes in §3.7.3 / §3.7.4. The old name is deleted; no aliasing. **The `commodity: str = DEFAULT_COMMODITY` default is removed as part of this transformation** — §3.6 references this consolidation, not a separate edit.
 
 #### 3.7.3 `_mtm_for_contract` accepts `PriceQuote`; populates `MTMResultResponse.price_quote`
 
@@ -402,7 +381,7 @@ price_quote=_resolve_price_quote(db, ..., lookup, commodity=...)
 
 (post-rename per §3.7.2 the function is `_resolve_price_quote`; the kwarg on `_mtm_for_*` becomes `price_quote=...`).
 
-**Imports to update** at `scenario_whatif_service.py` top (verified against `030a49bff` via Serena):
+**Imports to update** at `scenario_whatif_service.py` top (verified against `030a49bff` via grep):
 
 The current import block at lines 35-39 is:
 
@@ -414,18 +393,21 @@ from app.services.price_lookup_service import (
 )
 ```
 
-Post-fix:
+Post-fix — keep all imports under the same `app.services.price_lookup_service` path, mirroring the pattern in `mtm_order_service.py:12-16` which imports `PriceReferenceUnprovable` from `price_lookup_service` (re-exported there from `utils.price_reference`, verified at `price_lookup_service.py:15`):
 
 ```python
-from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable  # NEW import (top-of-file)
 from app.services.price_lookup_service import (
-    canonical_commodity,                               # unchanged — already present
-    get_cash_settlement_price_d1_with_provenance,      # NEW — replaces _d1 wrapper
-    resolve_symbol,                                    # unchanged — already present
+    PriceQuote,                                          # NEW — re-exported from utils.price_reference
+    PriceReferenceUnprovable,                            # NEW — re-exported from utils.price_reference
+    canonical_commodity,                                 # unchanged — already present
+    get_cash_settlement_price_d1_with_provenance,        # NEW — replaces _d1 wrapper
+    resolve_symbol,                                      # unchanged — already present
 )
 ```
 
-The existing `get_cash_settlement_price_d1` import is removed — the thin wrapper is no longer used inside `scenario_whatif_service`. The new line is `get_cash_settlement_price_d1_with_provenance`. `canonical_commodity` and `resolve_symbol` were already imported and are KEPT (not duplicated, not re-added). Verify via grep that no remaining reference to `get_cash_settlement_price_d1` (without `_with_provenance` suffix) exists in the file before deleting the import.
+**Why this import path and not `app.utils.price_reference`**: the existing scenario service already imports its lookup helpers from `app.services.price_lookup_service`. `mtm_order_service.py:12-16` follows the same pattern. Keeping all PriceQuote/PriceReferenceUnprovable usage routed through `price_lookup_service` (which re-exports both) preserves the institutional layering: services depend on services, not on `utils` modules directly. **Do not** introduce a parallel `from app.utils.price_reference import ...` line — that would be a stylistic regression vs the codebase's existing convention.
+
+The existing `get_cash_settlement_price_d1` import is removed — the thin wrapper is no longer used inside `scenario_whatif_service`. Verify via grep that no remaining reference to `get_cash_settlement_price_d1` (without `_with_provenance` suffix) exists in the file before deleting the import.
 
 #### 3.7.6 Scope guard: do NOT extend plumbing beyond scenario MTM
 
