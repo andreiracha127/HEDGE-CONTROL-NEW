@@ -117,6 +117,10 @@ Required constraints:
 Use JSON/JSONB-compatible column types for `processing_result` using the repo's
 portable `JSON().with_variant(JSONB(), "postgresql")` pattern.
 
+Add a SQLAlchemy `@validates("processing_status")` guard, mirroring the status
+validators in `InboundWebhookDelivery`, so invalid processing status values are
+rejected in SQLite-backed tests as well as by database constraints.
+
 Register the new model in `backend/app/models/__init__.py` so
 `Base.metadata.create_all()` sees the table in SQLite tests.
 
@@ -183,6 +187,11 @@ Acceptable options:
 - keep local suppression only as an optimization after durable insertion has
   already established one-time consumption.
 
+If `enqueue_message()` is refactored to accept a `delivery_message_id` parameter
+or otherwise expects the enriched `WhatsAppInboundMessage`, update all existing
+callers in `backend/app/api/routes/webhooks.py` and all direct tests in the same
+PR. This function signature/interface change is in scope for PR-A4-2.
+
 In either case, provider redelivery after restart or local cache eviction must
 not enqueue/process the same provider message again.
 
@@ -193,8 +202,8 @@ recover and update the durable `InboundWebhookMessage` row.
 
 Preferred direction:
 
-- add an optional `delivery_message_id` field to the inbound queue payload or a
-  small wrapper object;
+- add `delivery_message_id: uuid.UUID | None = None` to
+  `WhatsAppInboundMessage` in `backend/app/schemas/whatsapp.py`;
 - load the `InboundWebhookMessage` row at processing start;
 - transition status:
   - `received` -> `processing`;
@@ -300,6 +309,11 @@ Minimum expected coverage:
   - concurrent duplicate insert handles `IntegrityError` deterministically;
   - processing status/result is persisted for processed, skipped, and failed
     paths.
+  - If migration 041 tests are added to
+    `backend/tests/test_inbound_webhook_delivery.py`, create a separate
+    `_load_migration_041()` helper pointing to
+    `041_a4_inbound_webhook_messages.py`; do not reuse the existing migration
+    helper for revision 040.
 - `backend/tests/test_rfq_orchestrator.py`
   - queue item with durable message ID updates `processing_status`;
   - auto-created quote stores `quote_id` on the durable message result;
