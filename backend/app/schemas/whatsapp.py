@@ -62,6 +62,8 @@ class WhatsAppInboundMessage(BaseModel):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, WhatsAppInboundMessage):
             return NotImplemented
+        # delivery_message_id is intentionally excluded: redeliveries of the
+        # same provider message remain content-equal regardless of durable row.
         return (
             self.message_id,
             self.from_phone,

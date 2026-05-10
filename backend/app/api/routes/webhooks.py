@@ -162,6 +162,8 @@ def _persist_message_for_enqueue(
             )
             return None
 
+        # received and failed are both recoverable: return the existing row id
+        # so the orchestrator can claim the same durable message record.
         logger.info(
             "webhook_message_redelivery_recovered",
             provider=provider,

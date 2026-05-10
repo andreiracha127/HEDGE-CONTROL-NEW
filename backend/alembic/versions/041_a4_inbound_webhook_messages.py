@@ -54,6 +54,8 @@ def upgrade() -> None:
             name="ck_inbound_webhook_messages_provider_message_id_nonempty",
         ),
     ]
+    # SQLite test enforcement for processing_status comes from the ORM
+    # @validates guard; PostgreSQL gets the durable DB-level CHECK.
     if dialect_name == "postgresql":
         constraints.append(
             sa.CheckConstraint(
