@@ -120,6 +120,16 @@ portable `JSON().with_variant(JSONB(), "postgresql")` pattern.
 Add a SQLAlchemy `@validates("processing_status")` guard, mirroring the status
 validators in `InboundWebhookDelivery`, so invalid processing status values are
 rejected in SQLite-backed tests as well as by database constraints.
+The validator must enumerate all five statuses:
+
+```python
+@validates("processing_status")
+def _validate_processing_status(self, _key: str, value: str) -> str:
+    allowed = {"received", "processing", "processed", "duplicate", "failed"}
+    if value not in allowed:
+        raise ValueError(f"processing_status must be one of {sorted(allowed)}")
+    return value
+```
 
 Register the new model in `backend/app/models/__init__.py` so
 `Base.metadata.create_all()` sees the table in SQLite tests.
@@ -138,9 +148,10 @@ Before creating the file, run:
 cd backend && python -m alembic heads
 ```
 
-Current expected head is `040_a4_inbound_webhook_delivery`. If a newer migration
-has landed first, choose the correct next prefix while keeping the revision ID
-at or below Alembic's 32-character `version_num` limit.
+Expected head at authoring time is `040_a4_inbound_webhook_delivery`. Verify
+with `alembic heads` before creating the file. If a newer migration has landed
+first, choose the correct next prefix while keeping the revision ID at or below
+Alembic's 32-character `version_num` limit.
 
 Migration requirements:
 
@@ -202,7 +213,7 @@ recover and update the durable `InboundWebhookMessage` row.
 
 Preferred direction:
 
-- add `delivery_message_id: uuid.UUID | None = None` to
+- add `delivery_message_id: uuid.UUID | None = Field(None)` to
   `WhatsAppInboundMessage` in `backend/app/schemas/whatsapp.py`;
 - load the `InboundWebhookMessage` row at processing start;
 - transition status:
@@ -314,6 +325,10 @@ Minimum expected coverage:
     `_load_migration_041()` helper pointing to
     `041_a4_inbound_webhook_messages.py`; do not reuse the existing migration
     helper for revision 040.
+  - Also create a parallel `_run_migration_041(connection, direction)` that
+    calls `_load_migration_041()` exclusively. Do not pass migration 041 tests
+    through the existing `_run_migration()` helper, which is hardcoded to load
+    revision 040.
 - `backend/tests/test_rfq_orchestrator.py`
   - queue item with durable message ID updates `processing_status`;
   - auto-created quote stores `quote_id` on the durable message result;
