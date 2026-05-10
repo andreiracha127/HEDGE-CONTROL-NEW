@@ -460,15 +460,27 @@ def _create_with_retry(
     3-attempt exponential backoff on RateLimitError / APIConnectionError /
     APIStatusError; AuthenticationError fails fast (no retry).
 
-    NOTE: This wrapper uses ``tool_choice={"type": "any"}`` to guarantee
-    loop progress in the multi-turn caller. With Anthropic's default
-    ``auto`` setting, Sonnet may emit plain text without any tool_use
-    block, causing the multi-turn loop in ``call_review`` to abort with
-    "model emitted no tool_use block". The ``any`` setting still lets
-    the model choose between investigation tools and ``report_findings``;
-    it only requires SOME tool to be called per turn.
+    NOTE: This wrapper uses ``tool_choice={"type": "any",
+    "disable_parallel_tool_use": True}`` for two combined guarantees:
+
+    (1) ``"any"`` requires SOME tool to be called every turn — Anthropic's
+        default ``auto`` setting lets the model emit plain text, which
+        would abort ``call_review``'s multi-turn loop on the
+        ``"no tool_use block"`` raise.
+
+    (2) ``disable_parallel_tool_use=True`` forces a single tool_use per
+        turn. Anthropic's tool-use protocol requires every assistant
+        ``tool_use`` block to be matched by a ``tool_result`` block in
+        the next user message; if the model emits ``report_findings``
+        alongside an investigation tool in the same turn, the rejection
+        path (verify-before-P1 guard) would append a ``tool_result``
+        only for ``report_findings``, leaving the investigation
+        ``tool_use`` id orphaned — the next ``messages.create`` then
+        fails with 400. Sequential execution is also v2's stated
+        design intent (§4 Scope OUT defers parallel to v3).
     """
-    ...  # extracted from v1's inner retry loop, with tool_choice={"type": "any"}
+    ...  # extracted from v1's inner retry loop, with
+         # tool_choice={"type": "any", "disable_parallel_tool_use": True}
          # added to client.messages.create kwargs
 
 
@@ -598,7 +610,7 @@ def call_review(
 
 **Critical design points**:
 
-- **`tool_choice={"type": "any"}`** — guarantees that EVERY turn calls SOME tool. v1 forced the specific tool (`{"type": "tool", "name": "report_findings"}`); v2 cannot force a specific tool because the model needs to choose between investigation tools and the final `report_findings`. But omitting `tool_choice` (Anthropic default `auto`) lets the model emit plain text without any tool_use, which would hit the `if not executed_any` branch and abort the loop. `{"type": "any"}` is the correct middle ground: model picks any tool, but cannot opt out of tool-calling. The model is steered to call `report_findings` last via the system prompt instruction (§3.4).
+- **`tool_choice={"type": "any", "disable_parallel_tool_use": True}`** — combined guarantee: (1) some tool is called every turn (rules out plain-text turns that would abort the loop), AND (2) at most ONE tool_use block per turn (rules out parallel calls that would orphan tool_use ids when the verify-before-P1 guard rejects only a subset of the parallel block). v1 forced the specific tool (`{"type": "tool", "name": "report_findings"}`); v2 cannot force a specific tool because the model needs to choose between investigation tools and the final `report_findings`. The model is steered to call `report_findings` last via the system prompt instruction (§3.4); sequential execution matches §4 Scope OUT's "parallel deferred to v3".
 - **Retry/backoff** stays on the inner `_create_with_retry`. Network errors retry per turn; `MAX_ITERATIONS` caps the outer loop.
 - **`tool_results` content is JSON-serialized**. Anthropic accepts both string content and structured content for `tool_result`; JSON-string is the simplest portable shape.
 - **Response content history** is preserved (`messages.append({"role": "assistant", "content": response.content})`) so the model can reason across turns.
@@ -766,7 +778,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `_summarize_input_for_log(tool_name, tool_input)` is defined in `client.py` (per §3.3 sketch): redaction-safe summary of tool INPUT. The `grep_pattern.pattern` field is replaced with `"<redacted len=N>"` because the model may grep for suspected leaked credentials, and logging the raw pattern would persist the secret literal in `.cache/dispatch_review/*.json`. Other inputs (paths, line numbers, identifier names, context_lines) pass through verbatim — they are not secret-laden. The cache-artifact `tool_calls[].input` field MUST go through this helper, NOT `dict(block.input)`.
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
-- [ ] `client.messages.create` is called WITH `tool_choice={"type": "any"}` (guarantees a tool is called every turn — model picks between investigation tools and `report_findings`, but cannot emit plain-text-only response that would abort the loop).
+- [ ] `client.messages.create` is called WITH `tool_choice={"type": "any", "disable_parallel_tool_use": True}` — combined guarantee: (a) a tool is called every turn (no plain-text-only responses), (b) only ONE tool_use per turn (sequential execution; matches §4 Scope OUT). Without `disable_parallel_tool_use`, the model could emit `report_findings` AND `read_file` in the same turn; the verify-before-P1 rejection path would tool_result only `report_findings`, orphaning the `read_file` tool_use id, and the next `messages.create` would 400 on protocol violation.
 - [ ] **Verify-before-P1 guard**: when `report_findings` is called AND `p1_blocking` is non-empty AND **no `tool_call_log` entry has `ok=True`** (i.e., zero SUCCESSFUL investigations), the loop REJECTS the report via a `tool_result` rejection message and continues. Tool failures (`ok=False`) do NOT count as evidence per §3.4 — a bad path / invalid regex / unknown identifier is the absence of evidence, not its presence. Clean reports (`p1_blocking == []`) are accepted immediately. The `tool_call_log[].ok` boolean field is populated from `bool(result.get("ok"))` on every tool dispatch.
 - [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
 - [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4 tool-use discipline block.
@@ -873,7 +885,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 
 ## 10. Constraints — what NOT to do
 
-- DO NOT use `tool_choice={"type": "tool", "name": "report_findings"}` (v1's specific-forcing) in the multi-turn loop — it would prevent the model from calling investigation tools. DO use `tool_choice={"type": "any"}` (forces some tool but the model picks which) — required for loop progress.
+- DO NOT use `tool_choice={"type": "tool", "name": "report_findings"}` (v1's specific-forcing) in the multi-turn loop — it would prevent the model from calling investigation tools. DO use `tool_choice={"type": "any", "disable_parallel_tool_use": True}` — `any` forces some tool per turn (loop-progress guarantee), `disable_parallel_tool_use` forces sequential one-at-a-time (avoids orphaned tool_use ids when the verify-before-P1 guard rejects only the report_findings block in a parallel turn).
 - DO NOT accept a `report_findings` call with non-empty `p1_blocking` unless `tool_call_log` contains at least one entry with `ok=True`. Counting raw entries is INSUFFICIENT: failed investigations (bad path, invalid regex, unknown identifier returning `ok=False`) are not evidence per §3.4 — they are the absence of evidence. The guard MUST count successful entries only. Clean reports (no P1) on turn 1 are acceptable — the model's judgment that no investigation was needed is institutionally valid when nothing flagged Tipo-I.
 - DO NOT raise `_LINE_CAP` in `file_resolver.py`. Pre-inlining stays bounded at 200 lines/file; the new `read_file` tool covers gaps.
 - DO NOT add write tools, subprocess-execution tools, or tools that make HTTP requests. v2 is read-only.
