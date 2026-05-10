@@ -618,7 +618,26 @@ def call_review(
 
 ### 3.4 prompt_builder — instruct Sonnet about tools
 
-Update `_REVIEW_PROTOCOL_PROSE` in `scripts/dispatch_review/prompt_builder.py` to add a "Tool-use discipline" section. The cached system blocks 1-3 (persona + governance + rule sheet) are unchanged; only block 4 grows.
+Update `scripts/dispatch_review/prompt_builder.py` in TWO places:
+
+**(A) `_PERSONA_PREAMBLE` — REMOVE the v1 report-only directive.** The current persona block (committed in main during hook v1 landing) ends with:
+
+```
+Output via the `report_findings` tool only. Do NOT emit prose.
+```
+
+That instruction directly conflicts with v2's design: under `tool_choice={"type": "any"}`, the model can satisfy "any tool" by calling `report_findings` immediately, so the v1 prose actively steers Sonnet AWAY from `read_file` / `find_symbol` / `grep_pattern`. Verify-before-P1 rejections would then loop indefinitely (model reports → guard rejects → model re-reports). Replace the old line with:
+
+```
+Use the investigation tools (`read_file`, `find_symbol`, `grep_pattern`)
+to verify identifiers BEFORE emitting `report_findings`. P1 Tipo-I
+findings require at least one investigation tool result with ok=True.
+Call `report_findings` exactly once when your review is complete; do
+NOT emit prose-only responses (the loop guarantees tool-use every turn
+via `tool_choice={"type": "any"}`).
+```
+
+**(B) `_REVIEW_PROTOCOL_PROSE` (block 4) — append tool-use discipline.** The cached system blocks 1-3 (persona + governance + rule sheet) — block 1 (persona) DOES change per (A) above; blocks 2 and 3 are unchanged. Block 4 grows with the discipline subsection.
 
 New §"Tool-use discipline" appended to existing `_REVIEW_PROTOCOL_PROSE`:
 
@@ -783,7 +802,8 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `client.messages.create` is called WITH `tool_choice={"type": "any", "disable_parallel_tool_use": True}` — combined guarantee: (a) a tool is called every turn (no plain-text-only responses), (b) only ONE tool_use per turn (sequential execution; matches §4 Scope OUT). Without `disable_parallel_tool_use`, the model could emit `report_findings` AND `read_file` in the same turn; the verify-before-P1 rejection path would tool_result only `report_findings`, orphaning the `read_file` tool_use id, and the next `messages.create` would 400 on protocol violation.
 - [ ] **Verify-before-P1 guard**: when `report_findings` is called AND `p1_blocking` is non-empty AND **no `tool_call_log` entry has `ok=True`** (i.e., zero SUCCESSFUL investigations), the loop REJECTS the report via a `tool_result` rejection message and continues. Tool failures (`ok=False`) do NOT count as evidence per §3.4 — a bad path / invalid regex / unknown identifier is the absence of evidence, not its presence. Clean reports (`p1_blocking == []`) are accepted immediately. The `tool_call_log[].ok` boolean field is populated from `bool(result.get("ok"))` on every tool dispatch.
 - [ ] `scripts/dispatch_review/cache.py::write_cache_artifact` accepts and persists optional `tool_calls: list[dict] | None` parameter.
-- [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4 tool-use discipline block.
+- [ ] `scripts/dispatch_review/prompt_builder.py::_PERSONA_PREAMBLE` updated per §3.4(A) — the v1 line `Output via the report_findings tool only. Do NOT emit prose.` is REMOVED and replaced with a tool-use-aware instruction that allows investigation before reporting. Without this, the model's persona system block actively contradicts the v2 multi-turn loop and the verify-before-P1 guard would loop indefinitely.
+- [ ] `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` updated with the §3.4(B) tool-use discipline block.
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
@@ -914,7 +934,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 9. Implement `handle_find_symbol` and `handle_grep_pattern` per §3.1.
 10. Create `scripts/dispatch_review/tools.py` per §3.2. Tool schemas + `build_review_tools()`.
 11. Update `scripts/dispatch_review/client.py::call_review` per §3.3. Multi-turn loop, no `tool_choice` forcing, hard caps, tool dispatch, `tool_call_log`. Add `_create_with_retry` helper if extracting the inner network retry from the existing body keeps the code clean.
-12. Update `scripts/dispatch_review/prompt_builder.py::_REVIEW_PROTOCOL_PROSE` per §3.4 (append the tool-use discipline subsection).
+12. Update `scripts/dispatch_review/prompt_builder.py` per §3.4: (A) replace the v1 `_PERSONA_PREAMBLE` last line `Output via the report_findings tool only. Do NOT emit prose.` with the tool-use-aware instruction (without this, the v1 cached persona block contradicts the v2 multi-turn design and traps the model in a verify-before-P1 rejection loop), AND (B) append the tool-use discipline subsection to `_REVIEW_PROTOCOL_PROSE`.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
