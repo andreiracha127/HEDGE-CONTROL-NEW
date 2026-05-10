@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SessionLocal
@@ -180,9 +181,36 @@ def _persist_message_for_enqueue(
             return None
 
         if existing.processing_status == "processing":
-            existing.processing_status = "received"
-            existing.processing_started_at = None
+            stale_cutoff = datetime.now(timezone.utc) - _PROCESSING_STALE_AFTER
+            recovered = (
+                session.query(InboundWebhookMessage)
+                .filter(
+                    InboundWebhookMessage.provider == provider,
+                    InboundWebhookMessage.provider_message_id == msg.message_id,
+                    InboundWebhookMessage.processing_status == "processing",
+                    InboundWebhookMessage.processing_completed_at.is_(None),
+                    or_(
+                        InboundWebhookMessage.processing_started_at.is_(None),
+                        InboundWebhookMessage.processing_started_at <= stale_cutoff,
+                    ),
+                )
+                .update(
+                    {
+                        InboundWebhookMessage.processing_status: "received",
+                        InboundWebhookMessage.processing_started_at: None,
+                    },
+                    synchronize_session=False,
+                )
+            )
             session.commit()
+            if recovered != 1:
+                logger.warning(
+                    "webhook_message_redelivery_stale_processing_not_recovered",
+                    provider=provider,
+                    provider_message_id=msg.message_id,
+                    delivery_message_id=str(existing.id),
+                )
+                return None
             logger.info(
                 "webhook_message_redelivery_recovered_stale_processing",
                 provider=provider,
