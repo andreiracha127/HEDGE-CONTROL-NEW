@@ -65,8 +65,9 @@ Read these before coding:
   - Existing production/staging fail-closed pattern for `AUDIT_SIGNING_KEY`.
 - `backend/app/core/config.py:110-122`
   - WhatsApp/Twilio integration settings are currently plain optional fields.
-- `backend/tests/test_phase5_whatsapp_llm.py:390-402`
-  - Existing test documents the no-secret Meta webhook path returning HTTP 200.
+- `backend/tests/test_phase5_whatsapp_llm.py`
+  - Existing `TestWebhookRoute.test_post_webhook_enqueues_messages` documents
+    the no-secret Meta webhook path returning HTTP 200.
 - `backend/tests/test_webhook_processor.py`
   - Existing signature verification and extraction coverage.
 
@@ -128,14 +129,34 @@ Minimum required fields:
 - `parse_status` constrained to `received`, `parsed`, or `parse_failed`;
 - `messages_extracted` count;
 - `received_at`;
-- `acknowledged_at` or an equivalent timestamp proving acknowledgement happened
-  after persistence.
+- `acknowledged_at`, proving acknowledgement happened after persistence.
 
 Use JSON/JSONB-compatible column types consistent with existing repo patterns.
 The migration must be portable across PostgreSQL and SQLite tests.
 Use the existing `JSON().with_variant(JSONB(), "postgresql")` style for JSON
 payload columns in the SQLAlchemy model and Alembic migration rather than a
 PostgreSQL-only `JSONB` type.
+Concrete expected model/migration type mapping:
+
+- `id`: UUID primary key.
+- `provider`: constrained string/enum with values `meta`, `twilio`.
+- `provider_message_id`: nullable `String(128)`.
+- `sender_phone`: nullable `String(50)`.
+- `raw_body`: nullable `Text`, populated for Meta exact raw JSON body text.
+- `raw_form`: nullable `JSON().with_variant(JSONB(), "postgresql")`,
+  populated for Twilio exact form parameters.
+- `headers`: non-null `JSON().with_variant(JSONB(), "postgresql")`.
+- `signature_present`: non-null `Boolean`.
+- `signature_verified`: non-null `Boolean`.
+- `signature_status`: constrained string/enum with values `missing`,
+  `verified`, `invalid`, `bypassed`.
+- `parse_status`: constrained string/enum with values `received`, `parsed`,
+  `parse_failed`.
+- `messages_extracted`: non-null `Integer`.
+- `received_at`: non-null timezone-aware `DateTime`.
+- `acknowledged_at`: nullable timezone-aware `DateTime`, populated before
+  returning provider acknowledgement.
+
 Both `raw_body` and `raw_form` must be present on every row; the
 non-applicable field is `NULL` (`raw_form` is `NULL` for Meta, `raw_body` is
 `NULL` for Twilio). The two status fields must be enforced by an Enum, CHECK
@@ -154,6 +175,10 @@ CHECK (
 
 For invalid JSON/form extraction failures, preserve the inbound delivery record
 with a failed parse status before returning the controlled HTTP error.
+
+In the local/test bypass path where the provider secret is not configured and
+the environment marker explicitly allows bypass, persist the delivery record
+with `signature_status="bypassed"` before extraction and queueing.
 
 For invalid/missing signatures, prefer preserving a rejected delivery record with
 signature metadata. If you choose not to persist rejected unauthenticated
