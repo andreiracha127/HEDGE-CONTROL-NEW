@@ -244,7 +244,7 @@ in-flight message processed without `delivery_message_id` must emit a structured
 log entry with `message_id`, `from_phone`, and final processing status so the
 exceptional path remains reconstructible.
 This legacy path is scoped to the single deployment window between PR-A4-2
-deployment and full in-memory queue drain. PR-A4-3 may remove the legacy path
+deployment and full in-memory queue drain. PR-A4-3 MUST remove the legacy path
 after confirming no pre-PR-A4-2 queue items can remain in flight.
 
 The processing result must capture enough to prove what happened:
@@ -289,6 +289,8 @@ def __eq__(self, other: object) -> bool:
         other.text,
         other.sender_name,
     )
+
+__hash__ = None  # Explicitly unhashable; do not rely on Python's implicit rule.
 ```
 
 Do not make `WhatsAppInboundMessage` hashable in this PR.
@@ -375,6 +377,8 @@ not rely on Python locks or process-local sets for correctness.
   `received -> processing -> processed|failed`.
 - [ ] `processing_result` records final orchestrator status and any RFQ/quote
   identifiers produced by processing.
+- [ ] Legacy `delivery_message_id=None` processing emits a structured warning in
+  PR-A4-2 and is removed no later than PR-A4-3.
 - [ ] Current canonical RFQ correlation and phone consistency behavior remains
   unchanged.
 - [ ] PR-A4-3 LLM decision artifact persistence remains out of scope.
@@ -408,6 +412,10 @@ Minimum expected coverage:
     and update every resulting line. At authoring time the helper definitions
     and internal body references are at lines 74, 82, and 83; external call
     sites are at lines 407, 413, and 435.
+  - Keep the existing `spec_from_file_location("migration_040", ...)` module
+    alias on the renamed 040 helper and use a distinct
+    `spec_from_file_location("migration_041", ...)` alias for the new 041
+    helper.
   - Add sibling helpers `_load_migration_041()` and
     `_run_migration_041(connection, direction)` pointing exclusively to
     `041_a4_inbound_webhook_messages.py`. Do not run 041 assertions through the
