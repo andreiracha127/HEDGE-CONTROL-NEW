@@ -33,14 +33,12 @@ from app.schemas.scenario import (
 )
 from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
 from app.services.price_lookup_service import (
+    PriceQuote,
     canonical_commodity,
-    get_cash_settlement_price_d1,
+    get_cash_settlement_price_d1_with_provenance,
     resolve_symbol,
 )
 from app.utils.market_calendar import _market_calendar_for_symbol, _prior_business_day
-
-
-DEFAULT_COMMODITY = "LME_AL"
 
 
 @dataclass(frozen=True)
@@ -59,25 +57,32 @@ class VirtualHedgeContract:
 
 def _build_price_lookup(
     overrides: dict[tuple[str, date], Decimal],
-) -> Callable[[Session, str, date], Decimal]:
-    def lookup(db: Session, symbol: str, as_of_date: date) -> Decimal:
+) -> Callable[[Session, str, date], PriceQuote]:
+    def lookup(db: Session, symbol: str, as_of_date: date) -> PriceQuote:
         prior_bd = _prior_business_day(
             as_of_date, lambda year: _market_calendar_for_symbol(symbol, year)
         )
         key = (symbol, prior_bd)
         if key in overrides:
-            return overrides[key]
-        return get_cash_settlement_price_d1(db, symbol=symbol, as_of_date=as_of_date)
+            return PriceQuote(
+                value=overrides[key],
+                source="scenario_override",
+                settlement_date=prior_bd,
+                symbol=symbol,
+            )
+        return get_cash_settlement_price_d1_with_provenance(
+            db, symbol=symbol, as_of_date=as_of_date
+        )
 
     return lookup
 
 
-def _resolve_price_d1(
+def _resolve_price_quote(
     db: Session,
     as_of_date: date,
-    lookup: Callable[[Session, str, date], Decimal],
-    commodity: str = DEFAULT_COMMODITY,
-) -> Decimal:
+    lookup: Callable[[Session, str, date], PriceQuote],
+    commodity: str,
+) -> PriceQuote:
     symbol = resolve_symbol(commodity)
     return lookup(db, symbol, as_of_date)
 
@@ -87,11 +92,11 @@ def _mtm_for_contract(
     quantity_mt: Decimal,
     entry_price: Decimal,
     as_of_date: date,
-    price_d1: Decimal,
+    price_quote: PriceQuote,
 ) -> MTMResultResponse:
     quantity_mt = quantize_mt(quantity_mt)
     entry_price = quantize_price(entry_price)
-    price_d1 = quantize_price(price_d1)
+    price_d1 = quantize_price(price_quote.value)
     mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.hedge_contract,
@@ -101,6 +106,7 @@ def _mtm_for_contract(
         price_d1=price_d1,
         entry_price=entry_price,
         quantity_mt=quantity_mt,
+        price_quote=price_quote,
     )
 
 
@@ -108,7 +114,7 @@ def _mtm_for_order(
     order: Order,
     quantity_mt: Decimal,
     as_of_date: date,
-    price_d1: Decimal,
+    price_quote: PriceQuote,
 ) -> MTMResultResponse:
     if order.price_type != PriceType.variable:
         raise HTTPException(
@@ -132,7 +138,7 @@ def _mtm_for_order(
 
     quantity_mt = quantize_mt(quantity_mt)
     entry_price = quantize_price(order.avg_entry_price)
-    price_d1 = quantize_price(price_d1)
+    price_d1 = quantize_price(price_quote.value)
     mtm_value = quantize_money(quantity_mt * (price_d1 - entry_price))
     return MTMResultResponse(
         object_type=MTMObjectType.order,
@@ -142,6 +148,7 @@ def _mtm_for_order(
         price_d1=price_d1,
         entry_price=entry_price,
         quantity_mt=quantity_mt,
+        price_quote=price_quote,
     )
 
 
@@ -178,7 +185,7 @@ def _apply_deltas(
             virtual_contracts.append(
                 VirtualHedgeContract(
                     id=delta.contract_id,
-                    commodity=DEFAULT_COMMODITY,
+                    commodity=delta.commodity,
                     quantity_mt=Decimal(delta.quantity_mt),
                     fixed_leg_side=HedgeLegSide(delta.fixed_leg_side),
                     variable_leg_side=HedgeLegSide(delta.variable_leg_side),
@@ -469,7 +476,7 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.as_of_date,
-                price_d1=_resolve_price_d1(
+                price_quote=_resolve_price_quote(
                     db, req.as_of_date, lookup, contract.commodity
                 ),
             )
@@ -482,7 +489,7 @@ def run_what_if(
                 quantity_mt=contract.quantity_mt,
                 entry_price=contract.fixed_price_value,
                 as_of_date=req.as_of_date,
-                price_d1=_resolve_price_d1(
+                price_quote=_resolve_price_quote(
                     db, req.as_of_date, lookup, contract.commodity
                 ),
             )
@@ -496,7 +503,7 @@ def run_what_if(
                 order,
                 quantity,
                 req.as_of_date,
-                _resolve_price_d1(db, req.as_of_date, lookup, order.commodity),
+                _resolve_price_quote(db, req.as_of_date, lookup, order.commodity),
             )
         )
 
@@ -547,7 +554,7 @@ def run_what_if(
                 quantity_mt=Decimal(str(contract.quantity_mt)),
                 entry_price=Decimal(str(contract.fixed_price_value)),
                 as_of_date=req.period_end,
-                price_d1=_resolve_price_d1(
+                price_quote=_resolve_price_quote(
                     db, req.period_end, lookup, contract.commodity
                 ),
             ).mtm_value
@@ -592,7 +599,9 @@ def run_what_if(
             quantity_mt=contract.quantity_mt,
             entry_price=contract.fixed_price_value,
             as_of_date=req.period_end,
-            price_d1=_resolve_price_d1(db, req.period_end, lookup, contract.commodity),
+            price_quote=_resolve_price_quote(
+                db, req.period_end, lookup, contract.commodity
+            ),
         ).mtm_value
         pl_snapshots.append(
             ScenarioPLSnapshotItem(

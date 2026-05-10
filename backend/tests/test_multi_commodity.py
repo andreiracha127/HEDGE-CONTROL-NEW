@@ -4,7 +4,8 @@ Validates that:
 * ``resolve_symbol`` maps every known commodity correctly and rejects unknowns.
 * ``compute_mtm_for_contract`` uses the contract's own commodity to pick the
   right cash-settlement symbol (copper instead of aluminium, etc.).
-* ``compute_mtm_for_order`` honours the explicit *commodity* parameter.
+* ``compute_mtm_for_order`` uses the order's own commodity to pick the right
+  cash-settlement symbol.
 """
 
 from datetime import date, datetime, timezone
@@ -69,12 +70,14 @@ def _insert_contract(
         return contract.id
 
 
-def _insert_order(quantity_mt: float, avg_entry_price: float) -> uuid.UUID:
+def _insert_order(
+    quantity_mt: float, avg_entry_price: float, commodity: str = "LME_AL"
+) -> uuid.UUID:
     with SessionLocal() as session:
         order = Order(
             order_type=OrderType.sales,
             price_type=PriceType.variable,
-            commodity="LME_AL",
+            commodity=commodity,
             quantity_mt=quantity_mt,
             pricing_convention="avg",
             avg_entry_price=avg_entry_price,
@@ -154,27 +157,29 @@ class TestMTMContractMultiCommodity:
         assert exc.value.status_code == 424
 
 
-# ── MTM order with explicit commodity ─────────────────────────────────
+# ── MTM order with order commodity ────────────────────────────────────
 class TestMTMOrderMultiCommodity:
-    """compute_mtm_for_order honours the *commodity* parameter."""
+    """compute_mtm_for_order resolves from Order.commodity."""
 
-    def test_order_with_copper_commodity(self) -> None:
+    def test_order_with_copper_commodity_resolves_from_order_commodity(self) -> None:
         cu_symbol = COMMODITY_SYMBOL_MAP["LME_CU"]
         _insert_price(
             symbol=cu_symbol, settlement_date=date(2026, 1, 30), price_usd=9500.0
         )
-        order_id = _insert_order(quantity_mt=10.0, avg_entry_price=9000.0)
+        order_id = _insert_order(
+            quantity_mt=10.0, avg_entry_price=9000.0, commodity="LME_CU"
+        )
         with SessionLocal() as session:
             result = compute_mtm_for_order(
                 session,
                 order_id=order_id,
                 as_of_date=date(2026, 2, 1),
-                commodity="LME_CU",
             )
         assert result.price_d1 == Decimal("9500.0")
+        assert result.price_quote.symbol == cu_symbol
         assert result.mtm_value == Decimal("5000.00")
 
-    def test_order_default_commodity_is_aluminium(self) -> None:
+    def test_order_with_lme_al_commodity_resolves_from_order_commodity(self) -> None:
         al_symbol = COMMODITY_SYMBOL_MAP["LME_AL"]
         _insert_price(
             symbol=al_symbol, settlement_date=date(2026, 1, 30), price_usd=2400.0
@@ -189,14 +194,53 @@ class TestMTMOrderMultiCommodity:
         assert result.price_d1 == Decimal("2400.0")
         assert result.mtm_value == Decimal("1000.00")  # 10 * (2400 - 2300)
 
-    def test_order_with_unknown_commodity_raises_400(self) -> None:
-        order_id = _insert_order(quantity_mt=10.0, avg_entry_price=100.0)
+    def test_order_with_unknown_commodity_raises_400_from_order_commodity(self) -> None:
+        order_id = _insert_order(
+            quantity_mt=10.0, avg_entry_price=100.0, commodity="NOPE"
+        )
         with SessionLocal() as session:
             with pytest.raises(HTTPException) as exc:
                 compute_mtm_for_order(
                     session,
                     order_id=order_id,
                     as_of_date=date(2026, 2, 1),
-                    commodity="NOPE",
                 )
         assert exc.value.status_code == 400
+
+    def test_mtm_order_aluminum_copper_zinc_nickel_lead_tin_distinct_results(self) -> None:
+        cases = [
+            ("LME_AL", Decimal("2400.0"), Decimal("2300.0")),
+            ("LME_CU", Decimal("9500.0"), Decimal("9000.0")),
+            ("LME_ZN", Decimal("2800.0"), Decimal("2600.0")),
+            ("LME_NI", Decimal("18000.0"), Decimal("17000.0")),
+            ("LME_PB", Decimal("2100.0"), Decimal("1850.0")),
+            ("LME_SN", Decimal("30000.0"), Decimal("28500.0")),
+        ]
+        order_ids: list[tuple[uuid.UUID, str]] = []
+        for commodity, price, entry in cases:
+            _insert_price(
+                symbol=COMMODITY_SYMBOL_MAP[commodity],
+                settlement_date=date(2026, 1, 30),
+                price_usd=float(price),
+            )
+            order_ids.append(
+                (
+                    _insert_order(
+                        quantity_mt=10.0,
+                        avg_entry_price=float(entry),
+                        commodity=commodity,
+                    ),
+                    commodity,
+                )
+            )
+
+        values: list[Decimal] = []
+        with SessionLocal() as session:
+            for order_id, commodity in order_ids:
+                result = compute_mtm_for_order(
+                    session, order_id=order_id, as_of_date=date(2026, 2, 1)
+                )
+                assert result.price_quote.symbol == COMMODITY_SYMBOL_MAP[commodity]
+                values.append(result.mtm_value)
+
+        assert len(set(values)) == len(cases)

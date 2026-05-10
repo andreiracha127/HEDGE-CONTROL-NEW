@@ -8,8 +8,10 @@ from fastapi import HTTPException
 from app.core.database import SessionLocal
 from app.models.market_data import CashSettlementPrice
 from app.models.mtm import MTMObjectType, MTMSnapshot
+from app.models.orders import Order, OrderPricingConvention, OrderType, PriceType
 from app.services.mtm_order_service import compute_mtm_for_order
 from app.services.mtm_snapshot_service import create_mtm_snapshot_for_order
+from app.services.price_lookup_service import resolve_symbol
 
 
 def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
@@ -48,6 +50,26 @@ def _create_fixed_sales_order(client) -> str:
     return response.json()["id"]
 
 
+def _insert_variable_order(
+    commodity: str,
+    quantity_mt: Decimal = Decimal("10.0"),
+    avg_entry_price: Decimal = Decimal("9000.0"),
+) -> UUID:
+    with SessionLocal() as session:
+        order = Order(
+            order_type=OrderType.sales,
+            price_type=PriceType.variable,
+            commodity=commodity,
+            quantity_mt=quantity_mt,
+            pricing_convention=OrderPricingConvention.avg,
+            avg_entry_price=avg_entry_price,
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+        return order.id
+
+
 def test_mtm_for_avg_order(client) -> None:
     _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=110.0)
     order_id = _create_variable_sales_order(client, "AVG", avg_entry_price=100.0)
@@ -67,6 +89,42 @@ def test_mtm_for_c2r_order(client) -> None:
     with SessionLocal() as session:
         result = compute_mtm_for_order(session, order_id=UUID(order_id), as_of_date=date(2026, 2, 1))
         assert result.mtm_value == Decimal("-50.00")
+
+
+def test_compute_mtm_for_order_uses_order_commodity_not_default() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=2400.0)
+    _insert_price("LME_CU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=9500.0)
+    order_id = _insert_variable_order(
+        commodity="COPPER",
+        quantity_mt=Decimal("10.0"),
+        avg_entry_price=Decimal("9000.0"),
+    )
+
+    with SessionLocal() as session:
+        result = compute_mtm_for_order(session, order_id=order_id, as_of_date=date(2026, 2, 1))
+
+    assert result.price_quote is not None
+    assert result.price_quote.symbol == resolve_symbol("COPPER")
+    assert result.price_d1 == Decimal("9500.0")
+    assert result.mtm_value == Decimal("5000.00")
+
+
+def test_compute_mtm_for_order_function_signature_does_not_accept_commodity_kwarg() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", settlement_date=date(2026, 1, 30), price_usd=2400.0)
+    order_id = _insert_variable_order(
+        commodity="ALUMINUM",
+        quantity_mt=Decimal("10.0"),
+        avg_entry_price=Decimal("2300.0"),
+    )
+
+    with SessionLocal() as session:
+        with pytest.raises(TypeError):
+            compute_mtm_for_order(
+                session,
+                order_id=order_id,
+                as_of_date=date(2026, 2, 1),
+                commodity="LME_AL",
+            )
 
 
 def test_exclude_fixed_price_orders(client) -> None:

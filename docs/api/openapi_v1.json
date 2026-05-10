@@ -42,6 +42,11 @@
       },
       "AddUnlinkedHedgeContractDelta": {
         "properties": {
+          "commodity": {
+            "maxLength": 64,
+            "title": "Commodity",
+            "type": "string"
+          },
           "contract_id": {
             "format": "uuid",
             "title": "Contract Id",
@@ -106,6 +111,7 @@
         "required": [
           "delta_type",
           "contract_id",
+          "commodity",
           "quantity_mt",
           "fixed_leg_side",
           "variable_leg_side",

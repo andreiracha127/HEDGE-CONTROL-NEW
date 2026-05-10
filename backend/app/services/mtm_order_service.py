@@ -16,14 +16,10 @@ from app.services.price_lookup_service import (
 )
 
 
-DEFAULT_COMMODITY = "LME_AL"
-
-
 def compute_mtm_for_order(
     db: Session,
     order_id: UUID,
     as_of_date: date,
-    commodity: str = DEFAULT_COMMODITY,
 ) -> MTMResultResponse:
     order = db.get(Order, order_id)
     if not order:
@@ -55,7 +51,7 @@ def compute_mtm_for_order(
 
     try:
         price_quote = get_cash_settlement_price_d1_with_provenance(
-            db, symbol=resolve_symbol(commodity), as_of_date=as_of_date
+            db, symbol=resolve_symbol(order.commodity), as_of_date=as_of_date
         )
     except PriceReferenceUnprovable as exc:
         raise HTTPException(

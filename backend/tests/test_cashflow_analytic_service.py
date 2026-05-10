@@ -7,15 +7,21 @@ from fastapi import HTTPException
 from app.core.database import SessionLocal
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeContractStatus, HedgeLegSide
 from app.models.market_data import CashSettlementPrice
+from app.models.orders import Order, OrderPricingConvention, OrderType, PriceType
 from app.services.cashflow_analytic_service import compute_cashflow_analytic
+from app.services.price_lookup_service import resolve_symbol
 
 
-def _insert_price(settlement_date: date, price_usd: float) -> None:
+def _insert_price(
+    settlement_date: date,
+    price_usd: float,
+    symbol: str = "LME_ALU_CASH_SETTLEMENT_DAILY",
+) -> None:
     with SessionLocal() as session:
         session.add(
             CashSettlementPrice(
                 source="westmetall",
-                symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
+                symbol=symbol,
                 settlement_date=settlement_date,
                 price_usd=price_usd,
                 source_url="https://example.test/source",
@@ -59,6 +65,26 @@ def _create_variable_sales_order(client, convention: str, avg_entry_price: float
     return response.json()["id"]
 
 
+def _insert_variable_order(
+    quantity_mt: float,
+    avg_entry_price: float,
+    commodity: str,
+) -> uuid.UUID:
+    with SessionLocal() as session:
+        order = Order(
+            order_type=OrderType.sales,
+            price_type=PriceType.variable,
+            commodity=commodity,
+            quantity_mt=quantity_mt,
+            pricing_convention=OrderPricingConvention.avg,
+            avg_entry_price=avg_entry_price,
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+        return order.id
+
+
 def _create_fixed_sales_order(client) -> str:
     response = client.post("/orders/sales", json={"price_type": "fixed", "quantity_mt": 5.0})
     assert response.status_code == 201
@@ -84,6 +110,39 @@ def test_aggregate_order_cashflows(client) -> None:
         response = compute_cashflow_analytic(session, as_of_date=date(2026, 2, 1))
         ids = {item.object_id for item in response.cashflow_items if item.object_type == "order"}
         assert order_id in ids
+
+
+def test_analytic_prices_each_order_against_its_own_commodity(client) -> None:
+    cases = [
+        ("ALUMINUM", "LME_ALU_CASH_SETTLEMENT_DAILY", 2400.0, 2300.0),
+        ("COPPER", "LME_CU_CASH_SETTLEMENT_DAILY", 9500.0, 9000.0),
+        ("ZINC", "LME_ZN_CASH_SETTLEMENT_DAILY", 2800.0, 2600.0),
+    ]
+    order_ids: dict[str, str] = {}
+    for commodity, symbol, price, entry_price in cases:
+        _insert_price(
+            settlement_date=date(2026, 1, 30),
+            price_usd=price,
+            symbol=symbol,
+        )
+        order_id = _insert_variable_order(
+            quantity_mt=5.0,
+            avg_entry_price=entry_price,
+            commodity=commodity,
+        )
+        order_ids[str(order_id)] = resolve_symbol(commodity)
+
+    with SessionLocal() as session:
+        response = compute_cashflow_analytic(session, as_of_date=date(2026, 2, 1))
+
+    order_items = {
+        item.object_id: item
+        for item in response.cashflow_items
+        if item.object_type == "order"
+    }
+    assert set(order_items) == set(order_ids)
+    for order_id, expected_symbol in order_ids.items():
+        assert order_items[order_id].price_symbol == expected_symbol
 
 
 def test_exclude_fixed_price_orders(client) -> None:
