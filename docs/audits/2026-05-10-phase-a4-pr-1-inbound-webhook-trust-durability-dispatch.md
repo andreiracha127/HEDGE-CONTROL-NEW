@@ -127,7 +127,7 @@ Minimum required fields:
 - `signature_status` constrained to `missing`, `verified`, `invalid`, or
   `bypassed`;
 - `parse_status` constrained to `received`, `parsed`, or `parse_failed`;
-- `messages_extracted` count, nullable only for `parse_failed` rows;
+- `messages_extracted` count, nullable until extraction completes;
 - `received_at`;
 - `acknowledged_at`, proving acknowledgement happened after persistence.
 
@@ -152,8 +152,8 @@ Concrete expected model/migration type mapping:
   `verified`, `invalid`, `bypassed`.
 - `parse_status`: constrained string/enum with values `received`, `parsed`,
   `parse_failed`.
-- `messages_extracted`: nullable `Integer`; `NULL` means parsing failed before
-  extraction reached a meaningful message count.
+- `messages_extracted`: nullable `Integer`; `NULL` means extraction has not
+  completed or parsing failed before a meaningful message count existed.
 - `received_at`: non-null timezone-aware `DateTime`.
 - `acknowledged_at`: nullable timezone-aware `DateTime`, populated before
   returning provider acknowledgement.
@@ -192,9 +192,9 @@ Add a CHECK or equivalent database-backed validation for message count semantics
 
 ```sql
 CHECK (
-  (parse_status = 'parse_failed' AND messages_extracted IS NULL)
+  (parse_status IN ('received', 'parse_failed') AND messages_extracted IS NULL)
   OR
-  (parse_status IN ('received', 'parsed') AND messages_extracted IS NOT NULL)
+  (parse_status = 'parsed' AND messages_extracted IS NOT NULL)
 )
 ```
 
@@ -297,11 +297,6 @@ sufficient to register the table with `Base.metadata`.
 - Do not change outbound WhatsApp provider behavior except where tests need
   setup updates.
 - Do not relax hard-fail behavior for invalid signatures or malformed payloads.
-- Do not rewrite existing HMAC helper call sites unless the executor environment
-  surfaces a concrete runtime failure in focused tests. If a compatibility fix
-  is required, limit it to the failing helper call and use
-  `hmac.HMAC(key=secret.encode(), msg=body, digestmod=hashlib.sha256)` or an
-  equivalent form without changing signature test logic.
 
 ---
 
@@ -338,8 +333,8 @@ sufficient to register the table with `Base.metadata`.
   constrained provider values `meta` and `twilio`.
 - [ ] A model-level validation hook enforces the same provider/raw evidence
   invariant independent of Alembic CHECK rendering.
-- [ ] `messages_extracted` is NULL only for `parse_failed` rows and non-NULL for
-  `received`/`parsed` rows.
+- [ ] `messages_extracted` is NULL for `received` and `parse_failed` rows, and
+  non-NULL for `parsed` rows.
 - [ ] Malformed Meta JSON preserves a failed inbound delivery record before
   returning HTTP 400.
 - [ ] The existing canonical RFQ ID processing tests keep passing.
