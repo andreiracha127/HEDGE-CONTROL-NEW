@@ -81,6 +81,12 @@ Current code anchors at authoring time:
     whether an RFQ quote mutation occurs.
 - `backend/app/services/rfq_orchestrator.py:774-913`
   - `_auto_create_quote()` validates and commits the quote.
+- `backend/app/services/rfq_orchestrator.py`
+  - `_claim_durable_message()` currently logs
+    `orchestrator_legacy_inbound_without_delivery_message_id` and returns
+    `None` for `delivery_message_id=None`;
+  - because `process_inbound_queue()` treats `None` as "no claim/skip result",
+    the current legacy branch falls through to `_process_single_message()`.
 - `backend/app/models/inbound_webhook_message.py:22-102`
   - PR-A4-2 durable inbound message row exists and carries `processing_result`,
     `rfq_id`, and `quote_id`.
@@ -322,6 +328,22 @@ In PR-A4-3:
   without `delivery_message_id`;
 - legacy messages without durable inbound identity must not invoke LLM parsing;
 - no legacy message may create or mutate quotes;
+- fix the current fall-through explicitly:
+  - `_claim_durable_message()` must return a non-`None` result dictionary for
+    `delivery_message_id=None`, for example:
+
+    ```python
+    {
+        "message_id": msg.message_id,
+        "status": "legacy_missing_delivery_message_id",
+        "from_phone": msg.from_phone,
+    }
+    ```
+
+  - or add an equivalent explicit guard in `process_inbound_queue()` before
+    `_process_single_message()` is called;
+  - do not leave the current `return None` behavior for the legacy case, because
+    `None` means "continue into processing" in the caller;
 - tests that still enqueue bare `WhatsAppInboundMessage` objects must be updated
   to create durable inbound message rows and set `delivery_message_id`;
 - keep a structured error/skip result if needed for defensive programming, but
