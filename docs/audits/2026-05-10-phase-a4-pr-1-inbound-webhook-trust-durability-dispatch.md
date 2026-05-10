@@ -91,10 +91,10 @@ Required matrix:
   - production/staging must require non-empty `TWILIO_AUTH_TOKEN`;
   - missing `X-Twilio-Signature` must return HTTP 403;
   - invalid `X-Twilio-Signature` must return HTTP 403.
-- local/test/development bypass is allowed only through the existing explicit
-  environment markers and/or sqlite in-memory test path. The bypass must be
-  visible in code and tests; do not make "secret absent means accept" the default
-  production behavior.
+- local/test/development bypass is allowed only through explicit `app_env`
+  markers. Do not authorize webhook-auth bypass from `database_url`, SQLite, or
+  sqlite in-memory detection. The bypass must be visible in code and tests; do
+  not make "secret absent means accept" the default production behavior.
 
 If implemented at startup, follow the `AUDIT_SIGNING_KEY` style in
 `Settings.model_post_init()`. If implemented at route entry, the route must
@@ -320,6 +320,8 @@ sufficient to register the table with `Base.metadata`.
   `app_env in {"test", "local", "development", "dev"}`, emits a warning log,
   and is covered by a test proving the bypass does not activate for
   `app_env=production`.
+- [ ] `app_env=production` with an in-memory SQLite database URL still hard-fails
+  unsigned inbound webhooks when the active provider secret is absent.
 - [ ] Meta requests with configured secret and missing signature return HTTP
   403 and do not enqueue messages.
 - [ ] Meta requests with configured secret and invalid signature return HTTP
@@ -366,6 +368,7 @@ Minimum expected coverage:
   - production/staging Meta no-secret request hard-fails;
   - local/test Meta no-secret request remains allowed only when explicit bypass
     conditions are present;
+  - `app_env=production` plus sqlite in-memory URL does not activate the bypass;
   - production/staging Twilio no-token request hard-fails;
   - valid signed Meta request persists delivery before enqueue;
   - valid signed Twilio request persists delivery before enqueue;
