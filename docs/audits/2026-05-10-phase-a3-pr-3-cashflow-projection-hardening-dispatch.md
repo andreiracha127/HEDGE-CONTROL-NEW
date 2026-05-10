@@ -116,18 +116,17 @@ def _get_market_price_quote(
 
 The signature changes from `-> Decimal | None` to `-> PriceQuote` (raises on absence). Caller pattern updates accordingly. The function name becomes `_get_market_price_quote` — the new return shape is `PriceQuote`, not `price`. (Rename mandate consistent with Wave-2's `_resolve_price_d1 → _resolve_price_quote`.)
 
-**Imports to update** at top of `cashflow_projection_service.py` (verified via grep against `5e25f8bd8` — current import is dynamic inside the function):
+**Imports to update** at top of `cashflow_projection_service.py` (verified via Serena `find_symbol`: `PriceQuote` is at `backend/app/utils/price_reference.py:26`; `PriceReferenceUnprovable` is at `backend/app/utils/price_reference.py:8`; `price_lookup_service.py:15` re-imports them from `utils/price_reference` — re-export works at runtime BUT `utils/price_reference` is the authoritative source per Wave 2 dispatch §0 stale-citation note; split the imports accordingly):
 
 ```python
+from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable
 from app.services.price_lookup_service import (
-    PriceQuote,
-    PriceReferenceUnprovable,
     get_cash_settlement_price_d1_with_provenance,
     resolve_symbol,
 )
 ```
 
-The dynamic `from ... import ...` inside `_get_market_price` (lines 38-41) is removed; module-level import is the institutional pattern (consistent with `mtm_order_service.py:12-16`).
+The dynamic `from ... import ...` inside `_get_market_price` (lines 38-41) is removed; module-level import is the institutional pattern. **Do NOT** consolidate the two import lines into a single `from app.services.price_lookup_service import ...` block — that would import `PriceQuote` / `PriceReferenceUnprovable` via the re-export, which works but contradicts the Wave 2 §0 declaration of `utils/price_reference.py` as the authoritative location.
 
 ### 3.2 `compute_cashflow_projection` — per-row commodity pricing; remove all `or 0` and fallbacks
 
@@ -296,28 +295,14 @@ from fastapi import HTTPException, status
 
 ### 3.3 Route boundary — translate `PriceReferenceUnprovable` to 424
 
-**Current** at `backend/app/api/routes/cashflow.py:62-68`:
+**Current function name verified via `read_file`**: the route function is `get_cashflow_projection` (NOT `projection`); the path decorator is `@router.get("/projection", ...)`. Verify decorator stack + role list via `read_file` before authoring.
+
+**Replacement** — wrap the body of `get_cashflow_projection` (preserving its existing signature, role gates, and decorator stack — only the function BODY gains the try/except wrap):
 
 ```python
 @router.get("/projection", response_model=CashFlowProjectionResponse)
-def projection(
-    as_of_date: date = Query(...),
-    session: Session = Depends(get_session),
-    _: None = Depends(require_any_role(...)),
-) -> CashFlowProjectionResponse:
-    return compute_cashflow_projection(session=session, as_of_date=as_of_date)
-```
-
-(VERIFY-LATEST: read the actual route body via `read_file` to confirm the role list and exact decorator stack; the boundary translation must wrap the call to `compute_cashflow_projection` in a `try/except PriceReferenceUnprovable` per the Wave-1 pattern — same shape as `routes/mtm.py` post-Wave-1.)
-
-**Replacement** — wrap the call:
-
-```python
-@router.get("/projection", response_model=CashFlowProjectionResponse)
-def projection(
-    as_of_date: date = Query(...),
-    session: Session = Depends(get_session),
-    _: None = Depends(require_any_role(...)),
+def get_cashflow_projection(
+    # ... preserve existing signature verbatim — verify via read_file ...
 ) -> CashFlowProjectionResponse:
     try:
         return compute_cashflow_projection(session=session, as_of_date=as_of_date)
@@ -327,10 +312,10 @@ def projection(
         ) from exc
 ```
 
-**Imports to add** at `routes/cashflow.py` top (verified via grep):
+**Imports to add** at `routes/cashflow.py` top — use the authoritative module per the Wave 2 §0 declaration:
 
 ```python
-from app.services.price_lookup_service import PriceReferenceUnprovable
+from app.utils.price_reference import PriceReferenceUnprovable
 ```
 
 `HTTPException` and `status` are already imported in the route module.
@@ -385,12 +370,34 @@ The `CashFlowProjectionResponse` shape is unchanged. The route's success path re
 - [ ] `grep -n "or 0" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
 - [ ] `grep -n '"Al"' backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix (the hardcoded literal is gone).
 - [ ] `grep -n "except Exception" backend/app/services/cashflow_projection_service.py` returns ZERO matches post-fix.
+- [ ] **Pre-fix test cleanup completed** (per §7.1): `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` returns ZERO matches (old symbol replaced everywhere). The `MARKET_PRICE_PATCH` constant points to `_get_market_price_quote`. Every `@patch(...)` site uses `PriceQuote` for success or `side_effect=PriceReferenceUnprovable(...)` for absence — never `return_value=None` or `return_value=Decimal(...)`. `test_variable_order_fallback_to_entry_price` and any other fallback-regime tests are DELETED.
 
 ---
 
 ## 7. Test coverage required
 
-- `backend/tests/test_cashflow_projection_service.py` (NEW or extend if exists):
+### 7.1 Pre-fix test cleanup — MANDATORY before adding new tests
+
+The existing `backend/tests/test_cashflow_projection_service.py` (verified via `grep_pattern`) contains:
+- `MARKET_PRICE_PATCH = "app.services.cashflow_projection_service._get_market_price"` (the OLD symbol name, soon-to-be-renamed).
+- ~20 `@patch(MARKET_PRICE_PATCH, return_value=...)` decorators across the test bodies.
+- At least one test (`test_variable_order_fallback_to_entry_price`) that explicitly asserts `price_source == "entry"` — i.e., it pins the FALLBACK REGIME §10 mandates removing.
+
+After §3.1's rename (`_get_market_price` → `_get_market_price_quote`) and signature change (`Decimal | None` → `PriceQuote`, raises on absence), all existing patches will silently target a non-existent attribute (mock creates it; real service is NOT mocked), and fallback-regime tests will fail because the regime no longer exists.
+
+**Mandatory cleanup steps** (must be done BEFORE adding the new tests in §7.2):
+
+1. Update the patch constant: `MARKET_PRICE_PATCH = "app.services.cashflow_projection_service._get_market_price_quote"` (new name).
+2. Update every `@patch(MARKET_PRICE_PATCH, return_value=Decimal("..."))` call site: replace with `return_value=PriceQuote(value=Decimal("..."), source="westmetall", settlement_date=<prior_business_day>, symbol=resolve_symbol("<commodity>"))` for the market-available path. Verify via `find_symbol` that `PriceQuote` is constructible at the cited shape.
+3. Update every `@patch(MARKET_PRICE_PATCH, return_value=None)` call site: replace with `@patch(MARKET_PRICE_PATCH, side_effect=PriceReferenceUnprovable("..."))` — the new function raises, it does not return None.
+4. **DELETE** `test_variable_order_fallback_to_entry_price` (and any sibling test asserting `price_source == "entry"` or `price_source == "fixed"` for the variable path with market-unavailable). These tests pin the bug being removed — they do not represent new institutional invariants.
+5. **DELETE** any test that asserts `commodity == "Al"` on a non-aluminum order's projection item (the hardcode is gone).
+
+After cleanup: `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` MUST return ZERO matches (old symbol fully replaced; the `[^_]` excludes matches inside `_get_market_price_quote`).
+
+### 7.2 New tests
+
+- `backend/tests/test_cashflow_projection_service.py` (extend post-§7.1 cleanup):
   - `test_projection_orders_emit_their_commodity_not_hardcoded_aluminum` — fixture: insert a copper sales order + a zinc sales order + canonical settlement seeds for both; call `compute_cashflow_projection`; assert exactly 2 items; assert `items[0].commodity` and `items[1].commodity` are `"COPPER"` / `"ZINC"` (or whichever short codes the test fixture uses); assert NEITHER has `"Al"`.
   - `test_projection_resolves_per_row_commodity_via_per_row_market_price_lookup` — fixture: copper order + zinc order + DISTINCT canonical settlement values for each (e.g., 9500 / 2800); assert `items[i].price_per_mt` differs across rows (proves per-row pricing, not single-aluminum-curve).
   - `test_projection_raises_424_when_any_row_price_unprovable` — fixture: 1 copper order + NO copper settlement seeded; call `compute_cashflow_projection`; assert it raises `PriceReferenceUnprovable` (or that the route returns 424 if testing through the FastAPI client).
@@ -518,12 +525,12 @@ J-A3-OPUS-02 + J-A3-OPUS-06 + J-A3-OPUS-07.
 3. `python scripts/install_git_hooks.py` — confirm hook v2 active (`git config core.hooksPath` returns `.githooks`).
 4. Read jury §J-A3-OPUS-02, J-A3-OPUS-06, J-A3-OPUS-07 in full.
 5. Read Wave 1 dispatch §3.1-§3.4 (the `_with_provenance` machinery + `PriceReferenceUnprovable` translation pattern). Read Wave 2 dispatch §3.7.1 (the per-row commodity + try/except translation pattern). PR-A3-3 mirrors both.
-6. Update `cashflow_projection_service.py` imports (top of file): add `from fastapi import HTTPException, status`; add `from app.services.price_lookup_service import PriceQuote, PriceReferenceUnprovable, get_cash_settlement_price_d1_with_provenance, resolve_symbol`. Remove the dynamic in-function imports inside `_get_market_price`.
+6. Update `cashflow_projection_service.py` imports (top of file): add `from fastapi import HTTPException, status`; add **two** import lines per §3.1 (split for the `utils/price_reference` authoritative-location convention): `from app.utils.price_reference import PriceQuote, PriceReferenceUnprovable` AND `from app.services.price_lookup_service import get_cash_settlement_price_d1_with_provenance, resolve_symbol`. Remove the dynamic in-function imports inside `_get_market_price`.
 7. Rename `_get_market_price` → `_get_market_price_quote`; replace body per §3.1. The function now raises `PriceReferenceUnprovable` (it does NOT return `None`).
 8. Update `compute_cashflow_projection` per §3.2: remove the global `market_price = _get_market_price(...)` line; resolve per-row inside the order and contract loops; emit `order.commodity` (not `"Al"`); raise 422 on missing `avg_entry_price` / `fixed_price_value` / `settlement_date`; remove all "entry" fallback paths.
 9. Update `routes/cashflow.py:projection` per §3.3: wrap the call in `try/except PriceReferenceUnprovable: raise HTTPException(424)`; add the import.
 10. Run `grep -n "or 0\|except Exception\|\"Al\"\|price_src.*\"entry\"" backend/app/services/cashflow_projection_service.py` — confirm ZERO matches. This is the institutional contract that the `or 0` / fallback / hardcode patterns are gone.
-11. Author tests per §7. Each test pins a specific institutional contract; no test should be deleted in iterations.
+11. **Pre-fix test cleanup per §7.1**: update `MARKET_PRICE_PATCH` constant; update all `@patch` decorators to PriceQuote / PriceReferenceUnprovable side_effect; DELETE fallback-regime tests; verify `grep -n "_get_market_price[^_]" backend/tests/test_cashflow_projection_service.py` returns ZERO. Then author NEW tests per §7.2. Each new test pins a specific institutional contract; no NEW test should be deleted in iterations.
 12. Run targeted pytest: `pytest backend/tests/test_cashflow_projection_service.py backend/tests/test_cashflow_projection_routes.py backend/tests/test_alembic_chain.py -v`
 13. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 14. Verify ZERO openapi/schema diff:
