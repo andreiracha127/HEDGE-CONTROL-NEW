@@ -698,7 +698,9 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 16 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts. The multi-turn loop in `client.py` is NOT unit-tested in v2 (would require fixture-mocking the Anthropic API which is fragile). The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact.
+New test file. 16 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+
+Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
 
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
@@ -793,7 +795,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 
 ## 7. Test coverage required
 
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 10 tests per §3.9 enumeration.
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 16 tests per §3.9 enumeration: 13 handler tests (read_file, find_symbol, grep_pattern + path-traversal protection + truncation + oversized-file rejection + byte-cap + symlink skip + async def) + 3 multi-turn loop tests for the verify-before-P1 guard (mocked Anthropic client).
 - `backend/tests/scripts/test_file_resolver.py` (existing) — UNCHANGED. The `_LINE_CAP=200` test continues to assert the cap.
 - `backend/tests/scripts/test_schema.py` (existing) — UNCHANGED.
 - `backend/tests/scripts/test_install_git_hooks.py` (existing) — UNCHANGED.
