@@ -164,7 +164,7 @@ def verify_signature(payload_body: bytes, signature_header: str) -> bool:
         return False
 
     expected = signature_header[7:]  # strip 'sha256='
-    computed = hmac.new(
+    computed = hmac.HMAC(
         app_secret.encode("utf-8"),
         payload_body,
         hashlib.sha256,
@@ -274,7 +274,7 @@ def verify_twilio_signature(
         data_str += key + form_params[key]
 
     computed = b64encode(
-        hmac.new(
+        hmac.HMAC(
             auth_token.encode("utf-8"),
             data_str.encode("utf-8"),
             hashlib.sha1,

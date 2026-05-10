@@ -217,7 +217,7 @@ def test_queue_depth_updates():
 def test_verify_signature_valid():
     secret = "test-secret-123"
     body = b'{"entry": []}'
-    expected_hmac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    expected_hmac = hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
     sig_header = f"sha256={expected_hmac}"
 
     with patch.dict(os.environ, {"WHATSAPP_APP_SECRET": secret}):
@@ -245,7 +245,7 @@ def test_verify_signature_no_sha256_prefix():
 def test_verify_signature_tampered_body():
     secret = "test-secret-123"
     body = b'{"entry": []}'
-    expected_hmac = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    expected_hmac = hmac.HMAC(secret.encode(), body, hashlib.sha256).hexdigest()
     sig_header = f"sha256={expected_hmac}"
 
     with patch.dict(os.environ, {"WHATSAPP_APP_SECRET": secret}):
@@ -408,7 +408,7 @@ def _compute_twilio_signature(auth_token: str, url: str, params: dict[str, str])
     for key in sorted(params.keys()):
         data_str += key + params[key]
     return b64encode(
-        hmac.new(
+        hmac.HMAC(
             auth_token.encode("utf-8"),
             data_str.encode("utf-8"),
             hashlib.sha1,
