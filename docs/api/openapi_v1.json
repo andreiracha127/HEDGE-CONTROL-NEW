@@ -6673,14 +6673,10 @@
         "properties": {
           "analytic": {
             "$ref": "#/components/schemas/CashFlowAnalyticResponse"
-          },
-          "baseline": {
-            "$ref": "#/components/schemas/CashFlowAnalyticResponse"
           }
         },
         "required": [
-          "analytic",
-          "baseline"
+          "analytic"
         ],
         "title": "ScenarioCashflowSnapshot",
         "type": "object"

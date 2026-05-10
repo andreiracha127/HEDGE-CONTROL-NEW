@@ -94,7 +94,6 @@ class ScenarioWhatIfRunRequest(BaseModel):
 
 class ScenarioCashflowSnapshot(BaseModel):
     analytic: CashFlowAnalyticResponse
-    baseline: CashFlowAnalyticResponse
 
 
 class ScenarioPLSnapshotItem(BaseModel):
