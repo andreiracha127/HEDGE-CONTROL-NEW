@@ -183,6 +183,10 @@ equivalent model-level validation hook, enforcing the same provider-exclusive
 raw capture invariant independently of the database CHECK. This is required so
 SQLite and test metadata paths do not rely only on Alembic's dialect-specific
 CHECK rendering.
+The model-level guard must raise `ValueError` with a descriptive message on
+constraint violation. Cover it by constructing an `InboundWebhookDelivery`
+object outside a session and asserting the `ValueError` is raised before any DB
+flush.
 
 Add a CHECK or equivalent database-backed validation for message count semantics:
 
@@ -357,12 +361,12 @@ cd backend && alembic heads
 git diff --check
 ```
 
-Do not preemptively rewrite existing `hmac.new(...)` helpers. The existing
-`backend/tests/test_webhook_processor.py` and
-`backend/tests/test_phase5_whatsapp_llm.py` suites pass in the current local
-runtime. If a different executor runtime proves otherwise with a failing test,
-handle that runtime fix narrowly and report it as an environment compatibility
-correction, not as a dispatch prerequisite.
+Do not rewrite existing `hmac.new(...)` helpers unless the executor runtime
+raises a concrete failure on the current call form. If a compatibility fix is
+required, change only the call signature, for example to
+`hmac.new(key=secret.encode(), msg=body, digestmod=hashlib.sha256)` or an
+equivalent `hmac.HMAC(...)` form. Report it as an environment compatibility
+correction and do not alter signature test logic.
 
 If the executor adds a dedicated migration test file, include it in the focused
 test run explicitly. If broad backend tests are run, document the known local
