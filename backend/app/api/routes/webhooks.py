@@ -228,6 +228,8 @@ def _persist_and_enqueue_messages(
         )
         if durable_id is None:
             continue
+        # Durable rows stay "received" while queued. RFQOrchestrator claims the
+        # row with an atomic status update before invoking LLM/quote mutation.
         enqueue_message(msg.model_copy(update={"delivery_message_id": durable_id}))
         enqueued += 1
     return enqueued
