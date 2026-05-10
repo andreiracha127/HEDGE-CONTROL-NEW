@@ -1269,6 +1269,8 @@ export interface components {
         };
         /** AddUnlinkedHedgeContractDelta */
         AddUnlinkedHedgeContractDelta: {
+            /** Commodity */
+            commodity: string;
             /**
              * Contract Id
              * Format: uuid

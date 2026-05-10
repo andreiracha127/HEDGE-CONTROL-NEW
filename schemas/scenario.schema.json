@@ -20,6 +20,7 @@
       "properties": {
         "delta_type": { "type": "string", "enum": ["add_unlinked_hedge_contract"] },
         "contract_id": { "type": "string", "format": "uuid" },
+        "commodity": { "type": "string" },
         "quantity_mt": { "type": ["string", "number"] },
         "fixed_leg_side": { "type": "string", "enum": ["buy", "sell"] },
         "variable_leg_side": { "type": "string", "enum": ["buy", "sell"] },
@@ -30,6 +31,7 @@
       "required": [
         "delta_type",
         "contract_id",
+        "commodity",
         "quantity_mt",
         "fixed_leg_side",
         "variable_leg_side",
@@ -168,7 +170,13 @@
         "mtm_value": { "type": "string" },
         "price_d1": { "type": "string" },
         "entry_price": { "type": "string" },
-        "quantity_mt": { "type": "string" }
+        "quantity_mt": { "type": "string" },
+        "price_quote": {
+          "oneOf": [
+            { "$ref": "#/definitions/PriceQuote" },
+            { "type": "null" }
+          ]
+        }
       },
       "required": [
         "object_type",
@@ -179,6 +187,17 @@
         "entry_price",
         "quantity_mt"
       ]
+    },
+    "PriceQuote": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": { "type": "string" },
+        "source": { "type": "string" },
+        "settlement_date": { "type": "string", "format": "date" },
+        "symbol": { "type": "string" }
+      },
+      "required": ["value", "source", "settlement_date", "symbol"]
     },
     "ScenarioCashflowSnapshot": {
       "type": "object",
@@ -210,7 +229,11 @@
         "object_id": { "type": "string" },
         "settlement_date": { "type": "string", "format": "date" },
         "amount_usd": { "type": "string" },
-        "mtm_value": { "type": "string" }
+        "mtm_value": { "type": "string" },
+        "price_source": { "type": ["string", "null"] },
+        "price_symbol": { "type": ["string", "null"] },
+        "price_settlement_date": { "type": ["string", "null"], "format": "date" },
+        "price_value": { "type": ["string", "null"] }
       },
       "required": ["object_type", "object_id", "settlement_date", "amount_usd", "mtm_value"]
     },

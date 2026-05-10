@@ -44,6 +44,7 @@ class HedgeControlUser(HttpUser):
                 {
                     "delta_type": "add_unlinked_hedge_contract",
                     "contract_id": WHATIF_CONTRACT_ID,
+                    "commodity": "ALUMINUM",
                     "quantity_mt": "10",
                     "fixed_leg_side": "buy",
                     "variable_leg_side": "sell",

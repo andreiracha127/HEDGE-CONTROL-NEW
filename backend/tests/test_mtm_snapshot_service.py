@@ -16,6 +16,7 @@ from app.models.contracts import (
 )
 from app.models.market_data import CashSettlementPrice
 from app.models.mtm import MTMObjectType, MTMSnapshot
+from app.models.orders import Order, OrderPricingConvention, OrderType, PriceType
 from app.services.mtm_snapshot_service import (
     create_mtm_snapshot_for_contract,
     create_mtm_snapshot_for_order,
@@ -77,6 +78,24 @@ def _create_variable_sales_order(client, avg_entry_price: float = 100.0) -> str:
     )
     assert response.status_code == 201
     return response.json()["id"]
+
+
+def _insert_variable_order(
+    commodity: str, quantity_mt: float = 5.0, avg_entry_price: float = 100.0
+) -> uuid.UUID:
+    with SessionLocal() as session:
+        order = Order(
+            order_type=OrderType.sales,
+            price_type=PriceType.variable,
+            commodity=commodity,
+            quantity_mt=quantity_mt,
+            pricing_convention=OrderPricingConvention.avg,
+            avg_entry_price=avg_entry_price,
+        )
+        session.add(order)
+        session.commit()
+        session.refresh(order)
+        return order.id
 
 
 # ── create_mtm_snapshot_for_contract ─────────────────────────────────────
@@ -247,6 +266,26 @@ def test_snapshot_order_creates_record(client) -> None:
         assert snap.object_type == MTMObjectType.order
         assert snap.object_id == uuid.UUID(oid)
         assert snap.correlation_id == "o-1"
+
+
+def test_create_mtm_snapshot_for_order_persists_commodity_resolved_symbol() -> None:
+    _insert_price("LME_ALU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 2400.0)
+    _insert_price("LME_CU_CASH_SETTLEMENT_DAILY", date(2026, 1, 30), 9500.0)
+    oid = _insert_variable_order(
+        commodity="COPPER", quantity_mt=10.0, avg_entry_price=9000.0
+    )
+
+    with SessionLocal() as session:
+        snap = create_mtm_snapshot_for_order(
+            session,
+            order_id=oid,
+            as_of_date=date(2026, 2, 1),
+            correlation_id="o-cu",
+        )
+
+    assert snap.price_symbol == "LME_CU_CASH_SETTLEMENT_DAILY"
+    assert snap.price_source == "westmetall"
+    assert snap.price_settlement_date == date(2026, 1, 30)
 
 
 def test_snapshot_order_idempotent(client) -> None:

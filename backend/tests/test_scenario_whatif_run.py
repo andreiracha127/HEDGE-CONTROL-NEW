@@ -11,6 +11,7 @@ from app.models.contracts import HedgeClassification, HedgeContract, HedgeContra
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderPricingConvention, OrderType, PriceType
 from app.models.pl import PLSnapshot
+from app.services.price_lookup_service import resolve_symbol
 
 
 def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
@@ -144,6 +145,7 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
                 {
                     "delta_type": "add_unlinked_hedge_contract",
                     "contract_id": str(uuid4()),
+                    "commodity": "ALUMINUM",
                     "quantity_mt": "10",
                     "fixed_leg_side": "buy",
                     "variable_leg_side": "sell",
@@ -157,6 +159,96 @@ def test_add_unlinked_contract_affects_global_exposure(client) -> None:
     assert response.status_code == 200
     data = _row_by_commodity(response.json()["global_exposure_snapshot"], "ALUMINUM")
     assert _dec(data["hedge_long_mt"]) == Decimal("10.0")
+
+
+def test_scenario_add_unlinked_hedge_contract_requires_commodity(client) -> None:
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [
+                {
+                    "delta_type": "add_unlinked_hedge_contract",
+                    "contract_id": str(uuid4()),
+                    "quantity_mt": "10",
+                    "fixed_leg_side": "buy",
+                    "variable_leg_side": "sell",
+                    "fixed_price_value": "100",
+                    "fixed_price_unit": "USD/MT",
+                    "float_pricing_convention": "avg",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "commodity" in response.text
+
+
+def test_scenario_add_unlinked_hedge_contract_validates_known_commodity(client) -> None:
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [
+                {
+                    "delta_type": "add_unlinked_hedge_contract",
+                    "contract_id": str(uuid4()),
+                    "commodity": "UNKNOWN_FAKE",
+                    "quantity_mt": "10",
+                    "fixed_leg_side": "buy",
+                    "variable_leg_side": "sell",
+                    "fixed_price_value": "100",
+                    "fixed_price_unit": "USD/MT",
+                    "float_pricing_convention": "avg",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 422
+    assert "settlement-symbol mapping" in response.text
+
+
+def test_scenario_virtual_hedge_uses_provided_commodity_not_default(client) -> None:
+    symbol = "LME_ZN_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=2800.0)
+    contract_id = uuid4()
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [
+                {
+                    "delta_type": "add_unlinked_hedge_contract",
+                    "contract_id": str(contract_id),
+                    "commodity": "ZINC",
+                    "quantity_mt": "10",
+                    "fixed_leg_side": "buy",
+                    "variable_leg_side": "sell",
+                    "fixed_price_value": "100",
+                    "fixed_price_unit": "USD/MT",
+                    "float_pricing_convention": "avg",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    item = next(
+        item
+        for item in response.json()["mtm_snapshot"]
+        if item["object_id"] == str(contract_id)
+        and item["object_type"] == "hedge_contract"
+    )
+    assert item["price_quote"]["symbol"] == resolve_symbol("ZINC")
+    assert item["price_quote"]["source"] == "westmetall"
+    assert _dec(item["mtm_value"]) == Decimal("27000.000000")
 
 
 def test_adjust_order_quantity_changes_exposure(client) -> None:
@@ -287,6 +379,70 @@ def test_scenario_prices_mtm_and_pl_by_each_commodity(client) -> None:
     )
 
 
+def test_scenario_price_override_constructs_scenario_override_provenance(client) -> None:
+    symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
+    _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
+    _insert_price(symbol, settlement_date=date(2026, 1, 30), price_usd=110.0)
+    contract_id = _insert_contract(quantity_mt=5.0, entry_price=100.0)
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [
+                {
+                    "delta_type": "add_cash_settlement_price_override",
+                    "symbol": symbol,
+                    "settlement_date": "2026-01-30",
+                    "price_usd": "2500.00",
+                }
+            ],
+        },
+    )
+    assert response.status_code == 200
+    item = next(
+        item
+        for item in response.json()["mtm_snapshot"]
+        if item["object_id"] == str(contract_id)
+    )
+    assert item["price_quote"]["source"] == "scenario_override"
+    assert _dec(item["price_quote"]["value"]) == Decimal("2500.00")
+    assert item["price_quote"]["symbol"] == symbol
+    assert item["price_quote"]["settlement_date"] == "2026-01-30"
+
+
+def test_scenario_real_contract_mtm_carries_price_quote(client) -> None:
+    _insert_price(
+        "LME_CU_CASH_SETTLEMENT_DAILY",
+        settlement_date=date(2026, 1, 30),
+        price_usd=9500.0,
+    )
+    contract_id = _insert_contract(
+        quantity_mt=5.0, entry_price=9000.0, commodity="COPPER"
+    )
+
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-02-01",
+            "period_start": "2026-01-01",
+            "period_end": "2026-01-31",
+            "deltas": [],
+        },
+    )
+    assert response.status_code == 200
+    item = next(
+        item
+        for item in response.json()["mtm_snapshot"]
+        if item["object_id"] == str(contract_id)
+    )
+    assert item["price_quote"] is not None
+    assert item["price_quote"]["symbol"] == "LME_CU_CASH_SETTLEMENT_DAILY"
+    assert item["price_quote"]["source"] == "westmetall"
+
+
 def test_scenario_does_not_persist(client) -> None:
     symbol = "LME_ALU_CASH_SETTLEMENT_DAILY"
     _insert_price(symbol, settlement_date=date(2026, 1, 29), price_usd=105.0)
@@ -324,6 +480,7 @@ def test_missing_price_hard_fails(client) -> None:
         },
     )
     assert response.status_code == 424
+    assert "cash settlement" in response.json()["detail"]
 
 
 def test_invalid_period_rejected(client) -> None:
@@ -374,6 +531,7 @@ def test_virtual_contract_id_collision_is_409(client) -> None:
                 {
                     "delta_type": "add_unlinked_hedge_contract",
                     "contract_id": str(contract_id),
+                    "commodity": "ALUMINUM",
                     "quantity_mt": "10",
                     "fixed_leg_side": "buy",
                     "variable_leg_side": "sell",

@@ -5,11 +5,13 @@ from decimal import Decimal
 from typing import Annotated, Literal, Union
 from uuid import UUID
 
+from fastapi import HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from app.schemas.cashflow import CashFlowAnalyticResponse
 from app.schemas.exposure import CommercialExposureRead, GlobalExposureRead
 from app.schemas.mtm import MTMResultResponse
+from app.services.price_lookup_service import resolve_symbol
 
 
 class ScenarioDeltaBase(BaseModel):
@@ -19,6 +21,7 @@ class ScenarioDeltaBase(BaseModel):
 class AddUnlinkedHedgeContractDelta(ScenarioDeltaBase):
     delta_type: Literal["add_unlinked_hedge_contract"]
     contract_id: UUID
+    commodity: str = Field(..., max_length=64)
     quantity_mt: Decimal
     fixed_leg_side: Literal["buy", "sell"]
     variable_leg_side: Literal["buy", "sell"]
@@ -27,11 +30,17 @@ class AddUnlinkedHedgeContractDelta(ScenarioDeltaBase):
     float_pricing_convention: str = Field(..., max_length=64)
 
     @model_validator(mode="after")
-    def validate_quantity(self) -> "AddUnlinkedHedgeContractDelta":
+    def validate(self) -> "AddUnlinkedHedgeContractDelta":
         if self.quantity_mt <= 0:
             raise ValueError("quantity_mt must be greater than zero")
         if self.fixed_price_value <= 0:
             raise ValueError("fixed_price_value must be greater than zero")
+        try:
+            resolve_symbol(self.commodity)
+        except HTTPException as exc:
+            raise ValueError(
+                f"commodity {self.commodity!r} has no settlement-symbol mapping"
+            ) from exc
         return self
 
 
