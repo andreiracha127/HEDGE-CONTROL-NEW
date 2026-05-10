@@ -99,11 +99,23 @@ _MAX_FIND_SYMBOL_BYTES = 8000
 
 
 def _resolve_within_repo(repo_root: Path, raw_path: str) -> Path:
-    """Resolve a path under repo_root; reject any traversal outside."""
+    """Resolve a path under repo_root; reject any traversal outside.
+
+    Uses ``Path.relative_to`` for ancestry verification — NOT
+    ``str.startswith``. The string-prefix approach is vulnerable to
+    sibling-prefix escape: with repo at ``/workspace/HEDGE-CONTROL-NEW``,
+    a path like ``../HEDGE-CONTROL-NEW-secrets/file`` resolves outside
+    the repo yet starts with the repo-root string.
+    ``Path.relative_to`` enforces strict ancestry.
+    """
     candidate = (repo_root / raw_path).resolve()
     repo_root_resolved = repo_root.resolve()
-    if not str(candidate).startswith(str(repo_root_resolved)):
-        raise ValueError(f"path {raw_path!r} resolves outside repo root")
+    try:
+        candidate.relative_to(repo_root_resolved)
+    except ValueError as exc:
+        raise ValueError(
+            f"path {raw_path!r} resolves outside repo root"
+        ) from exc
     return candidate
 
 
@@ -136,9 +148,9 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
 def handle_find_symbol(payload: dict[str, Any], *, repo_root: Path) -> dict[str, Any]:
     """Locate where a Python class/function/constant is DEFINED.
 
-    Implementation: regex grep across `backend/app/` and `backend/tests/`
-    for `^(class|def)\\s+<name>\\b` or `^<NAME>\\s*[:=]`. Returns first
-    match's file:line + a 30-line excerpt around the definition.
+    Implementation: regex grep across `backend/app/`, `backend/tests/`,
+    `scripts/` for `^(class|def)\\s+<name>\\b` or `^<NAME>\\s*[:=]`.
+    Returns first match's file:line + a context excerpt (15 lines each side).
     """
     name = payload["name"]
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
@@ -167,7 +179,17 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
         return {"ok": False, "error": f"invalid regex: {exc}"}
     cumulative_bytes = 0
     for sp in search_paths:
-        root = (repo_root / sp).resolve()
+        # MANDATORY: every search root must pass _resolve_within_repo
+        # before rglob, or model/operator-controlled `search_path` could
+        # walk outside the repo (e.g. `/`, `..`, `/etc`). Drop unresolvable
+        # entries silently — the model will see an empty match list and
+        # adapt; we do NOT raise on the first invalid search path because
+        # legitimate calls may pass several paths and one being invalid
+        # should not abort the whole search.
+        try:
+            root = _resolve_within_repo(repo_root, sp)
+        except ValueError:
+            continue
         if not root.exists():
             continue
         files = root.rglob("*.py") if root.is_dir() else [root]
@@ -350,6 +372,24 @@ def _create_with_retry(
     ...  # extracted verbatim from v1's inner retry loop
 
 
+def _summarize_for_log(result: dict[str, Any]) -> str:
+    """Compact, redaction-safe summary of a tool result for the audit log.
+
+    Per §5 audit-trail rule: never embed full file contents or grep
+    excerpts in the cache artifact (potential credential exposure).
+    Logs only structural metadata: ok flag, top-level keys, payload size.
+    """
+    ok = result.get("ok")
+    keys = sorted(k for k in result.keys() if k != "ok")
+    excerpt_chars = len(str(result.get("excerpt", "")))
+    matches_count = len(result.get("matches") or [])
+    truncated = result.get("truncated", False)
+    return (
+        f"ok={ok} keys={keys} excerpt_chars={excerpt_chars} "
+        f"matches_count={matches_count} truncated={truncated}"
+    )
+
+
 def call_review(
     *,
     model: str,
@@ -514,6 +554,8 @@ Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
 - `test_handle_read_file_caps_at_500_lines` — fixture 1000-line file, assert excerpt has ≤ 500 lines.
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
+- `test_handle_read_file_rejects_sibling_prefix_escape` — fixture: temp dir `tmp/HEDGE-CONTROL-NEW` (repo) + sibling `tmp/HEDGE-CONTROL-NEW-secrets/leak.txt`; pass `path="../HEDGE-CONTROL-NEW-secrets/leak.txt"`; assert `result["ok"] is False` (the `Path.relative_to` ancestry check catches this; `str.startswith` would have allowed it).
+- `test_handle_grep_pattern_rejects_outside_repo_search_path` — pass `search_path="/"` or `search_path="../"`; assert `result["ok"] is True` (handler succeeds) and `result["matches"] == []` (silent drop, no filesystem walk performed). Verifies the per-search-path `_resolve_within_repo` guard in `_grep_with_context`.
 - `test_handle_read_file_returns_error_on_missing` — non-existent path, assert `ok: False`.
 - `test_handle_find_symbol_locates_class_definition` — fixture with `class Foo:` → assert `find_symbol(name="Foo")` returns matching line.
 - `test_handle_find_symbol_rejects_invalid_identifier` — `name="not a thing!"`, assert `ok: False, error: "invalid Python identifier"`.
@@ -567,7 +609,9 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 ## 6. Acceptance criteria
 
 - [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
-- [ ] `_resolve_within_repo` rejects path traversal: `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for `path="../../etc/passwd"` (substring match — the full error includes the path prefix `path '...' resolves outside repo root`).
+- [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
+- [ ] `_grep_with_context` applies `_resolve_within_repo` to EVERY search path before `rglob`. Invalid entries (absolute paths like `/`, traversal like `..`, sibling-prefix escapes) are silently dropped — the per-path try/except `ValueError: continue` pattern. Without this guard, `search_path="/"` would recursively walk the entire filesystem, hanging the pre-push hook.
+- [ ] `_summarize_for_log` is defined in `client.py` (per §3.3 sketch): redaction-safe summary returning only `ok` flag, top-level keys, payload-size metadata. NEVER includes the raw `excerpt` or `matches` content.
 - [ ] `scripts/dispatch_review/tools.py` exists with `READ_FILE_TOOL`, `FIND_SYMBOL_TOOL`, `GREP_PATTERN_TOOL` dicts and a `build_review_tools()` function returning all 4 tools (3 investigation + 1 `report_findings`).
 - [ ] `scripts/dispatch_review/client.py::call_review` runs a multi-turn loop with `_MAX_ITERATIONS=12` and `_MAX_CUMULATIVE_OUTPUT_TOKENS=60000`. Returns `(ReviewReport, tool_call_log)`. Raises non-zero exit on cap exceedance OR on no-tool-emitted iteration.
 - [ ] `client.messages.create` is called WITHOUT `tool_choice` (multi-turn requires the model to choose between investigation tools and `report_findings`).
