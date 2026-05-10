@@ -20,7 +20,7 @@ def test_projection_route_translates_PriceReferenceUnprovable_to_424(client: Tes
 
     # Call the route
     response = client.get(f"/cashflow/projection?as_of_date={date.today().isoformat()}")
-    
+
     # Assert 424 Failed Dependency
     assert response.status_code == 424
     assert "cash settlement" in response.text.lower()

@@ -454,16 +454,16 @@ def test_projection_resolves_per_row_commodity_via_per_row_market_price_lookup(m
         delivery_date_end=FUTURE,
         commodity="ZINC",
     )
-    
+
     def side_effect(sess, comm, dt):
         if comm == "COPPER":
             return _mock_price_quote("9500", comm)
         if comm == "ZINC":
             return _mock_price_quote("2800", comm)
         raise PriceReferenceUnprovable(f"No price for {comm}")
-    
+
     mock_mp.side_effect = side_effect
-    
+
     result = compute_cashflow_projection(session, TODAY)
     assert len(result.items) == 2
     prices = {it.price_per_mt for it in result.items}
@@ -544,16 +544,16 @@ def test_projection_does_not_compute_global_aluminum_price(mock_mp, session):
         delivery_date_end=FUTURE,
         commodity="COPPER",
     )
-    
+
     def side_effect(sess, comm, dt):
         if comm == "COPPER":
             return _mock_price_quote("9500", comm)
         if comm == "LME_AL":
             raise PriceReferenceUnprovable("No AL global price")
         return _mock_price_quote("0", comm)
-        
+
     mock_mp.side_effect = side_effect
-    
+
     result = compute_cashflow_projection(session, TODAY)
     assert len(result.items) == 1
     assert result.items[0].price_per_mt == Decimal("9500")
