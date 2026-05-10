@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from anthropic import (
 )
 from pydantic import ValidationError
 
-from .schema import ReviewReport
+from .schema import Finding, ReviewReport
 from .tool_handlers import HANDLERS
 from .tools import build_review_tools
 
@@ -109,6 +110,81 @@ def _build_report_repair_message(exc: ReviewReportParseError) -> str:
         "exactly once with a complete ReviewReport. Preserve every valid "
         "P1/P2/P3 finding from the invalid payload; fill missing fields from "
         "verified evidence; do not downgrade, bypass, or suppress findings."
+    )
+
+
+_SELF_REFUTING_FIX_PATTERNS = (
+    re.compile(r"\bno\s+change\s+needed\b", re.IGNORECASE),
+    re.compile(r"\bno\s+action\s+needed\b", re.IGNORECASE),
+    re.compile(r"\bno\s+blocking\s+issue\b", re.IGNORECASE),
+    re.compile(r"\bno\s+(?:issue|blocker)\b", re.IGNORECASE),
+    re.compile(r"\binternally\s+consistent\b", re.IGNORECASE),
+    re.compile(r"\bis\s+correct\b", re.IGNORECASE),
+    re.compile(r"\bremove\s+(?:this|it)\s+from\s+p1\b", re.IGNORECASE),
+)
+
+_PROTECTED_P1_DOMAIN_PATTERNS = (
+    re.compile(r"\beconomic\s+uncertainty\b", re.IGNORECASE),
+    re.compile(r"\bschema\s+mismatch\b", re.IGNORECASE),
+    re.compile(r"\bmigration\s+blocker\b", re.IGNORECASE),
+    re.compile(r"\bhard[-\s]?fail(?:ure)?\b", re.IGNORECASE),
+    re.compile(r"\bdeterminism\b", re.IGNORECASE),
+    re.compile(r"\bdeterministic\b", re.IGNORECASE),
+    re.compile(r"\bgovernance\s+violation\b", re.IGNORECASE),
+    re.compile(r"\bconstitutional\b", re.IGNORECASE),
+    re.compile(r"\bfail[-\s]?closed\b", re.IGNORECASE),
+    re.compile(r"§\s*2(?:\.\d+)?", re.IGNORECASE),
+)
+
+
+def _finding_text(finding: Finding) -> str:
+    return "\n".join(
+        [
+            finding.rule,
+            finding.section,
+            finding.snippet,
+            finding.why,
+            finding.fix_suggestion,
+        ]
+    )
+
+
+def _has_self_refuting_fix_suggestion(finding: Finding) -> bool:
+    return any(pattern.search(finding.fix_suggestion) for pattern in _SELF_REFUTING_FIX_PATTERNS)
+
+
+def _has_protected_p1_domain(finding: Finding) -> bool:
+    text = _finding_text(finding)
+    return any(pattern.search(text) for pattern in _PROTECTED_P1_DOMAIN_PATTERNS)
+
+
+def _demote_self_refuting_p1_findings(report: ReviewReport) -> ReviewReport:
+    """Move explicitly self-refuting P1s to P2 without suppressing evidence."""
+    remaining_p1: list[Finding] = []
+    demoted: list[Finding] = []
+    for finding in report.p1_blocking:
+        if _has_self_refuting_fix_suggestion(finding) and not _has_protected_p1_domain(finding):
+            demoted.append(
+                finding.model_copy(
+                    update={
+                        "rule": f"Demoted-P1-self-refuting: {finding.rule}",
+                        "fix_suggestion": (
+                            "[demoted from P1: self-refuting fix_suggestion] "
+                            f"{finding.fix_suggestion}"
+                        ),
+                    }
+                )
+            )
+        else:
+            remaining_p1.append(finding)
+
+    if not demoted:
+        return report
+    return report.model_copy(
+        update={
+            "p1_blocking": remaining_p1,
+            "p2_warn": [*report.p2_warn, *demoted],
+        }
     )
 
 
@@ -271,6 +347,7 @@ def call_review(
                     report_was_rejected = True
                     break
                 raise
+            candidate_report = _demote_self_refuting_p1_findings(candidate_report)
             successful_investigations = sum(
                 1
                 for entry in tool_call_log
