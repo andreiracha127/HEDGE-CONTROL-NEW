@@ -99,6 +99,43 @@ _MAX_FILE_SIZE_BYTES = 2_000_000  # 2 MB — reject early; generated artifacts /
 _MAX_GREP_RESULTS = 80
 _MAX_FIND_SYMBOL_BYTES = 8000
 
+# Filenames whose contents may contain secrets even when in-repo.
+# pre_push_review.py loads ANTHROPIC_API_KEY from repo-root .env via
+# _load_repo_dotenv (scripts/pre_push_review.py:41-48). Without this
+# denylist, `read_file(path=".env")` would return the raw secret in
+# the tool_result excerpt and ship it to Anthropic in the next
+# messages.create call — exfiltration despite cache-log redaction.
+_SECRET_BEARING_BASENAME_PREFIXES = (".env",)
+_SECRET_BEARING_BASENAMES = frozenset({
+    "credentials.json",
+    "credentials.yaml",
+    "credentials.yml",
+    "secrets.json",
+    "secrets.yaml",
+    "secrets.yml",
+    "id_rsa",
+    "id_ed25519",
+    "id_ecdsa",
+    "id_dsa",
+})
+
+
+def _is_secret_bearing_path(path: Path) -> bool:
+    """Return True if this path's basename matches the secret denylist.
+
+    Conservative: matches `.env`, `.env.local`, `.env.production`,
+    `credentials.*`, `secrets.*`, SSH private keys. Does NOT match
+    arbitrary files containing the substrings; only literal denylist
+    basenames or `.env*` family.
+    """
+    name = path.name
+    if name in _SECRET_BEARING_BASENAMES:
+        return True
+    for prefix in _SECRET_BEARING_BASENAME_PREFIXES:
+        if name == prefix or name.startswith(prefix + "."):
+            return True
+    return False
+
 
 def _resolve_within_repo(repo_root: Path, raw_path: str) -> Path:
     """Resolve a path under repo_root; reject any traversal outside.
@@ -131,6 +168,24 @@ def handle_read_file(payload: dict[str, Any], *, repo_root: Path) -> dict[str, A
         return {"ok": False, "error": str(exc)}
     if not target.is_file():
         return {"ok": False, "error": f"not a file: {path_str}"}
+    # Secret-denylist guard: reject before reading any file whose
+    # basename matches the secret-bearing list (.env, credentials.*,
+    # secrets.*, SSH keys). A successful read_file would return the
+    # raw contents in the excerpt, shipping the secret to Anthropic
+    # via messages.create — cache-log redaction does not protect the
+    # in-flight conversation. The model can adapt: it has find_symbol
+    # / grep_pattern for code investigation; it does not legitimately
+    # need to read .env to verify a dispatch.
+    if _is_secret_bearing_path(target):
+        return {
+            "ok": False,
+            "error": (
+                f"path {path_str!r} matches the secret-bearing denylist; "
+                "reads of .env / credentials.* / secrets.* / SSH key "
+                "files are refused. Use find_symbol or grep_pattern on "
+                "source files instead."
+            ),
+        }
     # Fast reject for oversized files (generated artifacts, source maps,
     # minified bundles, frontend chunks) before reading them into memory.
     # A multi-MB single-line minified file would blow the per-turn token
@@ -241,6 +296,15 @@ def _grep_with_context(repo_root: Path, pattern: str, search_paths: list[str], *
             try:
                 _ = _resolve_within_repo(repo_root, str(f.relative_to(repo_root)))
             except (ValueError, OSError):
+                continue
+            # Same secret-denylist guard as handle_read_file. Even though
+            # the find_symbol regex (`^\s*(class|def|...)`) would not
+            # match secret content syntactically, a developer could pass
+            # a custom grep_pattern that DOES match secret-shaped strings
+            # (e.g., `pattern=r"sk-[A-Za-z0-9]+"` to hunt for API keys).
+            # rglob's *.py scope already eliminates *.env from results;
+            # belt-and-suspenders for anyone extending the rglob filter.
+            if _is_secret_bearing_path(f):
                 continue
             try:
                 lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -721,13 +785,15 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 17 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+New test file. 19 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
 
 Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
 
 Test enumeration (mechanical):
 - `test_handle_read_file_returns_excerpt` — fixture file, assert excerpt content + `total_lines` field.
 - `test_handle_read_file_caps_at_500_lines` — fixture 1000-line file, assert excerpt has ≤ 500 lines.
+- `test_handle_read_file_rejects_secret_bearing_path_dotenv` — fixture: tmpdir as repo root with a `.env` file containing `ANTHROPIC_API_KEY=sk-fake-test-key`; pass `path=".env"`; assert `result["ok"] is False`, `"secret-bearing denylist" in result["error"]`, AND that `result` does NOT contain the literal `"sk-fake-test-key"` substring anywhere. Pins the API-exfiltration prevention contract.
+- `test_handle_read_file_rejects_secret_bearing_path_env_local` — same as above but for `.env.local` (verifies the `.env.*` family match, not just literal `.env`).
 - `test_handle_read_file_rejects_oversized_file` — fixture 3 MB file (single multi-MB line, simulating a source map / minified bundle); assert `result["ok"] is False` and `"likely a generated artifact" in result["error"]`. Verifies the `_MAX_FILE_SIZE_BYTES` early-reject prevents reading huge files into memory.
 - `test_handle_read_file_caps_excerpt_at_byte_limit` — fixture file with a single very long line (e.g., 100 KB on one line, file under 2 MB total so passes the size gate); assert `result["ok"] is True`, `result["excerpt_truncated"] is True`, `len(result["excerpt"]) <= _MAX_BYTES_PER_READ`. Verifies the belt-and-suspenders byte cap on the excerpt itself.
 - `test_handle_read_file_rejects_path_traversal` — `path="../../etc/passwd"`, assert `result["ok"] is False` and `"outside repo root" in result["error"]` (substring match; full error includes the rejected path prefix).
@@ -795,6 +861,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 ## 6. Acceptance criteria
 
 - [ ] `scripts/dispatch_review/tool_handlers.py` exists with 3 handlers: `handle_read_file`, `handle_find_symbol`, `handle_grep_pattern`. Each handler is read-only, scoped to `repo_root`, and returns structured `{"ok": bool, ...}` dicts.
+- [ ] `_is_secret_bearing_path` is defined in `tool_handlers.py` per §3.1: returns True for basenames matching `.env`, `.env.*`, `credentials.json/yaml/yml`, `secrets.json/yaml/yml`, `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`. `handle_read_file` calls this BEFORE reading and returns structured rejection if matched — prevents Anthropic API exfiltration of repo-root `.env` (which holds `ANTHROPIC_API_KEY` per `scripts/pre_push_review.py:41-48`). `_grep_with_context` skips matching files in the per-file loop (defense-in-depth alongside the rglob `*.py` filter that already excludes `.env`).
 - [ ] `handle_read_file` rejects files larger than `_MAX_FILE_SIZE_BYTES` (2 MB) BEFORE reading them into memory (early `target.stat().st_size` check). Returns structured `{"ok": False, "error": "...likely a generated artifact..."}`. Required to prevent multi-MB minified bundles / source maps / generated frontend chunks from blowing the per-turn token budget.
 - [ ] `handle_read_file` excerpts are byte-capped at `_MAX_BYTES_PER_READ` (60 KB). Even if a single line within the read range exceeds the line cap (e.g., a long minified line under the 2 MB file gate), the excerpt is truncated and `excerpt_truncated: True` is set on the result.
 - [ ] `_resolve_within_repo` uses `Path.relative_to()` (NOT `str.startswith`) for ancestry verification. Rejects path traversal AND sibling-prefix escape (e.g., repo at `/workspace/HEDGE-CONTROL-NEW` rejects `../HEDGE-CONTROL-NEW-secrets/file`). `handle_read_file` returns `{"ok": False, "error": <full string>}` where `"outside repo root" in result["error"]` for both `path="../../etc/passwd"` and the sibling-prefix shape.
@@ -812,7 +879,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 17 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 19 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -884,7 +951,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 17 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 19 mechanical tests
 
 ## Acceptance evidence
 
@@ -943,7 +1010,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (17 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (19 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
