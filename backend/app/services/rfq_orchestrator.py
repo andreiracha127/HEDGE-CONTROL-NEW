@@ -409,6 +409,15 @@ class RFQOrchestrator:
             return None
 
         session.refresh(durable)
+        if durable.processing_status in _DURABLE_MESSAGE_TERMINAL_STATUSES:
+            logger.info(
+                "orchestrator_durable_message_already_consumed_after_claim_race",
+                message_id=msg.message_id,
+                delivery_message_id=str(durable.id),
+                processing_status=durable.processing_status,
+            )
+            return {"message_id": msg.message_id, "status": "already_consumed"}
+
         if durable.processing_status == "processing":
             if _processing_started_at_is_stale(durable.processing_started_at):
                 logger.warning(
@@ -428,7 +437,13 @@ class RFQOrchestrator:
             )
             return {"message_id": msg.message_id, "status": "already_processing"}
 
-        return {"message_id": msg.message_id, "status": "already_consumed"}
+        logger.warning(
+            "orchestrator_durable_message_recoverable_claim_race_recovered",
+            message_id=msg.message_id,
+            delivery_message_id=str(durable.id),
+            processing_status=durable.processing_status,
+        )
+        return None
 
     @staticmethod
     def _finalize_durable_message(
