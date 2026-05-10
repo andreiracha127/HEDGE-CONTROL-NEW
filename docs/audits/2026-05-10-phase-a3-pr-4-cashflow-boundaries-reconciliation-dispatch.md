@@ -162,7 +162,9 @@ def _load_realized_ledger_entries(db: Session, as_of_date: date) -> list[CashFlo
             CashFlowLedgerEntry.cashflow_date.asc(),
             CashFlowLedgerEntry.hedge_contract_id.asc(),
             CashFlowLedgerEntry.leg_id.asc(),
+            CashFlowLedgerEntry.source_event_type.asc(),
             CashFlowLedgerEntry.source_event_id.asc().nulls_first(),
+            CashFlowLedgerEntry.id.asc(),
         )
         .all()
     )
@@ -307,16 +309,18 @@ def _canonicalize_snapshot_payload(payload: dict) -> dict:
                 item.get("cashflow_date"),
                 item.get("hedge_contract_id"),
                 item.get("leg_id"),
+                item.get("source_event_type") or "",
                 (0, "")
                 if item.get("source_event_id") is None
                 else (1, item.get("source_event_id")),
+                item.get("id") or "",
             ),
         )
     return payload
 ```
 
 The database query order and canonical payload order must use the same stable
-four-field realized-ledger key. Do not use `created_at` as a reconciliation
+six-field realized-ledger key. Do not use `created_at` as a reconciliation
 tiebreaker; it is not serialized into `snapshot_data` and therefore cannot be
 part of the persisted hash contract.
 
@@ -613,7 +617,7 @@ Also add or extend a deterministic-hash test so it proves canonical ordering is
 part of the hash input for both payload arrays:
 
 - `unrealized_items` sorted by `(object_type, object_id)`.
-- `realized_ledger_entries` sorted by `(cashflow_date, hedge_contract_id, leg_id, NULL-first source_event_id tuple)`.
+- `realized_ledger_entries` sorted by `(cashflow_date, hedge_contract_id, leg_id, source_event_type, NULL-first source_event_id tuple, id)`.
 
 If a test inserts a direct ledger row with `source_event_id=None`, it must prove
 the NULL-first source-event sort key is deterministic. Normal settlement-ledger
