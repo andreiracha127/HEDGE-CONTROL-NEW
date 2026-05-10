@@ -139,7 +139,7 @@ def _ledger_entry_payload(entry: CashFlowLedgerEntry) -> dict:
         "leg_id": entry.leg_id,
         "cashflow_date": entry.cashflow_date.isoformat(),
         "currency": entry.currency,
-        "direction": entry.direction,
+        "direction": str(entry.direction).upper(),
         "amount": str(quantize_money(entry.amount)),
         "signed_amount_usd": str(signed_amount),
         "price_source": entry.price_source,
@@ -340,6 +340,26 @@ The conflict check must use the replacement `_canonicalize_snapshot_payload()`
 for both the newly computed payload and `existing.snapshot_data`; otherwise
 persisted rows with new `unrealized_items` / `realized_ledger_entries` arrays
 may false-conflict because only the old `cashflow_items` array is sorted.
+
+Updated conflict-check shape:
+
+```python
+if existing is not None:
+    existing_payload = _canonicalize_snapshot_payload(dict(existing.snapshot_data))
+    if (
+        existing_payload != payload
+        or Decimal(str(existing.total_net_cashflow)) != total
+        or (existing.inputs_hash is not None and existing.inputs_hash != inputs_hash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="CashFlow baseline snapshot conflict",
+        )
+    return existing
+```
+
+This call-site already exists in the current service; keep it and ensure it uses
+the updated `_canonicalize_snapshot_payload()` replacement shown above.
 
 The legacy `cashflow_items` branch remains only to make conflict checks
 deterministic during any pre-migration/runtime overlap. It must not be used to
