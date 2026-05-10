@@ -303,7 +303,8 @@ def _canonicalize_snapshot_payload(payload: dict) -> dict:
         # Legacy Analytic-shaped Baseline rows are archived by migration 039.
         # Keep deterministic ordering for conflict checks during any
         # pre-migration/runtime overlap, but do not rewrite this shape into
-        # the new Baseline payload.
+        # the new Baseline payload. Remove only after migration 039 is
+        # confirmed applied in all environments.
         payload["cashflow_items"] = sorted(
             payload["cashflow_items"],
             key=lambda item: (item.get("object_type"), item.get("object_id")),
@@ -322,7 +323,9 @@ def _canonicalize_snapshot_payload(payload: dict) -> dict:
                 item.get("cashflow_date"),
                 item.get("hedge_contract_id"),
                 item.get("leg_id"),
-                item.get("source_event_type") or "",
+                item.get("source_event_type")
+                if item.get("source_event_type") is not None
+                else "",
                 (0, "")
                 if item.get("source_event_id") is None
                 else (1, str(item.get("source_event_id"))),
@@ -345,6 +348,8 @@ The non-NULL canonicalization branch must coerce `source_event_id` through
 `str(...)` even though `_ledger_entry_payload()` already serializes ORM UUIDs;
 this keeps the sort key type-stable for both fresh payloads and JSON-loaded
 existing payloads.
+Use the explicit `is not None` form for `source_event_type` so an empty string,
+if ever present, is not silently conflated with null.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
 
@@ -358,7 +363,12 @@ Updated conflict-check shape:
 ```python
 if existing is not None:
     existing_payload = _canonicalize_snapshot_payload(dict(existing.snapshot_data))
-    if existing_payload.get("view") == "baseline" and existing.inputs_hash is None:
+    if existing_payload.get("view") != "baseline":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="CashFlow baseline snapshot uses legacy payload shape",
+        )
+    if existing.inputs_hash is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="CashFlow baseline snapshot missing inputs_hash",
@@ -475,6 +485,7 @@ Migration requirements:
   - `original_created_at` DateTime(timezone=True), nullable.
   - `archived_at` DateTime(timezone=True), server default `func.now()`, not null.
   - `archive_reason` String(128) not null.
+- Populate `original_created_at` from the source row's `created_at` column.
 - Move only legacy Analytic-shaped rows:
   - `snapshot_data` contains root key `cashflow_items`, OR
   - `snapshot_data["view"]` is absent/not `"baseline"`.
@@ -543,9 +554,10 @@ Mechanical grep checks:
 grep -n "compute_cashflow_analytic\|analytic.model_dump" backend/app/services/cashflow_baseline_service.py
 grep -n "baseline=cashflow_analytic" backend/app/services/scenario_whatif_service.py
 grep -n "baseline: CashFlowAnalyticResponse" backend/app/schemas/scenario.py
+rg -n "\.baseline" frontend-svelte/src
 ```
 
-All three commands must return zero matches after the fix.
+All four commands must return zero matches after the fix.
 
 ---
 
@@ -620,17 +632,22 @@ Add a test that:
 
 1. Creates an active hedge contract.
 2. Seeds the required settlement price.
-3. Calls `ingest_hedge_contract_settlement()` with derived fixed and float leg amounts.
-4. Creates a Baseline snapshot with `as_of_date >= cashflow_date`.
-5. Asserts both ledger entries appear in `snapshot_data["realized_ledger_entries"]`.
-6. Asserts `realized_total_usd` equals signed ledger sum.
-7. Asserts `total_net_cashflow` equals realized plus unrealized.
+3. Builds a `HedgeContractSettlementCreate` whose leg amounts match the server-derived fixed and float amounts.
+4. Calls `ingest_hedge_contract_settlement()` with the `db`, `contract_id`, and payload.
+5. Creates a Baseline snapshot with `as_of_date >= cashflow_date`.
+6. Asserts both ledger entries appear in `snapshot_data["realized_ledger_entries"]`.
+7. Asserts `realized_total_usd` equals signed ledger sum.
+8. Asserts `total_net_cashflow` equals realized plus unrealized.
 
 Import `ingest_hedge_contract_settlement` from
 `app.services.cashflow_ledger_service`. Use existing ledger tests in
 `backend/tests/test_cashflow_ledger_settlement.py` as fixture guidance. Do not
 duplicate an end-to-end settlement suite; this test only proves Baseline
 consumes ledger evidence and stores reconciliation.
+Use the server-derived amount pattern from
+`test_settlement_amount_derived_server_side_not_from_payload`; wrong leg
+amounts should still fail at settlement ingest and are outside this Baseline
+test's purpose.
 
 ### 6.3 Partially settled unrealized tail is included by Baseline
 
