@@ -129,7 +129,8 @@ At minimum it must include:
 - `provider` and `provider_message_id` copied from the durable inbound message;
 - `rfq_id` nullable FK to `rfqs.id`;
 - `quote_id` nullable FK to `rfq_quotes.id`;
-- `counterparty_id` nullable UUID/string consistent with existing RFQ models;
+- `counterparty_id` nullable UUID FK to `counterparties.id`, consistent with
+  `RFQInvitation.counterparty_id`;
 - `schema_version` integer, default `1`;
 - `llm_provider`, e.g. `openai`;
 - `classification_model` nullable;
@@ -186,6 +187,18 @@ Migration requirements:
   add an `attempt_number` and a uniqueness constraint on
   `(inbound_message_id, attempt_number)`;
 - downgrade removes all introduced objects cleanly.
+
+JSON columns in the migration `op.create_table()` must use the same portable
+type shape as PR-A4-1/2:
+
+```python
+JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+```
+
+Do not use raw `JSONB()` directly in the migration, because that breaks the
+SQLite test dialect. Import the shared `json_payload_type` only if the migration
+environment can resolve application imports reliably; otherwise replicate the
+`with_variant` expression inline in the migration.
 
 SQLite tests must exercise the same uniqueness invariant. If PostgreSQL-only
 CHECK constraints are added, guard them by dialect and enforce the same status
@@ -340,10 +353,13 @@ In PR-A4-3:
     }
     ```
 
-  - or add an equivalent explicit guard in `process_inbound_queue()` before
-    `_process_single_message()` is called;
   - do not leave the current `return None` behavior for the legacy case, because
     `None` means "continue into processing" in the caller;
+  - `process_inbound_queue()` must append that result via its existing
+    `if claim is not None` branch and then `continue`;
+  - do not call `_finalize_durable_message()` for the legacy case, because there
+    is no durable inbound message row to finalize;
+  - `mark_message_finished(msg)` must still run via the existing `finally`;
 - tests that still enqueue bare `WhatsAppInboundMessage` objects must be updated
   to create durable inbound message rows and set `delivery_message_id`;
 - keep a structured error/skip result if needed for defensive programming, but
