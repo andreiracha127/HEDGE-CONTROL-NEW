@@ -220,8 +220,9 @@ recover and update the durable `InboundWebhookMessage` row.
 
 Preferred direction:
 
+- add `import uuid` to `backend/app/schemas/whatsapp.py`;
 - add `delivery_message_id: uuid.UUID | None = Field(None)` to
-  `WhatsAppInboundMessage` in `backend/app/schemas/whatsapp.py`;
+  `WhatsAppInboundMessage`;
 - load the `InboundWebhookMessage` row at processing start;
 - transition status:
   - `received` -> `processing`;
@@ -238,6 +239,9 @@ This legacy path must not be relied on beyond the deployment boundary. Any
 in-flight message processed without `delivery_message_id` must emit a structured
 log entry with `message_id`, `from_phone`, and final processing status so the
 exceptional path remains reconstructible.
+This legacy path is scoped to the single deployment window between PR-A4-2
+deployment and full in-memory queue drain. PR-A4-3 may remove the legacy path
+after confirming no pre-PR-A4-2 queue items can remain in flight.
 
 The processing result must capture enough to prove what happened:
 
@@ -260,11 +264,30 @@ logic changes meaning. Existing direct constructors such as `_make_inbound()` in
 `backend/tests/test_rfq_orchestrator.py` must remain valid with
 `delivery_message_id=None`.
 Because `WhatsAppInboundMessage` is a Pydantic `BaseModel`, adding
-`delivery_message_id` changes the auto-generated equality surface. Audit every
-test that compares `WhatsAppInboundMessage` objects directly. If such assertions
-exist, either make equality intentionally ignore `delivery_message_id` through
-model configuration or update the affected tests to compare only the relevant
-fields explicitly.
+`delivery_message_id` changes the auto-generated equality surface. Preserve the
+pre-PR equality contract by adding an explicit `__eq__` implementation that
+compares only the original message-content fields:
+
+```python
+def __eq__(self, other: object) -> bool:
+    if not isinstance(other, WhatsAppInboundMessage):
+        return NotImplemented
+    return (
+        self.message_id,
+        self.from_phone,
+        self.timestamp,
+        self.text,
+        self.sender_name,
+    ) == (
+        other.message_id,
+        other.from_phone,
+        other.timestamp,
+        other.text,
+        other.sender_name,
+    )
+```
+
+Do not make `WhatsAppInboundMessage` hashable in this PR.
 At authoring time, `backend/tests/test_rfq_orchestrator.py` constructs inbound
 messages via `_make_inbound()` at lines 106-111 and uses those objects in many
 tests, but the grep sweep did not find direct `WhatsAppInboundMessage` object
