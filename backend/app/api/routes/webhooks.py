@@ -117,6 +117,8 @@ def _persist_message_for_enqueue(
     msg: Any,
 ) -> uuid.UUID | None:
     if msg.timestamp is None:
+        # timestamp is required by the durable message schema; malformed
+        # provider messages are not partially persisted or enqueued.
         logger.warning(
             "webhook_message_missing_timestamp",
             provider=provider,
@@ -174,6 +176,18 @@ def _persist_message_for_enqueue(
         ):
             logger.info(
                 "webhook_message_redelivery_already_processing",
+                provider=provider,
+                provider_message_id=msg.message_id,
+                delivery_message_id=str(existing.id),
+            )
+            return None
+
+        if (
+            existing.processing_status == "processing"
+            and existing.processing_completed_at is not None
+        ):
+            logger.info(
+                "webhook_message_redelivery_already_completed",
                 provider=provider,
                 provider_message_id=msg.message_id,
                 delivery_message_id=str(existing.id),
