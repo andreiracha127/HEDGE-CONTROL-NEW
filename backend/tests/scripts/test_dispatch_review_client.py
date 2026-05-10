@@ -105,6 +105,122 @@ def test_call_review_accepts_p1_blocking_json_string_and_preserves_blocking_sema
     assert len(report.p1_blocking) == 1
 
 
+def test_call_review_demotes_self_refuting_p1_from_fix_suggestion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    finding = _finding()
+    finding["why"] = "The cited dispatch section is internally consistent."
+    finding["fix_suggestion"] = "No change needed; remove this from P1."
+    responses = [
+        _response(_ToolUse("report_findings", _report_input(p1_blocking=[finding]), "report-1")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert report.p1_blocking == []
+    assert len(report.p2_warn) == 1
+    assert report.p2_warn[0].rule == "Demoted-P1-self-refuting: Tipo I"
+    assert report.p2_warn[0].fix_suggestion.startswith(
+        "[demoted from P1: self-refuting fix_suggestion]"
+    )
+    assert tool_log == []
+
+
+def test_call_review_preserves_real_p1_with_no_change_text_when_protected_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "migration.py").write_text("revision = 'abc'\n", encoding="utf-8")
+    finding = _finding()
+    finding["why"] = "Migration blocker: schema mismatch leaves the ledger table invalid."
+    finding["fix_suggestion"] = "No change needed is incorrect; add the migration fix."
+    responses = [
+        _response(_ToolUse("read_file", {"path": "migration.py"}, "read-1")),
+        _response(_ToolUse("report_findings", _report_input(p1_blocking=[finding]), "report-1")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert len(report.p1_blocking) == 1
+    assert report.p2_warn == []
+    assert len(tool_log) == 1
+
+
+def test_call_review_does_not_demote_when_self_refuting_text_is_only_in_why(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "evidence.py").write_text("class Evidence:\n    pass\n", encoding="utf-8")
+    finding = _finding()
+    finding["why"] = "No blocking issue was proven by this sentence alone."
+    finding["fix_suggestion"] = "Fix the missing concrete-code identifier."
+    responses = [
+        _response(_ToolUse("read_file", {"path": "evidence.py"}, "read-1")),
+        _response(_ToolUse("report_findings", _report_input(p1_blocking=[finding]), "report-1")),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert len(report.p1_blocking) == 1
+    assert report.p2_warn == []
+    assert len(tool_log) == 1
+
+
+def test_call_review_mixed_self_refuting_and_real_p1_still_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "evidence.py").write_text("class Evidence:\n    pass\n", encoding="utf-8")
+    self_refuting = _finding()
+    self_refuting["fix_suggestion"] = "No blocking issue; no change needed."
+    real = _finding()
+    real["rule"] = "Tipo-II-governance"
+    real["why"] = "Governance violation: dispatch contradicts the mandatory fail-closed rule."
+    real["fix_suggestion"] = "Remove the contradictory acceptance criterion."
+    responses = [
+        _response(_ToolUse("read_file", {"path": "evidence.py"}, "read-1")),
+        _response(
+            _ToolUse(
+                "report_findings",
+                _report_input(p1_blocking=[self_refuting, real]),
+                "report-1",
+            )
+        ),
+    ]
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    monkeypatch.setattr(review_client, "Anthropic", lambda: _FakeAnthropic(responses))
+
+    report, tool_log = review_client.call_review(
+        model="claude-sonnet-4-6",
+        cached_system_blocks=[],
+        user_payload="payload",
+        repo_root=tmp_path,
+    )
+
+    assert [finding.rule for finding in report.p1_blocking] == ["Tipo-II-governance"]
+    assert len(report.p2_warn) == 1
+    assert report.p2_warn[0].rule == "Demoted-P1-self-refuting: Tipo I"
+    assert len(tool_log) == 1
+
+
 def test_call_review_repairs_missing_summary_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
