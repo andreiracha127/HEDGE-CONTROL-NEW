@@ -896,7 +896,7 @@ Update `scripts/pre_push_review.py::main` to pass `repo_root` into `call_review`
 
 ### 3.9 Tests — `backend/tests/scripts/test_tool_handlers.py`
 
-New test file. 25 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
+New test file. 26 mechanical tests covering the 3 handlers + path-traversal protection + truncation behavior + oversized-file rejection + byte-cap on excerpts + multi-turn loop verify-before-P1 guards (mocked Anthropic client at the boundary).
 
 Note on multi-turn loop coverage: the verify-before-P1 guard (§3.3) is critical institutional logic — without test coverage, the guard could land broken (e.g., counting all entries instead of ok=True only) and silently regress to the v1 FP class. The 3 multi-turn loop tests (`test_call_review_rejects_unverified_p1_on_turn_1`, `test_call_review_accepts_clean_p1_empty_report_on_turn_1`, `test_call_review_rejects_p1_with_only_failed_investigations`) mock the Anthropic client at the `client.messages.create` boundary using a small response stub. The mocking surface is narrow (2-3 fields per response: `content`, `stop_reason`, `usage`) and stable across SDK minor versions. The end-to-end smoke test runs the actual hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`) and inspects the resulting JSON artifact for tool_calls evidence and FP-class regression check.
 
@@ -1000,7 +1000,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 - [ ] `scripts/pre_push_review.py::main` passes `repo_root` into `call_review` and **unpacks the tuple return**: `report, tool_call_log = call_review(...)` (NOT `report = call_review(...)`). Verify via `grep -n 'call_review' scripts/pre_push_review.py` — left-hand side must be a 2-tuple unpack. Forwards `tool_call_log` to `write_cache_artifact`.
 - [ ] `scripts/dispatch_review/file_resolver.py` UNCHANGED (`_LINE_CAP=200`).
 - [ ] `scripts/dispatch_review/schema.py` UNCHANGED (`ReviewReport` shape stays).
-- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 25 mechanical tests.
+- [ ] `backend/tests/scripts/test_tool_handlers.py` exists with 26 mechanical tests.
 - [ ] Manual e2e: invoke the new hook against the merged Wave-2 dispatch (`docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md`). Inspect the cache artifact's `tool_calls` array — at least 1 `read_file` or `find_symbol` call observed; the `ReviewReport` either matches or improves on hook v1's findings on the same dispatch.
 - [ ] Backend full suite green except known failures (`test_ws.py` Python 3.14).
 
@@ -1008,7 +1008,7 @@ vs v1 R$ 0.30-0.80 cache hit. ~2-3× cost increase, justified by FP rate droppin
 
 ## 7. Test coverage required
 
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 25 tests per §3.9 enumeration: 22 handler tests (read_file: returns excerpt, caps at 500 lines, rejects path traversal, rejects sibling-prefix escape, rejects secret-bearing dotenv, rejects secret-bearing env_local, rejects oversized file, caps excerpt at byte limit, rejects out-of-range start_line, rejects inverted end_line, accepts empty file at line 1, returns error on missing; find_symbol: locates class def, locates async function def, locates indented method, rejects invalid identifier; grep_pattern: returns matches with context, truncates at 80 results, rejects outside-repo search_path, returns ok=False when all files skipped, skips oversized file, skips symlink outside repo, returns matches with byte-cap-truncated first entry) + 3 multi-turn loop tests for the verify-before-P1 guard (mocked Anthropic client). Single source of truth for the count is §3.9 enumeration; §6 acceptance and this section MUST quote the same total.
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 26 tests per §3.9 enumeration: 23 handler tests (read_file: returns excerpt, caps at 500 lines, rejects path traversal, rejects sibling-prefix escape, rejects secret-bearing dotenv, rejects secret-bearing env_local, rejects oversized file, caps excerpt at byte limit, rejects out-of-range start_line, rejects inverted end_line, accepts empty file at line 1, returns error on missing; find_symbol: locates class def, locates async function def, locates indented method, rejects invalid identifier; grep_pattern: returns matches with context, truncates at 80 results, rejects outside-repo search_path, returns ok=False when all files skipped, skips oversized file, skips symlink outside repo, truncates first match on byte-cap overflow) + 3 multi-turn loop tests for the verify-before-P1 guard (mocked Anthropic client). **Single source of truth for the count is the §3.9 enumeration**; if §6 / §7 / this line drift from the §3.9 list count, the executor MUST treat §3.9 as authoritative. The total is verifiable: `grep -c '^- \`test_' docs/audits/2026-05-09-infra-pre-push-hook-v2-tool-use-dispatch.md` within the §3.9 enumeration block.
 - `backend/tests/scripts/test_file_resolver.py` (existing) — UNCHANGED. The `_LINE_CAP=200` test continues to assert the cap.
 - `backend/tests/scripts/test_schema.py` (existing) — UNCHANGED.
 - `backend/tests/scripts/test_install_git_hooks.py` (existing) — UNCHANGED.
@@ -1072,7 +1072,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
-- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 25 mechanical tests
+- `backend/tests/scripts/test_tool_handlers.py` (NEW) — 26 mechanical tests
 
 ## Acceptance evidence
 
@@ -1131,7 +1131,7 @@ auto-fix, parallel tool calling, write tools, frontend regen.
 13. Update `scripts/dispatch_review/cache.py::write_cache_artifact` per §3.6 (optional `tool_calls` parameter).
 14. Update `scripts/pre_push_review.py::main` per §3.8 (pass `repo_root`, forward `tool_call_log`).
 15. Verify `scripts/dispatch_review/file_resolver.py` UNCHANGED. Verify `scripts/dispatch_review/schema.py` UNCHANGED.
-16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (25 mechanical tests).
+16. Author `backend/tests/scripts/test_tool_handlers.py` per §3.9 (26 mechanical tests).
 17. Run targeted pytest: `pytest backend/tests/scripts/ -v`. All pre-existing v1 tests + new v2 tests must pass.
 18. Full backend suite: `pytest backend/tests/ -v` — green except known failures (3 pre-existing `test_ws.py` Python 3.14 failures).
 19. **Manual e2e smoke test** per §7: invoke `python scripts/pre_push_review.py --dispatch-paths docs/audits/2026-05-09-phase-a3-pr-2-commodity-correctness-dispatch.md --branch test-v2 --head-sha v2smoke`. Inspect the JSON artifact. Document findings in PR body.
