@@ -127,7 +127,7 @@ Minimum required fields:
 - `signature_status` constrained to `missing`, `verified`, `invalid`, or
   `bypassed`;
 - `parse_status` constrained to `received`, `parsed`, or `parse_failed`;
-- `messages_extracted` count;
+- `messages_extracted` count, nullable only for `parse_failed` rows;
 - `received_at`;
 - `acknowledged_at`, proving acknowledgement happened after persistence.
 
@@ -152,7 +152,8 @@ Concrete expected model/migration type mapping:
   `verified`, `invalid`, `bypassed`.
 - `parse_status`: constrained string/enum with values `received`, `parsed`,
   `parse_failed`.
-- `messages_extracted`: non-null `Integer`.
+- `messages_extracted`: nullable `Integer`; `NULL` means parsing failed before
+  extraction reached a meaningful message count.
 - `received_at`: non-null timezone-aware `DateTime`.
 - `acknowledged_at`: nullable timezone-aware `DateTime`, populated before
   returning provider acknowledgement.
@@ -167,9 +168,29 @@ with a database-level CHECK constraint. The strongest acceptable form is:
 
 ```sql
 CHECK (
-  (provider = 'meta' AND raw_body IS NOT NULL AND raw_form IS NULL)
+  provider IN ('meta', 'twilio')
+  AND
+  (
+    (provider = 'meta' AND raw_body IS NOT NULL AND raw_form IS NULL)
+    OR
+    (provider = 'twilio' AND raw_body IS NULL AND raw_form IS NOT NULL)
+  )
+)
+```
+
+Add a SQLAlchemy `@validates("provider", "raw_body", "raw_form")` guard, or an
+equivalent model-level validation hook, enforcing the same provider-exclusive
+raw capture invariant independently of the database CHECK. This is required so
+SQLite and test metadata paths do not rely only on Alembic's dialect-specific
+CHECK rendering.
+
+Add a CHECK or equivalent database-backed validation for message count semantics:
+
+```sql
+CHECK (
+  (parse_status = 'parse_failed' AND messages_extracted IS NULL)
   OR
-  (provider = 'twilio' AND raw_body IS NULL AND raw_form IS NOT NULL)
+  (parse_status IN ('received', 'parsed') AND messages_extracted IS NOT NULL)
 )
 ```
 
@@ -233,6 +254,11 @@ the revision id at or below 32 characters.
 
 Ensure the model is imported/registered wherever this repo requires model
 registration for metadata creation in tests.
+Specifically, add
+`from app.models.inbound_webhook_delivery import InboundWebhookDelivery` to
+`backend/app/models/__init__.py` and add `InboundWebhookDelivery` to `__all__`,
+because `backend/tests/conftest.py` imports `app.models` before
+`Base.metadata.create_all()`.
 
 ---
 
@@ -284,7 +310,12 @@ registration for metadata creation in tests.
 - [ ] Meta rows populate `raw_body` and leave `raw_form` null; Twilio rows
   populate `raw_form` and leave `raw_body` null.
 - [ ] A database CHECK constraint enforces that the provider value matches the
-  applicable raw evidence column and rejects both-null/both-populated rows.
+  applicable raw evidence column and rejects both-null/both-populated rows for
+  constrained provider values `meta` and `twilio`.
+- [ ] A model-level validation hook enforces the same provider/raw evidence
+  invariant independent of Alembic CHECK rendering.
+- [ ] `messages_extracted` is NULL only for `parse_failed` rows and non-NULL for
+  `received`/`parsed` rows.
 - [ ] Malformed Meta JSON preserves a failed inbound delivery record before
   returning HTTP 400.
 - [ ] The existing canonical RFQ ID processing tests keep passing.
@@ -326,13 +357,12 @@ cd backend && alembic heads
 git diff --check
 ```
 
-Do not preemptively rewrite existing `hmac.new(...)` helpers. The current local
-Python 3.14 runtime exposes `hmac.new`, and the existing
+Do not preemptively rewrite existing `hmac.new(...)` helpers. The existing
 `backend/tests/test_webhook_processor.py` and
-`backend/tests/test_phase5_whatsapp_llm.py` suites pass on Python 3.14. If a
-different executor runtime proves otherwise with a failing test, handle that
-runtime fix narrowly and report it as an environment compatibility correction,
-not as a dispatch prerequisite.
+`backend/tests/test_phase5_whatsapp_llm.py` suites pass in the current local
+runtime. If a different executor runtime proves otherwise with a failing test,
+handle that runtime fix narrowly and report it as an environment compatibility
+correction, not as a dispatch prerequisite.
 
 If the executor adds a dedicated migration test file, include it in the focused
 test run explicitly. If broad backend tests are run, document the known local
