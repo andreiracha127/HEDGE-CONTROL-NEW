@@ -732,7 +732,7 @@ Cache artifact gains `tool_calls` array for post-hoc calibration.
 
 - `scripts/dispatch_review/tool_handlers.py` (NEW) — handler functions
 - `scripts/dispatch_review/tools.py` (NEW) — Anthropic tool schemas
-- `scripts/dispatch_review/client.py` — multi-turn loop, caps, no `tool_choice` forcing
+- `scripts/dispatch_review/client.py` — multi-turn loop, caps, `tool_choice={"type": "any"}` (forces some tool per turn, model picks which)
 - `scripts/dispatch_review/prompt_builder.py` — `_REVIEW_PROTOCOL_PROSE` updated with tool-use discipline
 - `scripts/dispatch_review/cache.py` — `tool_calls` field
 - `scripts/pre_push_review.py` — pass `repo_root`, forward `tool_call_log`
