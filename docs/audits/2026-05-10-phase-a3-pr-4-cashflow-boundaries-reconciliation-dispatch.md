@@ -460,6 +460,7 @@ Migration requirements:
 - Leave already-new rows with `snapshot_data["view"] == "baseline"` untouched.
 - Downgrade restores archived rows into `cashflow_baseline_snapshots` only when no active row exists for the same `as_of_date`; if an active row exists, downgrade must hard-fail with an explicit exception rather than silently overwrite.
 - Restored rows must satisfy the `cashflow_baseline_snapshots.correlation_id` NOT NULL contract. If archived data has `correlation_id IS NULL`, downgrade must hard-fail with an explicit exception rather than inserting invalid data.
+- After all downgrade restore/conflict checks complete, drop `cashflow_baseline_snapshot_archives` so downgrade followed by re-upgrade is round-trip safe.
 
 Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless the migration branches by dialect. This repo's migration tests run SQLite roundtrips.
 
@@ -728,6 +729,7 @@ Regenerate OpenAPI and frontend schema:
 ```bash
 cd backend && DATABASE_URL=sqlite:///:memory: SECRET_KEY=dummy JWT_SIGNING_SECRET=dummy AUDIT_HMAC_KEY=dummy AUDIT_SIGNING_KEY=test python -c "from app.main import app; import json; json.dump(app.openapi(), open('../docs/api/openapi_v1.json', 'w'), indent=2, sort_keys=True)"
 cd ../frontend-svelte && OPENAPI_SOURCE=../docs/api/openapi_v1.json node scripts/regen-schema.mjs
+cd ..
 ```
 
 Run diff/grep gates:
