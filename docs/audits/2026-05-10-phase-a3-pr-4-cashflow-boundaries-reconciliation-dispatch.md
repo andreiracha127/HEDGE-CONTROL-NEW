@@ -195,12 +195,28 @@ Orders:
 Acceptable implementation shape:
 
 ```python
+def _cashflow_item_from_mtm(mtm: MTMResultResponse, as_of_date: date) -> CashFlowItem:
+    mtm_value = quantize_money(mtm.mtm_value)
+    return CashFlowItem(
+        object_type=mtm.object_type.value,
+        object_id=mtm.object_id,
+        settlement_date=as_of_date,
+        amount_usd=mtm_value,
+        mtm_value=mtm_value,
+        price_source=mtm.price_quote.source,
+        price_symbol=mtm.price_quote.symbol,
+        price_settlement_date=mtm.price_quote.settlement_date,
+        price_value=mtm.price_quote.value,
+    )
+
+
 def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]:
     items: list[CashFlowItem] = []
     # Query active + partially_settled, non-deleted contracts and variable
     # MTM-eligible, non-deleted orders.
     # Call compute_mtm_for_contract / compute_mtm_for_order directly.
-    # Convert MTMResultResponse to CashFlowItem with price provenance.
+    # Convert each MTMResultResponse through _cashflow_item_from_mtm() so
+    # every unrealized item carries price_quote provenance.
     return items
 ```
 
@@ -288,6 +304,11 @@ part of the persisted hash contract.
 PostgreSQL and SQLite sort NULLs differently.
 
 Keep the existing conflict behavior: if an existing snapshot for `as_of_date` does not match the newly derived payload, return HTTP 409. Do not silently rewrite old analytic-shaped snapshots into the new Baseline shape.
+
+The conflict check must use the replacement `_canonicalize_snapshot_payload()`
+for both the newly computed payload and `existing.snapshot_data`; otherwise
+persisted rows with new `unrealized_items` / `realized_ledger_entries` arrays
+may false-conflict because only the old `cashflow_items` array is sorted.
 
 ### 3.3 Scenario response boundary
 
@@ -380,6 +401,16 @@ Migration requirements:
 - Restored rows must satisfy the `cashflow_baseline_snapshots.correlation_id` NOT NULL contract. If archived data has `correlation_id IS NULL`, downgrade must hard-fail with an explicit exception rather than inserting invalid data.
 
 Use SQLAlchemy/Alembic APIs rather than PostgreSQL-only JSON operators unless the migration branches by dialect. This repo's migration tests run SQLite roundtrips.
+
+For the archive `snapshot_data` column, follow the migration 038 JSON pattern:
+
+```python
+json_type = postgresql.JSONB() if bind.dialect.name == "postgresql" else sa.JSON()
+```
+
+Use `json_type` for `cashflow_baseline_snapshot_archives.snapshot_data` so PostgreSQL receives JSONB and SQLite tests receive generic JSON.
+
+The downgrade `correlation_id IS NULL` guard is defensive against corrupted archive rows; live rows moved from `cashflow_baseline_snapshots` should already satisfy the source table's NOT NULL constraint.
 
 `cd backend && python -m alembic heads` must return one head: `039_a3_cashflow_baseline_legacy_archive`.
 
