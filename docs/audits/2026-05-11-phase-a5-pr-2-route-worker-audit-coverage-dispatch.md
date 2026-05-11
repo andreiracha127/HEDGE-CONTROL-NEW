@@ -95,17 +95,23 @@ dependency that never emits an event.
 For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 
 - retain the `request` object instead of deleting it;
-- call `mark_audit_success(request, entity_id)` or an equivalent explicit audit
-  success marker after a successful ingest operation;
-- use an entity identity that can be reconstructed from durable ingest output,
-  such as the created/updated `CashSettlementPrice` row id for single-date
-  ingest and a deterministic batch/run identity or explicit list/linkage for
-  bulk ingest;
+- call `mark_audit_success(request, entity_id)` after a successful ingest
+  operation;
+- extract `entity_id` from persisted ingest output: the created/updated
+  `CashSettlementPrice` row id for single-date ingest; and for bulk ingest a
+  deterministic durable batch/run identity, or an explicit persisted
+  list/linkage of created/updated `CashSettlementPrice` row ids;
+- if the current service response only exposes counts, extend the service or
+  route result enough to expose the durable identity required for
+  `mark_audit_success()`;
 - persist the audit row atomically with the ingest mutation;
 - verify with behavioral tests that the audit row is actually durable and
   queryable.
 
 Merely declaring `audit_event` on the route is not a fix.
+Do not use the worker audit envelope for Westmetall. Westmetall routes are HTTP
+routes and must use the standard route-level `audit_event` plus
+`mark_audit_success()` pattern.
 
 Route inventory must be derived from the actual repo state, not a manual
 six-route whitelist:
@@ -142,6 +148,26 @@ Minimum acceptable behavior:
 
 Do not duplicate the HTTP dependency by constructing fake request state. The
 background path should have an explicit service-level API.
+
+The worker audit API must have an explicit callable surface comparable to:
+
+```python
+record_worker_audit(
+    session: Session,
+    *,
+    entity_type: str,
+    entity_id: UUID,
+    event_type: str,
+    actor: str,
+    source: str,
+    metadata: dict | None = None,
+) -> None
+```
+
+The exact name may differ, but the semantics may not: it writes a signed
+`AuditEvent` into the provided session, uses deterministic payload/checksum
+rules from the current audit trail service, and relies on the caller's existing
+transaction to commit or roll back atomically with the worker mutation.
 
 ## 5. Acceptance Criteria
 
