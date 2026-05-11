@@ -182,22 +182,24 @@ payload = {
     "source": source,
     "metadata": metadata or {},
 }
-payload_raw = AuditTrailService.normalize_payload_raw(payload)
+payload_raw, payload_obj = normalize_payload_raw(payload)
 AuditTrailService.record(
     session,
-    event_id=None,
+    event_id=uuid.uuid4(),
     event_type=event_type,
     entity_type=entity_type,
-    entity_id=str(entity_id),
-    user_id=actor,
+    entity_id=entity_id,
     payload_raw=payload_raw,
-    payload_obj=payload,
+    payload_obj=payload_obj,
     commit=False,
 )
 ```
 
 The skeleton is illustrative. The final implementation must align with the
 post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed.
+If `normalize_payload_raw()` remains a module-level helper, import/call it as
+such; do not call it as an `AuditTrailService` static method unless the helper is
+moved intentionally in the implementation.
 
 ## 5. Acceptance Criteria
 
