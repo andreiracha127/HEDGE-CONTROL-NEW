@@ -94,7 +94,7 @@ dependency that never emits an event.
 
 For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 
-- retain the `request` object instead of deleting it;
+- remove the existing `del request` statement and retain the `request` object;
 - call `mark_audit_success(request, entity_id)` after a successful ingest
   operation;
 - extract `entity_id` from persisted ingest output: the created/updated
@@ -150,7 +150,9 @@ Do not duplicate the HTTP dependency by constructing fake request state. The
 background path should have an explicit service-level API.
 
 Create this non-HTTP API in `backend/app/services/audit_trail_service.py` as a
-new `AuditTrailService` method. Suggested signature:
+new `AuditTrailService.record_worker_event()` method in this wave. This method
+must be a small wrapper around the existing `AuditTrailService.record()` path,
+not a parallel signing implementation. Required signature:
 
 ```python
 @staticmethod
@@ -166,13 +168,11 @@ def record_worker_event(
 ) -> None
 ```
 
-The exact method name may differ if there is a stronger local naming pattern,
-but the implementation must add a concrete method in
-`backend/app/services/audit_trail_service.py` with these semantics: write a
-signed `AuditEvent` into the provided session, use deterministic
-payload/checksum rules from the current audit trail service, and rely on the
-caller's existing transaction to commit or roll back atomically with the worker
-mutation.
+The implementation must add this concrete method unless the executor finds an
+existing non-HTTP audit helper with the same semantics. It must write a signed
+`AuditEvent` into the provided session, use deterministic payload/checksum
+rules from the current audit trail service, and rely on the caller's existing
+transaction to commit or roll back atomically with the worker mutation.
 
 Minimum skeleton:
 
@@ -185,12 +185,14 @@ payload = {
 payload_raw = AuditTrailService.normalize_payload_raw(payload)
 AuditTrailService.record(
     session,
+    event_id=None,
     event_type=event_type,
     entity_type=entity_type,
     entity_id=str(entity_id),
     user_id=actor,
     payload_raw=payload_raw,
     payload_obj=payload,
+    commit=False,
 )
 ```
 
