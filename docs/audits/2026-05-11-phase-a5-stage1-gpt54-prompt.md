@@ -75,9 +75,15 @@ Start with these files and expand only as needed:
 - `backend/alembic/versions/028_reconciliation_run.py`
 - `backend/app/models/reconciliation_run.py`
 - API routes that mutate institutional state:
+  - First derive the current mutating route set with a repo-wide route search,
+    for example `rg -n "@router\.(post|put|patch|delete)" backend/app/api/routes`.
+    The list below is a starting scope, not permission to ignore other mutating
+    routes discovered by that search.
   - `backend/app/api/routes/orders.py`
   - `backend/app/api/routes/deals.py`
+  - `backend/app/api/routes/counterparties.py`
   - `backend/app/api/routes/contracts.py`
+  - `backend/app/api/routes/linkages.py`
   - `backend/app/api/routes/rfqs.py`
   - `backend/app/api/routes/cashflow.py`
   - `backend/app/api/routes/cashflow_ledger.py`
@@ -86,6 +92,7 @@ Start with these files and expand only as needed:
   - `backend/app/api/routes/exposures.py`
   - `backend/app/api/routes/scenario.py`
   - `backend/app/api/routes/webhooks.py`
+  - `backend/app/api/routes/finance_pipeline.py`
   - `backend/app/api/routes/westmetall.py`
 - Background and service mutation paths:
   - `backend/app/services/rfq_orchestrator.py`

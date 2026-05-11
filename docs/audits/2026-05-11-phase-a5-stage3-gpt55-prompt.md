@@ -45,9 +45,15 @@ Then inspect implementation evidence in the Phase A5 scope:
 - `backend/app/core/database.py`
 - `backend/app/core/auth.py`
 - `backend/alembic/versions/015_phase7_audit_events_table.py`
+- Derive the current mutating route set with a repo-wide route search, for
+  example `rg -n "@router\.(post|put|patch|delete)" backend/app/api/routes`.
+  The route list below is a starting scope, not permission to ignore other
+  mutating routes discovered by that search.
 - `backend/app/api/routes/orders.py`
 - `backend/app/api/routes/deals.py`
+- `backend/app/api/routes/counterparties.py`
 - `backend/app/api/routes/contracts.py`
+- `backend/app/api/routes/linkages.py`
 - `backend/app/api/routes/rfqs.py`
 - `backend/app/api/routes/cashflow.py`
 - `backend/app/api/routes/cashflow_ledger.py`
@@ -56,6 +62,7 @@ Then inspect implementation evidence in the Phase A5 scope:
 - `backend/app/api/routes/exposures.py`
 - `backend/app/api/routes/scenario.py`
 - `backend/app/api/routes/webhooks.py`
+- `backend/app/api/routes/finance_pipeline.py`
 - `backend/app/services/rfq_service.py`
 - `backend/app/services/rfq_orchestrator.py`
 - `backend/app/services/cashflow_ledger_service.py`
