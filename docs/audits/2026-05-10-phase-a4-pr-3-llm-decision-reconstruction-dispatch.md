@@ -369,6 +369,12 @@ Required cases:
 - auto-quote creation failed;
 - auto-quote created.
 
+Decision mapping:
+
+- `auto_quote_created` maps to `final_decision="allow_mutation"`;
+- every skip, deny, unavailable, duplicate, invalid, failed, question, or
+  declined status above maps to `final_decision="deny_no_mutation"`.
+
 Messages that do not reach the LLM do not need an LLM artifact:
 
 - no canonical RFQ;
@@ -488,14 +494,14 @@ Concrete placement requirement:
 - if artifact construction or insertion raises, do not call `session.commit()`;
   the transaction path must `session.rollback()` so the flushed quote and
   artifact are both rolled back;
-- widen rollback coverage with a clear exception shape:
-  - wrap artifact payload construction separately and catch only
-    `(TypeError, ValueError)` there;
-  - for the submit/insert/commit DB block, replace the current
-    `(HTTPException, IntegrityError, OperationalError)` tuple with
-    `(HTTPException, SQLAlchemyError)`;
-  - do not list `IntegrityError` or `OperationalError` separately next to
-    `SQLAlchemyError`, because they are subclasses;
+- widen rollback coverage with two separate implementation steps:
+  1. commit relocation: remove the current pre-artifact commit and place the
+     single commit after `session.add(artifact)`;
+  2. exception tuple: for the submit/insert/commit DB block, replace the current
+     `(HTTPException, IntegrityError, OperationalError)` tuple with
+     `(HTTPException, SQLAlchemyError)`.
+- do not list `IntegrityError` or `OperationalError` separately next to
+  `SQLAlchemyError`, because they are subclasses;
 - do not add a second post-commit artifact write. The current `_auto_create_quote`
   shape must be restructured only enough to stage the artifact and move the
   existing commit after `session.add(artifact)`.
@@ -528,9 +534,19 @@ except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
     return {"status": "auto_quote_failed", "error": str(exc), ...}
 ```
 
+`build_artifact_payload(...)` in the template is a new local helper to create in
+`backend/app/services/rfq_orchestrator.py`, not an existing codebase function.
+It must return a `dict` containing at least the minimum non-null artifact
+constructor payload below, plus nullable fields from §3.1 when available.
+
 After replacing the exception tuple, remove stale `IntegrityError` and
 `OperationalError` imports if no other code in `rfq_orchestrator.py` uses them,
 and import `SQLAlchemyError` from `sqlalchemy.exc`.
+Verify import cleanup explicitly:
+
+```bash
+rg -n "IntegrityError|OperationalError" backend/app/services/rfq_orchestrator.py
+```
 
 Minimum non-null artifact constructor payload:
 
