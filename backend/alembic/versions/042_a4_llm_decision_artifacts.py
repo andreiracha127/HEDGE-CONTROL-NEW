@@ -40,18 +40,15 @@ def upgrade() -> None:
             "final_decision IN ('allow_mutation', 'deny_no_mutation')",
             name="ck_llm_decision_artifacts_final_decision",
         ),
+        sa.CheckConstraint(
+            "final_status IN ('auto_quote_created', 'counterparty_declined', "
+            "'counterparty_question', 'needs_human_review', 'llm_unavailable', "
+            "'hallucinated_price_blocked', 'duplicate_quote_skipped', "
+            "'auto_quote_skipped_incomplete', "
+            "'auto_quote_skipped_invalid_payload', 'auto_quote_failed')",
+            name="ck_llm_decision_artifacts_final_status",
+        ),
     ]
-    if dialect_name == "postgresql":
-        check_constraints.append(
-            sa.CheckConstraint(
-                "final_status IN ('auto_quote_created', 'counterparty_declined', "
-                "'counterparty_question', 'needs_human_review', 'llm_unavailable', "
-                "'hallucinated_price_blocked', 'duplicate_quote_skipped', "
-                "'auto_quote_skipped_incomplete', "
-                "'auto_quote_skipped_invalid_payload', 'auto_quote_failed')",
-                name="ck_llm_decision_artifacts_final_status",
-            )
-        )
 
     op.create_table(
         "llm_decision_artifacts",
