@@ -435,6 +435,20 @@ Concrete placement requirement:
 - the existing `session.commit()` call inside `_auto_create_quote()` must be
   relocated to after `session.add(artifact)`. This is a relocation of the single
   commit, not an added second commit;
+- remove the current pre-artifact `session.commit()` call from its existing
+  position in `_auto_create_quote()` before adding the artifact write. The final
+  `_auto_create_quote()` implementation must have exactly one commit in the
+  auto-create transaction path, and that commit must be after
+  `session.add(artifact)`;
+- after editing, verify the commit boundary explicitly:
+
+  ```bash
+  rg -n "session.commit\\(" backend/app/services/rfq_orchestrator.py
+  ```
+
+  The grep may show commits in other orchestrator methods, but inside
+  `_auto_create_quote()` there must be only one `session.commit()` and it must
+  appear after the artifact is added to the session;
 - retain the existing pre-commit scalar snapshot pattern before constructing the
   artifact. The current code snapshots attributes before commit to avoid
   expire-on-commit refresh races; do not remove that protection.
