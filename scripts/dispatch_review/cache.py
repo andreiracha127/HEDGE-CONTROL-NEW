@@ -23,6 +23,7 @@ def write_cache_artifact(
     branch: str,
     head_sha: str,
     tool_calls: list[dict[str, Any]] | None = None,
+    usage_by_turn: list[dict[str, Any]] | None = None,
 ) -> Path:
     cache_dir = repo_root / _CACHE_RELATIVE
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -31,6 +32,8 @@ def write_cache_artifact(
     payload = report.model_dump(mode="json")
     if tool_calls is not None:
         payload["tool_calls"] = tool_calls
+    if usage_by_turn is not None:
+        payload["usage_by_turn"] = usage_by_turn
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return out_path
 
@@ -44,6 +47,7 @@ def write_parse_error_artifact(
     error_message: str,
     raw_report_input: dict[str, Any] | None,
     tool_calls: list[dict[str, Any]] | None = None,
+    usage_by_turn: list[dict[str, Any]] | None = None,
 ) -> Path:
     cache_dir = repo_root / _CACHE_RELATIVE
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -58,5 +62,7 @@ def write_parse_error_artifact(
     }
     if tool_calls is not None:
         payload["tool_calls"] = tool_calls
+    if usage_by_turn is not None:
+        payload["usage_by_turn"] = usage_by_turn
     out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return out_path

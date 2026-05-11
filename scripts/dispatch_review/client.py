@@ -260,6 +260,21 @@ def _create_with_retry(
     ) from last_exc
 
 
+def _usage_to_log_entry(response: Any, iteration: int) -> dict[str, int]:
+    usage = getattr(response, "usage", None)
+
+    def _usage_int(name: str) -> int:
+        return int(getattr(usage, name, 0) or 0)
+
+    return {
+        "iteration": iteration,
+        "input_tokens": _usage_int("input_tokens"),
+        "cache_creation_input_tokens": _usage_int("cache_creation_input_tokens"),
+        "cache_read_input_tokens": _usage_int("cache_read_input_tokens"),
+        "output_tokens": _usage_int("output_tokens"),
+    }
+
+
 def _tool_budget_nudge(iteration: int, tool_call_log: list[dict[str, Any]]) -> str | None:
     """Return a concise convergence nudge for the next model turn."""
     successful_calls = sum(1 for entry in tool_call_log if entry.get("ok"))
@@ -286,6 +301,7 @@ def call_review(
     cached_system_blocks: list[dict[str, Any]],
     user_payload: str,
     repo_root: Path,
+    usage_log: list[dict[str, Any]] | None = None,
 ) -> tuple[ReviewReport, list[dict[str, Any]]]:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError(
@@ -311,6 +327,8 @@ def call_review(
         )
         output_tokens = int(getattr(getattr(response, "usage", None), "output_tokens", 0) or 0)
         cumulative_output_tokens += output_tokens
+        if usage_log is not None:
+            usage_log.append(_usage_to_log_entry(response, iteration))
         if cumulative_output_tokens > _MAX_CUMULATIVE_OUTPUT_TOKENS:
             raise RuntimeError(
                 f"cumulative output exceeded {_MAX_CUMULATIVE_OUTPUT_TOKENS} tokens; "

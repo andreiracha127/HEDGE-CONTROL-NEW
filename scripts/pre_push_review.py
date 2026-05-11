@@ -36,7 +36,9 @@ from dispatch_review.prompt_builder import (
 )
 from dispatch_review.schema import Finding, ReviewReport
 
-_DEFAULT_MODEL = "claude-sonnet-4-6"
+_DEFAULT_MODEL = "claude-haiku-4-5"
+
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
 def _load_repo_dotenv(repo_root: Path) -> None:
@@ -100,6 +102,14 @@ def _resolve_existing_dispatch_paths(raw_paths: list[str], repo_root: Path) -> l
     return dispatch_paths
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY_ENV_VALUES
+
+
+def _review_required() -> bool:
+    return _env_truthy("PRE_PUSH_REVIEW_REQUIRED") or _env_truthy("CI")
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="pre_push_review",
@@ -125,8 +135,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--remote-name", default="origin")
     parser.add_argument(
         "--model",
-        default=_DEFAULT_MODEL,
-        help=f"Anthropic model identifier. Default: {_DEFAULT_MODEL}",
+        default=None,
+        help=(
+            "Anthropic model identifier. Default: PRE_PUSH_REVIEW_MODEL or "
+            f"{_DEFAULT_MODEL}"
+        ),
     )
     parser.add_argument(
         "--repo-root",
@@ -153,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
         repo_root = Path(__file__).resolve().parent.parent
 
     _load_repo_dotenv(repo_root)
+    model = args.model or os.environ.get("PRE_PUSH_REVIEW_MODEL") or _DEFAULT_MODEL
+    review_required = _review_required()
 
     if args.changed_paths is not None:
         raw_changed_paths = args.changed_paths
@@ -196,11 +211,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
+        usage_log: list[dict[str, object]] = []
         report, tool_call_log = call_review(
-            model=args.model,
+            model=model,
             cached_system_blocks=cached_system,
             user_payload=user_payload,
             repo_root=repo_root,
+            usage_log=usage_log,
         )
     except ReviewReportParseError as exc:
         artifact_path = write_parse_error_artifact(
@@ -211,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
             error_message=str(exc),
             raw_report_input=exc.raw_report_input,
             tool_calls=exc.tool_calls,
+            usage_by_turn=locals().get("usage_log", []),
         )
         print(
             f"[pre-push-review] review report parse failed: {exc}",
@@ -234,15 +252,22 @@ def main(argv: list[str] | None = None) -> int:
         branch=args.branch,
         head_sha=args.head_sha,
         tool_calls=tool_call_log,
+        usage_by_turn=usage_log,
     )
     print(f"[pre-push-review] artifact written: {artifact_path.relative_to(repo_root)}")
     print(f"[pre-push-review] summary: {report.summary}")
 
     if report.p1_blocking:
         _print_findings(report.p1_blocking, level="P1 BLOCKING")
+        if not review_required:
+            print(
+                f"\n[pre-push-review] {len(report.p1_blocking)} P1 finding(s) found but push proceeds "
+                "because PRE_PUSH_REVIEW_REQUIRED is not enabled and CI is not true."
+            )
+            return 0
         print(
             f"\n[pre-push-review] {len(report.p1_blocking)} P1 finding(s) -push blocked. "
-            "Use `git push --no-verify` to override (not recommended)."
+            "Set PRE_PUSH_REVIEW_REQUIRED=0 only for local advisory mode."
         )
         return 1
     if report.p2_warn:

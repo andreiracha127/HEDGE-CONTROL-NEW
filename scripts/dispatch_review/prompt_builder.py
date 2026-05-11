@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -122,26 +123,37 @@ Severity tier reminder (unchanged from v1):
 """
 
 
+def _prompt_cache_enabled() -> bool:
+    return os.environ.get("PRE_PUSH_REVIEW_PROMPT_CACHE", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
+def _cache_control() -> dict[str, str] | None:
+    if not _prompt_cache_enabled():
+        return None
+    return {"type": "ephemeral"}
+
+
+def _maybe_cached_block(text: str) -> dict[str, Any]:
+    block: dict[str, Any] = {"type": "text", "text": text}
+    cache_control = _cache_control()
+    if cache_control is not None:
+        block["cache_control"] = cache_control
+    return block
+
+
 def build_cached_system_blocks(repo_root: Path) -> list[dict[str, Any]]:
-    """Return 4 system blocks. The first 3 are cached (TTL 5 min ephemeral)."""
+    """Return 4 system blocks, optionally marked for Anthropic prompt caching."""
     governance = load_governance(repo_root)
     rule_sheet = load_rule_sheet(repo_root)
     return [
-        {
-            "type": "text",
-            "text": _PERSONA_PREAMBLE,
-            "cache_control": {"type": "ephemeral"},
-        },
-        {
-            "type": "text",
-            "text": f"# docs/governance.md (constitutional ground truth)\n\n{governance}",
-            "cache_control": {"type": "ephemeral"},
-        },
-        {
-            "type": "text",
-            "text": f"# Dispatch self-consistency rule sheet\n\n{rule_sheet}",
-            "cache_control": {"type": "ephemeral"},
-        },
+        _maybe_cached_block(_PERSONA_PREAMBLE),
+        _maybe_cached_block(f"# docs/governance.md (constitutional ground truth)\n\n{governance}"),
+        _maybe_cached_block(f"# Dispatch self-consistency rule sheet\n\n{rule_sheet}"),
         {
             "type": "text",
             "text": _REVIEW_PROTOCOL_PROSE,
