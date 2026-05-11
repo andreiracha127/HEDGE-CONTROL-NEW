@@ -140,7 +140,9 @@ Uniform HTTP route pattern for the newly covered routes:
 
 - declare the route-level `audit_event()` dependency with the correct
   `entity_type` and `event_type`;
-- retain `request` in the route signature/body;
+- add and retain a `Request` parameter in every newly covered HTTP route if it
+  is not already present: counterparty create/update/delete, SO-PO link
+  creation, finance pipeline trigger, and Westmetall single/bulk ingest;
 - perform the mutation under the same fail-closed transaction boundary used for
   audit emission;
 - call `mark_audit_success(request, entity_id)` after the mutation returns the
@@ -183,6 +185,10 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
   `tuple[list[uuid.UUID], uuid.UUID, int, int, WestmetallFetchEvidence]`,
   ordered as
   `(inserted_ids, batch_uuid, ingested_count, skipped_count, evidence)`;
+- bulk ingest needs `batch_uuid` because one HTTP call can insert multiple
+  `CashSettlementPrice` rows but `AuditEvent.entity_id` is singular;
+  single-date ingest audits one inserted row directly and therefore uses the
+  row id without a batch identity;
 - compute `batch_uuid` deterministically with a canonical function such as
   `uuid.uuid5(uuid.NAMESPACE_URL, canonical_batch_key)`, where
   `canonical_batch_key` includes source, requested date range, `html_sha256`,
