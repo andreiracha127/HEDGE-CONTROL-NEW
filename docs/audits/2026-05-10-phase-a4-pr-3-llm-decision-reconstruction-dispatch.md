@@ -184,6 +184,9 @@ status string returned in `processing_result`, for example:
 - `auto_quote_skipped_invalid_payload`;
 - `auto_quote_failed`.
 
+The longest status listed above is `auto_quote_skipped_invalid_payload`
+(34 characters), which is safely within the required `String(64)` column.
+
 Enforce both domains in code and, where portable, in DDL:
 
 - add SQLAlchemy `@validates("final_decision")`;
@@ -332,6 +335,19 @@ existing behavior.
 In `backend/app/services/rfq_orchestrator.py`, persist one decision artifact for
 every inbound durable message that reaches LLM-assisted decisioning.
 
+Make the durable `InboundWebhookMessage` row available to artifact construction
+explicitly. Choose one shape and keep it consistent:
+
+- preferred: after `_claim_durable_message()` confirms the row is processable,
+  pass the loaded `InboundWebhookMessage` row into `_process_single_message()`
+  as an argument; or
+- acceptable: re-fetch the row inside `_process_single_message()` using
+  `msg.delivery_message_id` and hard-skip if it is missing.
+
+Do not infer `delivery_id` from `WhatsAppInboundMessage.delivery_message_id`.
+That field is the `InboundWebhookMessage.id`, not the
+`InboundWebhookDelivery.id`.
+
 Required cases:
 
 - classification returns non-quote:
@@ -409,6 +425,15 @@ the existing code already canonicalizes a more specific representation.
 
 For the `auto_quote_created` path, the artifact must be inserted before or
 atomically with the quote commit.
+
+Define the local exception used by the transaction template in
+`backend/app/services/rfq_orchestrator.py`, near the module-level constants or
+other local helpers:
+
+```python
+class ArtifactPayloadError(Exception):
+    """Raised when LLM decision artifact payload construction is invalid."""
+```
 
 Required behavior:
 
@@ -502,6 +527,31 @@ except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
     session.rollback()
     return {"status": "auto_quote_failed", "error": str(exc), ...}
 ```
+
+After replacing the exception tuple, remove stale `IntegrityError` and
+`OperationalError` imports if no other code in `rfq_orchestrator.py` uses them,
+and import `SQLAlchemyError` from `sqlalchemy.exc`.
+
+Minimum non-null artifact constructor payload:
+
+```python
+artifact_payload = {
+    "inbound_message_id": durable.id,
+    "delivery_id": durable.delivery_id,
+    "provider": durable.provider,
+    "provider_message_id": durable.provider_message_id,
+    "schema_version": 1,
+    "llm_provider": "openai",
+    "input_snapshot": input_snapshot,
+    "guard_outcomes": guard_outcomes,
+    "final_decision": final_decision,
+    "final_status": final_status,
+}
+```
+
+Add nullable fields from §3.1 when available, including `rfq_id`, `quote_id`,
+`counterparty_id`, model ids, prompts, raw responses, parsed payloads, and error
+strings.
 
 ### 3.6 Remove PR-A4-2 legacy inbound path
 
