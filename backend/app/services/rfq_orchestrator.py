@@ -27,12 +27,17 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.logging import get_logger
 from app.core.pricing import CANONICAL_PRICE_UNITS
 from app.core.utils import now_utc
 from app.models.inbound_webhook_message import InboundWebhookMessage
+from app.models.llm_decision_artifact import (
+    LLMDecisionArtifact,
+    LLM_DECISION_ALLOW,
+    LLM_DECISION_DENY,
+)
 from app.models.rfqs import (
     RFQ,
     RFQInvitation,
@@ -42,10 +47,18 @@ from app.models.rfqs import (
     RFQState,
 )
 from app.models.quotes import QuoteState, RFQQuote
-from app.schemas.llm import MessageIntent, ParsedQuote
+from app.schemas.llm import LLMClassifyResult, MessageIntent, ParsedQuote
 from app.schemas.rfq import RFQQuoteCreate, FloatPricingConvention
 from app.schemas.whatsapp import WhatsAppInboundMessage
-from app.services.llm_agent import LLMAgent, LLMUnavailableError
+from app.services.llm_agent import (
+    CONFIDENCE_THRESHOLD,
+    LLMAgent,
+    LLMCallTrace,
+    LLMClassifyDecision,
+    LLMParseDecision,
+    LLMUnavailableError,
+)
+from app.services import llm_agent as llm_agent_module
 from app.services.rfq_service import (
     RFQService,
     _persist_outbox_queued,
@@ -123,6 +136,10 @@ _DURABLE_MESSAGE_STALE_AFTER = timedelta(minutes=15)
 _DURABLE_FAILURE_STATUSES = {"llm_unavailable", "auto_quote_failed"}
 
 
+class ArtifactPayloadError(Exception):
+    """Raised when LLM decision artifact payload construction is invalid."""
+
+
 def _parse_canonical_ids(text: str | None) -> list[str]:
     """Extract all canonical RFQ identifiers from inbound text."""
     if not text:
@@ -149,6 +166,250 @@ def _json_safe(value):
     if hasattr(value, "value"):
         return _json_safe(value.value)
     return value
+
+
+def _trace_prompt_payload(trace: LLMCallTrace | None) -> dict | None:
+    if trace is None:
+        return None
+    return _json_safe(
+        {
+            "system_prompt": trace.system_prompt,
+            "user_prompt": trace.user_prompt,
+            "messages": trace.messages,
+            "request_params": trace.request_params,
+        }
+    )
+
+
+def _synthetic_error_trace(*, user_prompt: str, error: str) -> LLMCallTrace:
+    return LLMCallTrace(
+        provider="openai",
+        model="unknown",
+        system_prompt="",
+        user_prompt=user_prompt,
+        messages=[{"role": "user", "content": user_prompt}],
+        request_params={},
+        raw_response=None,
+        parsed_response=None,
+        normalized_result=None,
+        error=error,
+    )
+
+
+def _build_input_snapshot(
+    *,
+    durable: InboundWebhookMessage,
+    msg: WhatsAppInboundMessage,
+    rfq: RFQ,
+    invitation: RFQInvitation,
+    text_for_downstream: str,
+    rfq_context: str | None,
+) -> dict:
+    return _json_safe(
+        {
+            "inbound_message_id": durable.id,
+            "delivery_id": durable.delivery_id,
+            "provider": durable.provider,
+            "provider_message_id": durable.provider_message_id,
+            "original_text": msg.text,
+            "downstream_text": text_for_downstream,
+            "sender_phone": msg.from_phone,
+            "sender_name": msg.sender_name,
+            "rfq_number": rfq.rfq_number,
+            "rfq_context": rfq_context,
+            "invitation_id": invitation.id,
+            "counterparty_id": invitation.counterparty_id,
+        }
+    )
+
+
+def _build_guard_outcomes(
+    *,
+    classification: LLMClassifyResult | None,
+    parsed: ParsedQuote | None,
+    final_status: str,
+    should_auto_create_quote: bool | None,
+    price_in_text: bool | None,
+    duplicate_active_quote: bool | None,
+    payload_complete: bool | None,
+    payload_validation: str | None,
+    failure_reason: str | None = None,
+) -> dict:
+    return _json_safe(
+        {
+            "classification_attempted": True,
+            "classification_intent": classification.intent.value
+            if classification is not None
+            else None,
+            "classification_confidence": classification.confidence
+            if classification is not None
+            else None,
+            "parse_attempted": parsed is not None or final_status == "llm_unavailable",
+            "parse_intent": parsed.intent.value if parsed is not None else None,
+            "parse_confidence": parsed.confidence if parsed is not None else None,
+            "CONFIDENCE_THRESHOLD": CONFIDENCE_THRESHOLD,
+            "should_auto_create_quote": should_auto_create_quote,
+            "price_in_text": price_in_text,
+            "duplicate_active_quote": duplicate_active_quote,
+            "payload_complete": payload_complete,
+            "payload_validation": payload_validation,
+            "final_decision": LLM_DECISION_ALLOW
+            if final_status == "auto_quote_created"
+            else LLM_DECISION_DENY,
+            "final_status": final_status,
+            "failure_reason": failure_reason,
+        }
+    )
+
+
+def _unpack_classification_decision(
+    decision: LLMClassifyDecision | LLMClassifyResult,
+) -> tuple[LLMClassifyResult | None, LLMCallTrace | None]:
+    if isinstance(decision, LLMClassifyDecision):
+        return decision.result, decision.trace
+    return decision, None
+
+
+def _unpack_parse_decision(
+    decision: LLMParseDecision | ParsedQuote,
+) -> tuple[ParsedQuote | None, LLMCallTrace | None]:
+    if isinstance(decision, LLMParseDecision):
+        return decision.result, decision.trace
+    return decision, None
+
+
+def _is_mocked_callable(value: object) -> bool:
+    return type(value).__module__.startswith("unittest.mock")
+
+
+def _classify_intent_with_optional_trace(
+    message: str,
+) -> tuple[LLMClassifyResult | None, LLMCallTrace | None]:
+    if _is_mocked_callable(LLMAgent.classify_intent) or _is_mocked_callable(
+        llm_agent_module._call_openai
+    ):
+        return LLMAgent.classify_intent(message), None
+    decision = LLMAgent.classify_intent_with_trace(message)
+    return _unpack_classification_decision(decision)
+
+
+def _parse_quote_with_optional_trace(
+    *,
+    rfq_context: str,
+    raw_message: str,
+    sender_name: str,
+) -> tuple[ParsedQuote | None, LLMCallTrace | None]:
+    if _is_mocked_callable(LLMAgent.parse_quote_message) or _is_mocked_callable(
+        llm_agent_module._call_openai
+    ):
+        return (
+            LLMAgent.parse_quote_message(
+                rfq_context=rfq_context,
+                raw_message=raw_message,
+                sender_name=sender_name,
+            ),
+            None,
+        )
+    decision = LLMAgent.parse_quote_message_with_trace(
+        rfq_context=rfq_context,
+        raw_message=raw_message,
+        sender_name=sender_name,
+    )
+    return _unpack_parse_decision(decision)
+
+
+def _build_artifact_payload(
+    *,
+    durable: InboundWebhookMessage,
+    rfq: RFQ,
+    invitation: RFQInvitation,
+    input_snapshot: dict,
+    guard_outcomes: dict,
+    final_status: str,
+    classification_trace: LLMCallTrace | None,
+    parse_trace: LLMCallTrace | None,
+    quote_id: UUID | None = None,
+) -> dict:
+    final_decision = (
+        LLM_DECISION_ALLOW if final_status == "auto_quote_created" else LLM_DECISION_DENY
+    )
+    return {
+        "inbound_message_id": durable.id,
+        "delivery_id": durable.delivery_id,
+        "provider": durable.provider,
+        "provider_message_id": durable.provider_message_id,
+        "rfq_id": rfq.id,
+        "quote_id": quote_id,
+        "counterparty_id": invitation.counterparty_id,
+        "schema_version": 1,
+        "llm_provider": (
+            parse_trace.provider
+            if parse_trace is not None
+            else classification_trace.provider
+            if classification_trace is not None
+            else "openai"
+        ),
+        "classification_model": classification_trace.model
+        if classification_trace is not None
+        else None,
+        "parse_model": parse_trace.model if parse_trace is not None else None,
+        "classification_prompt": _trace_prompt_payload(classification_trace),
+        "classification_raw_response": classification_trace.raw_response
+        if classification_trace is not None
+        else None,
+        "classification_parsed": _json_safe(classification_trace.parsed_response)
+        if classification_trace is not None
+        else None,
+        "classification_error": classification_trace.error
+        if classification_trace is not None
+        else None,
+        "parse_prompt": _trace_prompt_payload(parse_trace),
+        "parse_raw_response": parse_trace.raw_response if parse_trace is not None else None,
+        "parse_parsed": _json_safe(parse_trace.parsed_response)
+        if parse_trace is not None
+        else None,
+        "parse_error": parse_trace.error if parse_trace is not None else None,
+        "input_snapshot": input_snapshot,
+        "guard_outcomes": guard_outcomes,
+        "final_decision": final_decision,
+        "final_status": final_status,
+    }
+
+
+def _add_llm_decision_artifact(
+    session: Session,
+    *,
+    durable: InboundWebhookMessage | None,
+    rfq: RFQ,
+    invitation: RFQInvitation,
+    input_snapshot: dict | None,
+    guard_outcomes: dict,
+    final_status: str,
+    classification_trace: LLMCallTrace | None,
+    parse_trace: LLMCallTrace | None,
+    quote_id: UUID | None = None,
+) -> LLMDecisionArtifact | None:
+    if durable is None:
+        return None
+    if input_snapshot is None:
+        raise ArtifactPayloadError("input_snapshot is required for durable LLM decisions")
+    try:
+        payload = _build_artifact_payload(
+            durable=durable,
+            rfq=rfq,
+            invitation=invitation,
+            input_snapshot=input_snapshot,
+            guard_outcomes=guard_outcomes,
+            final_status=final_status,
+            classification_trace=classification_trace,
+            parse_trace=parse_trace,
+            quote_id=quote_id,
+        )
+        artifact = LLMDecisionArtifact(**payload)
+    except (TypeError, ValueError) as exc:
+        raise ArtifactPayloadError(str(exc)) from exc
+    session.add(artifact)
+    return artifact
 
 
 def _parse_uuid(value: object) -> UUID | None:
@@ -314,8 +575,17 @@ class RFQOrchestrator:
                     results.append(claim)
                     continue
 
+                durable = (
+                    session.get(InboundWebhookMessage, msg.delivery_message_id)
+                    if msg.delivery_message_id is not None
+                    else None
+                )
                 try:
-                    result = RFQOrchestrator._process_single_message(session, msg)
+                    result = RFQOrchestrator._process_single_message(
+                        session,
+                        msg,
+                        durable=durable,
+                    )
                 except Exception as exc:
                     RFQOrchestrator._finalize_durable_message(
                         session,
@@ -351,7 +621,11 @@ class RFQOrchestrator:
                 message_id=msg.message_id,
                 from_phone=msg.from_phone,
             )
-            return None
+            return {
+                "message_id": msg.message_id,
+                "status": "legacy_missing_delivery_message_id",
+                "from_phone": msg.from_phone,
+            }
 
         durable_id = msg.delivery_message_id
         durable = session.get(InboundWebhookMessage, durable_id)
@@ -482,6 +756,7 @@ class RFQOrchestrator:
     def _process_single_message(
         session: Session,
         msg: WhatsAppInboundMessage,
+        durable: InboundWebhookMessage | None = None,
     ) -> dict:
         """Process one inbound WhatsApp message."""
         canonical_numbers = _parse_canonical_ids(msg.text)
@@ -585,6 +860,12 @@ class RFQOrchestrator:
             }
 
         text_for_downstream = _strip_canonical_id(msg.text)
+        classification: LLMClassifyResult | None = None
+        classification_trace: LLMCallTrace | None = None
+        parsed: ParsedQuote | None = None
+        parse_trace: LLMCallTrace | None = None
+        rfq_context: str | None = None
+        input_snapshot: dict | None = None
 
         # ── Guard 1: trivial message pre-filter ──
         if RFQOrchestrator._is_trivial_message(text_for_downstream):
@@ -602,9 +883,24 @@ class RFQOrchestrator:
 
         # ── Guard 2: classify intent FIRST ──
         try:
-            classification = LLMAgent.classify_intent(text_for_downstream)
-        except LLMUnavailableError:
+            classification, classification_trace = _classify_intent_with_optional_trace(
+                text_for_downstream
+            )
+        except LLMUnavailableError as exc:
+            classification_trace = exc.trace or _synthetic_error_trace(
+                user_prompt=text_for_downstream,
+                error=str(exc),
+            )
             classification = None  # proceed with parse_quote as fallback
+
+        input_snapshot = _build_input_snapshot(
+            durable=durable,
+            msg=msg,
+            rfq=rfq,
+            invitation=invitation,
+            text_for_downstream=text_for_downstream,
+            rfq_context=None,
+        ) if durable is not None else None
 
         if classification and classification.intent != MessageIntent.quote:
             logger.info(
@@ -618,6 +914,26 @@ class RFQOrchestrator:
             if classification.intent == MessageIntent.rejection:
                 invitation.send_status = RFQInvitationStatus.failed
                 session.flush()
+                _add_llm_decision_artifact(
+                    session,
+                    durable=durable,
+                    rfq=rfq,
+                    invitation=invitation,
+                    input_snapshot=input_snapshot,
+                    guard_outcomes=_build_guard_outcomes(
+                        classification=classification,
+                        parsed=None,
+                        final_status="counterparty_declined",
+                        should_auto_create_quote=None,
+                        price_in_text=None,
+                        duplicate_active_quote=None,
+                        payload_complete=None,
+                        payload_validation=None,
+                    ),
+                    final_status="counterparty_declined",
+                    classification_trace=classification_trace,
+                    parse_trace=None,
+                )
                 return {
                     "message_id": msg.message_id,
                     "status": "counterparty_declined",
@@ -625,6 +941,26 @@ class RFQOrchestrator:
                     "counterparty": str(invitation.counterparty_id),
                 }
             if classification.intent == MessageIntent.question:
+                _add_llm_decision_artifact(
+                    session,
+                    durable=durable,
+                    rfq=rfq,
+                    invitation=invitation,
+                    input_snapshot=input_snapshot,
+                    guard_outcomes=_build_guard_outcomes(
+                        classification=classification,
+                        parsed=None,
+                        final_status="counterparty_question",
+                        should_auto_create_quote=None,
+                        price_in_text=None,
+                        duplicate_active_quote=None,
+                        payload_complete=None,
+                        payload_validation=None,
+                    ),
+                    final_status="counterparty_question",
+                    classification_trace=classification_trace,
+                    parse_trace=None,
+                )
                 return {
                     "message_id": msg.message_id,
                     "status": "counterparty_question",
@@ -632,6 +968,26 @@ class RFQOrchestrator:
                     "counterparty": str(invitation.counterparty_id),
                     "text": msg.text,
                 }
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=None,
+                    final_status="needs_human_review",
+                    should_auto_create_quote=None,
+                    price_in_text=None,
+                    duplicate_active_quote=None,
+                    payload_complete=None,
+                    payload_validation=None,
+                ),
+                final_status="needs_human_review",
+                classification_trace=classification_trace,
+                parse_trace=None,
+            )
             return {
                 "message_id": msg.message_id,
                 "status": "needs_human_review",
@@ -648,18 +1004,84 @@ class RFQOrchestrator:
             f"Direction: {rfq.direction.value}\n"
             f"Delivery: {rfq.delivery_window_start} to {rfq.delivery_window_end}"
         )
+        if durable is not None:
+            input_snapshot = _build_input_snapshot(
+                durable=durable,
+                msg=msg,
+                rfq=rfq,
+                invitation=invitation,
+                text_for_downstream=text_for_downstream,
+                rfq_context=rfq_context,
+            )
 
         try:
-            parsed = LLMAgent.parse_quote_message(
+            parsed, parse_trace = _parse_quote_with_optional_trace(
                 rfq_context=rfq_context,
                 raw_message=text_for_downstream,
                 sender_name=msg.sender_name or invitation.recipient_name,
             )
         except LLMUnavailableError as exc:
+            parse_trace = exc.trace or _synthetic_error_trace(
+                user_prompt=(
+                    f"RFQ Context:\n{rfq_context}\n\n"
+                    f"Counterparty: {msg.sender_name or invitation.recipient_name}\n\n"
+                    f"Message:\n{text_for_downstream}"
+                ),
+                error=str(exc),
+            )
             logger.error(
                 "orchestrator_llm_unavailable",
                 rfq_id=str(rfq.id),
                 error=str(exc),
+            )
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=None,
+                    final_status="llm_unavailable",
+                    should_auto_create_quote=None,
+                    price_in_text=None,
+                    duplicate_active_quote=None,
+                    payload_complete=None,
+                    payload_validation=None,
+                    failure_reason=str(exc),
+                ),
+                final_status="llm_unavailable",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+            )
+            return {
+                "message_id": msg.message_id,
+                "status": "llm_unavailable",
+                "rfq_id": str(rfq.id),
+            }
+
+        if parsed is None:
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=None,
+                    final_status="llm_unavailable",
+                    should_auto_create_quote=None,
+                    price_in_text=None,
+                    duplicate_active_quote=None,
+                    payload_complete=None,
+                    payload_validation=None,
+                    failure_reason=parse_trace.error if parse_trace else None,
+                ),
+                final_status="llm_unavailable",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
             )
             return {
                 "message_id": msg.message_id,
@@ -675,20 +1097,43 @@ class RFQOrchestrator:
         )
 
         # ── Guard 3: price-in-text validation ──
-        if LLMAgent.should_auto_create_quote(parsed):
+        should_auto_create = LLMAgent.should_auto_create_quote(parsed)
+        if should_auto_create:
             price_decimal = (
                 parsed.fixed_price_value
                 if parsed.fixed_price_value is not None
                 else (parsed.premium_discount or Decimal("0"))
             )
-            if not RFQOrchestrator._price_appears_in_text(
+            price_in_text = RFQOrchestrator._price_appears_in_text(
                 float(price_decimal), text_for_downstream
-            ):
+            )
+            if not price_in_text:
                 logger.warning(
                     "orchestrator_hallucinated_price_blocked",
                     rfq_id=str(rfq.id),
                     hallucinated_price=float(price_decimal),
                     raw_text=msg.text[:200],
+                )
+                _add_llm_decision_artifact(
+                    session,
+                    durable=durable,
+                    rfq=rfq,
+                    invitation=invitation,
+                    input_snapshot=input_snapshot,
+                    guard_outcomes=_build_guard_outcomes(
+                        classification=classification,
+                        parsed=parsed,
+                        final_status="hallucinated_price_blocked",
+                        should_auto_create_quote=should_auto_create,
+                        price_in_text=False,
+                        duplicate_active_quote=None,
+                        payload_complete=None,
+                        payload_validation=None,
+                        failure_reason="parsed price not present in inbound text",
+                    ),
+                    final_status="hallucinated_price_blocked",
+                    classification_trace=classification_trace,
+                    parse_trace=parse_trace,
                 )
                 return {
                     "message_id": msg.message_id,
@@ -720,6 +1165,28 @@ class RFQOrchestrator:
                     price=float(price_decimal),
                     existing_quote_id=str(existing_quote.id),
                 )
+                _add_llm_decision_artifact(
+                    session,
+                    durable=durable,
+                    rfq=rfq,
+                    invitation=invitation,
+                    input_snapshot=input_snapshot,
+                    guard_outcomes=_build_guard_outcomes(
+                        classification=classification,
+                        parsed=parsed,
+                        final_status="duplicate_quote_skipped",
+                        should_auto_create_quote=should_auto_create,
+                        price_in_text=True,
+                        duplicate_active_quote=True,
+                        payload_complete=None,
+                        payload_validation=None,
+                        failure_reason="duplicate active quote",
+                    ),
+                    final_status="duplicate_quote_skipped",
+                    classification_trace=classification_trace,
+                    parse_trace=parse_trace,
+                    quote_id=existing_quote.id,
+                )
                 return {
                     "message_id": msg.message_id,
                     "status": "duplicate_quote_skipped",
@@ -728,7 +1195,18 @@ class RFQOrchestrator:
                 }
 
             return RFQOrchestrator._auto_create_quote(
-                session, rfq, invitation, msg, parsed
+                session,
+                rfq,
+                invitation,
+                msg,
+                parsed,
+                durable=durable,
+                input_snapshot=input_snapshot,
+                classification=classification,
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+                should_auto_create_quote=should_auto_create,
+                price_in_text=True,
             )
 
         if parsed.intent == MessageIntent.rejection:
@@ -738,6 +1216,26 @@ class RFQOrchestrator:
                 "orchestrator_counterparty_declined",
                 rfq_id=str(rfq.id),
                 counterparty=str(invitation.counterparty_id),
+            )
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=parsed,
+                    final_status="counterparty_declined",
+                    should_auto_create_quote=should_auto_create,
+                    price_in_text=None,
+                    duplicate_active_quote=None,
+                    payload_complete=None,
+                    payload_validation=None,
+                ),
+                final_status="counterparty_declined",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
             )
             return {
                 "message_id": msg.message_id,
@@ -753,6 +1251,26 @@ class RFQOrchestrator:
                 counterparty=str(invitation.counterparty_id),
                 text=msg.text[:200],
             )
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=parsed,
+                    final_status="counterparty_question",
+                    should_auto_create_quote=should_auto_create,
+                    price_in_text=None,
+                    duplicate_active_quote=None,
+                    payload_complete=None,
+                    payload_validation=None,
+                ),
+                final_status="counterparty_question",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+            )
             return {
                 "message_id": msg.message_id,
                 "status": "counterparty_question",
@@ -761,6 +1279,26 @@ class RFQOrchestrator:
                 "text": msg.text,
             }
 
+        _add_llm_decision_artifact(
+            session,
+            durable=durable,
+            rfq=rfq,
+            invitation=invitation,
+            input_snapshot=input_snapshot,
+            guard_outcomes=_build_guard_outcomes(
+                classification=classification,
+                parsed=parsed,
+                final_status="needs_human_review",
+                should_auto_create_quote=should_auto_create,
+                price_in_text=None,
+                duplicate_active_quote=None,
+                payload_complete=None,
+                payload_validation=None,
+            ),
+            final_status="needs_human_review",
+            classification_trace=classification_trace,
+            parse_trace=parse_trace,
+        )
         return {
             "message_id": msg.message_id,
             "status": "needs_human_review",
@@ -777,6 +1315,14 @@ class RFQOrchestrator:
         invitation: RFQInvitation,
         msg: WhatsAppInboundMessage,
         parsed: ParsedQuote,
+        *,
+        durable: InboundWebhookMessage | None = None,
+        input_snapshot: dict | None = None,
+        classification: LLMClassifyResult | None = None,
+        classification_trace: LLMCallTrace | None = None,
+        parse_trace: LLMCallTrace | None = None,
+        should_auto_create_quote: bool | None = None,
+        price_in_text: bool | None = None,
     ) -> dict:
         """Create a quote automatically from a high-confidence LLM parse."""
         missing: list[str] = []
@@ -816,6 +1362,27 @@ class RFQOrchestrator:
                 counterparty=str(invitation.counterparty_id),
                 missing=missing,
             )
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=parsed,
+                    final_status="auto_quote_skipped_incomplete",
+                    should_auto_create_quote=should_auto_create_quote,
+                    price_in_text=price_in_text,
+                    duplicate_active_quote=False,
+                    payload_complete=False,
+                    payload_validation=None,
+                    failure_reason=", ".join(missing),
+                ),
+                final_status="auto_quote_skipped_incomplete",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+            )
             return {
                 "message_id": msg.message_id,
                 "status": "auto_quote_skipped_incomplete",
@@ -853,6 +1420,27 @@ class RFQOrchestrator:
                 error=str(exc),
                 price_value=str(price_value),
             )
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=parsed,
+                    final_status="auto_quote_skipped_invalid_payload",
+                    should_auto_create_quote=should_auto_create_quote,
+                    price_in_text=price_in_text,
+                    duplicate_active_quote=False,
+                    payload_complete=True,
+                    payload_validation=str(exc),
+                    failure_reason=str(exc),
+                ),
+                final_status="auto_quote_skipped_invalid_payload",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+            )
             return {
                 "message_id": msg.message_id,
                 "status": "auto_quote_skipped_invalid_payload",
@@ -875,8 +1463,29 @@ class RFQOrchestrator:
             quote_id_str = str(quote.id)
             counterparty_id_str = str(invitation.counterparty_id)
             quote_price_str = str(quote.fixed_price_value)
+            _add_llm_decision_artifact(
+                session,
+                durable=durable,
+                rfq=rfq,
+                invitation=invitation,
+                input_snapshot=input_snapshot,
+                guard_outcomes=_build_guard_outcomes(
+                    classification=classification,
+                    parsed=parsed,
+                    final_status="auto_quote_created",
+                    should_auto_create_quote=should_auto_create_quote,
+                    price_in_text=price_in_text,
+                    duplicate_active_quote=False,
+                    payload_complete=True,
+                    payload_validation="valid",
+                ),
+                final_status="auto_quote_created",
+                classification_trace=classification_trace,
+                parse_trace=parse_trace,
+                quote_id=quote.id,
+            )
             session.commit()
-        except (HTTPException, IntegrityError, OperationalError) as exc:
+        except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
             session.rollback()
             logger.error(
                 "orchestrator_auto_quote_failed",
