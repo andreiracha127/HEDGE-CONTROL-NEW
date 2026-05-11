@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, Uuid
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.models.base import Base
@@ -32,6 +33,11 @@ LLM_FINAL_STATUS_VALUES = {
 class LLMDecisionArtifact(Base):
     __tablename__ = "llm_decision_artifacts"
     __table_args__ = (
+        UniqueConstraint(
+            "inbound_message_id",
+            "attempt_number",
+            name="uq_llm_decision_artifacts_inbound_message_attempt",
+        ),
         CheckConstraint(
             "final_decision IN ('allow_mutation', 'deny_no_mutation')",
             name="ck_llm_decision_artifacts_final_decision",
@@ -57,7 +63,6 @@ class LLMDecisionArtifact(Base):
         Uuid(as_uuid=True),
         ForeignKey("inbound_webhook_messages.id"),
         nullable=False,
-        unique=True,
     )
     delivery_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True),
@@ -82,6 +87,7 @@ class LLMDecisionArtifact(Base):
         nullable=True,
     )
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     llm_provider: Mapped[str] = mapped_column(String(32), nullable=False)
     classification_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     parse_model: Mapped[str | None] = mapped_column(String(128), nullable=True)

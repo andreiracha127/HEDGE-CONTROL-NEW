@@ -329,6 +329,7 @@ def _build_artifact_payload(
     classification_trace: LLMCallTrace | None,
     parse_trace: LLMCallTrace | None,
     quote_id: UUID | None = None,
+    attempt_number: int = 1,
 ) -> dict:
     final_decision = (
         LLM_DECISION_ALLOW if final_status == "auto_quote_created" else LLM_DECISION_DENY
@@ -342,6 +343,7 @@ def _build_artifact_payload(
         "quote_id": quote_id,
         "counterparty_id": invitation.counterparty_id,
         "schema_version": 1,
+        "attempt_number": attempt_number,
         "llm_provider": (
             parse_trace.provider
             if parse_trace is not None
@@ -404,12 +406,28 @@ def _add_llm_decision_artifact(
             classification_trace=classification_trace,
             parse_trace=parse_trace,
             quote_id=quote_id,
+            attempt_number=_next_artifact_attempt_number(session, durable),
         )
         artifact = LLMDecisionArtifact(**payload)
     except (TypeError, ValueError) as exc:
         raise ArtifactPayloadError(str(exc)) from exc
     session.add(artifact)
     return artifact
+
+
+def _next_artifact_attempt_number(
+    session: Session,
+    durable: InboundWebhookMessage,
+) -> int:
+    latest = (
+        session.query(LLMDecisionArtifact.attempt_number)
+        .filter(LLMDecisionArtifact.inbound_message_id == durable.id)
+        .order_by(LLMDecisionArtifact.attempt_number.desc())
+        .first()
+    )
+    if latest is None:
+        return 1
+    return int(latest[0]) + 1
 
 
 def _parse_uuid(value: object) -> UUID | None:

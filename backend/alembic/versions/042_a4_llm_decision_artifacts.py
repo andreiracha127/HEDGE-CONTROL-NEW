@@ -64,6 +64,7 @@ def upgrade() -> None:
         sa.Column("quote_id", _uuid_type(dialect_name), nullable=True),
         sa.Column("counterparty_id", _uuid_type(dialect_name), nullable=True),
         sa.Column("schema_version", sa.Integer(), nullable=False, server_default="1"),
+        sa.Column("attempt_number", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("llm_provider", sa.String(length=32), nullable=False),
         sa.Column("classification_model", sa.String(length=128), nullable=True),
         sa.Column("parse_model", sa.String(length=128), nullable=True),
@@ -107,7 +108,8 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint(
             "inbound_message_id",
-            name="uq_llm_decision_artifacts_inbound_message_id",
+            "attempt_number",
+            name="uq_llm_decision_artifacts_inbound_message_attempt",
         ),
         *check_constraints,
     )
