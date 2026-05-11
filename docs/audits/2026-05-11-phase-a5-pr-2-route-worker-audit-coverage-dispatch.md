@@ -228,6 +228,10 @@ new `AuditTrailService.record_worker_event()` method in this wave. This method
 must be a small wrapper around the existing `AuditTrailService.record()` path,
 not a parallel signing implementation. Required signature:
 
+This method is expected to be absent on current `main`. Its absence before
+PR-A5-2 implementation is the implementation gap this dispatch assigns, not a
+dispatch citation claim that the method already exists.
+
 ```python
 @staticmethod
 def record_worker_event(
