@@ -41,6 +41,10 @@ worker.
   `FinancePipelineRun` and needs no return-shape change; and
   `AuditTrailService.record_worker_event()` is a new method returning
   `AuditEvent`.
+- Narrow route-audit metadata extension is allowed when required to persist
+  post-mutation durable identities, such as bulk Westmetall inserted row ids.
+  This must be explicit and tested; do not hide it inside request-body payload
+  snapshots.
 
 Signed audit evidence must be actor/source-bound and committed atomically with
 the mutation it describes.
@@ -96,14 +100,36 @@ evidence but no generic signed `AuditEvent` envelope:
 - `backend/app/services/rfq_orchestrator.py:1585`
 - `backend/app/models/llm_decision_artifact.py:20`.
 
-The intended integration point is inside `_auto_create_quote()` after
-`RFQService.submit_quote()` and `_add_llm_decision_artifact()` have both
-succeeded, but before the existing worker `session.commit()`. The executor must
-wire the worker audit method into that same transaction, for example:
+The intended integration must include durable message finalization in the same
+transaction as the quote, RFQ state changes, `LLMDecisionArtifact`, and signed
+`AuditEvent`. The current worker finalizes durable message status after
+`_process_single_message()` returns, in a separate `_finalize_durable_message()`
+commit. PR-A5-2 must remove that split for auto-quote success.
+
+Do not merely call `record_worker_event()` inside `_auto_create_quote()` before
+its existing `session.commit()` while leaving `_finalize_durable_message()` as a
+later commit. That would produce a signed auto-quote audit row without the
+promised atomic durable message linkage/status if finalization later fails.
+
+Acceptable implementation boundary:
+
+- avoid committing inside `_auto_create_quote()` for the auto-quote success path;
+- return enough quote/artifact context to the worker loop or move finalization
+  into the same transaction;
+- set durable message `processing_status`, `rfq_id`, `quote_id`, and
+  `processing_result`;
+- call `AuditTrailService.record_worker_event()`;
+- commit once.
+
+Illustrative sequence:
 
 ```python
 quote = RFQService.submit_quote(session, rfq.id, quote_payload)
 _add_llm_decision_artifact(..., quote_id=quote.id)
+durable.processing_status = "processed"
+durable.rfq_id = rfq.id
+durable.quote_id = quote.id
+durable.processing_result = _json_safe(result)
 AuditTrailService.record_worker_event(
     session,
     entity_type="rfq_quote",
@@ -120,9 +146,9 @@ AuditTrailService.record_worker_event(
 session.commit()
 ```
 
-The call site must be before commit so audit failure rolls back the quote, RFQ
-state changes, durable message linkage/status, and LLM decision artifact
-together.
+The call site must be before the single commit so audit failure rolls back the
+quote, RFQ state changes, durable message linkage/status, and LLM decision
+artifact together.
 
 ## 4. Required Implementation Boundary
 
@@ -212,6 +238,14 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
   `entity_id`;
 - for bulk ingest, use the deterministic batch UUID as `entity_id` and include
   the inserted `CashSettlementPrice.id` list in the audit payload/metadata;
+- because the current `audit_event()` dependency captures request payload before
+  the route runs and `mark_audit_success()` only carries `entity_id`, PR-A5-2
+  must add an explicit route-audit metadata mechanism for post-mutation data,
+  for example `mark_audit_success(request, entity_id, metadata={...})` or an
+  equivalent audited success-metadata setter;
+- the bulk Westmetall audit event must persist the deterministic `batch_uuid`,
+  inserted `CashSettlementPrice.id` list, source, requested date range, and
+  `html_sha256` in the signed audit payload or metadata;
 - when Westmetall ingest skips all rows and creates no mutation, do not mark a
   successful mutation audit event; tests must distinguish skip/no-op from
   mutation success;
@@ -356,12 +390,18 @@ pass them to `AuditTrailService.record()` as `payload_raw=payload_raw` and
 - Finance pipeline manual run rolls back when audit signing fails.
 - Single and bulk Westmetall ingest produce signed audit rows when rows are
   created or updated, explicitly re-wiring the existing-but-inert dependency.
+- Bulk Westmetall signed audit payload includes batch UUID, inserted row ids,
+  source, requested date range, and `html_sha256` via explicit post-mutation
+  audit metadata.
 - Single and bulk Westmetall ingest roll back when audit signing fails.
 - Westmetall no-op audit dependency is eliminated: the `request` object is
   retained and `mark_audit_success()` is called with the durable entity id.
 - Westmetall no-op ingests that create no rows do not emit mutation audit rows.
 - RFQ worker auto-quote creates a signed audit row atomically with quote,
   durable inbound message linkage/status, and `LLMDecisionArtifact`.
+- RFQ worker auto-quote does not commit quote/artifact/audit before durable
+  message finalization; quote, artifact, durable finalization, and audit row
+  commit or roll back together.
 - If worker audit signing fails, the auto-quote mutation is not durable.
 - The repo-wide route coverage test is derived from
   `@router.(post|put|patch|delete)` inventory and cannot silently miss newly
@@ -383,11 +423,14 @@ Minimum test coverage:
 - Westmetall single-date audit row;
 - Westmetall single-date rollback when audit signing fails;
 - Westmetall bulk audit row;
+- Westmetall bulk audit row contains inserted row ids in signed audit metadata;
 - Westmetall bulk rollback when audit signing fails;
 - Westmetall no-op/skip path emits no mutation audit row;
 - Westmetall declared dependency actually emits on success;
 - repo-wide mutating route inventory coverage;
 - worker auto-quote audit row with links to RFQ/quote/message/decision artifact;
+- worker auto-quote finalization failure rolls back quote, RFQ state changes,
+  durable message status/linkage, LLM decision artifact, and audit row together;
 - worker audit failure rolls back the quote/state mutation.
 - worker `MissingAuditSigningKey` from `record_worker_event()` prevents the
   enclosing worker `session.commit()` and rolls back quote, RFQ state changes,

@@ -138,8 +138,11 @@ longer than 32 characters.
 - `/audit/events/{id}/verify` fails when persisted payload and stored checksum
   diverge.
 - `/audit/events/{id}/verify` fails when checksum and signature diverge.
-- Existing valid audit rows verify successfully after the new canonicalization
-  path.
+- Audit rows written after the new canonicalization path verify successfully.
+- Legacy audit rows written before canonicalization are either migrated to a
+  reconstructible canonical checksum input or explicitly reported by verify as
+  unverifiable legacy rows. Do not make legacy rows pass by falling back to
+  checksum/signature self-consistency.
 - Tests prove that semantically identical JSON with different whitespace/key
   ordering produces deterministic canonical checksum behavior.
 - `docs/governance.md` has no diff.
@@ -160,6 +163,9 @@ Minimum test coverage:
 - checksum tamper fails verification;
 - signature tamper fails verification;
 - canonical JSON behavior is deterministic across key order/whitespace variants.
+- legacy rows without reconstructible checksum input are reported as
+  unverifiable unless migrated; they must not pass via checksum/signature-only
+  fallback.
 
 Do not rely only on static tests. At least one behavioral test per mutation
 family must prove database state is not durable when audit emission fails.
