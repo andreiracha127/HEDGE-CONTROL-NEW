@@ -144,19 +144,18 @@ dependency that never emits an event.
 For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 
 - remove the existing `del request` statement and retain the `request` object;
-- call `mark_audit_success(request, entity_id)` after a successful ingest
-  operation;
-- extract `entity_id` from persisted ingest output: the created/updated
-  `CashSettlementPrice` row id for single-date ingest; and for bulk ingest a
-  deterministic batch UUID derived from immutable ingest evidence
-  (`source`, date range, `html_sha256`, and inserted settlement dates);
-- if the current service response only exposes counts, extend the service or
-  route result narrowly so daily ingest returns the inserted
-  `CashSettlementPrice.id` when a row is created, and bulk ingest returns the
-  inserted `CashSettlementPrice.id` values plus the deterministic batch UUID;
-- for bulk ingest, use the deterministic batch UUID as
-  `mark_audit_success(request, entity_id)` and include the inserted
-  `CashSettlementPrice.id` list in the audit payload/metadata;
+- first extend both Westmetall ingest service return contracts narrowly:
+  - single-date ingest must return the inserted `CashSettlementPrice.id` when a
+    row is created;
+  - bulk ingest must return the inserted `CashSettlementPrice.id` values and a
+    deterministic batch UUID derived from immutable ingest evidence (`source`,
+    date range, `html_sha256`, and inserted settlement dates);
+- after the service returns durable identities, the HTTP route must call
+  `mark_audit_success(request, entity_id)` after a successful ingest operation;
+- for single-date ingest, use the inserted `CashSettlementPrice.id` as
+  `entity_id`;
+- for bulk ingest, use the deterministic batch UUID as `entity_id` and include
+  the inserted `CashSettlementPrice.id` list in the audit payload/metadata;
 - when Westmetall ingest skips all rows and creates no mutation, do not mark a
   successful mutation audit event; tests must distinguish skip/no-op from
   mutation success;
@@ -233,6 +232,9 @@ It must be generic: callers provide `actor` and `source`; the method must not
 invent them. In this wave, the required call site is RFQ auto-quote only.
 Future background workers may reuse the method only if they pass explicit,
 caller-owned actor/source metadata.
+Do not expose a `commit` parameter on `record_worker_event()` in this wave; the
+method must always call `AuditTrailService.record(..., commit=False)` so the
+worker's existing transaction remains the only commit boundary.
 
 Minimum skeleton:
 
