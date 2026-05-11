@@ -539,14 +539,20 @@ except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
 It must return a `dict` containing at least the minimum non-null artifact
 constructor payload below, plus nullable fields from §3.1 when available.
 
-After replacing the exception tuple, remove stale `IntegrityError` and
-`OperationalError` imports if no other code in `rfq_orchestrator.py` uses them,
-and import `SQLAlchemyError` from `sqlalchemy.exc`.
-Verify import cleanup explicitly:
+Before changing imports, verify whether `IntegrityError` or `OperationalError`
+are used anywhere else in `rfq_orchestrator.py`:
 
 ```bash
 rg -n "IntegrityError|OperationalError" backend/app/services/rfq_orchestrator.py
 ```
+
+Then:
+
+- import `SQLAlchemyError` from `sqlalchemy.exc`;
+- remove `IntegrityError` and `OperationalError` imports only if the grep shows
+  zero remaining usages after the `_auto_create_quote()` tuple is replaced;
+- if either exception is used elsewhere, keep the specific import and only add
+  `SQLAlchemyError`.
 
 Minimum non-null artifact constructor payload:
 
