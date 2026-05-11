@@ -127,7 +127,9 @@ existing inbound models:
 from app.models.llm_decision_artifact import LLMDecisionArtifact
 ```
 
-and add `"LLMDecisionArtifact"` to `__all__`.
+and add `"LLMDecisionArtifact"` to `__all__`. At authoring time `__all__` is
+not strictly alphabetical; keep the new entry near `InboundWebhookDelivery` and
+`InboundWebhookMessage` to preserve the inbound evidence grouping.
 
 The table must be durable, queryable, and linked to the inbound evidence chain.
 At minimum it must include:
@@ -138,8 +140,9 @@ At minimum it must include:
 - `provider` and `provider_message_id` copied from the durable inbound message;
 - `rfq_id` nullable FK to `rfqs.id`;
 - `quote_id` nullable FK to `rfq_quotes.id`;
-- `counterparty_id` nullable UUID FK to `counterparties.id`, consistent with
-  `RFQInvitation.counterparty_id`;
+- `counterparty_id` nullable UUID FK to `counterparties.id`; it is nullable
+  because some diagnostic paths may not have a resolved counterparty, but when
+  an invitation is present it must be copied from `RFQInvitation.counterparty_id`;
 - `schema_version` integer, default `1`;
 - `llm_provider`, e.g. `openai`;
 - `classification_model` nullable;
@@ -247,6 +250,32 @@ environment can resolve application imports reliably; otherwise replicate the
 SQLite tests must exercise the same uniqueness invariant. If PostgreSQL-only
 CHECK constraints are added, guard them by dialect and enforce the same status
 domain in the SQLAlchemy model with `@validates`.
+Follow the concrete 041 migration pattern:
+
+```python
+check_constraints = [
+    sa.CheckConstraint(
+        "final_decision IN ('allow_mutation', 'deny_no_mutation')",
+        name="ck_llm_decision_artifacts_final_decision",
+    ),
+]
+if dialect_name == "postgresql":
+    check_constraints.append(
+        sa.CheckConstraint(
+            "final_status IN ('auto_quote_created', 'counterparty_declined', "
+            "'counterparty_question', 'needs_human_review', 'llm_unavailable', "
+            "'hallucinated_price_blocked', 'duplicate_quote_skipped', "
+            "'auto_quote_skipped_incomplete', "
+            "'auto_quote_skipped_invalid_payload', 'auto_quote_failed')",
+            name="ck_llm_decision_artifacts_final_status",
+        )
+    )
+```
+
+Then pass `*check_constraints` to `op.create_table(...)`, matching the style in
+`backend/alembic/versions/041_a4_inbound_webhook_messages.py`. If the final
+status CHECK is made portable and passes SQLite migration tests, a dialect guard
+is not required; the model validators remain mandatory either way.
 
 ### 3.3 Preserve raw LLM response and prompt/input
 
@@ -301,6 +330,9 @@ Required cases:
   - `llm_unavailable`;
 - parsed result below auto-create threshold:
   - `needs_human_review`;
+- post-parse intent returns non-quote:
+  - `counterparty_declined`;
+  - `counterparty_question`;
 - hallucinated price blocked;
 - duplicate active quote skipped;
 - incomplete auto-quote payload skipped (`auto_quote_skipped_incomplete`);
@@ -384,13 +416,36 @@ Concrete placement requirement:
 - if artifact construction or insertion raises, do not call `session.commit()`;
   the transaction path must `session.rollback()` so the flushed quote and
   artifact are both rolled back;
-- widen the rollback coverage around this transaction path to include artifact
-  construction/insertion failures such as `SQLAlchemyError`, `TypeError`, and
-  `ValueError`, not only the current `HTTPException`, `IntegrityError`, and
-  `OperationalError` cases;
+- widen rollback coverage with a clear exception shape:
+  - wrap artifact payload construction separately and catch only
+    `(TypeError, ValueError)` there;
+  - for the submit/insert/commit DB block, replace the current
+    `(HTTPException, IntegrityError, OperationalError)` tuple with
+    `(HTTPException, SQLAlchemyError)`;
+  - do not list `IntegrityError` or `OperationalError` separately next to
+    `SQLAlchemyError`, because they are subclasses;
 - do not add a second post-commit artifact write. The current `_auto_create_quote`
   shape must be restructured only enough to stage the artifact before the
   existing commit.
+
+Expected exception shape:
+
+```python
+try:
+    artifact_payload = build_artifact_payload(...)
+except (TypeError, ValueError) as exc:
+    session.rollback()
+    return {"status": "auto_quote_failed", "error": str(exc), ...}
+
+try:
+    quote = RFQService.submit_quote(session, rfq.id, quote_payload)
+    artifact = LLMDecisionArtifact(quote_id=quote.id, **artifact_payload)
+    session.add(artifact)
+    session.commit()
+except (HTTPException, SQLAlchemyError) as exc:
+    session.rollback()
+    return {"status": "auto_quote_failed", "error": str(exc), ...}
+```
 
 ### 3.6 Remove PR-A4-2 legacy inbound path
 
