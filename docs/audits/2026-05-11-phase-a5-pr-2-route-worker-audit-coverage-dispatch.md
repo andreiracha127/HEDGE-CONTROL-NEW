@@ -291,9 +291,10 @@ post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed. Call
   trigger and durable pipeline run identity.
 - Finance pipeline manual run rolls back when audit signing fails.
 - Single and bulk Westmetall ingest produce signed audit rows when rows are
-  created or updated.
+  created or updated, explicitly re-wiring the existing-but-inert dependency.
 - Single and bulk Westmetall ingest roll back when audit signing fails.
-- Westmetall no-op audit dependency is eliminated.
+- Westmetall no-op audit dependency is eliminated: the `request` object is
+  retained and `mark_audit_success()` is called with the durable entity id.
 - RFQ worker auto-quote creates a signed audit row atomically with quote,
   durable inbound message linkage/status, and `LLMDecisionArtifact`.
 - If worker audit signing fails, the auto-quote mutation is not durable.
@@ -322,6 +323,9 @@ Minimum test coverage:
 - repo-wide mutating route inventory coverage;
 - worker auto-quote audit row with links to RFQ/quote/message/decision artifact;
 - worker audit failure rolls back the quote/state mutation.
+- worker `MissingAuditSigningKey` from `record_worker_event()` prevents the
+  enclosing worker `session.commit()` and rolls back quote, RFQ state changes,
+  durable message linkage/status, and LLM decision artifact.
 
 ## 7. Required Verification
 
