@@ -1085,6 +1085,78 @@ def test_failed_llm_unavailable_durable_retry_records_second_artifact(
         assert artifacts[1].quote_id is not None
 
 
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_stale_redelivery_after_quote_artifact_commit_reuses_artifact(
+    mock_classify, mock_parse
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    mock_parse.return_value = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.replay-artifact",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.replay-artifact-1",
+                delivery_message_id=durable_id,
+            )
+        )
+        with patch(
+            "app.services.rfq_orchestrator.RFQOrchestrator._finalize_durable_message",
+            side_effect=RuntimeError("finalize failed"),
+        ):
+            with pytest.raises(RuntimeError, match="finalize failed"):
+                RFQOrchestrator.process_inbound_queue(session)
+
+        durable = session.get(type(durable), durable_id)
+        assert durable is not None
+        durable.processing_started_at = now_utc() - timedelta(hours=1)
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.replay-artifact-2",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        artifacts = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .all()
+        )
+        durable = session.get(type(durable), durable_id)
+        assert len(artifacts) == 1
+        assert artifacts[0].final_status == "auto_quote_created"
+        assert artifacts[0].attempt_number == 1
+        assert session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).count() == 1
+        assert durable is not None
+        assert durable.processing_status == "processed"
+        assert durable.processing_result["status"] == "auto_quote_created"
+        assert durable.quote_id == artifacts[0].quote_id
+
+
 @patch("app.services.rfq_orchestrator._build_artifact_payload")
 def test_artifact_persistence_failure_rolls_back_auto_quote(mock_build_payload):
     mock_build_payload.side_effect = ValueError("artifact payload bad")

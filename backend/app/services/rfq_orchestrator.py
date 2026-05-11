@@ -435,6 +435,45 @@ def _next_artifact_attempt_number(
     return int(latest[0]) + 1
 
 
+def _existing_auto_quote_artifact(
+    session: Session,
+    *,
+    durable: InboundWebhookMessage | None,
+    quote_id: UUID,
+) -> LLMDecisionArtifact | None:
+    if durable is None:
+        return None
+    return (
+        session.query(LLMDecisionArtifact)
+        .filter(
+            LLMDecisionArtifact.inbound_message_id == durable.id,
+            LLMDecisionArtifact.quote_id == quote_id,
+            LLMDecisionArtifact.final_status == "auto_quote_created",
+        )
+        .order_by(LLMDecisionArtifact.attempt_number.desc())
+        .first()
+    )
+
+
+def _auto_quote_replay_result(
+    msg: WhatsAppInboundMessage,
+    *,
+    artifact: LLMDecisionArtifact,
+    rfq: RFQ,
+    quote: RFQQuote,
+) -> dict:
+    result: dict = {
+        "message_id": msg.message_id,
+        "status": "auto_quote_created",
+        "rfq_id": str(rfq.id),
+        "quote_id": str(quote.id),
+    }
+    parsed = artifact.parse_parsed
+    if isinstance(parsed, dict) and parsed.get("confidence") is not None:
+        result["confidence"] = parsed["confidence"]
+    return result
+
+
 def _parse_uuid(value: object) -> UUID | None:
     if value is None:
         return None
@@ -1197,6 +1236,24 @@ class RFQOrchestrator:
                     price=float(price_decimal),
                     existing_quote_id=str(existing_quote.id),
                 )
+                replay_artifact = _existing_auto_quote_artifact(
+                    session,
+                    durable=durable,
+                    quote_id=existing_quote.id,
+                )
+                if replay_artifact is not None:
+                    logger.info(
+                        "orchestrator_auto_quote_replay_from_artifact",
+                        rfq_id=str(rfq.id),
+                        quote_id=str(existing_quote.id),
+                        delivery_message_id=str(durable.id) if durable else None,
+                    )
+                    return _auto_quote_replay_result(
+                        msg,
+                        artifact=replay_artifact,
+                        rfq=rfq,
+                        quote=existing_quote,
+                    )
                 _add_llm_decision_artifact(
                     session,
                     durable=durable,
