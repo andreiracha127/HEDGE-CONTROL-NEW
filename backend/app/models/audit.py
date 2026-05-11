@@ -20,5 +20,6 @@ class AuditEvent(Base):
     entity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     event_type: Mapped[str] = mapped_column(Text, nullable=False)
     payload: Mapped[object] = mapped_column(JSON, nullable=False)
+    payload_canonical: Mapped[str | None] = mapped_column(Text, nullable=True)
     checksum: Mapped[str] = mapped_column(String(length=64), nullable=False)
     signature: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)

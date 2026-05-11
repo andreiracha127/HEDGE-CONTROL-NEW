@@ -10,6 +10,7 @@ from app.core.auth import require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.schemas.pl import PLResultResponse, PLSnapshotCreate, PLSnapshotResponse
 from app.services.pl_calculation_service import compute_pl
 from app.services.pl_snapshot_service import create_pl_snapshot, get_pl_snapshot
@@ -46,15 +47,16 @@ def post_pl_snapshot(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> PLSnapshotResponse:
-    snapshot = create_pl_snapshot(
-        db=session,
-        entity_type=snapshot_in.entity_type,
-        entity_id=snapshot_in.entity_id,
-        period_start=snapshot_in.period_start,
-        period_end=snapshot_in.period_end,
-    )
-    mark_audit_success(request, snapshot.id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        snapshot = create_pl_snapshot(
+            db=session,
+            entity_type=snapshot_in.entity_type,
+            entity_id=snapshot_in.entity_id,
+            period_start=snapshot_in.period_start,
+            period_end=snapshot_in.period_end,
+            commit=False,
+        )
+        mark_audit_success(request, snapshot.id)
     return PLSnapshotResponse.model_validate(snapshot)
 
 

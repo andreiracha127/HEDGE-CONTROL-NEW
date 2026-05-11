@@ -218,6 +218,8 @@ def ingest_hedge_contract_settlement(
     db: Session,
     contract_id: UUID,
     payload: HedgeContractSettlementCreate,
+    *,
+    commit: bool = True,
 ) -> tuple[HedgeContractSettlementEvent, list[CashFlowLedgerEntry]]:
     contract = db.get(HedgeContract, contract_id)
     if not contract:
@@ -288,10 +290,13 @@ def ingest_hedge_contract_settlement(
         db.add(entry)
 
     contract.status = HedgeContractStatus.settled
-    db.commit()
-    db.refresh(settlement_event)
-    for entry in ledger_entries:
-        db.refresh(entry)
+    if commit:
+        db.commit()
+        db.refresh(settlement_event)
+        for entry in ledger_entries:
+            db.refresh(entry)
+    else:
+        db.flush()
 
     return settlement_event, ledger_entries
 

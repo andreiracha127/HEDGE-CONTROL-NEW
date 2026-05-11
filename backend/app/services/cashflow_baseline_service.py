@@ -187,7 +187,11 @@ def _build_unrealized_items(db: Session, as_of_date: date) -> list[CashFlowItem]
 
 
 def create_cashflow_baseline_snapshot(
-    db: Session, as_of_date: date, correlation_id: str
+    db: Session,
+    as_of_date: date,
+    correlation_id: str,
+    *,
+    commit: bool = True,
 ) -> CashFlowBaselineSnapshot:
     existing = (
         db.query(CashFlowBaselineSnapshot)
@@ -266,8 +270,11 @@ def create_cashflow_baseline_snapshot(
         correlation_id=correlation_id,
     )
     db.add(snapshot)
-    db.commit()
-    db.refresh(snapshot)
+    if commit:
+        db.commit()
+        db.refresh(snapshot)
+    else:
+        db.flush()
     return snapshot
 
 

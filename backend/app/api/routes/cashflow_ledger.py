@@ -8,6 +8,7 @@ from app.core.auth import require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.schemas.cashflow import (
     CashFlowLedgerEntryRead,
     HedgeContractSettlementCreate,
@@ -43,11 +44,11 @@ def settle_hedge_contract(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> HedgeContractSettlementResponse:
-    event, ledger_entries = ingest_hedge_contract_settlement(
-        session, contract_id, payload
-    )
-    mark_audit_success(request, event.id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        event, ledger_entries = ingest_hedge_contract_settlement(
+            session, contract_id, payload, commit=False
+        )
+        mark_audit_success(request, event.id)
     return HedgeContractSettlementResponse(
         event=event,
         ledger_entries=[

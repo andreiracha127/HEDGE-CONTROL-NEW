@@ -67,6 +67,10 @@ def verify_signature(checksum: str, signature: bytes, key: bytes) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+def compute_checksum(payload_canonical: str) -> str:
+    return hashlib.sha256(payload_canonical.encode("utf-8")).hexdigest()
+
+
 class AuditTrailService:
     @staticmethod
     def record(
@@ -86,7 +90,8 @@ class AuditTrailService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Audit event already exists",
             )
-        checksum = hashlib.sha256(payload_raw.encode("utf-8")).hexdigest()
+        payload_canonical, payload_obj = normalize_payload_raw(payload_obj)
+        checksum = compute_checksum(payload_canonical)
 
         signing_key = _get_signing_key()
         if not signing_key:
@@ -103,6 +108,7 @@ class AuditTrailService:
             entity_id=entity_id,
             event_type=event_type,
             payload=payload_obj,
+            payload_canonical=payload_canonical,
             checksum=checksum,
             signature=signature,
         )
@@ -151,6 +157,32 @@ class AuditTrailService:
                 detail="Audit event not found",
             )
         return event
+
+    @staticmethod
+    def verify_event(event: AuditEvent, key: bytes) -> tuple[bool, str]:
+        if event.signature is None:
+            return False, "Event was recorded without a signature"
+        if not event.payload_canonical:
+            return False, "Legacy event is unverifiable: canonical audit payload missing"
+
+        payload_canonical, _ = normalize_payload_raw(event.payload)
+        if payload_canonical != event.payload_canonical:
+            return (
+                False,
+                "Payload mismatch — persisted payload no longer matches canonical audit input",
+            )
+
+        expected_checksum = compute_checksum(payload_canonical)
+        if expected_checksum != event.checksum:
+            return (
+                False,
+                "Checksum mismatch — persisted payload no longer matches stored checksum",
+            )
+
+        if not verify_signature(event.checksum, event.signature, key):
+            return False, "Signature mismatch — event may have been tampered with"
+
+        return True, "Signature valid"
 
 
 def normalize_payload_raw(payload: object | None) -> tuple[str, object]:

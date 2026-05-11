@@ -20,13 +20,20 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, datetime, timezone
+from decimal import Decimal
 from uuid import UUID
 
 import pytest
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
+from app.models.cashflow import (
+    CashFlowBaselineSnapshot,
+    CashFlowLedgerEntry,
+    HedgeContractSettlementEvent,
+)
 from app.models.contracts import (
     HedgeClassification,
     HedgeContract,
@@ -36,11 +43,16 @@ from app.models.contracts import (
 from app.models.counterparty import Counterparty
 from app.models.deal import Deal, DealLink
 from app.models.exposure import HedgeTask, HedgeTaskStatus
+from app.models.market_data import CashSettlementPrice
+from app.models.mtm import MTMSnapshot
 from app.models.orders import Order, OrderType, PriceType
+from app.models.pl import PLSnapshot
+from app.models.quotes import QuoteState, RFQQuote
 from app.models.reconciliation_run import (
     ReconciliationRun,
     ReconciliationRunStatus,
 )
+from app.models.rfqs import RFQ, RFQInvitation, RFQInvitationPurpose, RFQState
 from app.services.audit_trail_service import (
     AuditTrailService,
     MissingAuditSigningKey,
@@ -425,3 +437,440 @@ class TestRouteCoverageStatic:
                 assert "audit_event" in joined, (
                     f"Route {mp} missing audit_event dependency; deps={source_names}"
                 )
+
+
+@contextmanager
+def _without_signing_key():
+    previous = os.environ.pop("AUDIT_SIGNING_KEY", None)
+    _reset_signing_key_cache()
+    try:
+        yield
+    finally:
+        if previous is not None:
+            os.environ["AUDIT_SIGNING_KEY"] = previous
+        else:
+            os.environ["AUDIT_SIGNING_KEY"] = "test-signing-key-for-audit-hmac"
+        _reset_signing_key_cache()
+
+
+def _create_counterparty_via_api(
+    client,
+    *,
+    name: str = "CP-A",
+    phone: str = "+5511999990001",
+) -> str:
+    resp = client.post(
+        "/counterparties",
+        json={
+            "type": "broker",
+            "name": name,
+            "country": "BRA",
+            "whatsapp_phone": phone,
+        },
+    )
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+def _create_global_rfq(client, cp_ids: list[str]) -> dict:
+    resp = client.post(
+        "/rfqs",
+        json={
+            "intent": "GLOBAL_POSITION",
+            "commodity": "LME_AL",
+            "quantity_mt": "5.000",
+            "delivery_window_start": "2026-03-01",
+            "delivery_window_end": "2026-03-31",
+            "direction": "BUY",
+            "order_id": None,
+            "invitations": [{"counterparty_id": cp_id} for cp_id in cp_ids],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _create_quote_via_api(
+    client,
+    *,
+    rfq_id: str,
+    counterparty_id: str,
+    price: str = "100.000",
+) -> dict:
+    resp = client.post(
+        f"/rfqs/{rfq_id}/quotes",
+        json={
+            "rfq_id": rfq_id,
+            "counterparty_id": counterparty_id,
+            "fixed_price_value": price,
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def _insert_price(
+    session: Session,
+    *,
+    settlement_date: date,
+    price_usd: str | float,
+    symbol: str = "LME_ALU_CASH_SETTLEMENT_DAILY",
+) -> None:
+    session.add(
+        CashSettlementPrice(
+            source="westmetall",
+            symbol=symbol,
+            settlement_date=settlement_date,
+            price_usd=Decimal(str(price_usd)),
+            source_url="https://example.test/source",
+            html_sha256="0" * 64,
+            fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        )
+    )
+    session.commit()
+
+
+def _create_variable_sales_order(client, avg_entry_price: float = 100.0) -> dict:
+    response = client.post(
+        "/orders/sales",
+        json={
+            "price_type": "variable",
+            "quantity_mt": 5.0,
+            "pricing_convention": "AVG",
+            "avg_entry_price": avg_entry_price,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _create_hedge_contract_via_api(client) -> str:
+    response = client.post(
+        "/contracts/hedge",
+        json={
+            "commodity": "LME_AL",
+            "quantity_mt": 12.0,
+            "legs": [
+                {"side": "buy", "price_type": "fixed"},
+                {"side": "sell", "price_type": "variable"},
+            ],
+            "fixed_price_value": "100",
+            "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
+def _settlement_payload(source_event_id: str) -> dict:
+    return {
+        "source_event_id": source_event_id,
+        "cashflow_date": date(2026, 1, 15).isoformat(),
+        "legs": [
+            {"leg_id": "FIXED", "direction": "OUT", "amount": "1200.000000"},
+            {"leg_id": "FLOAT", "direction": "IN", "amount": "1320.000000"},
+        ],
+    }
+
+
+class TestA5FailClosedMutationFamilies:
+    def test_order_archive_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        order = _create_variable_sales_order(client)
+        order_id = UUID(order["id"])
+
+        with _without_signing_key():
+            resp = client.patch(f"/orders/{order_id}/archive")
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        persisted = session.get(Order, order_id)
+        assert persisted is not None
+        assert persisted.deleted_at is None
+
+    def test_rfq_create_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+
+        with _without_signing_key():
+            resp = client.post(
+                "/rfqs",
+                json={
+                    "intent": "GLOBAL_POSITION",
+                    "commodity": "LME_AL",
+                    "quantity_mt": "5.000",
+                    "delivery_window_start": "2026-03-01",
+                    "delivery_window_end": "2026-03-31",
+                    "direction": "BUY",
+                    "order_id": None,
+                    "invitations": [{"counterparty_id": cp_id}],
+                },
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.query(RFQ).count() == 0
+        assert session.query(RFQInvitation).count() == 0
+
+    def test_rfq_quote_submit_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/quotes",
+                json={
+                    "rfq_id": rfq["id"],
+                    "counterparty_id": cp_id,
+                    "fixed_price_value": "100.000",
+                    "fixed_price_unit": "USD/MT",
+                    "float_pricing_convention": "avg",
+                    "received_at": datetime(
+                        2026, 2, 1, tzinfo=timezone.utc
+                    ).isoformat(),
+                },
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.query(RFQQuote).count() == 0
+        assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.sent
+
+    def test_rfq_reject_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+        _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/reject",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.quoted
+
+    def test_rfq_cancel_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/cancel",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.sent
+
+    def test_rfq_reject_quote_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+        quote = _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
+        quote_id = UUID(quote["id"])
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        persisted_quote = session.get(RFQQuote, quote_id)
+        assert persisted_quote is not None
+        assert persisted_quote.state == QuoteState.active
+        reject_rows = (
+            session.query(RFQInvitation)
+            .filter(RFQInvitation.purpose == RFQInvitationPurpose.reject_quote)
+            .count()
+        )
+        assert reject_rows == 0
+
+    def test_rfq_refresh_counterparty_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/refresh-counterparty",
+                json={"counterparty_id": cp_id, "user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        refresh_rows = (
+            session.query(RFQInvitation)
+            .filter(RFQInvitation.purpose == RFQInvitationPurpose.refresh)
+            .count()
+        )
+        assert refresh_rows == 0
+
+    def test_rfq_refresh_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/refresh",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        refresh_rows = (
+            session.query(RFQInvitation)
+            .filter(RFQInvitation.purpose == RFQInvitationPurpose.refresh)
+            .count()
+        )
+        assert refresh_rows == 0
+
+    def test_rfq_award_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+        _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/rfqs/{rfq['id']}/actions/award",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        persisted_rfq = session.get(RFQ, UUID(rfq["id"]))
+        assert persisted_rfq is not None
+        assert persisted_rfq.state == RFQState.quoted
+        assert (
+            session.query(HedgeContract)
+            .filter(HedgeContract.rfq_id == UUID(rfq["id"]))
+            .count()
+            == 0
+        )
+
+    def test_rfq_archive_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = _create_counterparty_via_api(client)
+        rfq = _create_global_rfq(client, [cp_id])
+        closed = client.post(f"/rfqs/{rfq['id']}/actions/cancel", json={"user_id": "U1"})
+        assert closed.status_code == 200
+
+        with _without_signing_key():
+            resp = client.patch(
+                f"/rfqs/{rfq['id']}/archive",
+                json={"user_id": "U1"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        persisted_rfq = session.get(RFQ, UUID(rfq["id"]))
+        assert persisted_rfq is not None
+        assert persisted_rfq.deleted_at is None
+        assert persisted_rfq.state == RFQState.closed
+
+    def test_mtm_snapshot_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
+        contract_id = _create_hedge_contract_via_api(client)
+
+        with _without_signing_key():
+            resp = client.post(
+                "/mtm/snapshots",
+                json={
+                    "object_type": "hedge_contract",
+                    "object_id": contract_id,
+                    "as_of_date": "2026-02-01",
+                    "correlation_id": "a5-mtm",
+                },
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.query(MTMSnapshot).count() == 0
+
+    def test_pl_snapshot_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        _insert_price(session, settlement_date=date(2026, 1, 14), price_usd="110")
+        _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
+        contract_id = _create_hedge_contract_via_api(client)
+        settlement = client.post(
+            f"/cashflow/contracts/{contract_id}/settle",
+            json=_settlement_payload(str(uuid.uuid4())),
+        )
+        assert settlement.status_code == 201, settlement.text
+
+        with _without_signing_key():
+            resp = client.post(
+                "/pl/snapshots",
+                json={
+                    "entity_type": "hedge_contract",
+                    "entity_id": contract_id,
+                    "period_start": "2026-01-01",
+                    "period_end": "2026-01-31",
+                },
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.query(PLSnapshot).count() == 0
+
+    def test_cashflow_baseline_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
+        _create_variable_sales_order(client, avg_entry_price=100.0)
+
+        with _without_signing_key():
+            resp = client.post(
+                "/cashflow/baseline/snapshots",
+                json={"as_of_date": "2026-02-01", "correlation_id": "a5-cf"},
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        assert session.query(CashFlowBaselineSnapshot).count() == 0
+
+    def test_cashflow_settlement_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        _insert_price(session, settlement_date=date(2026, 1, 14), price_usd="110")
+        contract_id = _create_hedge_contract_via_api(client)
+
+        with _without_signing_key():
+            resp = client.post(
+                f"/cashflow/contracts/{contract_id}/settle",
+                json=_settlement_payload(str(uuid.uuid4())),
+            )
+
+        assert resp.status_code >= 500
+        session.expire_all()
+        persisted_contract = session.get(HedgeContract, UUID(contract_id))
+        assert persisted_contract is not None
+        assert persisted_contract.status == HedgeContractStatus.active
+        assert session.query(HedgeContractSettlementEvent).count() == 0
+        assert session.query(CashFlowLedgerEntry).count() == 0

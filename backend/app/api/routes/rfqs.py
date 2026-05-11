@@ -9,7 +9,12 @@ from app.core.auth import require_any_role, require_role
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
-from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.audit import (
+    audit_event,
+    mark_audit_success,
+    record_audit_checkpoint,
+)
+from app.api.dependencies.uow import unit_of_work
 from app.models.quotes import RFQQuote
 from app.models.rfqs import RFQ, RFQDirection, RFQIntent, RFQState, RFQStateEvent
 from app.schemas.rfq import (
@@ -108,11 +113,19 @@ def create_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    rfq = RFQService.create(session, payload)
-    session.commit()
-    session.refresh(rfq)
-    mark_audit_success(request, rfq.id)
-    request.state.audit_commit()
+    try:
+        rfq = RFQService.create(
+            session,
+            payload,
+            audit_checkpoint=lambda entity_id: record_audit_checkpoint(
+                request, entity_id
+            ),
+        )
+        session.commit()
+        session.refresh(rfq)
+    except Exception:
+        session.rollback()
+        raise
     return _build_rfq_read(session, rfq.id)
 
 
@@ -265,11 +278,9 @@ def create_quote(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQQuoteRead:
-    quote = RFQService.submit_quote(session, rfq_id, payload)
-    session.commit()
-    session.refresh(quote)
-    mark_audit_success(request, quote.id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        quote = RFQService.submit_quote(session, rfq_id, payload)
+        mark_audit_success(request, quote.id)
     return RFQQuoteRead.model_validate(quote)
 
 
@@ -317,10 +328,9 @@ def reject_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    RFQService.reject(session, rfq_id, payload.user_id)
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        RFQService.reject(session, rfq_id, payload.user_id)
+        mark_audit_success(request, rfq_id)
     return _build_rfq_read(session, rfq_id)
 
 
@@ -340,10 +350,9 @@ async def cancel_rfq(
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Cancel an RFQ in CREATED or SENT state."""
-    RFQService.cancel(session, rfq_id, payload.user_id)
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        RFQService.cancel(session, rfq_id, payload.user_id)
+        mark_audit_success(request, rfq_id)
     await ws_manager.broadcast(
         "rfq",
         str(rfq_id),
@@ -373,10 +382,20 @@ def reject_quote(
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Reject a specific counterparty quote without closing the RFQ."""
-    RFQService.reject_quote(session, rfq_id, quote_id, payload.user_id)
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    try:
+        RFQService.reject_quote(
+            session,
+            rfq_id,
+            quote_id,
+            payload.user_id,
+            audit_checkpoint=lambda entity_id: record_audit_checkpoint(
+                request, entity_id
+            ),
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return _build_rfq_read(session, rfq_id)
 
 
@@ -396,12 +415,20 @@ def refresh_counterparty(
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Re-send invitation to a specific counterparty."""
-    RFQService.refresh_counterparty(
-        session, rfq_id, payload.counterparty_id, payload.user_id
-    )
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    try:
+        RFQService.refresh_counterparty(
+            session,
+            rfq_id,
+            payload.counterparty_id,
+            payload.user_id,
+            audit_checkpoint=lambda entity_id: record_audit_checkpoint(
+                request, entity_id
+            ),
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return _build_rfq_read(session, rfq_id)
 
 
@@ -420,10 +447,19 @@ def refresh_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    RFQService.refresh(session, rfq_id, payload.user_id)
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    try:
+        RFQService.refresh(
+            session,
+            rfq_id,
+            payload.user_id,
+            audit_checkpoint=lambda entity_id: record_audit_checkpoint(
+                request, entity_id
+            ),
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     return _build_rfq_read(session, rfq_id)
 
 
@@ -442,10 +478,9 @@ def award_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    RFQService.award(session, rfq_id, payload.user_id)
-    session.commit()
-    mark_audit_success(request, rfq_id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        RFQService.award(session, rfq_id, payload.user_id)
+        mark_audit_success(request, rfq_id)
     return _build_rfq_read(session, rfq_id)
 
 
@@ -464,9 +499,7 @@ def archive_rfq(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> RFQRead:
-    rfq = RFQService.archive(session, rfq_id, user_id=payload.user_id)
-    session.commit()
-    session.refresh(rfq)
-    mark_audit_success(request, rfq.id)
-    request.state.audit_commit()
+    with unit_of_work(session, request=request):
+        rfq = RFQService.archive(session, rfq_id, user_id=payload.user_id)
+        mark_audit_success(request, rfq.id)
     return _build_rfq_read(session, rfq_id)

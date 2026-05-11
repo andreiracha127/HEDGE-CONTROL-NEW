@@ -17,6 +17,7 @@ import uuid
 import pytest
 from fastapi import status
 
+from app.models.audit import AuditEvent
 from app.services.audit_trail_service import (
     AuditTrailService,
     MissingAuditSigningKey,
@@ -100,6 +101,35 @@ class TestAuditSignatureService:
                 payload_obj={},
             )
 
+    def test_record_canonicalizes_semantically_identical_json(self, session) -> None:
+        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
+
+        event_a = AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload_raw='{"b":1,"nested":{"y":2,"x":1},"a":2}',
+            payload_obj={"b": 1, "nested": {"y": 2, "x": 1}, "a": 2},
+        )
+        event_b = AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload_raw='{\n  "a": 2,\n  "nested": {"x": 1, "y": 2},\n  "b": 1\n}',
+            payload_obj={"a": 2, "nested": {"x": 1, "y": 2}, "b": 1},
+        )
+
+        assert event_a.checksum == event_b.checksum
+        assert event_a.payload_canonical == event_b.payload_canonical
+        assert (
+            event_a.payload_canonical
+            == '{"a":2,"b":1,"nested":{"x":1,"y":2}}'
+        )
+
 
 # ── Endpoint tests ────────────────────────────────────────────────────
 class TestAuditVerifyEndpoint:
@@ -132,6 +162,92 @@ class TestAuditVerifyEndpoint:
         os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
         resp = client.get(f"/audit/events/{uuid.uuid4()}/verify")
         assert resp.status_code == 404
+
+    def test_verify_payload_tamper_fails(self, client, session) -> None:
+        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
+        event = AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload_raw='{"a":1}',
+            payload_obj={"a": 1},
+        )
+        event.payload = {"a": 999}
+        session.commit()
+
+        verify_resp = client.get(f"/audit/events/{event.id}/verify")
+        assert verify_resp.status_code == 200
+        body = verify_resp.json()
+        assert body["valid"] is False
+        assert "payload" in body["detail"].lower()
+
+    def test_verify_checksum_tamper_fails(self, client, session) -> None:
+        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
+        event = AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload_raw='{"a":1}',
+            payload_obj={"a": 1},
+        )
+        event.checksum = hashlib.sha256(b"tampered").hexdigest()
+        session.commit()
+
+        verify_resp = client.get(f"/audit/events/{event.id}/verify")
+        assert verify_resp.status_code == 200
+        body = verify_resp.json()
+        assert body["valid"] is False
+        assert "checksum" in body["detail"].lower()
+
+    def test_verify_signature_tamper_fails(self, client, session) -> None:
+        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
+        event = AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload_raw='{"a":1}',
+            payload_obj={"a": 1},
+        )
+        event.signature = b"\x00" * 32
+        session.commit()
+
+        verify_resp = client.get(f"/audit/events/{event.id}/verify")
+        assert verify_resp.status_code == 200
+        body = verify_resp.json()
+        assert body["valid"] is False
+        assert "signature" in body["detail"].lower()
+
+    def test_verify_legacy_row_without_canonical_payload_is_unverifiable(
+        self, client, session
+    ) -> None:
+        os.environ["AUDIT_SIGNING_KEY"] = TEST_KEY
+        key = _get_signing_key()
+        assert key is not None
+        legacy_checksum = hashlib.sha256(b'{\n  "a": 1\n}').hexdigest()
+        legacy_event = AuditEvent(
+            id=uuid.uuid4(),
+            entity_type="order",
+            entity_id=uuid.uuid4(),
+            event_type="created",
+            payload={"a": 1},
+            payload_canonical=None,
+            checksum=legacy_checksum,
+            signature=compute_signature(legacy_checksum, key),
+        )
+        session.add(legacy_event)
+        session.commit()
+
+        verify_resp = client.get(f"/audit/events/{legacy_event.id}/verify")
+        assert verify_resp.status_code == 200
+        body = verify_resp.json()
+        assert body["valid"] is False
+        assert "legacy" in body["detail"].lower()
 
     def test_mutation_without_key_fails_closed(self, client) -> None:
         """Fail-closed: a mutation with no signing key returns 5xx
