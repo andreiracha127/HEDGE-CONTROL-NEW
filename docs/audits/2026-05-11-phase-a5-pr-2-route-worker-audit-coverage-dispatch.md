@@ -31,6 +31,9 @@ worker.
 - Do not accept route dependency presence as proof; behavioral tests must show
   an audit row is created.
 - Do not broaden the worker change into generic workflow refactoring.
+- Narrow service return-shape changes are allowed when they are required to
+  expose durable identities for audit emission. This is not permission for a
+  broad refactor.
 
 Signed audit evidence must be actor/source-bound and committed atomically with
 the mutation it describes.
@@ -145,11 +148,18 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
   operation;
 - extract `entity_id` from persisted ingest output: the created/updated
   `CashSettlementPrice` row id for single-date ingest; and for bulk ingest a
-  deterministic durable batch/run identity, or an explicit persisted
-  list/linkage of created/updated `CashSettlementPrice` row ids;
+  deterministic batch UUID derived from immutable ingest evidence
+  (`source`, date range, `html_sha256`, and inserted settlement dates);
 - if the current service response only exposes counts, extend the service or
-  route result enough to expose the durable identity required for
-  `mark_audit_success()`;
+  route result narrowly so daily ingest returns the inserted
+  `CashSettlementPrice.id` when a row is created, and bulk ingest returns the
+  inserted `CashSettlementPrice.id` values plus the deterministic batch UUID;
+- for bulk ingest, use the deterministic batch UUID as
+  `mark_audit_success(request, entity_id)` and include the inserted
+  `CashSettlementPrice.id` list in the audit payload/metadata;
+- when Westmetall ingest skips all rows and creates no mutation, do not mark a
+  successful mutation audit event; tests must distinguish skip/no-op from
+  mutation success;
 - persist the audit row atomically with the ingest mutation;
 - verify with behavioral tests that the audit row is actually durable and
   queryable.
