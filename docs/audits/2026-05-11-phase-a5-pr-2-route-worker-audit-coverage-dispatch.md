@@ -67,6 +67,8 @@ The jury accepted that these mutating routes are uncovered or no-op-covered:
 - `backend/app/services/finance_pipeline_service.py:107`
 - `backend/app/api/routes/westmetall.py:115`
 - `backend/app/api/routes/westmetall.py:133`
+- `backend/app/services/westmetall_cash_settlement.py:89`
+- `backend/app/services/cash_settlement_prices.py:13`
 - `backend/app/services/cash_settlement_prices.py:50`
 - `backend/app/api/routes/westmetall.py:161`
 - `backend/app/api/routes/westmetall.py:179`
@@ -246,10 +248,9 @@ def record_worker_event(
 ) -> AuditEvent
 ```
 
-The implementation must add this concrete method unless the executor finds an
-existing non-HTTP audit helper with the same semantics. It must write a signed
-`AuditEvent` into the provided session, use deterministic payload/checksum
-rules from the current audit trail service, and rely on the caller's existing
+The implementation must add this concrete method. It must write a signed
+`AuditEvent` into the provided session, use deterministic payload/checksum rules
+from the current audit trail service, and rely on the caller's existing
 transaction to commit or roll back atomically with the worker mutation.
 It must be generic: callers provide `actor` and `source`; the method must not
 invent them. In this wave, the required call site is RFQ auto-quote only.
@@ -356,7 +357,10 @@ do not treat it as evidence against this wave.
 
 ## 8. Out of Scope
 
-- Transaction-boundary refactor for already-covered routes. That is PR-A5-1.
+- Transaction-boundary refactor for routes already covered by J-A5-01: orders,
+  RFQs, MTM, P&L, cashflow, and cashflow_ledger. That is PR-A5-1. The
+  J-A5-03 routes targeted here - counterparty, SO-PO link, finance pipeline,
+  and Westmetall - must receive fail-closed transaction wiring in this wave.
 - Checksum canonicalization/reconstruction. That is PR-A5-1.
 - Non-destructive migration downgrade. That is PR-A5-3.
 - Auth startup validation. That is PR-A5-3.
