@@ -16,6 +16,7 @@ and includes a confidence threshold (0.85) for automatic processing.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -143,6 +144,39 @@ _GENERATE_TEMPLATES = {
 # ---------------------------------------------------------------------------
 
 
+_REQUEST_PARAMS: dict[str, Any] = {
+    "temperature": 0.1,
+    "max_tokens": 500,
+    "response_format": {"type": "json_object"},
+}
+
+
+@dataclass(frozen=True)
+class LLMCallTrace:
+    provider: str
+    model: str
+    system_prompt: str
+    user_prompt: str
+    messages: list[dict[str, str]]
+    request_params: dict[str, Any]
+    raw_response: str | None
+    parsed_response: dict[str, Any] | None
+    normalized_result: dict[str, Any] | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LLMClassifyDecision:
+    result: LLMClassifyResult | None
+    trace: LLMCallTrace
+
+
+@dataclass(frozen=True)
+class LLMParseDecision:
+    result: ParsedQuote | None
+    trace: LLMCallTrace
+
+
 @retry(
     retry=retry_if_exception_type(
         (APITimeoutError, APIConnectionError, APIStatusError)
@@ -155,19 +189,94 @@ def _call_openai_with_retry(
     client: OpenAI,
     model: str,
     messages: list[dict[str, str]],
-) -> dict[str, Any]:
+) -> str:
     """HTTP call with exponential-backoff retry on transient failures."""
     completion = client.chat.completions.create(
         model=model,
         messages=messages,
-        temperature=0.1,
-        max_tokens=500,
-        response_format={"type": "json_object"},
+        **_REQUEST_PARAMS,
     )
     content = completion.choices[0].message.content
     if content is None:
         raise KeyError("choices[0].message.content")
-    return json.loads(content)
+    return content
+
+
+def _call_openai_with_trace(
+    system_prompt: str,
+    user_prompt: str,
+) -> tuple[dict[str, Any], LLMCallTrace]:
+    """Call OpenAI and return parsed JSON plus reconstruction evidence."""
+    settings = get_settings()
+    api_key = settings.openai_api_key
+    model = settings.openai_model or "gpt-4o-mini"
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    if not api_key:
+        trace = LLMCallTrace(
+            provider="openai",
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            messages=messages,
+            request_params=dict(_REQUEST_PARAMS),
+            raw_response=None,
+            parsed_response=None,
+            normalized_result=None,
+            error="OpenAI not configured",
+        )
+        raise LLMUnavailableError("OpenAI not configured", trace)
+
+    client = OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
+
+    try:
+        raw_response = _call_openai_with_retry(client, model, messages)
+        parsed = json.loads(raw_response)
+        trace = LLMCallTrace(
+            provider="openai",
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            messages=messages,
+            request_params=dict(_REQUEST_PARAMS),
+            raw_response=raw_response,
+            parsed_response=parsed,
+            normalized_result=None,
+        )
+        return parsed, trace
+    except APITimeoutError as exc:
+        logger.error("llm_timeout_after_retries")
+        trace = LLMCallTrace(
+            provider="openai",
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            messages=messages,
+            request_params=dict(_REQUEST_PARAMS),
+            raw_response=None,
+            parsed_response=None,
+            normalized_result=None,
+            error="OpenAI request timed out after retries",
+        )
+        raise LLMUnavailableError("OpenAI request timed out after retries", trace) from exc
+    except (APIError, KeyError, json.JSONDecodeError) as exc:
+        logger.error("llm_call_failed_after_retries", error=str(exc), exc_info=True)
+        trace = LLMCallTrace(
+            provider="openai",
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            messages=messages,
+            request_params=dict(_REQUEST_PARAMS),
+            raw_response=raw_response if "raw_response" in locals() else None,
+            parsed_response=None,
+            normalized_result=None,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise LLMUnavailableError(f"OpenAI call failed: {exc}", trace) from exc
 
 
 def _call_openai(
@@ -179,27 +288,11 @@ def _call_openai(
     Retries up to 3 times with exponential backoff on transient failures.
     Raises ``LLMUnavailableError`` if all attempts fail.
     """
-    settings = get_settings()
-    api_key = settings.openai_api_key
-    model = settings.openai_model or "gpt-4o-mini"
-
-    if not api_key:
-        raise LLMUnavailableError("OpenAI not configured")
-
-    client = OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-
     try:
-        return _call_openai_with_retry(client, model, messages)
-    except APITimeoutError:
-        logger.error("llm_timeout_after_retries")
-        raise LLMUnavailableError("OpenAI request timed out after retries")
-    except (APIError, KeyError, json.JSONDecodeError) as exc:
-        logger.error("llm_call_failed_after_retries", error=str(exc), exc_info=True)
-        raise LLMUnavailableError(f"OpenAI call failed: {exc}") from exc
+        parsed, _trace = _call_openai_with_trace(system_prompt, user_prompt)
+        return parsed
+    except LLMUnavailableError:
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +302,10 @@ def _call_openai(
 
 class LLMUnavailableError(Exception):
     """Raised when the LLM backend is not reachable or not configured."""
+
+    def __init__(self, message: str, trace: LLMCallTrace | None = None) -> None:
+        super().__init__(message)
+        self.trace = trace
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +339,35 @@ class LLMAgent:
             confidence=confidence,
             raw_reasoning=result.get("reasoning"),
         )
+
+    @staticmethod
+    def classify_intent_with_trace(message: str) -> LLMClassifyDecision:
+        """Classify a message and return durable reconstruction evidence."""
+        try:
+            result, trace = _call_openai_with_trace(_CLASSIFY_SYSTEM_PROMPT, message)
+        except LLMUnavailableError as exc:
+            if exc.trace is None:
+                raise
+            return LLMClassifyDecision(result=None, trace=exc.trace)
+
+        intent_str = result.get("intent", "OTHER").upper()
+        try:
+            intent = MessageIntent(intent_str)
+        except ValueError:
+            intent = MessageIntent.other
+
+        confidence = float(result.get("confidence", 0.0))
+        confidence = max(0.0, min(1.0, confidence))
+
+        normalized = LLMClassifyResult(
+            intent=intent,
+            confidence=confidence,
+            raw_reasoning=result.get("reasoning"),
+        )
+        trace = LLMCallTrace(
+            **{**trace.__dict__, "normalized_result": normalized.model_dump(mode="json")}
+        )
+        return LLMClassifyDecision(result=normalized, trace=trace)
 
     @staticmethod
     def parse_quote_message(
@@ -302,6 +428,65 @@ class LLMAgent:
             counterparty_name=result.get("counterparty_name", sender_name),
             notes=result.get("notes"),
         )
+
+    @staticmethod
+    def parse_quote_message_with_trace(
+        rfq_context: str,
+        raw_message: str,
+        sender_name: str = "Unknown",
+    ) -> LLMParseDecision:
+        """Parse a quote message and return durable reconstruction evidence."""
+        user_prompt = (
+            f"RFQ Context:\n{rfq_context}\n\n"
+            f"Counterparty: {sender_name}\n\n"
+            f"Message:\n{raw_message}"
+        )
+        try:
+            result, trace = _call_openai_with_trace(_PARSE_SYSTEM_PROMPT, user_prompt)
+        except LLMUnavailableError as exc:
+            if exc.trace is None:
+                raise
+            return LLMParseDecision(result=None, trace=exc.trace)
+
+        intent_str = result.get("intent", "OTHER").upper()
+        try:
+            intent = MessageIntent(intent_str)
+        except ValueError:
+            intent = MessageIntent.other
+
+        confidence = float(result.get("confidence", 0.0))
+        confidence = max(0.0, min(1.0, confidence))
+
+        fixed_price_value = None
+        raw_price = result.get("fixed_price_value")
+        if raw_price is not None:
+            try:
+                fixed_price_value = Decimal(str(raw_price))
+            except (InvalidOperation, ValueError):
+                fixed_price_value = None
+
+        premium_discount = None
+        raw_premium = result.get("premium_discount")
+        if raw_premium is not None:
+            try:
+                premium_discount = Decimal(str(raw_premium))
+            except (InvalidOperation, ValueError):
+                premium_discount = None
+
+        normalized = ParsedQuote(
+            intent=intent,
+            confidence=confidence,
+            fixed_price_value=fixed_price_value,
+            fixed_price_unit=result.get("fixed_price_unit"),
+            float_pricing_convention=result.get("float_pricing_convention"),
+            premium_discount=premium_discount,
+            counterparty_name=result.get("counterparty_name", sender_name),
+            notes=result.get("notes"),
+        )
+        trace = LLMCallTrace(
+            **{**trace.__dict__, "normalized_result": normalized.model_dump(mode="json")}
+        )
+        return LLMParseDecision(result=normalized, trace=trace)
 
     @staticmethod
     def generate_outbound_message(

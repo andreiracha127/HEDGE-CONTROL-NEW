@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
 from app.models.counterparty import Counterparty, CounterpartyType
+from app.models.llm_decision_artifact import LLMDecisionArtifact
 from app.models.quotes import QuoteState, RFQQuote
 from app.models.rfqs import (
     RFQ,
@@ -26,7 +27,12 @@ from app.models.rfqs import (
 )
 from app.schemas.llm import LLMClassifyResult, MessageIntent, ParsedQuote
 from app.schemas.whatsapp import WhatsAppInboundMessage, WhatsAppSendResult
-from app.services.llm_agent import LLMUnavailableError
+from app.services.llm_agent import (
+    LLMCallTrace,
+    LLMClassifyDecision,
+    LLMParseDecision,
+    LLMUnavailableError,
+)
 from app.services.rfq_orchestrator import RFQOrchestrator
 
 
@@ -148,6 +154,34 @@ def _parsed_quote(
         premium_discount=None,
         counterparty_name="Test Counterparty",
         notes=None,
+    )
+
+
+def _llm_trace(
+    *,
+    system_prompt: str = "system prompt",
+    user_prompt: str = "user prompt",
+    raw_response: str = '{"intent":"QUOTE","confidence":0.95}',
+    parsed_response: dict | None = None,
+    normalized_result: dict | None = None,
+) -> LLMCallTrace:
+    return LLMCallTrace(
+        provider="openai",
+        model="gpt-test",
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        request_params={
+            "temperature": 0.1,
+            "max_tokens": 500,
+            "response_format": {"type": "json_object"},
+        },
+        raw_response=raw_response,
+        parsed_response=parsed_response or {"intent": "QUOTE", "confidence": 0.95},
+        normalized_result=normalized_result,
     )
 
 
@@ -608,11 +642,23 @@ def test_process_inbound_empty_queue(mock_dequeue):
 @patch("app.services.rfq_orchestrator.RFQOrchestrator._process_single_message")
 @patch("app.services.rfq_orchestrator.dequeue_message")
 def test_process_inbound_drains_queue(mock_dequeue, mock_process):
-    msgs = [_make_inbound(msg_id=f"msg-{i}") for i in range(3)]
-    mock_dequeue.side_effect = msgs + [None]
     mock_process.return_value = {"status": "processed"}
 
     with SessionLocal() as session:
+        durable_ids = [
+            _durable_message(
+                session,
+                provider_message_id=f"wamid.drain-{i}",
+                text="RFQ#RFQ-2026-000001 — 2550 USD/MT avg",
+            ).id
+            for i in range(3)
+        ]
+        session.commit()
+        msgs = [
+            _make_inbound(msg_id=f"msg-{i}", delivery_message_id=durable_ids[i])
+            for i in range(3)
+        ]
+        mock_dequeue.side_effect = msgs + [None]
         results = RFQOrchestrator.process_inbound_queue(session)
 
     assert len(results) == 3
@@ -728,6 +774,451 @@ def test_process_inbound_queue_updates_durable_message_failed(mock_classify, moc
         assert durable is not None
         assert durable.processing_status == "failed"
         assert durable.processing_result["status"] == "llm_unavailable"
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent_with_trace")
+def test_auto_quote_created_persists_llm_decision_artifact(
+    mock_classify_trace, mock_parse_trace
+):
+    from app.services.webhook_processor import enqueue_message
+
+    classification = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    parsed = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_classify_trace.return_value = LLMClassifyDecision(
+        result=classification,
+        trace=_llm_trace(
+            system_prompt="classify system",
+            user_prompt="2550 USD/MT avg",
+            raw_response='{"intent":"QUOTE","confidence":0.95,"reasoning":"quote"}',
+            parsed_response={"intent": "QUOTE", "confidence": 0.95, "reasoning": "quote"},
+            normalized_result=classification.model_dump(mode="json"),
+        ),
+    )
+    mock_parse_trace.return_value = LLMParseDecision(
+        result=parsed,
+        trace=_llm_trace(
+            system_prompt="parse system",
+            user_prompt="parse user",
+            raw_response='{"intent":"QUOTE","confidence":0.95,"fixed_price_value":2550}',
+            parsed_response={
+                "intent": "QUOTE",
+                "confidence": 0.95,
+                "fixed_price_value": 2550,
+            },
+            normalized_result=parsed.model_dump(mode="json"),
+        ),
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.artifact-created",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        delivery_id = durable.delivery_id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.artifact-created",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert artifact.delivery_id == delivery_id
+        assert artifact.rfq_id == rfq_id
+        assert str(artifact.quote_id) == results[0]["quote_id"]
+        assert artifact.final_decision == "allow_mutation"
+        assert artifact.final_status == "auto_quote_created"
+        assert artifact.llm_provider == "openai"
+        assert artifact.parse_model == "gpt-test"
+        assert artifact.parse_raw_response is not None
+        assert artifact.parse_parsed["fixed_price_value"] == 2550
+        assert artifact.guard_outcomes["should_auto_create_quote"] is True
+        assert artifact.guard_outcomes["price_in_text"] is True
+        assert artifact.input_snapshot["delivery_id"] == str(delivery_id)
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent_with_trace")
+def test_low_confidence_parsed_quote_persists_deny_artifact(
+    mock_classify_trace, mock_parse_trace
+):
+    from app.services.webhook_processor import enqueue_message
+
+    classification = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    parsed = _parsed_quote(intent=MessageIntent.quote, confidence=0.4)
+    mock_classify_trace.return_value = LLMClassifyDecision(
+        result=classification,
+        trace=_llm_trace(normalized_result=classification.model_dump(mode="json")),
+    )
+    mock_parse_trace.return_value = LLMParseDecision(
+        result=parsed,
+        trace=_llm_trace(normalized_result=parsed.model_dump(mode="json")),
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.artifact-deny",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.artifact-deny",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "needs_human_review"
+    with SessionLocal() as session:
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert artifact.quote_id is None
+        assert artifact.final_decision == "deny_no_mutation"
+        assert artifact.final_status == "needs_human_review"
+        assert artifact.guard_outcomes["parse_confidence"] == 0.4
+        assert session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).count() == 0
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_declined_counterparty_artifact_marks_invitation_mutation(mock_classify):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.rejection,
+        confidence=0.95,
+        raw_reasoning="declined",
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        invitation = _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.declined-artifact",
+            text=_canonical_text(rfq, "No quote from us"),
+        )
+        durable_id = durable.id
+        invitation_id = invitation.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "No quote from us"),
+                msg_id="wamid.declined-artifact",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "counterparty_declined"
+    with SessionLocal() as session:
+        invitation = session.get(RFQInvitation, invitation_id)
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert invitation is not None
+        assert invitation.send_status == RFQInvitationStatus.failed
+        assert artifact.final_status == "counterparty_declined"
+        assert artifact.final_decision == "allow_mutation"
+        assert artifact.guard_outcomes["final_decision"] == "allow_mutation"
+        assert artifact.guard_outcomes["state_mutations"] == [
+            {
+                "model": "RFQInvitation",
+                "field": "send_status",
+                "before": "sent",
+                "after": "failed",
+            }
+        ]
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_auto_quote_failed_persists_diagnostic_artifact(
+    mock_classify, mock_parse, mock_auto, mock_submit
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    mock_parse.return_value = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_auto.return_value = True
+    mock_submit.side_effect = HTTPException(status_code=409, detail="DB conflict")
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.auto-failed-artifact",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.auto-failed-artifact",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_failed"
+    with SessionLocal() as session:
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert artifact.final_status == "auto_quote_failed"
+        assert artifact.final_decision == "deny_no_mutation"
+        assert artifact.quote_id is None
+        assert "DB conflict" in artifact.guard_outcomes["failure_reason"]
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_failed_llm_unavailable_durable_retry_records_second_artifact(
+    mock_classify, mock_parse
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.side_effect = [
+        LLMUnavailableError("LLM down"),
+        LLMClassifyResult(
+            intent=MessageIntent.quote,
+            confidence=0.95,
+            raw_reasoning="quote",
+        ),
+    ]
+    mock_parse.side_effect = [
+        LLMUnavailableError("LLM down"),
+        _parsed_quote(intent=MessageIntent.quote, confidence=0.95),
+    ]
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.retry-artifact",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.retry-artifact-1",
+                delivery_message_id=durable_id,
+            )
+        )
+        first = RFQOrchestrator.process_inbound_queue(session)
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.retry-artifact-2",
+                delivery_message_id=durable_id,
+            )
+        )
+        second = RFQOrchestrator.process_inbound_queue(session)
+
+    assert first[0]["status"] == "llm_unavailable"
+    assert second[0]["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        artifacts = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .order_by(LLMDecisionArtifact.attempt_number)
+            .all()
+        )
+        assert [artifact.attempt_number for artifact in artifacts] == [1, 2]
+        assert [artifact.final_status for artifact in artifacts] == [
+            "llm_unavailable",
+            "auto_quote_created",
+        ]
+        assert artifacts[0].quote_id is None
+        assert artifacts[1].quote_id is not None
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_stale_redelivery_after_quote_artifact_commit_reuses_artifact(
+    mock_classify, mock_parse
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    mock_parse.return_value = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.replay-artifact",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.replay-artifact-1",
+                delivery_message_id=durable_id,
+            )
+        )
+        with patch(
+            "app.services.rfq_orchestrator.RFQOrchestrator._finalize_durable_message",
+            side_effect=RuntimeError("finalize failed"),
+        ):
+            with pytest.raises(RuntimeError, match="finalize failed"):
+                RFQOrchestrator.process_inbound_queue(session)
+
+        durable = session.get(type(durable), durable_id)
+        assert durable is not None
+        durable.processing_started_at = now_utc() - timedelta(hours=1)
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.replay-artifact-2",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_created"
+    with SessionLocal() as session:
+        artifacts = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .all()
+        )
+        durable = session.get(type(durable), durable_id)
+        assert len(artifacts) == 1
+        assert artifacts[0].final_status == "auto_quote_created"
+        assert artifacts[0].attempt_number == 1
+        assert session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).count() == 1
+        assert durable is not None
+        assert durable.processing_status == "processed"
+        assert durable.processing_result["status"] == "auto_quote_created"
+        assert durable.quote_id == artifacts[0].quote_id
+
+
+@patch("app.services.rfq_orchestrator._build_artifact_payload")
+def test_artifact_persistence_failure_rolls_back_auto_quote(mock_build_payload):
+    mock_build_payload.side_effect = ValueError("artifact payload bad")
+
+    with SessionLocal() as session:
+        rfq, invitation = _auto_quote_context(session)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.artifact-fails",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        input_snapshot = {
+            "inbound_message_id": str(durable.id),
+            "delivery_id": str(durable.delivery_id),
+            "provider": durable.provider,
+            "provider_message_id": durable.provider_message_id,
+        }
+        result = RFQOrchestrator._auto_create_quote(
+            session,
+            rfq,
+            invitation,
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.artifact-fails",
+                delivery_message_id=durable.id,
+            ),
+            _parsed_quote(price=Decimal("2550.0"), unit="USD/MT", convention="avg"),
+            durable=durable,
+            input_snapshot=input_snapshot,
+            should_auto_create_quote=True,
+            price_in_text=True,
+        )
+        quote_count = session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq.id).count()
+
+    assert result["status"] == "auto_quote_failed"
+    assert "artifact payload bad" in result["error"]
+    assert quote_count == 0
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+@patch("app.services.rfq_orchestrator.dequeue_message")
+def test_legacy_inbound_without_delivery_message_id_skips_llm(
+    mock_dequeue, mock_classify
+):
+    msg = _make_inbound(
+        text="RFQ#RFQ-2026-000001 — 2550 USD/MT avg",
+        msg_id="wamid.legacy",
+        delivery_message_id=None,
+    )
+    mock_dequeue.side_effect = [msg, None]
+
+    with SessionLocal() as session:
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results == [
+        {
+            "message_id": "wamid.legacy",
+            "status": "legacy_missing_delivery_message_id",
+            "from_phone": "+5511999990001",
+        }
+    ]
+    mock_classify.assert_not_called()
 
 
 @patch("app.services.rfq_orchestrator.RFQOrchestrator._finalize_durable_message")

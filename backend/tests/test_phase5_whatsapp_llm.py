@@ -713,6 +713,45 @@ class TestRFQOrchestrator:
         data["_cp_id"] = cp_id  # stash for tests that need it
         return data
 
+    def _durable_inbound_message(
+        self,
+        session,
+        *,
+        provider_message_id: str,
+        text: str,
+        phone: str,
+        sender_name: str | None = "Test Bank",
+    ):
+        from app.models.inbound_webhook_delivery import InboundWebhookDelivery
+        from app.models.inbound_webhook_message import InboundWebhookMessage
+
+        delivery = InboundWebhookDelivery(
+            provider="meta",
+            raw_body="{}",
+            raw_form=None,
+            headers={},
+            signature_present=False,
+            signature_verified=False,
+            signature_status="bypassed",
+            parse_status="parsed",
+            messages_extracted=1,
+        )
+        session.add(delivery)
+        session.flush()
+        message = InboundWebhookMessage(
+            delivery_id=delivery.id,
+            provider="meta",
+            provider_message_id=provider_message_id,
+            sender_phone=phone,
+            sender_name=sender_name,
+            timestamp=_NOW,
+            text=text,
+            processing_status="received",
+        )
+        session.add(message)
+        session.flush()
+        return message
+
     def test_dispatch_whatsapp_invitations(self, client: TestClient, session) -> None:
         from app.services.rfq_orchestrator import RFQOrchestrator
 
@@ -756,13 +795,24 @@ class TestRFQOrchestrator:
             "notes": None,
         }
 
+        inbound_text = f"RFQ#{rfq_data['rfq_number']} — Ofereco 2450 USD/MT avg"
+        durable = self._durable_inbound_message(
+            session,
+            provider_message_id="wamid.in1",
+            text=inbound_text,
+            phone=phone,
+        )
+        durable_id = durable.id
+        session.commit()
+
         enqueue_message(
             WhatsAppInboundMessage(
                 message_id="wamid.in1",
                 from_phone=phone,
                 timestamp=_NOW,
-                text=f"RFQ#{rfq_data['rfq_number']} — Ofereco 2450 USD/MT avg",
+                text=inbound_text,
                 sender_name="Test Bank",
+                delivery_message_id=durable_id,
             )
         )
 
@@ -799,13 +849,24 @@ class TestRFQOrchestrator:
             "counterparty_name": "Test Bank",
         }
 
+        inbound_text = f"RFQ#{rfq_data['rfq_number']} — Maybe 2400?"
+        durable = self._durable_inbound_message(
+            session,
+            provider_message_id="wamid.low",
+            text=inbound_text,
+            phone=phone,
+        )
+        durable_id = durable.id
+        session.commit()
+
         enqueue_message(
             WhatsAppInboundMessage(
                 message_id="wamid.low",
                 from_phone=phone,
                 timestamp=_NOW,
-                text=f"RFQ#{rfq_data['rfq_number']} — Maybe 2400?",
+                text=inbound_text,
                 sender_name="Test Bank",
+                delivery_message_id=durable_id,
             )
         )
 
@@ -835,7 +896,7 @@ class TestRFQOrchestrator:
         results = RFQOrchestrator.process_inbound_queue(session)
 
         assert len(results) == 1
-        assert results[0]["status"] == "no_canonical_id"
+        assert results[0]["status"] == "legacy_missing_delivery_message_id"
 
     def test_check_rfq_timeouts_no_quotes(self, client: TestClient, session) -> None:
         """RFQ with no quotes past timeout → flagged (state stays SENT;
