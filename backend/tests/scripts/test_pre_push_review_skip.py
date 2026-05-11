@@ -231,6 +231,8 @@ def test_dispatch_file_in_changed_paths_is_passed_as_optional_context(
 def test_p1_blocking_report_warns_by_default_and_writes_artifact(
     capsys, monkeypatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("CI", raising=False)
+    monkeypatch.delenv("PRE_PUSH_REVIEW_REQUIRED", raising=False)
     changed_path = tmp_path / "backend" / "app" / "migration.py"
     changed_path.parent.mkdir(parents=True)
     changed_path.write_text("revision = 'abc'\n", encoding="utf-8")
