@@ -149,6 +149,12 @@ Uniform HTTP route pattern for the newly covered routes:
   for SO-PO link creation, and `FinancePipelineRun.id` returned by
   `FinancePipelineService.run_daily_pipeline()` for manual finance pipeline
   trigger;
+- for the finance pipeline trigger at
+  `backend/app/api/routes/finance_pipeline.py:23`, add a `Request` parameter and
+  route-level `audit_event(entity_type="finance_pipeline_run",
+  event_type="manual_run_triggered")` dependency; after
+  `FinancePipelineService.run_daily_pipeline()` returns `run`, call
+  `mark_audit_success(request, run.id)` before the route-level audit commit;
 - prove rollback on audit signing failure for each newly covered route family.
 
 Westmetall routes already declare `audit_event` but delete `request` and never
