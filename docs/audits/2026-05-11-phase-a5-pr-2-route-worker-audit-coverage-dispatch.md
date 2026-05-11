@@ -51,6 +51,11 @@ the mutation it describes.
 
 The jury accepted that these mutating routes are uncovered or no-op-covered:
 
+The list below is evidence context from the verdict and local code inspection,
+not the canonical route inventory. The executor must derive the canonical route
+inventory in Section 4 with the `@router.(post|put|patch|delete)` search and
+classify every route found there.
+
 - `backend/app/api/routes/counterparties.py:21`
 - `backend/app/services/counterparty_service.py:38`
 - `backend/app/api/routes/counterparties.py:81`
@@ -68,7 +73,6 @@ The jury accepted that these mutating routes are uncovered or no-op-covered:
 - `backend/app/api/routes/westmetall.py:115`
 - `backend/app/api/routes/westmetall.py:133`
 - `backend/app/services/westmetall_cash_settlement.py:89`
-- `backend/app/services/cash_settlement_prices.py:13`
 - `backend/app/models/market_data.py:18`
 - `backend/app/services/cash_settlement_prices.py:50`
 - `backend/app/api/routes/westmetall.py:161`
@@ -193,6 +197,11 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 - when Westmetall ingest skips all rows and creates no mutation, do not mark a
   successful mutation audit event; tests must distinguish skip/no-op from
   mutation success;
+- the route must explicitly check the returned identity before audit success:
+  daily ingest calls `mark_audit_success(request, inserted_id)` only when
+  `inserted_id is not None`; bulk ingest calls
+  `mark_audit_success(request, batch_uuid)` only when `inserted_ids` is
+  non-empty;
 - persist the audit row atomically with the ingest mutation;
 - verify with behavioral tests that the audit row is actually durable and
   queryable.
@@ -242,10 +251,6 @@ Create this non-HTTP API in `backend/app/services/audit_trail_service.py` as a
 new `AuditTrailService.record_worker_event()` method in this wave. This method
 must be a small wrapper around the existing `AuditTrailService.record()` path,
 not a parallel signing implementation. Required signature:
-
-This method is expected to be absent on current `main`. Its absence before
-PR-A5-2 implementation is the implementation gap this dispatch assigns, not a
-dispatch citation claim that the method already exists.
 
 ```python
 @staticmethod
@@ -313,6 +318,7 @@ post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed. Call
 - Single and bulk Westmetall ingest roll back when audit signing fails.
 - Westmetall no-op audit dependency is eliminated: the `request` object is
   retained and `mark_audit_success()` is called with the durable entity id.
+- Westmetall no-op ingests that create no rows do not emit mutation audit rows.
 - RFQ worker auto-quote creates a signed audit row atomically with quote,
   durable inbound message linkage/status, and `LLMDecisionArtifact`.
 - If worker audit signing fails, the auto-quote mutation is not durable.
@@ -337,6 +343,7 @@ Minimum test coverage:
 - Westmetall single-date rollback when audit signing fails;
 - Westmetall bulk audit row;
 - Westmetall bulk rollback when audit signing fails;
+- Westmetall no-op/skip path emits no mutation audit row;
 - Westmetall declared dependency actually emits on success;
 - repo-wide mutating route inventory coverage;
 - worker auto-quote audit row with links to RFQ/quote/message/decision artifact;
