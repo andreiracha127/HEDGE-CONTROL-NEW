@@ -158,7 +158,8 @@ At minimum it must include:
 - `input_snapshot` JSON;
 - `guard_outcomes` JSON;
 - `final_decision`;
-- `final_status`;
+- `final_status` as `String(64)` or wider, because the longest required status
+  at authoring time is `auto_quote_skipped_invalid_payload`;
 - `created_at` timezone-aware timestamp.
 
 `final_decision` domain:
@@ -199,6 +200,10 @@ Alembic migration, where application imports may be less reliable.
 `input_snapshot`: the FK supports joins, while the JSON snapshot preserves the
 point-in-time audit input independently of later relational changes.
 
+Artifact rows are immutable after insert. Do not implement bulk update paths for
+`LLMDecisionArtifact`; SQLAlchemy `@validates` guards are an insert-time safety
+layer and do not replace database constraints on engines that support them.
+
 Do not add these fields to `RFQQuote` as nullable metadata columns. A dedicated
 artifact table is required so non-mutating LLM decisions are also reconstructible
 and so quote economic rows remain clean.
@@ -234,6 +239,11 @@ Migration requirements:
   add an `attempt_number` and a uniqueness constraint on
   `(inbound_message_id, attempt_number)`;
 - downgrade removes all introduced objects cleanly.
+
+Column sizing requirement:
+
+- `final_decision`: `String(32)` or wider;
+- `final_status`: `String(64)` or wider.
 
 JSON columns in the migration `op.create_table()` must use the same portable
 type shape as PR-A4-1/2:
@@ -352,7 +362,13 @@ Messages that do not reach the LLM do not need an LLM artifact:
 For each artifact, `input_snapshot` must include:
 
 - inbound message id;
-- delivery id;
+- delivery id sourced from `InboundWebhookMessage.delivery_id`, not from
+  `WhatsAppInboundMessage.delivery_message_id`:
+
+  ```python
+  delivery_id = durable.delivery_id
+  ```
+
 - provider;
 - provider message id;
 - original text;
@@ -413,6 +429,17 @@ Concrete placement requirement:
   and before `session.commit()`;
 - call the single existing `session.commit()` only after both quote and artifact
   are staged;
+- retain the existing pre-commit scalar snapshot pattern before constructing the
+  artifact. The current code snapshots attributes before commit to avoid
+  expire-on-commit refresh races; do not remove that protection.
+- merged shape:
+  - call `RFQService.submit_quote(...)`;
+  - snapshot `quote_id_str = str(quote.id)`, `counterparty_id_str`,
+    `quote_price_str`, and any other scalar values needed after commit;
+  - build artifact payload from those snapshots and from already-available LLM
+    trace data;
+  - `session.add(artifact)`;
+  - `session.commit()`;
 - if artifact construction or insertion raises, do not call `session.commit()`;
   the transaction path must `session.rollback()` so the flushed quote and
   artifact are both rolled back;
@@ -432,17 +459,26 @@ Expected exception shape:
 
 ```python
 try:
-    artifact_payload = build_artifact_payload(...)
-except (TypeError, ValueError) as exc:
-    session.rollback()
-    return {"status": "auto_quote_failed", "error": str(exc), ...}
-
-try:
     quote = RFQService.submit_quote(session, rfq.id, quote_payload)
+    quote_id_str = str(quote.id)
+    counterparty_id_str = str(invitation.counterparty_id)
+    quote_price_str = str(quote.fixed_price_value)
+    try:
+        artifact_payload = build_artifact_payload(
+            quote_id=quote.id,
+            quote_id_str=quote_id_str,
+            counterparty_id=counterparty_id_str,
+            quote_price=quote_price_str,
+            classification_intent=classification.intent.value if classification else None,
+            classification_confidence=classification.confidence if classification else None,
+            ...
+        )
+    except (TypeError, ValueError) as exc:
+        raise ArtifactPayloadError(str(exc)) from exc
     artifact = LLMDecisionArtifact(quote_id=quote.id, **artifact_payload)
     session.add(artifact)
     session.commit()
-except (HTTPException, SQLAlchemyError) as exc:
+except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
     session.rollback()
     return {"status": "auto_quote_failed", "error": str(exc), ...}
 ```
@@ -473,8 +509,11 @@ In PR-A4-3:
 
   - do not leave the current `return None` behavior for the legacy case, because
     `None` means "continue into processing" in the caller;
-  - the `if claim is not None: results.append(claim); continue` branch already
-    exists in `process_inbound_queue()`; do not duplicate it;
+  - the caller already has `if claim is not None: results.append(claim); continue`;
+    once the legacy branch returns a dictionary, that existing caller branch will
+    append the skip result and bypass `_process_single_message()`;
+  - while the legacy branch returns `None`, the caller proceeds into
+    `_process_single_message()`; that is the bug PR-A4-3 must close;
   - `_finalize_durable_message()` already has an early-return guard for missing
     `delivery_message_id`; do not add a finalize call for the legacy case;
   - the required code change is specifically to make the legacy branch in
