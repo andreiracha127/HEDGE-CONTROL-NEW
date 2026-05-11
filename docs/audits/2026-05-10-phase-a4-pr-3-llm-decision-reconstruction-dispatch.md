@@ -70,16 +70,19 @@ Current code anchors at authoring time:
     returns only `ParsedQuote`.
 - `backend/app/services/llm_agent.py:360-373`
   - `should_auto_create_quote()` gates auto-quote creation.
-- `backend/app/services/rfq_orchestrator.py:603-641`
+- `backend/app/services/rfq_orchestrator.py`, `_process_single_message()`
+  classification block
   - classification can return non-mutating statuses without durable LLM
     evidence.
-- `backend/app/services/rfq_orchestrator.py:643-668`
+- `backend/app/services/rfq_orchestrator.py`, `_process_single_message()`
+  quote-parse block
   - quote parsing calls `LLMAgent.parse_quote_message()` and returns
     `llm_unavailable` without durable LLM evidence.
-- `backend/app/services/rfq_orchestrator.py:677-732`
+- `backend/app/services/rfq_orchestrator.py`, `_process_single_message()`
+  auto-create guard block
   - confidence, price-in-text, duplicate quote, and auto-create gates decide
     whether an RFQ quote mutation occurs.
-- `backend/app/services/rfq_orchestrator.py:774-913`
+- `backend/app/services/rfq_orchestrator.py`, `_auto_create_quote()`
   - `_auto_create_quote()` validates and commits the quote.
 - `backend/app/services/rfq_orchestrator.py`
   - `_claim_durable_message()` currently logs
@@ -429,6 +432,9 @@ Concrete placement requirement:
   and before `session.commit()`;
 - call the single existing `session.commit()` only after both quote and artifact
   are staged;
+- the existing `session.commit()` call inside `_auto_create_quote()` must be
+  relocated to after `session.add(artifact)`. This is a relocation of the single
+  commit, not an added second commit;
 - retain the existing pre-commit scalar snapshot pattern before constructing the
   artifact. The current code snapshots attributes before commit to avoid
   expire-on-commit refresh races; do not remove that protection.
@@ -439,7 +445,7 @@ Concrete placement requirement:
   - build artifact payload from those snapshots and from already-available LLM
     trace data;
   - `session.add(artifact)`;
-  - `session.commit()`;
+  - relocated single `session.commit()`;
 - if artifact construction or insertion raises, do not call `session.commit()`;
   the transaction path must `session.rollback()` so the flushed quote and
   artifact are both rolled back;
@@ -452,8 +458,8 @@ Concrete placement requirement:
   - do not list `IntegrityError` or `OperationalError` separately next to
     `SQLAlchemyError`, because they are subclasses;
 - do not add a second post-commit artifact write. The current `_auto_create_quote`
-  shape must be restructured only enough to stage the artifact before the
-  existing commit.
+  shape must be restructured only enough to stage the artifact and move the
+  existing commit after `session.add(artifact)`.
 
 Expected exception shape:
 
