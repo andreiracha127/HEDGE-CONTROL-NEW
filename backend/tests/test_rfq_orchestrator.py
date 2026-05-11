@@ -914,6 +914,111 @@ def test_low_confidence_parsed_quote_persists_deny_artifact(
         assert session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).count() == 0
 
 
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_declined_counterparty_artifact_marks_invitation_mutation(mock_classify):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.rejection,
+        confidence=0.95,
+        raw_reasoning="declined",
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        invitation = _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.declined-artifact",
+            text=_canonical_text(rfq, "No quote from us"),
+        )
+        durable_id = durable.id
+        invitation_id = invitation.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "No quote from us"),
+                msg_id="wamid.declined-artifact",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "counterparty_declined"
+    with SessionLocal() as session:
+        invitation = session.get(RFQInvitation, invitation_id)
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert invitation is not None
+        assert invitation.send_status == RFQInvitationStatus.failed
+        assert artifact.final_status == "counterparty_declined"
+        assert artifact.final_decision == "allow_mutation"
+        assert artifact.guard_outcomes["final_decision"] == "allow_mutation"
+        assert artifact.guard_outcomes["state_mutations"] == [
+            {
+                "model": "RFQInvitation",
+                "field": "send_status",
+                "before": "sent",
+                "after": "failed",
+            }
+        ]
+
+
+@patch("app.services.rfq_orchestrator.RFQService.submit_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.should_auto_create_quote")
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
+def test_auto_quote_failed_persists_diagnostic_artifact(
+    mock_classify, mock_parse, mock_auto, mock_submit
+):
+    from app.services.webhook_processor import enqueue_message
+
+    mock_classify.return_value = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    mock_parse.return_value = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_auto.return_value = True
+    mock_submit.side_effect = HTTPException(status_code=409, detail="DB conflict")
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.auto-failed-artifact",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.auto-failed-artifact",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_failed"
+    with SessionLocal() as session:
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        assert artifact.final_status == "auto_quote_failed"
+        assert artifact.final_decision == "deny_no_mutation"
+        assert artifact.quote_id is None
+        assert "DB conflict" in artifact.guard_outcomes["failure_reason"]
+
+
 @patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message")
 @patch("app.services.rfq_orchestrator.LLMAgent.classify_intent")
 def test_failed_llm_unavailable_durable_retry_records_second_artifact(

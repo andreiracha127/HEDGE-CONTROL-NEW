@@ -234,7 +234,9 @@ def _build_guard_outcomes(
     payload_complete: bool | None,
     payload_validation: str | None,
     failure_reason: str | None = None,
+    state_mutations: list[dict] | None = None,
 ) -> dict:
+    final_decision = _artifact_final_decision(final_status)
     return _json_safe(
         {
             "classification_attempted": True,
@@ -253,13 +255,18 @@ def _build_guard_outcomes(
             "duplicate_active_quote": duplicate_active_quote,
             "payload_complete": payload_complete,
             "payload_validation": payload_validation,
-            "final_decision": LLM_DECISION_ALLOW
-            if final_status == "auto_quote_created"
-            else LLM_DECISION_DENY,
+            "final_decision": final_decision,
             "final_status": final_status,
             "failure_reason": failure_reason,
+            "state_mutations": state_mutations or [],
         }
     )
+
+
+def _artifact_final_decision(final_status: str) -> str:
+    if final_status in {"auto_quote_created", "counterparty_declined"}:
+        return LLM_DECISION_ALLOW
+    return LLM_DECISION_DENY
 
 
 def _unpack_classification_decision(
@@ -331,9 +338,7 @@ def _build_artifact_payload(
     quote_id: UUID | None = None,
     attempt_number: int = 1,
 ) -> dict:
-    final_decision = (
-        LLM_DECISION_ALLOW if final_status == "auto_quote_created" else LLM_DECISION_DENY
-    )
+    final_decision = _artifact_final_decision(final_status)
     return {
         "inbound_message_id": durable.id,
         "delivery_id": durable.delivery_id,
@@ -930,6 +935,7 @@ class RFQOrchestrator:
             )
             # Handle rejection and question from classification
             if classification.intent == MessageIntent.rejection:
+                prior_send_status = invitation.send_status.value
                 invitation.send_status = RFQInvitationStatus.failed
                 session.flush()
                 _add_llm_decision_artifact(
@@ -947,6 +953,14 @@ class RFQOrchestrator:
                         duplicate_active_quote=None,
                         payload_complete=None,
                         payload_validation=None,
+                        state_mutations=[
+                            {
+                                "model": "RFQInvitation",
+                                "field": "send_status",
+                                "before": prior_send_status,
+                                "after": RFQInvitationStatus.failed.value,
+                            }
+                        ],
                     ),
                     final_status="counterparty_declined",
                     classification_trace=classification_trace,
@@ -1228,6 +1242,7 @@ class RFQOrchestrator:
             )
 
         if parsed.intent == MessageIntent.rejection:
+            prior_send_status = invitation.send_status.value
             invitation.send_status = RFQInvitationStatus.failed
             session.flush()
             logger.info(
@@ -1250,6 +1265,14 @@ class RFQOrchestrator:
                     duplicate_active_quote=None,
                     payload_complete=None,
                     payload_validation=None,
+                    state_mutations=[
+                        {
+                            "model": "RFQInvitation",
+                            "field": "send_status",
+                            "before": prior_send_status,
+                            "after": RFQInvitationStatus.failed.value,
+                        }
+                    ],
                 ),
                 final_status="counterparty_declined",
                 classification_trace=classification_trace,
@@ -1505,6 +1528,28 @@ class RFQOrchestrator:
             session.commit()
         except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
             session.rollback()
+            if not isinstance(exc, ArtifactPayloadError):
+                _add_llm_decision_artifact(
+                    session,
+                    durable=durable,
+                    rfq=rfq,
+                    invitation=invitation,
+                    input_snapshot=input_snapshot,
+                    guard_outcomes=_build_guard_outcomes(
+                        classification=classification,
+                        parsed=parsed,
+                        final_status="auto_quote_failed",
+                        should_auto_create_quote=should_auto_create_quote,
+                        price_in_text=price_in_text,
+                        duplicate_active_quote=False,
+                        payload_complete=True,
+                        payload_validation="valid",
+                        failure_reason=str(exc),
+                    ),
+                    final_status="auto_quote_failed",
+                    classification_trace=classification_trace,
+                    parse_trace=parse_trace,
+                )
             logger.error(
                 "orchestrator_auto_quote_failed",
                 rfq_id=rfq_id_str,
