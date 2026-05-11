@@ -50,7 +50,10 @@ The jury accepted that these mutating routes are uncovered or no-op-covered:
 - `backend/app/api/routes/orders.py:89`
 - `backend/app/services/order_service.py:148`
 - `backend/app/api/routes/finance_pipeline.py:23`
+- `backend/app/services/finance_pipeline_service.py:58`
+- `backend/app/services/finance_pipeline_service.py:68`
 - `backend/app/services/finance_pipeline_service.py:77`
+- `backend/app/services/finance_pipeline_service.py:91`
 - `backend/app/services/finance_pipeline_service.py:107`
 - `backend/app/api/routes/westmetall.py:115`
 - `backend/app/api/routes/westmetall.py:133`
@@ -75,6 +78,34 @@ evidence but no generic signed `AuditEvent` envelope:
 - `backend/app/services/rfq_orchestrator.py:1564`
 - `backend/app/services/rfq_orchestrator.py:1585`
 - `backend/app/models/llm_decision_artifact.py:20`.
+
+The intended integration point is inside `_auto_create_quote()` after
+`RFQService.submit_quote()` and `_add_llm_decision_artifact()` have both
+succeeded, but before the existing worker `session.commit()`. The executor must
+wire the worker audit method into that same transaction, for example:
+
+```python
+quote = RFQService.submit_quote(session, rfq.id, quote_payload)
+_add_llm_decision_artifact(..., quote_id=quote.id)
+AuditTrailService.record_worker_event(
+    session,
+    entity_type="rfq_quote",
+    entity_id=quote.id,
+    event_type="rfq.auto_quote_created",
+    actor="rfq_orchestrator",
+    source="inbound_webhook_worker",
+    metadata={
+        "rfq_id": str(rfq.id),
+        "message_id": msg.message_id,
+        "llm_decision_status": "auto_quote_created",
+    },
+)
+session.commit()
+```
+
+The call site must be before commit so audit failure rolls back the quote, RFQ
+state changes, durable message linkage/status, and LLM decision artifact
+together.
 
 ## 4. Required Implementation Boundary
 
