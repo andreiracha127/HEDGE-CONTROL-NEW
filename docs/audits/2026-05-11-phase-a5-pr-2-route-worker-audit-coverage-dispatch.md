@@ -149,10 +149,12 @@ Minimum acceptable behavior:
 Do not duplicate the HTTP dependency by constructing fake request state. The
 background path should have an explicit service-level API.
 
-The worker audit API must have an explicit callable surface comparable to:
+Create this non-HTTP API in `backend/app/services/audit_trail_service.py` as a
+new `AuditTrailService` method. Suggested signature:
 
 ```python
-record_worker_audit(
+@staticmethod
+def record_worker_event(
     session: Session,
     *,
     entity_type: str,
@@ -164,10 +166,36 @@ record_worker_audit(
 ) -> None
 ```
 
-The exact name may differ, but the semantics may not: it writes a signed
-`AuditEvent` into the provided session, uses deterministic payload/checksum
-rules from the current audit trail service, and relies on the caller's existing
-transaction to commit or roll back atomically with the worker mutation.
+The exact method name may differ if there is a stronger local naming pattern,
+but the implementation must add a concrete method in
+`backend/app/services/audit_trail_service.py` with these semantics: write a
+signed `AuditEvent` into the provided session, use deterministic
+payload/checksum rules from the current audit trail service, and rely on the
+caller's existing transaction to commit or roll back atomically with the worker
+mutation.
+
+Minimum skeleton:
+
+```python
+payload = {
+    "actor": actor,
+    "source": source,
+    "metadata": metadata or {},
+}
+payload_raw = AuditTrailService.normalize_payload_raw(payload)
+AuditTrailService.record(
+    session,
+    event_type=event_type,
+    entity_type=entity_type,
+    entity_id=str(entity_id),
+    user_id=actor,
+    payload_raw=payload_raw,
+    payload_obj=payload,
+)
+```
+
+The skeleton is illustrative. The final implementation must align with the
+post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed.
 
 ## 5. Acceptance Criteria
 
