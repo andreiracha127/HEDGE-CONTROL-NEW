@@ -242,10 +242,9 @@ AuditTrailService.record(
 ```
 
 The skeleton is illustrative. The final implementation must align with the
-post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed.
-If `normalize_payload_raw()` remains a module-level helper, import/call it as
-such; do not call it as an `AuditTrailService` static method unless the helper is
-moved intentionally in the implementation.
+post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed. Call
+`normalize_payload_raw()` as the module-level helper in
+`audit_trail_service.py` before invoking `AuditTrailService.record()`.
 
 ## 5. Acceptance Criteria
 
