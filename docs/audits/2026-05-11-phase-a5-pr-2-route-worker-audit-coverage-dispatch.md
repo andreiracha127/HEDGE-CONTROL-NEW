@@ -51,10 +51,10 @@ the mutation it describes.
 
 The jury accepted that these mutating routes are uncovered or no-op-covered:
 
-The list below is evidence context from the verdict and local code inspection,
-not the canonical route inventory. The executor must derive the canonical route
-inventory in Section 4 with the `@router.(post|put|patch|delete)` search and
-classify every route found there.
+Examples below are evidence context from the verdict and local code inspection,
+not an exhaustive or canonical route inventory. The executor must derive the
+canonical route inventory in Section 4 with the `@router.(post|put|patch|delete)`
+search and classify every route found there.
 
 - `backend/app/api/routes/counterparties.py:21`
 - `backend/app/services/counterparty_service.py:38`
@@ -224,6 +224,26 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 - verify with behavioral tests that the audit row is actually durable and
   queryable.
 
+Required Westmetall route unpacking shape:
+
+```python
+inserted_id, ingested_count, skipped_count, evidence = (
+    ingest_westmetall_cash_settlement_daily_for_date(...)
+)
+if inserted_id is not None:
+    mark_audit_success(request, inserted_id)
+
+inserted_ids, batch_uuid, ingested_count, skipped_count, evidence = (
+    ingest_westmetall_cash_settlement_bulk(...)
+)
+if inserted_ids:
+    mark_audit_success(request, batch_uuid)
+```
+
+Do not reuse the daily tuple indexes for bulk or the bulk tuple indexes for
+daily; their shapes differ intentionally because bulk groups multiple inserted
+rows under one audit entity.
+
 Merely declaring `audit_event` on the route is not a fix.
 Do not use the worker audit envelope for Westmetall. Westmetall routes are HTTP
 routes and must use the standard route-level `audit_event` plus
@@ -321,6 +341,9 @@ The skeleton is illustrative. The final implementation must align with the
 post-PR-A5-1 checksum canonicalization path if PR-A5-1 has already landed. Call
 `normalize_payload_raw()` as the module-level helper in
 `audit_trail_service.py` before invoking `AuditTrailService.record()`.
+`normalize_payload_raw()` returns `(payload_raw_str, payload_obj_parsed)`;
+pass them to `AuditTrailService.record()` as `payload_raw=payload_raw` and
+`payload_obj=payload_obj` exactly as shown in the skeleton.
 
 ## 5. Acceptance Criteria
 
