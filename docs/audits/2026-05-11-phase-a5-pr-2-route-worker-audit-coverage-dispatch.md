@@ -221,7 +221,7 @@ def record_worker_event(
     actor: str,
     source: str,
     metadata: dict | None = None,
-) -> None
+) -> AuditEvent
 ```
 
 The implementation must add this concrete method unless the executor finds an
@@ -229,6 +229,10 @@ existing non-HTTP audit helper with the same semantics. It must write a signed
 `AuditEvent` into the provided session, use deterministic payload/checksum
 rules from the current audit trail service, and rely on the caller's existing
 transaction to commit or roll back atomically with the worker mutation.
+It must be generic: callers provide `actor` and `source`; the method must not
+invent them. In this wave, the required call site is RFQ auto-quote only.
+Future background workers may reuse the method only if they pass explicit,
+caller-owned actor/source metadata.
 
 Minimum skeleton:
 
@@ -239,7 +243,7 @@ payload = {
     "metadata": metadata or {},
 }
 payload_raw, payload_obj = normalize_payload_raw(payload)
-AuditTrailService.record(
+return AuditTrailService.record(
     session,
     event_id=uuid.uuid4(),
     event_type=event_type,
