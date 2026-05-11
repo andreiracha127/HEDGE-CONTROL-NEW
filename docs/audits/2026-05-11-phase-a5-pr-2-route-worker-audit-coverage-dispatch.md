@@ -92,6 +92,21 @@ Westmetall routes already declare `audit_event` but delete `request` and never
 call `mark_audit_success()`. Fix the no-op audit coverage; do not leave a
 dependency that never emits an event.
 
+For Westmetall, "fix the no-op audit coverage" has a specific meaning:
+
+- retain the `request` object instead of deleting it;
+- call `mark_audit_success(request, entity_id)` or an equivalent explicit audit
+  success marker after a successful ingest operation;
+- use an entity identity that can be reconstructed from durable ingest output,
+  such as the created/updated `CashSettlementPrice` row id for single-date
+  ingest and a deterministic batch/run identity or explicit list/linkage for
+  bulk ingest;
+- persist the audit row atomically with the ingest mutation;
+- verify with behavioral tests that the audit row is actually durable and
+  queryable.
+
+Merely declaring `audit_event` on the route is not a fix.
+
 Route inventory must be derived from the actual repo state, not a manual
 six-route whitelist:
 
