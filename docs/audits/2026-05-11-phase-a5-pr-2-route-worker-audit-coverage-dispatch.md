@@ -34,6 +34,13 @@ worker.
 - Narrow service return-shape changes are allowed when they are required to
   expose durable identities for audit emission. This is not permission for a
   broad refactor.
+  Specifically:
+  `ingest_westmetall_cash_settlement_daily_for_date()` and
+  `ingest_westmetall_cash_settlement_bulk()` may change return shape only;
+  `FinancePipelineService.run_daily_pipeline()` already returns
+  `FinancePipelineRun` and needs no return-shape change; and
+  `AuditTrailService.record_worker_event()` is a new method returning
+  `AuditEvent`.
 
 Signed audit evidence must be actor/source-bound and committed atomically with
 the mutation it describes.
@@ -150,6 +157,18 @@ For Westmetall, "fix the no-op audit coverage" has a specific meaning:
   - bulk ingest must return the inserted `CashSettlementPrice.id` values and a
     deterministic batch UUID derived from immutable ingest evidence (`source`,
     date range, `html_sha256`, and inserted settlement dates);
+- required daily return contract:
+  `tuple[uuid.UUID | None, int, int, WestmetallFetchEvidence]`, ordered as
+  `(inserted_id, ingested_count, skipped_count, evidence)`, with `inserted_id`
+  set to `None` when no row is created;
+- required bulk return contract:
+  `tuple[list[uuid.UUID], uuid.UUID, int, int, WestmetallFetchEvidence]`,
+  ordered as
+  `(inserted_ids, batch_uuid, ingested_count, skipped_count, evidence)`;
+- compute `batch_uuid` deterministically with a canonical function such as
+  `uuid.uuid5(uuid.NAMESPACE_URL, canonical_batch_key)`, where
+  `canonical_batch_key` includes source, requested date range, `html_sha256`,
+  and the sorted inserted settlement dates;
 - after the service returns durable identities, the HTTP route must call
   `mark_audit_success(request, entity_id)` after a successful ingest operation;
 - for single-date ingest, use the inserted `CashSettlementPrice.id` as
