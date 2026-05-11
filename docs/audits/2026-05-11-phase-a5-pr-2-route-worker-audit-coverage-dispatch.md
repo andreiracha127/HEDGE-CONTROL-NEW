@@ -105,6 +105,12 @@ Every route in the resulting inventory must be classified as one of:
 - non-mutating command/query with evidence;
 - explicitly out of A5 mutation scope, with reason.
 
+For routes newly covered in this wave, adding `audit_event()` is not sufficient.
+The route must also be wired so the institutional mutation and signed audit row
+share one fail-closed transaction boundary. A missing signing key, audit
+persistence error, or audit signing failure must roll back the newly covered
+mutation.
+
 ### Worker Audit Envelope
 
 Introduce a worker-safe signed audit API for non-HTTP mutations.
@@ -125,11 +131,15 @@ background path should have an explicit service-level API.
 ## 5. Acceptance Criteria
 
 - Counterparty create/update/delete produce signed audit rows.
+- Counterparty create/update/delete roll back when audit signing fails.
 - SO-PO link creation produces a signed audit row.
+- SO-PO link creation rolls back when audit signing fails.
 - Finance pipeline manual run produces a signed audit row for the operator
   trigger and durable pipeline run identity.
+- Finance pipeline manual run rolls back when audit signing fails.
 - Single and bulk Westmetall ingest produce signed audit rows when rows are
   created or updated.
+- Single and bulk Westmetall ingest roll back when audit signing fails.
 - Westmetall no-op audit dependency is eliminated.
 - RFQ worker auto-quote creates a signed audit row atomically with quote,
   durable inbound message linkage/status, and `LLMDecisionArtifact`.
@@ -146,10 +156,15 @@ Add or update focused tests under `backend/tests/`.
 Minimum test coverage:
 
 - counterparty create/update/delete audit rows;
+- counterparty create/update/delete rollback when audit signing fails;
 - SO-PO link audit row;
+- SO-PO link rollback when audit signing fails;
 - finance pipeline trigger audit row;
+- finance pipeline trigger rollback when audit signing fails;
 - Westmetall single-date audit row;
+- Westmetall single-date rollback when audit signing fails;
 - Westmetall bulk audit row;
+- Westmetall bulk rollback when audit signing fails;
 - Westmetall declared dependency actually emits on success;
 - repo-wide mutating route inventory coverage;
 - worker auto-quote audit row with links to RFQ/quote/message/decision artifact;
@@ -198,4 +213,3 @@ do not treat it as evidence against this wave.
   - route inventory classification summary;
   - hook artifact path;
   - statement that `docs/governance.md` has no diff.
-
