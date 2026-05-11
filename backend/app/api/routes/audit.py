@@ -13,7 +13,6 @@ from app.schemas.audit import AuditEventListResponse, AuditEventRead
 from app.services.audit_trail_service import (
     AuditTrailService,
     _get_signing_key,
-    verify_signature,
 )
 
 
@@ -76,11 +75,9 @@ def verify_audit_event(
             detail="Event was recorded without a signature",
         )
 
-    valid = verify_signature(event.checksum, event.signature, key)
+    valid, detail = AuditTrailService.verify_event(event, key)
     return AuditVerifyResponse(
         event_id=event_id,
         valid=valid,
-        detail="Signature valid"
-        if valid
-        else "Signature mismatch — event may have been tampered with",
+        detail=detail,
     )

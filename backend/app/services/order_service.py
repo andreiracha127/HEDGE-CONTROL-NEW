@@ -39,14 +39,28 @@ class OrderService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def create_sales_order(session: Session, payload: SalesOrderCreate) -> Order:
+    def create_sales_order(
+        session: Session,
+        payload: SalesOrderCreate,
+        *,
+        commit: bool = True,
+    ) -> Order:
         """Create a Sales Order (SO)."""
-        return OrderService._create_order(session, payload, OrderType.sales)
+        return OrderService._create_order(
+            session, payload, OrderType.sales, commit=commit
+        )
 
     @staticmethod
-    def create_purchase_order(session: Session, payload: PurchaseOrderCreate) -> Order:
+    def create_purchase_order(
+        session: Session,
+        payload: PurchaseOrderCreate,
+        *,
+        commit: bool = True,
+    ) -> Order:
         """Create a Purchase Order (PO)."""
-        return OrderService._create_order(session, payload, OrderType.purchase)
+        return OrderService._create_order(
+            session, payload, OrderType.purchase, commit=commit
+        )
 
     @staticmethod
     def list_orders(
@@ -90,7 +104,7 @@ class OrderService:
         return order
 
     @staticmethod
-    def archive(session: Session, order_id: UUID) -> Order:
+    def archive(session: Session, order_id: UUID, *, commit: bool = True) -> Order:
         """Soft-delete (archive) an order."""
         order = session.get(Order, order_id)
         if not order:
@@ -104,8 +118,11 @@ class OrderService:
                 detail="Order already archived",
             )
         order.deleted_at = datetime.now(timezone.utc)
-        session.commit()
-        session.refresh(order)
+        if commit:
+            session.commit()
+            session.refresh(order)
+        else:
+            session.flush()
         return order
 
     # ------------------------------------------------------------------
@@ -180,6 +197,8 @@ class OrderService:
         session: Session,
         payload: SalesOrderCreate | PurchaseOrderCreate,
         order_type: OrderType,
+        *,
+        commit: bool = True,
     ) -> Order:
         """Shared logic for SO / PO creation."""
         # Cross-validate pricing_convention ↔ price_type for variable orders.
@@ -229,6 +248,9 @@ class OrderService:
             order.fixing_date = payload.fixing_date
 
         session.add(order)
-        session.commit()
-        session.refresh(order)
+        if commit:
+            session.commit()
+            session.refresh(order)
+        else:
+            session.flush()
         return order

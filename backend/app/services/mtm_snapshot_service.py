@@ -69,7 +69,12 @@ def _snapshot_matches(snapshot: MTMSnapshot, computed: MTMResultResponse, inputs
 
 
 def create_mtm_snapshot_for_contract(
-    db: Session, contract_id: UUID, as_of_date: date, correlation_id: str
+    db: Session,
+    contract_id: UUID,
+    as_of_date: date,
+    correlation_id: str,
+    *,
+    commit: bool = True,
 ) -> MTMSnapshot:
     existing = (
         db.query(MTMSnapshot)
@@ -108,13 +113,21 @@ def create_mtm_snapshot_for_contract(
         correlation_id=correlation_id,
     )
     db.add(snapshot)
-    db.commit()
-    db.refresh(snapshot)
+    if commit:
+        db.commit()
+        db.refresh(snapshot)
+    else:
+        db.flush()
     return snapshot
 
 
 def create_mtm_snapshot_for_order(
-    db: Session, order_id: UUID, as_of_date: date, correlation_id: str
+    db: Session,
+    order_id: UUID,
+    as_of_date: date,
+    correlation_id: str,
+    *,
+    commit: bool = True,
 ) -> MTMSnapshot:
     existing = (
         db.query(MTMSnapshot)
@@ -151,8 +164,11 @@ def create_mtm_snapshot_for_order(
         correlation_id=correlation_id,
     )
     db.add(snapshot)
-    db.commit()
-    db.refresh(snapshot)
+    if commit:
+        db.commit()
+        db.refresh(snapshot)
+    else:
+        db.flush()
     return snapshot
 
 

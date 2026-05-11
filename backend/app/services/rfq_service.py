@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import uuid as _uuid
 from decimal import Decimal
+from typing import Callable
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -453,7 +454,11 @@ class RFQService:
         return value.value if hasattr(value, "value") else str(value)
 
     @staticmethod
-    def create(session: Session, payload: RFQCreate) -> RFQ:
+    def create(
+        session: Session,
+        payload: RFQCreate,
+        audit_checkpoint: Callable[[UUID], None] | None = None,
+    ) -> RFQ:
         """Create an RFQ, its invitations and initial state events.
 
         Implements the **durable outbox pattern** (Phase A2 PR-4 §3.2 strategy
@@ -642,6 +647,8 @@ class RFQService:
         # Durable checkpoint: RFQ + queued invitations are now in the WAL
         # before any WhatsApp call is made. A crash between here and the
         # caller's commit cannot erase the evidence rows.
+        if audit_checkpoint is not None:
+            audit_checkpoint(rfq.id)
         session.commit()
 
         # ── PHASE 2: send each invitation, then update its row status.
@@ -964,7 +971,12 @@ class RFQService:
         return rfq
 
     @staticmethod
-    def refresh(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+    def refresh(
+        session: Session,
+        rfq_id: UUID,
+        user_id: str,
+        audit_checkpoint: Callable[[UUID], None] | None = None,
+    ) -> RFQ:
         """Re-send invitations for an RFQ in SENT or QUOTED state.
 
         Per Phase A2 PR-4 (J-A2-05 + J-A2-07 + J-A2-OPUS-02), each refresh
@@ -1046,6 +1058,8 @@ class RFQService:
                 idempotency_key=idem_key,
             )
             session.add(row)
+            if audit_checkpoint is not None:
+                audit_checkpoint(rfq.id)
             session.commit()
 
             if recipient.channel != RFQInvitationChannel.whatsapp:
@@ -1092,6 +1106,7 @@ class RFQService:
         quote_id: UUID,
         user_id: str,
         reason: str = "manual_reject",
+        audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> None:
         """Reject a counterparty quote without erasing it.
 
@@ -1216,6 +1231,8 @@ class RFQService:
         # state event ALL land in the SAME commit (§3.3 coupling rule
         # extended per Codex P2). If this commit fails, none of the
         # four mutations persist; no send has been attempted yet.
+        if audit_checkpoint is not None:
+            audit_checkpoint(rfq.id)
         session.commit()
 
         # ── (5) Send WhatsApp now that durable evidence exists.
@@ -1249,7 +1266,11 @@ class RFQService:
 
     @staticmethod
     def refresh_counterparty(
-        session: Session, rfq_id: UUID, counterparty_id: str, user_id: str
+        session: Session,
+        rfq_id: UUID,
+        counterparty_id: str,
+        user_id: str,
+        audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> RFQ:
         """Re-send invitation to a specific counterparty.
 
@@ -1321,6 +1342,8 @@ class RFQService:
             idempotency_key=idem_key,
         )
         session.add(row)
+        if audit_checkpoint is not None:
+            audit_checkpoint(rfq.id)
         session.commit()
 
         if existing.channel != RFQInvitationChannel.whatsapp:

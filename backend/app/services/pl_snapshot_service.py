@@ -45,6 +45,8 @@ def create_pl_snapshot(
     entity_id: UUID,
     period_start: date,
     period_end: date,
+    *,
+    commit: bool = True,
 ) -> PLSnapshot:
     """Create an immutable P&L snapshot for a given entity and period.
 
@@ -103,8 +105,11 @@ def create_pl_snapshot(
         correlation_id=uuid.uuid4(),
     )
     db.add(new_snapshot)
-    db.commit()
-    db.refresh(new_snapshot)
+    if commit:
+        db.commit()
+        db.refresh(new_snapshot)
+    else:
+        db.flush()
     return new_snapshot
 
 
