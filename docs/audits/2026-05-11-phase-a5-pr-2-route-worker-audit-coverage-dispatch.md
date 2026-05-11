@@ -119,6 +119,21 @@ Add signed audit coverage for:
 - single-date Westmetall ingest;
 - bulk Westmetall ingest.
 
+Uniform HTTP route pattern for the newly covered routes:
+
+- declare the route-level `audit_event()` dependency with the correct
+  `entity_type` and `event_type`;
+- retain `request` in the route signature/body;
+- perform the mutation under the same fail-closed transaction boundary used for
+  audit emission;
+- call `mark_audit_success(request, entity_id)` after the mutation returns the
+  durable identity and before route-level audit commit;
+- use `Counterparty.id` for counterparty create/update/delete, `SoPoLink.id`
+  for SO-PO link creation, and `FinancePipelineRun.id` returned by
+  `FinancePipelineService.run_daily_pipeline()` for manual finance pipeline
+  trigger;
+- prove rollback on audit signing failure for each newly covered route family.
+
 Westmetall routes already declare `audit_event` but delete `request` and never
 call `mark_audit_success()`. Fix the no-op audit coverage; do not leave a
 dependency that never emits an event.
