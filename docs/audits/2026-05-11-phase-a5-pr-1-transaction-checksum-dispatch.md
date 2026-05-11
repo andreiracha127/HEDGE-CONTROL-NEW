@@ -50,6 +50,11 @@ are persisted. Evidence includes:
 - `backend/app/api/routes/rfqs.py:268`
 - `backend/app/api/routes/rfqs.py:320`
 - `backend/app/api/routes/rfqs.py:376`
+- `backend/app/api/routes/rfqs.py:344`
+- `backend/app/api/routes/rfqs.py:402`
+- `backend/app/api/routes/rfqs.py:424`
+- `backend/app/api/routes/rfqs.py:446`
+- `backend/app/api/routes/rfqs.py:468`
 - `backend/app/api/routes/mtm.py:65`
 - `backend/app/services/mtm_snapshot_service.py:110`
 - `backend/app/api/routes/pl.py:49`
@@ -85,7 +90,9 @@ data. Evidence includes:
 Bring these already-covered mutation paths under a single atomic boundary:
 
 - order create/archive paths that already declare audit coverage;
-- RFQ create, quote submit, RFQ reject, quote reject;
+- all RFQ routes that already declare `audit_event` and currently commit before
+  `request.state.audit_commit()`, including create, quote submit, RFQ reject,
+  cancel, quote reject, refresh-counterparty, refresh, award, and archive;
 - MTM snapshot creation;
 - P&L snapshot creation;
 - cashflow baseline snapshot creation;
@@ -144,7 +151,9 @@ Add or update focused tests under `backend/tests/`.
 Minimum test coverage:
 
 - order create/archive rollback when audit signing fails;
-- RFQ create/quote/reject rollback when audit signing fails;
+- RFQ create, quote submit, RFQ reject, cancel, quote reject,
+  refresh-counterparty, refresh, award, and archive rollback when audit signing
+  fails;
 - MTM/P&L/cashflow baseline/settlement rollback when audit signing fails;
 - checksum recomputation from persisted data succeeds for valid rows;
 - payload tamper fails verification;
@@ -201,4 +210,3 @@ do not treat it as evidence against this wave.
   - `rg` commit-boundary review result;
   - hook artifact path;
   - statement that `docs/governance.md` has no diff.
-
