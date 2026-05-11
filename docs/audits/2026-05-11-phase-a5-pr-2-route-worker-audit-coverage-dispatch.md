@@ -154,6 +154,11 @@ dependency that never emits an event.
 For Westmetall, "fix the no-op audit coverage" has a specific meaning:
 
 - remove the existing `del request` statement and retain the `request` object;
+- current `main` state: both Westmetall ingest services return only
+  `tuple[int, int, WestmetallFetchEvidence]`, ordered as
+  `(ingested_count, skipped_count, evidence)`;
+- PR-A5-2 must change those return contracts before the routes can call
+  `mark_audit_success(request, entity_id)`;
 - first extend both Westmetall ingest service return contracts narrowly:
   - single-date ingest must return the inserted `CashSettlementPrice.id` when a
     row is created;
