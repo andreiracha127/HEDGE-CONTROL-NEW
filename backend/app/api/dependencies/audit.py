@@ -12,10 +12,17 @@ from app.core.metrics import audit_events_total
 from app.services.audit_trail_service import AuditTrailService, normalize_payload_raw
 
 
-def mark_audit_success(request: Request, entity_id: uuid.UUID | None = None) -> None:
+def mark_audit_success(
+    request: Request,
+    entity_id: uuid.UUID | None = None,
+    *,
+    metadata: dict | None = None,
+) -> None:
     request.state.audit_should_record = True
     if entity_id is not None:
         request.state.audit_entity_id = entity_id
+    if metadata is not None:
+        request.state.audit_metadata = metadata
 
 
 def record_audit_checkpoint(
@@ -64,14 +71,22 @@ def audit_event(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="entity_id missing",
                 )
+            payload_for_record = payload_obj
+            payload_raw = payload_canonical
+            metadata = getattr(request.state, "audit_metadata", None)
+            if metadata is not None:
+                payload_raw, payload_for_record = normalize_payload_raw(
+                    {"request": payload_obj, "metadata": metadata}
+                )
+
             AuditTrailService.record(
                 session,
                 event_id=uuid.uuid4(),
                 entity_type=entity_type,
                 entity_id=entity_id,
                 event_type=event_type,
-                payload_raw=payload_canonical,
-                payload_obj=payload_obj,
+                payload_raw=payload_raw,
+                payload_obj=payload_for_record,
                 commit=not getattr(request.state, "audit_defer_commit", False),
             )
             request.state.audit_recorded = True

@@ -14,7 +14,7 @@ from app.models.counterparty import (
 
 class CounterpartyService:
     @staticmethod
-    def create(session: Session, data: dict) -> Counterparty:
+    def create(session: Session, data: dict, *, commit: bool = True) -> Counterparty:
         cp = Counterparty(
             type=CounterpartyType(data["type"]),
             name=data["name"],
@@ -36,8 +36,10 @@ class CounterpartyService:
             notes=data.get("notes"),
         )
         session.add(cp)
-        session.commit()
-        session.refresh(cp)
+        session.flush()
+        if commit:
+            session.commit()
+            session.refresh(cp)
         return cp
 
     @staticmethod
@@ -67,7 +69,9 @@ class CounterpartyService:
         return query
 
     @staticmethod
-    def update(session: Session, cp: Counterparty, data: dict) -> Counterparty:
+    def update(
+        session: Session, cp: Counterparty, data: dict, *, commit: bool = True
+    ) -> Counterparty:
         for key, value in data.items():
             if value is not None:
                 if key == "kyc_status":
@@ -78,17 +82,23 @@ class CounterpartyService:
                     setattr(cp, key, RiskRating(value))
                 else:
                     setattr(cp, key, value)
-        session.commit()
-        session.refresh(cp)
+        session.flush()
+        if commit:
+            session.commit()
+            session.refresh(cp)
         return cp
 
     @staticmethod
-    def soft_delete(session: Session, cp: Counterparty) -> Counterparty:
+    def soft_delete(
+        session: Session, cp: Counterparty, *, commit: bool = True
+    ) -> Counterparty:
         cp.is_deleted = True
         cp.deleted_at = datetime.now(timezone.utc)
         cp.is_active = False
-        session.commit()
-        session.refresh(cp)
+        session.flush()
+        if commit:
+            session.commit()
+            session.refresh(cp)
         return cp
 
     @staticmethod

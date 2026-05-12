@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timedelta, timezone, date
 from decimal import Decimal
@@ -13,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
+from app.models.audit import AuditEvent
 from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.llm_decision_artifact import LLMDecisionArtifact
 from app.models.quotes import QuoteState, RFQQuote
@@ -27,6 +29,10 @@ from app.models.rfqs import (
 )
 from app.schemas.llm import LLMClassifyResult, MessageIntent, ParsedQuote
 from app.schemas.whatsapp import WhatsAppInboundMessage, WhatsAppSendResult
+from app.services.audit_trail_service import (
+    MissingAuditSigningKey,
+    _reset_signing_key_cache,
+)
 from app.services.llm_agent import (
     LLMCallTrace,
     LLMClassifyDecision,
@@ -37,6 +43,20 @@ from app.services.rfq_orchestrator import RFQOrchestrator
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def without_audit_signing_key():
+    previous = os.environ.pop("AUDIT_SIGNING_KEY", None)
+    _reset_signing_key_cache()
+    try:
+        yield
+    finally:
+        if previous is not None:
+            os.environ["AUDIT_SIGNING_KEY"] = previous
+        else:
+            os.environ["AUDIT_SIGNING_KEY"] = "test-signing-key-for-audit-hmac"
+        _reset_signing_key_cache()
 
 
 def _create_rfq(
@@ -859,6 +879,136 @@ def test_auto_quote_created_persists_llm_decision_artifact(
 
 @patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")
 @patch("app.services.rfq_orchestrator.LLMAgent.classify_intent_with_trace")
+def test_auto_quote_created_persists_signed_worker_audit_event(
+    mock_classify_trace, mock_parse_trace
+):
+    from app.services.webhook_processor import enqueue_message
+
+    classification = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    parsed = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_classify_trace.return_value = LLMClassifyDecision(
+        result=classification,
+        trace=_llm_trace(normalized_result=classification.model_dump(mode="json")),
+    )
+    mock_parse_trace.return_value = LLMParseDecision(
+        result=parsed,
+        trace=_llm_trace(normalized_result=parsed.model_dump(mode="json")),
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.worker-audit",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.worker-audit",
+                delivery_message_id=durable_id,
+            )
+        )
+        results = RFQOrchestrator.process_inbound_queue(session)
+
+    assert results[0]["status"] == "auto_quote_created"
+    quote_id = uuid.UUID(results[0]["quote_id"])
+    with SessionLocal() as session:
+        artifact = (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .one()
+        )
+        event = (
+            session.query(AuditEvent)
+            .filter(
+                AuditEvent.entity_type == "rfq_quote",
+                AuditEvent.entity_id == quote_id,
+                AuditEvent.event_type == "rfq.auto_quote_created",
+            )
+            .one()
+        )
+        assert event.signature is not None
+        assert event.payload["actor"] == "rfq_orchestrator"
+        assert event.payload["source"] == "inbound_webhook_worker"
+        assert event.payload["metadata"]["rfq_id"] == str(rfq_id)
+        assert event.payload["metadata"]["quote_id"] == str(quote_id)
+        assert event.payload["metadata"]["durable_message_id"] == str(durable_id)
+        assert event.payload["metadata"]["llm_decision_artifact_id"] == str(artifact.id)
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent_with_trace")
+def test_worker_audit_missing_signing_key_rolls_back_auto_quote(
+    mock_classify_trace,
+    mock_parse_trace,
+    without_audit_signing_key,
+):
+    from app.services.webhook_processor import enqueue_message
+
+    classification = LLMClassifyResult(
+        intent=MessageIntent.quote,
+        confidence=0.95,
+        raw_reasoning="quote",
+    )
+    parsed = _parsed_quote(intent=MessageIntent.quote, confidence=0.95)
+    mock_classify_trace.return_value = LLMClassifyDecision(
+        result=classification,
+        trace=_llm_trace(normalized_result=classification.model_dump(mode="json")),
+    )
+    mock_parse_trace.return_value = LLMParseDecision(
+        result=parsed,
+        trace=_llm_trace(normalized_result=parsed.model_dump(mode="json")),
+    )
+
+    with SessionLocal() as session:
+        rfq = _create_rfq(session, state=RFQState.sent)
+        _create_invitation(session, rfq, status=RFQInvitationStatus.sent)
+        durable = _durable_message(
+            session,
+            provider_message_id="wamid.worker-audit-fail",
+            text=_canonical_text(rfq, "2550 USD/MT avg"),
+        )
+        durable_id = durable.id
+        rfq_id = rfq.id
+        session.commit()
+
+        enqueue_message(
+            _make_inbound(
+                text=_canonical_text(rfq, "2550 USD/MT avg"),
+                msg_id="wamid.worker-audit-fail",
+                delivery_message_id=durable_id,
+            )
+        )
+        with pytest.raises(MissingAuditSigningKey):
+            RFQOrchestrator.process_inbound_queue(session)
+
+    with SessionLocal() as session:
+        assert session.query(RFQQuote).filter(RFQQuote.rfq_id == rfq_id).count() == 0
+        assert (
+            session.query(LLMDecisionArtifact)
+            .filter(LLMDecisionArtifact.inbound_message_id == durable_id)
+            .count()
+            == 0
+        )
+        assert session.query(AuditEvent).count() == 0
+        durable = session.get(type(durable), durable_id)
+        assert durable is not None
+        assert durable.quote_id is None
+        assert durable.processing_result is None
+
+
+@patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")
+@patch("app.services.rfq_orchestrator.LLMAgent.classify_intent_with_trace")
 def test_low_confidence_parsed_quote_persists_deny_artifact(
     mock_classify_trace, mock_parse_trace
 ):
@@ -1119,10 +1269,10 @@ def test_stale_redelivery_after_quote_artifact_commit_reuses_artifact(
             )
         )
         with patch(
-            "app.services.rfq_orchestrator.RFQOrchestrator._finalize_durable_message",
-            side_effect=RuntimeError("finalize failed"),
+            "app.services.rfq_orchestrator.AuditTrailService.record_worker_event",
+            side_effect=RuntimeError("audit failed"),
         ):
-            with pytest.raises(RuntimeError, match="finalize failed"):
+            with pytest.raises(RuntimeError, match="audit failed"):
                 RFQOrchestrator.process_inbound_queue(session)
 
         durable = session.get(type(durable), durable_id)

@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_SCRAPING, limiter
-from app.api.dependencies.audit import audit_event
+from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.models.market_data import CashSettlementPrice
 from app.services.cash_settlement_prices import (
     ingest_westmetall_cash_settlement_bulk,
@@ -130,13 +131,15 @@ def ingest_cash_settlement_daily(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> CashSettlementIngestResponse:
-    del request
     try:
-        ingested_count, skipped_count, evidence = (
-            ingest_westmetall_cash_settlement_daily_for_date(
-                session, payload.settlement_date
+        with unit_of_work(session, request=request):
+            inserted_id, ingested_count, skipped_count, evidence = (
+                ingest_westmetall_cash_settlement_daily_for_date(
+                    session, payload.settlement_date
+                )
             )
-        )
+            if inserted_id is not None:
+                mark_audit_success(request, inserted_id)
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
@@ -176,15 +179,32 @@ def ingest_cash_settlement_bulk(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> CashSettlementBulkIngestResponse:
-    del request
     try:
-        ingested_count, skipped_count, evidence = (
-            ingest_westmetall_cash_settlement_bulk(
-                session,
-                start_date=payload.start_date,
-                end_date=payload.end_date,
+        with unit_of_work(session, request=request):
+            inserted_ids, batch_uuid, ingested_count, skipped_count, evidence = (
+                ingest_westmetall_cash_settlement_bulk(
+                    session,
+                    start_date=payload.start_date,
+                    end_date=payload.end_date,
+                )
             )
-        )
+            if inserted_ids:
+                mark_audit_success(
+                    request,
+                    batch_uuid,
+                    metadata={
+                        "batch_uuid": str(batch_uuid),
+                        "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
+                        "source": SOURCE_WESTMETALL,
+                        "requested_start_date": payload.start_date.isoformat()
+                        if payload.start_date
+                        else None,
+                        "requested_end_date": payload.end_date.isoformat()
+                        if payload.end_date
+                        else None,
+                        "html_sha256": evidence.html_sha256,
+                    },
+                )
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)

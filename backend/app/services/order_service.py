@@ -130,7 +130,9 @@ class OrderService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def create_sopo_link(session: Session, payload: SoPoLinkCreate) -> SoPoLink:
+    def create_sopo_link(
+        session: Session, payload: SoPoLinkCreate, *, commit: bool = True
+    ) -> SoPoLink:
         """Create a Sales-Order ↔ Purchase-Order link."""
         so = session.get(Order, payload.sales_order_id)
         if not so or so.order_type != OrderType.sales:
@@ -163,8 +165,10 @@ class OrderService:
             linked_tons=payload.linked_tons,
         )
         session.add(link)
-        session.commit()
-        session.refresh(link)
+        session.flush()
+        if commit:
+            session.commit()
+            session.refresh(link)
         return link
 
     @staticmethod
