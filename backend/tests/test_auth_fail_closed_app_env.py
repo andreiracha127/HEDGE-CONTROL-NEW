@@ -216,21 +216,21 @@ def test_audit_verify_rejects_anonymous_in_staging() -> None:
 # ── seed.py / local tooling — must self-declare APP_ENV ───────────────────
 
 
-def test_seed_script_declares_app_env_before_importing_app() -> None:
-    """J-A5-06 regression: developer tooling that imports ``app.main`` cannot
-    rely on the legacy ``AUTH_DISABLED`` escape hatch, because that hatch is
-    no longer honored under the production-default ``APP_ENV``. Every such
-    tool must self-declare a local/test ``APP_ENV`` *before* importing the
-    app. This test pins that contract for ``backend/scripts/seed.py`` via
-    source-order inspection so a future edit cannot regress."""
-    import ast
+def _script_path(name: str):
     from pathlib import Path
 
-    seed_path = (
-        Path(__file__).resolve().parents[1] / "scripts" / "seed.py"
-    )
-    source = seed_path.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(seed_path))
+    return Path(__file__).resolve().parents[1] / "scripts" / name
+
+
+def _assert_script_declares_app_env_before_app_main(script_name: str) -> None:
+    """Shared AST contract: every script that imports ``app.main`` must
+    declare ``APP_ENV`` via ``os.environ.setdefault`` BEFORE the import,
+    so the fail-closed boot gates (J-A5-06) do not refuse to boot."""
+    import ast
+
+    path = _script_path(script_name)
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
 
     app_main_import_line: int | None = None
     app_env_setdefault_line: int | None = None
@@ -256,20 +256,30 @@ def test_seed_script_declares_app_env_before_importing_app() -> None:
                     app_env_setdefault_line = node.lineno
 
     assert app_main_import_line is not None, (
-        "seed.py must import app.main; the contract this test pins assumes "
-        "that import exists."
+        f"{script_name} must import app.main; the contract this test pins "
+        f"assumes that import exists."
     )
     assert app_env_setdefault_line is not None, (
-        "seed.py must declare APP_ENV via os.environ.setdefault(\"APP_ENV\", ...) "
-        "before importing app.main, so the fail-closed boot gates (J-A5-06) "
-        "do not refuse to boot. Add the declaration near the existing "
-        "DATABASE_URL/AUTH_DISABLED setdefault block."
+        f"{script_name} must declare APP_ENV via "
+        f"os.environ.setdefault(\"APP_ENV\", ...) before importing app.main, "
+        f"so the fail-closed boot gates (J-A5-06) do not refuse to boot."
     )
     assert app_env_setdefault_line < app_main_import_line, (
-        "seed.py must set APP_ENV BEFORE importing app.main "
+        f"{script_name} must set APP_ENV BEFORE importing app.main "
         f"(setdefault at line {app_env_setdefault_line}, "
         f"import at line {app_main_import_line})."
     )
+
+
+def test_seed_script_declares_app_env_before_importing_app() -> None:
+    _assert_script_declares_app_env_before_app_main("seed.py")
+
+
+def test_export_openapi_script_declares_app_env_before_importing_app() -> None:
+    """Regression for the second Codex P2: standalone schema export must
+    work without a wrapping CI step setting ``APP_ENV=test``. The script
+    self-declares the env so local/documented regeneration paths boot."""
+    _assert_script_declares_app_env_before_app_main("export_openapi.py")
 
 
 def test_audit_list_allows_anonymous_in_development() -> None:

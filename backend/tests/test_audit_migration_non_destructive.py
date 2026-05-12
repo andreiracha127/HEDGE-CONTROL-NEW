@@ -27,24 +27,24 @@ from pathlib import Path
 import pytest
 
 
-MIGRATION_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "alembic"
-    / "versions"
-    / "015_phase7_audit_events_table.py"
+MIGRATIONS_DIR = (
+    Path(__file__).resolve().parents[1] / "alembic" / "versions"
 )
+MIGRATION_PATH = MIGRATIONS_DIR / "015_phase7_audit_events_table.py"
+MIGRATION_043_PATH = MIGRATIONS_DIR / "043_a5_audit_payload_input.py"
 
 
 def _migration_source() -> str:
     return MIGRATION_PATH.read_text(encoding="utf-8")
 
 
-def _downgrade_function() -> ast.FunctionDef:
-    tree = ast.parse(_migration_source(), filename=str(MIGRATION_PATH))
+def _downgrade_function(path: Path = MIGRATION_PATH) -> ast.FunctionDef:
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == "downgrade":
             return node
-    pytest.fail("downgrade() function not found in migration 015")
+    pytest.fail(f"downgrade() function not found in {path.name}")
 
 
 def test_downgrade_does_not_drop_audit_events_table() -> None:
@@ -193,3 +193,98 @@ def test_upgrade_then_downgrade_then_upgrade_is_idempotent(tmp_path) -> None:
                 "'00000000-0000-0000-0000-000000000001'"
             )
         assert "append-only" in str(excinfo.value).lower()
+
+
+# ── Migration 043 — payload_canonical preservation (Codex P2 follow-up) ───
+
+
+def test_043_downgrade_does_not_drop_payload_canonical_column() -> None:
+    """``payload_canonical`` stores the canonical JSON payload that
+    ``AuditTrailService.verify_event`` needs to recompute the HMAC. A
+    full rollback that drops this column would leave the preserved audit
+    rows (per migration 015's no-op downgrade) without verification
+    evidence, silently breaking the append-only invariant. Mirror the
+    015 policy: 043's downgrade must not drop the column."""
+    func = _downgrade_function(MIGRATION_043_PATH)
+    for node in ast.walk(func):
+        if isinstance(node, ast.Call):
+            callee = node.func
+            attr = callee.attr if isinstance(callee, ast.Attribute) else None
+            name = callee.id if isinstance(callee, ast.Name) else None
+            if attr == "drop_column" or name == "drop_column":
+                pytest.fail(
+                    "043 downgrade() must not drop audit_events.payload_canonical "
+                    "— that column carries the canonical payload used for "
+                    "audit signature verification (J-A5-04 extended)."
+                )
+
+
+def test_043_round_trip_preserves_payload_canonical_data(tmp_path) -> None:
+    """Operator flow: upgrade(015) → upgrade(043) → seed row with
+    payload_canonical → downgrade(043) → upgrade(043). The preserved
+    column and the row's canonical payload must survive intact, and the
+    re-upgrade must not raise on the existing column."""
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    db_path = tmp_path / "audit043.sqlite"
+    engine = sa.create_engine(f"sqlite:///{db_path}", future=True)
+    migration_015 = _load_migration_module()
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "phase_a5_audit_payload_input", MIGRATION_043_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    migration_043 = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration_043)
+
+    def _run(module, callable_name: str) -> None:
+        with engine.begin() as connection:
+            ctx = MigrationContext.configure(connection)
+            ops = Operations(ctx)
+            original_op = module.op
+            module.op = ops
+            try:
+                getattr(module, callable_name)()
+            finally:
+                module.op = original_op
+
+    _run(migration_015, "upgrade")
+    _run(migration_043, "upgrade")
+
+    columns = {c["name"] for c in sa.inspect(engine).get_columns("audit_events")}
+    assert "payload_canonical" in columns
+
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO audit_events (id, entity_type, entity_id, event_type, "
+            "payload, payload_canonical, checksum) VALUES "
+            "('00000000-0000-0000-0000-0000000000aa', 'order', "
+            "'00000000-0000-0000-0000-0000000000bb', 'created', '{}', "
+            "'{\"canonical\":true}', 'cafef00d')"
+        )
+
+    _run(migration_043, "downgrade")
+    columns = {c["name"] for c in sa.inspect(engine).get_columns("audit_events")}
+    assert "payload_canonical" in columns, (
+        "043 downgrade dropped payload_canonical — verification evidence lost"
+    )
+
+    with engine.connect() as connection:
+        canonical = connection.exec_driver_sql(
+            "SELECT payload_canonical FROM audit_events WHERE id = "
+            "'00000000-0000-0000-0000-0000000000aa'"
+        ).scalar_one()
+    assert canonical == '{"canonical":true}'
+
+    # Re-upgrade must NOT raise on duplicate column.
+    _run(migration_043, "upgrade")
+    with engine.connect() as connection:
+        canonical = connection.exec_driver_sql(
+            "SELECT payload_canonical FROM audit_events WHERE id = "
+            "'00000000-0000-0000-0000-0000000000aa'"
+        ).scalar_one()
+    assert canonical == '{"canonical":true}'
