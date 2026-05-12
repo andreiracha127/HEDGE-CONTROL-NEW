@@ -59,6 +59,10 @@ Accepted evidence:
 - `frontend-svelte/src/lib/stores/auth.svelte.ts:3` defines the `auditor` role.
 - `docs/api/openapi_v1.json:7175` exposes `/audit/events`.
 - `docs/api/openapi_v1.json:7303` exposes `/audit/events/{event_id}/verify`.
+- `backend/app/api/routes/audit.py:36` protects `/audit/events` with
+  `require_role("auditor")`.
+- `backend/app/api/routes/audit.py:58` protects
+  `/audit/events/{event_id}/verify` with `require_role("auditor")`.
 
 ### J-A6-10 - Dev-only manual JWT login
 
@@ -96,6 +100,11 @@ Add a read-only protected audit surface:
 - detail or inline verification action using `/audit/events/{event_id}/verify`;
 - show entity type/id, event type, actor/user, created timestamp, verification
   status, and enough payload context for auditors to inspect evidence;
+- expose audit navigation and route access only for the `auditor` role because
+  the current backend rejects other roles;
+- if the executor deliberately widens backend authorization in this same wave,
+  update backend tests, OpenAPI/schema as needed, and the frontend role policy
+  in the same PR;
 - hide or disable the route for roles that should not see audit evidence,
   without treating frontend role gating as the security boundary.
 
@@ -118,8 +127,10 @@ Gate the manual JWT paste login:
   records.
 - `/audit/events` frontend route exists and is read-only.
 - Audit route can call verify endpoint and display verification result.
-- Audit route is visible only to auditor/risk-manager role surfaces, or the PR
-  explicitly documents the chosen role policy.
+- Audit route is visible only to `auditor` role surfaces unless backend
+  authorization is deliberately widened in the same wave.
+- If backend authorization is widened beyond `auditor`, the PR includes backend
+  authorization tests proving the new role can list and verify audit events.
 - Manual JWT paste login is gated by dev/local/test config and is not the
   default production flow.
 - No order mutation UI is added in this wave.
@@ -137,7 +148,8 @@ Minimum coverage:
 - audit events route calls `/audit/events`;
 - audit verification action calls `/audit/events/{event_id}/verify` and renders
   valid/invalid/unverifiable status distinctly;
-- role visibility for audit navigation is covered;
+- role visibility for audit navigation is covered: `auditor` can see it, and
+  `risk_manager` cannot unless backend auth is widened and tested in this PR;
 - production-mode login does not show the token paste form unless the explicit
   dev-login flag is enabled;
 - local/dev/test mode keeps manual token login usable.
@@ -162,8 +174,10 @@ git diff --check
 
 Confirm that the backend `/audit/events` and
 `/audit/events/{event_id}/verify` endpoints enforce authenticated role
-authorization for the intended auditor/risk-manager audience. Do not treat
-frontend navigation visibility as the security boundary.
+authorization for the intended auditor-only audience. Do not treat frontend
+navigation visibility as the security boundary. If the implementation widens
+the backend role policy, report the backend authorization tests and schema/API
+impact explicitly.
 
 If new Playwright tests are added, run:
 

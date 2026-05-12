@@ -71,6 +71,12 @@ Canonical paths from `docs/api/openapi_v1.json` and
 
 - `/cashflow/analytic`
 - `/cashflow/projection`
+- `backend/app/api/routes/cashflow.py:31` requires `as_of_date` for
+  `/cashflow/analytic`.
+- `backend/app/api/routes/cashflow.py:69` requires `as_of_date` for
+  `/cashflow/projection`.
+- `backend/app/api/routes/cashflow_ledger.py:77-79` defines
+  `/cashflow/ledger` with required `source_event_id`, not a date range.
 - `/contracts/hedge`
 - `/contracts/hedge/{contract_id}`
 - `/contracts/hedge/{contract_id}/status`
@@ -131,8 +137,12 @@ Correct the route files identified above to use current contract paths.
 
 Minimum acceptable behavior:
 
-- Cashflow page calls `/cashflow/analytic`, `/cashflow/projection`, and the
-  existing ledger path.
+- Cashflow page calls `/cashflow/analytic` and `/cashflow/projection` with a
+  valid `as_of_date` query parameter. If the page cannot derive `as_of_date`,
+  render a missing-parameter state before making a request.
+- Cashflow ledger calls must use the documented `/cashflow/ledger` contract
+  with `source_event_id`. Do not reuse date-range query parameters for ledger,
+  and do not call ledger at all if the page lacks a source event id.
 - Contracts list/detail/status calls use `/contracts/hedge...`.
 - Critical coupling: do not merge the
   `/contracts/hedge/{contract_id}/status` URL repair unless the settlement
@@ -224,6 +234,10 @@ file.
 - No routed page in this wave calls `/cashflow/analytics`,
   `/cashflow/projections`, `/contracts`, `/contracts/{id}`,
   `/contracts/{id}/status`, `/mtm/snapshots/latest`, or `/pl/snapshot/latest`.
+- Cashflow analytic/projection requests include `as_of_date`, or the UI shows
+  a missing-parameter state without submitting a request.
+- Cashflow ledger requests include `source_event_id`, or the UI shows a
+  missing-parameter state without submitting a request.
 - Each repaired page has an explicit non-2xx error state.
 - MTM/P&L snapshot calls include the documented singleton query parameters or
   render an explicit missing-parameter state before making a request.
@@ -262,7 +276,10 @@ Minimum coverage:
 - contract list/detail/status calls use `/contracts/hedge...`;
 - contract detail does not call `/contracts/hedge/{contract_id}/status` for
   `settled` or `partially_settled`;
-- cashflow calls use singular `/cashflow/analytic` and `/cashflow/projection`;
+- cashflow analytic/projection calls use singular `/cashflow/analytic` and
+  `/cashflow/projection` with `as_of_date`;
+- cashflow ledger calls use `/cashflow/ledger` with `source_event_id` and do
+  not use date-range query parameters;
 - MTM/P&L snapshot pages do not call nonexistent `/latest` paths and do not
   call `/mtm/snapshots` or `/pl/snapshots` without the required singleton query
   parameters;
