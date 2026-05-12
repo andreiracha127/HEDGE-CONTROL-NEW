@@ -213,6 +213,65 @@ def test_audit_verify_rejects_anonymous_in_staging() -> None:
         app.dependency_overrides.update(overrides)
 
 
+# ── seed.py / local tooling — must self-declare APP_ENV ───────────────────
+
+
+def test_seed_script_declares_app_env_before_importing_app() -> None:
+    """J-A5-06 regression: developer tooling that imports ``app.main`` cannot
+    rely on the legacy ``AUTH_DISABLED`` escape hatch, because that hatch is
+    no longer honored under the production-default ``APP_ENV``. Every such
+    tool must self-declare a local/test ``APP_ENV`` *before* importing the
+    app. This test pins that contract for ``backend/scripts/seed.py`` via
+    source-order inspection so a future edit cannot regress."""
+    import ast
+    from pathlib import Path
+
+    seed_path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "seed.py"
+    )
+    source = seed_path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(seed_path))
+
+    app_main_import_line: int | None = None
+    app_env_setdefault_line: int | None = None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "app.main":
+            if app_main_import_line is None or node.lineno < app_main_import_line:
+                app_main_import_line = node.lineno
+        if isinstance(node, ast.Call):
+            func = node.func
+            attr = func.attr if isinstance(func, ast.Attribute) else None
+            value = func.value if isinstance(func, ast.Attribute) else None
+            value_name = value.attr if isinstance(value, ast.Attribute) else None
+            # match os.environ.setdefault("APP_ENV", ...)
+            if (
+                attr == "setdefault"
+                and value_name == "environ"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "APP_ENV"
+            ):
+                if app_env_setdefault_line is None or node.lineno < app_env_setdefault_line:
+                    app_env_setdefault_line = node.lineno
+
+    assert app_main_import_line is not None, (
+        "seed.py must import app.main; the contract this test pins assumes "
+        "that import exists."
+    )
+    assert app_env_setdefault_line is not None, (
+        "seed.py must declare APP_ENV via os.environ.setdefault(\"APP_ENV\", ...) "
+        "before importing app.main, so the fail-closed boot gates (J-A5-06) "
+        "do not refuse to boot. Add the declaration near the existing "
+        "DATABASE_URL/AUTH_DISABLED setdefault block."
+    )
+    assert app_env_setdefault_line < app_main_import_line, (
+        "seed.py must set APP_ENV BEFORE importing app.main "
+        f"(setdefault at line {app_env_setdefault_line}, "
+        f"import at line {app_main_import_line})."
+    )
+
+
 def test_audit_list_allows_anonymous_in_development() -> None:
     """Sanity: dev environment continues to expose audit endpoints via the
     anonymous identity so local workflows keep working."""
