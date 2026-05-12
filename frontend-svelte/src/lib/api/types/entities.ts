@@ -178,38 +178,48 @@ export interface Counterparty {
 }
 
 // ─── Analytics: P&L ─────────────────────────────────────────────────────
-
-export interface PnlEntry {
-	commodity?: string;
-	label?: string;
-	realized_pnl?: number;
-	realized?: number;
-	unrealized_pnl?: number;
-	unrealized?: number;
-}
+//
+// Mirror of `components["schemas"]["PLSnapshotResponse"]` from the
+// generated `schema.d.ts`. `/pl/snapshots` returns a single snapshot
+// (scalar fields), not a collection — `realized_pl` and `unrealized_mtm`
+// are Decimal-as-string per the FastAPI Decimal serialization contract.
 
 export interface PnlSnapshot {
-	total_realized?: number;
-	realized_total?: number;
-	total_unrealized?: number;
-	unrealized_total?: number;
-	items?: PnlEntry[];
-	entries?: PnlEntry[];
+	id: string;
+	correlation_id: string | null;
+	created_at: string;
+	entity_id: string;
+	entity_type: string;
+	period_start: string;
+	period_end: string;
+	inputs_hash?: string | null;
+	realized_pl: string;
+	unrealized_mtm: string;
+	price_references?: Array<Record<string, unknown>> | null;
 }
 
 // ─── Analytics: MTM ─────────────────────────────────────────────────────
-
-export interface MtmEntry {
-	date?: string;
-	snapshot_date?: string;
-	label?: string;
-	mtm_value?: number;
-	value?: number;
-}
+//
+// Mirror of `components["schemas"]["MTMSnapshotResponse"]`. `/mtm/snapshots`
+// returns a single snapshot — `mtm_value`, `entry_price`, `price_d1`, and
+// `quantity_mt` are Decimal-as-string. `MTMObjectType` is "hedge_contract"
+// or "order".
 
 export interface MtmSnapshot {
-	items?: MtmEntry[];
-	entries?: MtmEntry[];
+	id: string;
+	correlation_id: string;
+	created_at: string;
+	as_of_date: string;
+	object_id: string;
+	object_type: 'hedge_contract' | 'order';
+	mtm_value: string;
+	entry_price: string;
+	price_d1: string;
+	quantity_mt: string;
+	inputs_hash?: string | null;
+	price_settlement_date?: string | null;
+	price_source?: string | null;
+	price_symbol?: string | null;
 }
 
 // ─── Analytics: What-If ─────────────────────────────────────────────────

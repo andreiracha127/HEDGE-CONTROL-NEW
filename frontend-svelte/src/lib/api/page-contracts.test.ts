@@ -77,6 +77,18 @@ describe('MTM snapshot page', () => {
 		expect(source).toMatch(/viewState\s*=\s*'missing-param'/);
 		expect(source).toMatch(/paramsReady\(\)/);
 	});
+
+	it('renders scalar MTMSnapshotResponse fields (mtm_value, entry_price, price_d1, quantity_mt)', () => {
+		// /mtm/snapshots returns a single scalar snapshot, not a collection.
+		// The page must read scalar fields and must not depend on the old
+		// items/entries shape that produced empty charts on valid lookups.
+		expect(source).toContain('mtmData.mtm_value');
+		expect(source).toContain('mtmData.entry_price');
+		expect(source).toContain('mtmData.price_d1');
+		expect(source).toContain('mtmData.quantity_mt');
+		expect(source).not.toMatch(/mtmData[?.]*\.items/);
+		expect(source).not.toMatch(/mtmData[?.]*\.entries/);
+	});
 });
 
 describe('P&L snapshot page', () => {
@@ -95,6 +107,20 @@ describe('P&L snapshot page', () => {
 		expect(source).not.toContain('/pl/snapshots/latest');
 		expect(source).toMatch(/viewState\s*=\s*'missing-param'/);
 		expect(source).toMatch(/paramsReady\(\)/);
+	});
+
+	it('renders scalar PLSnapshotResponse fields (realized_pl, unrealized_mtm)', () => {
+		// /pl/snapshots returns a single scalar snapshot. The page must
+		// read realized_pl / unrealized_mtm directly and must not depend
+		// on the obsolete items/entries/total_* shape (Codex P2 catch).
+		expect(source).toContain('pnlData.realized_pl');
+		expect(source).toContain('pnlData.unrealized_mtm');
+		expect(source).not.toMatch(/pnlData[?.]*\.items/);
+		expect(source).not.toMatch(/pnlData[?.]*\.entries/);
+		expect(source).not.toContain('total_realized');
+		expect(source).not.toContain('total_unrealized');
+		expect(source).not.toContain('realized_total');
+		expect(source).not.toContain('unrealized_total');
 	});
 });
 

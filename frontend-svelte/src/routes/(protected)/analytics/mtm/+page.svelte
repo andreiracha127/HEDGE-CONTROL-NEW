@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
+	import { formatNumber, formatDate, formatQuantityMT, formatPrice } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import { mtmSnapshotsPath } from '$lib/api/paths';
 	import { describeApiError } from '$lib/api/errors';
-	import EChart from '$lib/components/chart/EChart.svelte';
 	import type { MtmSnapshot } from '$lib/api/types/entities';
 
 	type ViewState = 'idle' | 'missing-param' | 'loading' | 'ready' | 'error' | 'malformed';
@@ -13,8 +13,10 @@
 	let viewState = $state<ViewState>('idle');
 	let viewError = $state<string>('');
 
-	// Operator-supplied parameters. `/mtm/snapshots` is a singleton lookup,
-	// not a collection; no request fires until all three are provided.
+	// `/mtm/snapshots` returns a single scalar `MTMSnapshotResponse`
+	// (mtm_value, entry_price, price_d1, quantity_mt — all Decimal-as-string,
+	// see schema.d.ts:2672). No request fires until all three required
+	// singleton params are supplied.
 	let objectType = $state<string>('hedge_contract');
 	let objectId = $state<string>('');
 	let asOfDate = $state<string>('');
@@ -78,29 +80,17 @@
 
 	onDestroy(() => { abortController?.abort(); });
 
-	let chartOptions = $derived.by(() => {
-		if (!mtmData?.items && !mtmData?.entries) return {};
-		const entries = mtmData.items ?? mtmData.entries ?? [];
-		return {
-			tooltip: { trigger: 'axis' as const },
-			xAxis: {
-				type: 'category' as const,
-				data: entries.map((e: any) => e.date ?? e.snapshot_date ?? e.label ?? ''),
-			},
-			yAxis: { type: 'value' as const },
-			series: [
-				{
-					name: 'MTM',
-					type: 'line' as const,
-					data: entries.map((e: any) => e.mtm_value ?? e.value ?? 0),
-					smooth: true,
-					areaStyle: { opacity: 0.1 },
-					itemStyle: { color: '#3b82f6' },
-				},
-			],
-			dataZoom: [{ type: 'inside' as const }],
-		};
-	});
+	// `mtm_value` etc. are Decimal-as-string; the format.ts helpers preserve
+	// precision when given a string. Parse only for sign-based colour logic
+	// (positive vs negative MTM); the displayed value goes through the
+	// Decimal-aware formatter.
+	function signOf(value: string | null | undefined): number {
+		if (value == null || value === '') return Number.NaN;
+		const n = Number(value);
+		return Number.isFinite(n) ? n : Number.NaN;
+	}
+
+	const mtmValueSign = $derived(mtmData ? signOf(mtmData.mtm_value) : Number.NaN);
 </script>
 
 <div class="p-6">
@@ -157,7 +147,53 @@
 				Erro ao carregar MTM: {viewError}
 			</div>
 		{:else if mtmData}
-			<EChart options={chartOptions} style="width:100%;height:450px" />
+			<!--
+				/mtm/snapshots returns a single scalar snapshot (see
+				MTMSnapshotResponse). Render the scalar fields directly —
+				there is no entries[] collection to chart.
+			-->
+			<div class="grid grid-cols-4 gap-4">
+				<div class="rounded border border-surface-800 bg-surface-900 p-3">
+					<div class="text-xs text-surface-500">MTM Value</div>
+					<div
+						class="text-lg font-semibold tabular-nums {Number.isFinite(mtmValueSign) && mtmValueSign >= 0 ? 'text-success' : 'text-danger'}"
+						data-testid="mtm-value"
+					>
+						{formatNumber(mtmData.mtm_value)}
+					</div>
+				</div>
+				<div class="rounded border border-surface-800 bg-surface-900 p-3">
+					<div class="text-xs text-surface-500">Entry Price</div>
+					<div class="text-lg font-semibold tabular-nums text-surface-200">
+						{formatPrice(mtmData.entry_price)}
+					</div>
+				</div>
+				<div class="rounded border border-surface-800 bg-surface-900 p-3">
+					<div class="text-xs text-surface-500">Price D-1</div>
+					<div class="text-lg font-semibold tabular-nums text-surface-200">
+						{formatPrice(mtmData.price_d1)}
+					</div>
+				</div>
+				<div class="rounded border border-surface-800 bg-surface-900 p-3">
+					<div class="text-xs text-surface-500">Quantidade (MT)</div>
+					<div class="text-lg font-semibold tabular-nums text-surface-200">
+						{formatQuantityMT(mtmData.quantity_mt)}
+					</div>
+				</div>
+			</div>
+
+			<div class="mt-4 rounded border border-surface-800 bg-surface-900 p-3 text-sm space-y-1">
+				<div><span class="text-surface-500">As of:</span> <span class="text-surface-200">{formatDate(mtmData.as_of_date)}</span></div>
+				<div><span class="text-surface-500">Object:</span> <span class="text-surface-200">{mtmData.object_type} / {mtmData.object_id}</span></div>
+				{#if mtmData.price_symbol}
+					<div><span class="text-surface-500">Price source:</span> <span class="text-surface-200">{mtmData.price_source ?? '—'} / {mtmData.price_symbol}</span></div>
+				{/if}
+				{#if mtmData.price_settlement_date}
+					<div><span class="text-surface-500">Settlement date:</span> <span class="text-surface-200">{formatDate(mtmData.price_settlement_date)}</span></div>
+				{/if}
+				<div><span class="text-surface-500">Correlation:</span> <span class="font-mono text-xs text-surface-400">{mtmData.correlation_id}</span></div>
+				<div><span class="text-surface-500">Created:</span> <span class="text-surface-400">{formatDate(mtmData.created_at)}</span></div>
+			</div>
 		{:else}
 			<div class="text-surface-500">Nenhum dado de MTM disponível</div>
 		{/if}
