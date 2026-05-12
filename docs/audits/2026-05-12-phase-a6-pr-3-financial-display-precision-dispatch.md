@@ -144,6 +144,9 @@ Minimum coverage:
 - true zero realized/unrealized/MTM values render as zero;
 - RFQ quantity accepts `123.456` MT and submits `"123.456"` or another
   explicitly safe representation;
+- RFQ quantity with four or more decimal places, such as `123.4567`, is either
+  rejected with a visible error or normalized to the documented product
+  precision before submission; the PR body must state the chosen behavior;
 - RFQ preview and create use identical quantity precision behavior.
 
 ## 7. Required Verification

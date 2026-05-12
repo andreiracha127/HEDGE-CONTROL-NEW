@@ -160,6 +160,11 @@ rg -n "href: '/orders'|href: '/audit'|/orders|/audit/events|manual-token|JWT|VIT
 git diff --check
 ```
 
+Confirm that the backend `/audit/events` and
+`/audit/events/{event_id}/verify` endpoints enforce authenticated role
+authorization for the intended auditor/risk-manager audience. Do not treat
+frontend navigation visibility as the security boundary.
+
 If new Playwright tests are added, run:
 
 ```bash
