@@ -130,12 +130,21 @@ actor derivation as the documented cross-phase deferral.
 Parse each response once:
 
 ```ts
-const quoteBody = quotesRes.ok ? await quotesRes.json() : [];
+if (!quotesRes.ok) {
+  const errorBody = await quotesRes.json().catch(() => null);
+  quoteError =
+    typeof errorBody?.detail === 'string'
+      ? errorBody.detail
+      : 'Failed to load RFQ quotes';
+  return;
+}
+const quoteBody = await quotesRes.json();
 quotes = Array.isArray(quoteBody) ? quoteBody : (quoteBody.items ?? []);
 ```
 
 Apply the same pattern to state events. Handle non-2xx with explicit error
-state; do not silently erase quotes or timeline evidence.
+state; do not assign `[]` on backend failure and do not replace existing quote
+or timeline evidence unless a successful response has been parsed.
 
 ## 5. Acceptance Criteria
 
@@ -149,6 +158,8 @@ state; do not silently erase quotes or timeline evidence.
   auth; missing identity hard-fails visibly.
 - RFQ quote and state-event response bodies are parsed once.
 - RFQ detail works with array responses from `/quotes` and `/state-events`.
+- RFQ detail preserves existing quotes and state events on non-2xx evidence
+  reload failure while surfacing the backend error.
 - `docs/governance.md` has no diff.
 
 ## 6. Required Tests
@@ -166,6 +177,8 @@ Minimum coverage:
   `user_id`;
 - missing `sub` blocks RFQ mutation with an explicit auth error;
 - RFQ detail loads quotes and state events when backend returns arrays;
+- RFQ detail non-2xx quote/state-event reload shows an error and does not clear
+  existing quotes or timeline entries;
 - response bodies are not parsed twice in the tested RFQ detail flow.
 
 ## 7. Required Verification
