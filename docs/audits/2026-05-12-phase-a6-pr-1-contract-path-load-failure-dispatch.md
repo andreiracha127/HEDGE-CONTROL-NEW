@@ -1,0 +1,342 @@
+# Phase A6 Remediation Dispatch - PR-A6-1 Contract Path and Load-Failure Discipline
+
+**Phase:** A6 - Frontend Svelte institutional control surface
+**Wave:** PR-A6-1
+**Authoring date:** 2026-05-12
+**Repository:** `D:/Projetos/Hedge-Control-New`
+**Base branch:** `main`
+**Required branch:** `audit-a6/contract-path-load-failure-discipline`
+**Source verdict:** `docs/audits/2026-05-12-phase-a6-jury-verdict.md`
+
+## 1. Objective
+
+Close:
+
+- `J-A6-01` - Align frontend API paths with the generated OpenAPI contract.
+- `J-A6-05` - Surface non-2xx mutation failures instead of silently clearing
+  in-flight state.
+- `J-A6-07` - Enforce typed contract paths or static route drift guards.
+- `J-A6-02` mandatory guard slice - Remove or hard-disable generic settlement
+  status transitions exposed by contract path repair.
+
+This wave restores basic route/API connectivity and prevents failed backend
+responses from becoming silent frontend fallbacks. It is intentionally limited
+to broken endpoint paths, explicit error surfacing, drift guards for the
+repaired call sites, and the settlement guard that becomes reachable once the
+contract detail/status paths are fixed.
+
+## 2. Non-Negotiable Constraints
+
+- Do not edit `docs/governance.md`.
+- Do not implement PR-A6-2 RFQ actor/quote parsing fixes in this wave.
+- Do not repair `/contracts/hedge/{contract_id}/status` while leaving
+  `settled` or `partially_settled` reachable through the generic contract
+  status patch. The minimal settlement guard is in scope for this wave because
+  path repair exposes that failure mode.
+- Do not add backend endpoints merely to match stale frontend strings.
+- Do not normalize failed loads into empty arrays, zero totals, or "no data"
+  states when the backend returned non-2xx.
+- Do not broadly migrate the whole frontend to the typed client. This wave uses
+  a focused static drift guard for the repaired route literals.
+- Do not regenerate schemas blindly. If schema drift is discovered, document it
+  and make the smallest required schema/update change in this wave only if it is
+  necessary to type or guard the repaired paths.
+
+Hard-fail remains the institutional rule: when the backend rejects or cannot
+serve an institutional route, the operator must see an explicit failure.
+
+## 3. Findings and Evidence
+
+### J-A6-01 - Stale API paths
+
+The jury accepted these stale paths:
+
+- `frontend-svelte/src/routes/(protected)/cashflow/+page.svelte:33` calls
+  `/cashflow/analytics${qs}`.
+- `frontend-svelte/src/routes/(protected)/cashflow/+page.svelte:34` calls
+  `/cashflow/projections${qs}`.
+- `frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:15`
+  calls `/mtm/snapshots/latest`.
+- `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:16`
+  calls `/pl/snapshot/latest`.
+- `frontend-svelte/src/routes/(protected)/contracts/+page.svelte:19` calls
+  `/contracts?...`.
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:55`
+  calls `/contracts/${contractId}`.
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:70`
+  calls `/contracts/${contractId}/status`.
+
+Canonical paths from `docs/api/openapi_v1.json` and
+`frontend-svelte/src/lib/api/schema.d.ts` include:
+
+- `/cashflow/analytic`
+- `/cashflow/projection`
+- `backend/app/api/routes/cashflow.py:31` requires `as_of_date` for
+  `/cashflow/analytic`.
+- `backend/app/api/routes/cashflow.py:69` requires `as_of_date` for
+  `/cashflow/projection`.
+- `backend/app/api/routes/cashflow_ledger.py:77-79` defines
+  `/cashflow/ledger` with required `source_event_id`, not a date range.
+- `/contracts/hedge`
+- `/contracts/hedge/{contract_id}`
+- `/contracts/hedge/{contract_id}/status`
+- `/mtm/snapshots`
+- `/pl/snapshots`
+
+### J-A6-05 - Silent non-2xx mutation failures
+
+The jury accepted that these mutation handlers suppress hard-fail detail:
+
+- `frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte:142`
+  `rejectRfq()`.
+- `frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte:160`
+  `cancelRfq()`.
+- `frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte:175`
+  `refreshRfq()`.
+- `frontend-svelte/src/routes/(protected)/market-data/+page.svelte:35`
+  market-data ingest.
+
+### J-A6-02 guard slice - Settlement transitions exposed by path repair
+
+The jury accepted that contract path repair makes these status-only settlement
+controls reachable:
+
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:17`
+  allows `active` to transition to `settled`.
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:18`
+  allows `active` to transition to `partially_settled`.
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:35`
+  labels `settled` as `Liquidar`.
+- `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:70`
+  sends `{ status: targetStatus }` through the generic status endpoint.
+- `docs/api/openapi_v1.json:7472` defines the canonical ledger settlement
+  endpoint `/cashflow/contracts/{contract_id}/settle`.
+- `docs/api/openapi_v1.json:3050` shows `HedgeContractSettlementCreate`
+  requires `source_event_id`, `cashflow_date`, and `legs`.
+
+Repairing the contract status URL without removing or replacing those
+settlement transitions creates an intermediate state where the UI can bypass
+ledger settlement evidence.
+
+### J-A6-07 - Call-site drift guard gap
+
+The jury accepted that typed generated schema exists but routed pages use
+`apiFetch(path: string)`, so stale strings compile:
+
+- `frontend-svelte/src/lib/api/client.ts:1`
+- `frontend-svelte/src/lib/api/fetch.ts:9`
+- `frontend-svelte/package.json:16`
+- `frontend-svelte/package.json:17`
+- `.github/workflows/ci.yml:122`
+
+## 4. Required Implementation Boundary
+
+### 4.1 Endpoint Corrections (J-A6-01)
+
+Correct the route files identified above to use current contract paths.
+
+Minimum acceptable behavior:
+
+- Cashflow page calls `/cashflow/analytic` and `/cashflow/projection` with a
+  valid `as_of_date` query parameter. If the page cannot derive `as_of_date`,
+  render a missing-parameter state before making a request.
+- Cashflow ledger calls must use the documented `/cashflow/ledger` contract
+  with `source_event_id`. Do not reuse date-range query parameters for ledger,
+  and do not call ledger at all if the page lacks a source event id.
+- Contracts list/detail/status calls use `/contracts/hedge...`.
+- Critical coupling: do not merge the
+  `/contracts/hedge/{contract_id}/status` URL repair unless the settlement
+  guard in §4.2 is implemented in the same PR. URL repair without that guard
+  creates a reachable status-only settlement bypass.
+- MTM and P&L pages call the documented singleton snapshot endpoints with the
+  required query parameters. Do not treat `/mtm/snapshots` or `/pl/snapshots`
+  as collections and do not select a synthetic latest snapshot in the
+  frontend:
+  - MTM `GET /mtm/snapshots` requires query params `object_type` (enum/string),
+    `object_id` (uuid), and `as_of_date` (date);
+  - P&L `GET /pl/snapshots` requires query params `entity_type` (string),
+    `entity_id` (uuid), `period_start` (date), and `period_end` (date).
+- Note: MTM uses `object_type`/`object_id`; P&L uses
+  `entity_type`/`entity_id`. Do not conflate these names or translate one
+  parameter shape into the other.
+- Example MTM query shape:
+  `/mtm/snapshots?object_type=hedge_contract&object_id={contract_uuid}&as_of_date=2026-05-12`.
+- Example P&L query shape:
+  `/pl/snapshots?entity_type=hedge_contract&entity_id={contract_uuid}&period_start=2026-05-01&period_end=2026-05-31`.
+- If the current page has no reliable source for those required parameters,
+  call the established local error surface, such as
+  `notifications.error("Missing parameter: <name>")`, and render a locked or
+  disabled missing-parameter/configuration state instead of issuing a 422
+  request or inventing defaults. Use the existing notification store in
+  `frontend-svelte/src/lib/stores/notifications.svelte.ts`.
+- Every repaired load path distinguishes:
+  - loading;
+  - successful empty data;
+  - backend non-2xx failure;
+  - malformed response.
+
+### 4.2 Settlement Guard (J-A6-02 guard slice)
+
+When contract detail/status paths are repaired, remove or hard-disable generic
+status transitions to `settled` and `partially_settled`.
+
+Minimum acceptable behavior:
+
+- no `Liquidar` or `Liquidar Parcial` button may call
+  `/contracts/hedge/{contract_id}/status`;
+- the settlement controls in
+  `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:17-18`
+  must be removed or visibly disabled;
+- if settlement remains visible, it must be non-mutating/disabled and must not
+  submit a request;
+- do not fabricate `source_event_id`, `cashflow_date`, or `legs`.
+
+Removal or hard-disabling of settlement status buttons is mandatory. A full
+settlement form, ledger payload assembly, and ledger API submission are out of
+scope for this wave.
+
+If operator-facing settlement is needed in a future wave, it must be a
+dedicated ledger settlement form that gathers `source_event_id`,
+`cashflow_date`, and `legs` from the operator or a verified upstream source. Do
+not synthesize those fields from contract state in PR-A6-1.
+
+### 4.3 Error Surfacing (J-A6-05)
+
+For the RFQ and market-data mutation handlers in `J-A6-05`:
+
+- parse backend error bodies on non-2xx;
+- extract the first non-empty value from `detail`, `error`, or `message`; if
+  `detail` is an array or object, render a concise serialized validation
+  summary; if no structured field exists, include the HTTP status code;
+- show `notifications.error(...)` or the established local error surface;
+- do not reset UI state in a way that implies success;
+- keep successful mutation reloads unchanged unless the current code races or
+  double-submits.
+
+### 4.4 Drift Guard (J-A6-07)
+
+Add one narrow guard for the paths fixed in this wave:
+
+- add a focused static test that fails when the repaired stale path literals
+  reappear under `frontend-svelte/src`.
+
+The guard must cover at least the seven stale paths listed in `J-A6-01`.
+The guard must fail closed on any match for those literals; it is not an
+advisory grep.
+Typed-client migration remains out of scope for this wave unless it is already
+needed for one of the repaired call sites and does not broaden beyond that
+file.
+
+## 5. Acceptance Criteria
+
+### 5.1 J-A6-01 Endpoint Corrections
+
+- No routed page in this wave calls `/cashflow/analytics`,
+  `/cashflow/projections`, `/contracts`, `/contracts/{id}`,
+  `/contracts/{id}/status`, `/mtm/snapshots/latest`, or `/pl/snapshot/latest`.
+- Cashflow analytic/projection requests include `as_of_date`, or the UI shows
+  a missing-parameter state without submitting a request.
+- Cashflow ledger requests include `source_event_id`, or the UI shows a
+  missing-parameter state without submitting a request.
+- Each repaired page has an explicit non-2xx error state.
+- MTM/P&L snapshot calls include the documented singleton query parameters or
+  render an explicit missing-parameter state before making a request.
+- Missing snapshot parameters are surfaced through an operator-visible error
+  and no backend request is submitted.
+
+### 5.2 J-A6-05 Error Surfacing
+
+- RFQ reject/cancel/refresh and market-data ingest show backend failure detail
+  instead of silently clearing in-flight state.
+- Error handling extracts `detail`, `error`, or `message` where available and
+  falls back to HTTP status if the backend body is unstructured.
+
+### 5.3 J-A6-07 Drift Guard
+
+- The focused static drift guard prevents these exact stale paths from passing
+  tests again.
+
+### 5.4 J-A6-02 Settlement Guard
+
+- Contract detail does not expose generic status-patch actions for `settled`
+  or `partially_settled`.
+
+### 5.5 General
+
+- The implementation does not create backend routes to satisfy stale frontend
+  calls.
+- `docs/governance.md` has no diff.
+
+## 6. Required Tests
+
+Add or update focused frontend tests.
+
+Minimum coverage:
+
+- contract list/detail/status calls use `/contracts/hedge...`;
+- contract detail does not call `/contracts/hedge/{contract_id}/status` for
+  `settled` or `partially_settled`;
+- cashflow analytic/projection calls use singular `/cashflow/analytic` and
+  `/cashflow/projection` with `as_of_date`;
+- cashflow ledger calls use `/cashflow/ledger` with `source_event_id` and do
+  not use date-range query parameters;
+- MTM/P&L snapshot pages do not call nonexistent `/latest` paths and do not
+  call `/mtm/snapshots` or `/pl/snapshots` without the required singleton query
+  parameters;
+- one non-2xx RFQ mutation response produces an operator-visible error;
+- one non-2xx market-data ingest response produces an operator-visible error;
+- error tests cover at least one structured `detail` response and one fallback
+  `message` or `error` response;
+- focused static drift guard fails if the stale path literals return.
+
+If Playwright route interception is the existing local pattern, use it. If unit
+tests are more stable for the path checks, prefer narrow unit tests and reserve
+E2E for critical route smoke.
+
+## 7. Required Verification
+
+Run, at minimum:
+
+```bash
+cd frontend-svelte
+npm run check
+npm test
+npm run build
+```
+
+Also run and report:
+
+```bash
+rg -n "/cashflow/analytics|/cashflow/projections|/contracts\\?|/contracts/\\$\\{contractId\\}|/contracts/\\$\\{contractId\\}/status|/mtm/snapshots/latest|/pl/snapshot/latest" frontend-svelte/src
+rg -n "active: \\['partially_settled'|partially_settled: \\['settled'|label: 'Liquidar'|transitionStatus\\(.*settled" "frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte"
+rg -n "apiFetch\\(" frontend-svelte/src/routes
+git diff --check
+```
+
+If `npm run api:types:check` is run on Windows and fails because
+`/tmp/schema-check.d.ts` is not a valid local path, report that separately and
+use CI `openapi_diff` plus the drift guard tests for this wave.
+
+## 8. Out of Scope
+
+- Full settlement lifecycle redesign. The minimal guard that prevents generic
+  status-patch settlement is in scope for this wave because path repair exposes
+  it.
+- RFQ actor identity and quote/event parsing. That is PR-A6-2.
+- P&L/MTM zero-default removal and numeric precision fixes. That is PR-A6-3.
+- Orders/audit pages and login gating. That is PR-A6-4.
+- Full typed-client migration across the entire frontend.
+
+## 9. PR Requirements
+
+- Use branch `audit-a6/contract-path-load-failure-discipline`.
+- Push normally; do not use `--no-verify`.
+- Open a PR against `main`.
+- Include in the PR body:
+  - findings closed;
+  - files changed;
+  - tests run and results;
+  - stale-path grep result;
+  - settlement guard decision;
+  - hook artifact path;
+  - statement that `docs/governance.md` has no diff.
