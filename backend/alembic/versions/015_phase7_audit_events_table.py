@@ -17,24 +17,35 @@ depends_on = None
 
 
 def upgrade():
-    op.create_table(
-        "audit_events",
-        sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
-        sa.Column("timestamp_utc", sa.TIMESTAMP(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
-        sa.Column("entity_type", sa.Text, nullable=False),
-        sa.Column("entity_id", sa.Uuid(), nullable=False),
-        sa.Column("event_type", sa.Text, nullable=False),
-        sa.Column("payload", sa.JSON, nullable=False),
-        sa.Column("checksum", sa.String(length=64), nullable=False),
-        sa.Column("signature", sa.LargeBinary, nullable=True),
-    )
-
+    # Idempotent (Codex P2 on PR #61): because downgrade() preserves
+    # audit_events and its append-only triggers, an operator who runs
+    # `alembic downgrade <pre-015>` followed by `alembic upgrade head`
+    # arrives here with the table and triggers already present. A bare
+    # CREATE TABLE / CREATE TRIGGER would fail on duplicate objects and
+    # force the operator to drop exactly the history the downgrade was
+    # trying to preserve. The branches below detect existing objects and
+    # skip their creation so the upgrade path tolerates a preserved table.
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if "audit_events" not in inspector.get_table_names():
+        op.create_table(
+            "audit_events",
+            sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
+            sa.Column("timestamp_utc", sa.TIMESTAMP(timezone=True), server_default=sa.text("CURRENT_TIMESTAMP"), nullable=False),
+            sa.Column("entity_type", sa.Text, nullable=False),
+            sa.Column("entity_id", sa.Uuid(), nullable=False),
+            sa.Column("event_type", sa.Text, nullable=False),
+            sa.Column("payload", sa.JSON, nullable=False),
+            sa.Column("checksum", sa.String(length=64), nullable=False),
+            sa.Column("signature", sa.LargeBinary, nullable=True),
+        )
+
     dialect = bind.dialect.name
     if dialect == "sqlite":
+        # CREATE TRIGGER IF NOT EXISTS is the idiomatic SQLite idempotent form.
         op.execute(
             """
-            CREATE TRIGGER audit_events_no_update
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_update
             BEFORE UPDATE ON audit_events
             BEGIN
                 SELECT RAISE(FAIL, 'audit_events is append-only');
@@ -43,7 +54,7 @@ def upgrade():
         )
         op.execute(
             """
-            CREATE TRIGGER audit_events_no_delete
+            CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
             BEFORE DELETE ON audit_events
             BEGIN
                 SELECT RAISE(FAIL, 'audit_events is append-only');
@@ -51,6 +62,10 @@ def upgrade():
             """
         )
     else:
+        # Postgres has no CREATE TRIGGER IF NOT EXISTS; CREATE OR REPLACE
+        # FUNCTION is already idempotent, and a preceding DROP TRIGGER IF
+        # EXISTS makes the trigger creation re-runnable without dropping
+        # any rows (DROP TRIGGER does not touch table contents).
         op.execute(
             """
             CREATE OR REPLACE FUNCTION audit_events_no_update_delete()
@@ -60,6 +75,9 @@ def upgrade():
             END;
             $$ LANGUAGE plpgsql;
             """
+        )
+        op.execute(
+            "DROP TRIGGER IF EXISTS audit_events_no_update_delete ON audit_events"
         )
         op.execute(
             """

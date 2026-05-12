@@ -1,4 +1,5 @@
-"""J-A5-04 — audit_events migration downgrade is non-destructive.
+"""J-A5-04 — audit_events migration downgrade is non-destructive
+and the upgrade path tolerates the preserved objects.
 
 The Phase A5 jury verdict found that revision
 ``015_phase7_audit_events_table.py`` destroyed append-only audit history
@@ -105,3 +106,90 @@ def test_downgrade_preserves_append_only_triggers() -> None:
         assert forbidden not in body_lower, (
             f"downgrade() must not drop append-only enforcement object: {forbidden!r}"
         )
+
+
+# ── Idempotent upgrade (Codex P2 on PR #61) ───────────────────────────────
+
+
+def _load_migration_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "phase7_audit_events_migration", MIGRATION_PATH
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_upgrade_then_downgrade_then_upgrade_is_idempotent(tmp_path) -> None:
+    """Operator flow Codex flagged: ``alembic upgrade`` past 015, then
+    ``alembic downgrade <pre-015>`` (no-op), then ``alembic upgrade head``
+    again. With a bare CREATE TABLE/CREATE TRIGGER, the second upgrade
+    would fail on duplicate objects and force the operator to drop the
+    audit history the downgrade preserved. The upgrade body must
+    therefore tolerate the preserved table and triggers."""
+    import sqlalchemy as sa
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    db_path = tmp_path / "audit.sqlite"
+    engine = sa.create_engine(f"sqlite:///{db_path}", future=True)
+    migration = _load_migration_module()
+
+    def _run(callable_name: str) -> None:
+        with engine.begin() as connection:
+            ctx = MigrationContext.configure(connection)
+            ops = Operations(ctx)
+            # The migration uses the module-level ``op`` proxy; rebind it
+            # to our ad-hoc Operations so we don't need a full alembic.ini.
+            original_op = migration.op
+            migration.op = ops
+            try:
+                getattr(migration, callable_name)()
+            finally:
+                migration.op = original_op
+
+    # 1) Fresh upgrade — creates table + triggers.
+    _run("upgrade")
+    inspector = sa.inspect(engine)
+    assert "audit_events" in inspector.get_table_names()
+
+    # Seed a row so we can verify it survives the round-trip.
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "INSERT INTO audit_events (id, entity_type, entity_id, event_type, "
+            "payload, checksum) VALUES ('00000000-0000-0000-0000-000000000001', "
+            "'order', '00000000-0000-0000-0000-000000000002', 'created', "
+            "'{}', 'deadbeef')"
+        )
+
+    # 2) Downgrade — must preserve table + row + triggers (no-op policy).
+    _run("downgrade")
+    inspector = sa.inspect(engine)
+    assert "audit_events" in inspector.get_table_names()
+    with engine.connect() as connection:
+        count = connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM audit_events"
+        ).scalar_one()
+    assert count == 1
+
+    # 3) Re-upgrade — must NOT raise on duplicate table/trigger.
+    _run("upgrade")
+    inspector = sa.inspect(engine)
+    assert "audit_events" in inspector.get_table_names()
+    with engine.connect() as connection:
+        count = connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM audit_events"
+        ).scalar_one()
+    assert count == 1, "re-upgrade must not destroy preserved audit history"
+
+    # 4) Append-only trigger must still fire after the round-trip.
+    with engine.begin() as connection:
+        with pytest.raises(Exception) as excinfo:
+            connection.exec_driver_sql(
+                "DELETE FROM audit_events WHERE id = "
+                "'00000000-0000-0000-0000-000000000001'"
+            )
+        assert "append-only" in str(excinfo.value).lower()
