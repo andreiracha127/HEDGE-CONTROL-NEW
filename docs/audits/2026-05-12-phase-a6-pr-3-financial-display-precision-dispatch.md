@@ -82,6 +82,7 @@ Accepted evidence:
 - `frontend-svelte/src/lib/api/schema.d.ts:3291` defines
   `RFQCreate.quantity_mt: number | string`.
 - `backend/app/schemas/_types.py:13` defines `MTQuantity` as a Decimal.
+- `backend/app/core/precision.py:7` defines `MT_NUMERIC_SCALE = 3`.
 - `frontend-svelte/src/lib/utils/format.ts:74-76` exports `formatQuantityMT`,
   which treats MT quantities as
   three-decimal precision.
@@ -106,9 +107,17 @@ For P&L and MTM analytics:
   - `MTMSnapshotResponse.as_of_date: string` (required date);
   - `MTMSnapshotResponse.object_id: string` (required);
   - `MTMSnapshotResponse.object_type: MTMObjectType` (required);
-- treat absent or `null` values for any required field above as malformed
-  response data. For P&L, missing `period_start` or `period_end` must render a
-  date-boundary error; do not substitute the current date or an empty label.
+- validate the complete required response shape:
+  - `PLSnapshotResponse`: `id`, `entity_type`, `entity_id`, `period_start`,
+    `period_end`, `realized_pl`, `unrealized_mtm`, `created_at`,
+    `correlation_id`;
+  - `MTMSnapshotResponse`: `id`, `object_type`, `object_id`, `as_of_date`,
+    `quantity_mt`, `entry_price`, `price_d1`, `mtm_value`, `created_at`,
+    `correlation_id`;
+- treat absent values, or `null` values for non-nullable required fields above,
+  as malformed response data. For P&L, missing `period_start` or `period_end`
+  must render a date-boundary error; do not substitute the current date or an
+  empty label.
 - remove alternate-field chains such as `realized_pnl ?? realized` and
   `mtm_value ?? value` unless the generated schema explicitly documents both
   names;
@@ -138,7 +147,8 @@ For RFQ quantity:
   different precision;
 - support three-decimal MT entry end to end;
 - reject quantities with more than three decimal places at the frontend with a
-  visible validation error before submission;
+  visible validation error before preview generation, submit-button enablement,
+  and submission payload construction;
 - preserve submitted quantity as a decimal string at the form boundary;
 - update preview and submit payloads consistently.
 
@@ -146,6 +156,9 @@ For RFQ quantity:
 
 - P&L/MTM required values missing from the response produce explicit error
   states, not zeros.
+- All fields listed in the required response-shape enumeration are present and
+  non-null, except `correlation_id` may be `null` only if the generated schema
+  permits it; missing any non-null required field renders an error state.
 - True backend zero values still display as zero.
 - Westmetall settlement price strings preserve six-decimal display precision.
 - RFQ quantity input accepts and submits valid three-decimal MT quantities.
@@ -174,8 +187,8 @@ Minimum coverage:
   string;
 - RFQ quantity input renders `step="0.001"` unless the PR documents and tests a
   stricter product rule;
-- RFQ quantity with four or more decimal places, such as `123.4567`, is either
-  rejected with a visible error before submission;
+- RFQ quantity with four or more decimal places, such as `123.4567`, is
+  rejected with a visible error before preview generation or submission;
 - RFQ preview and create use identical quantity precision behavior.
 
 ## 7. Required Verification
