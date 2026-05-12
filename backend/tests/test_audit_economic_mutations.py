@@ -531,6 +531,38 @@ class TestA5RouteWorkerCoverage:
             == 0
         )
 
+    def test_finance_pipeline_pl_snapshot_rolls_back_when_audit_fails(
+        self, client, session, monkeypatch
+    ) -> None:
+        from app.schemas.pl import PLResultResponse
+
+        _insert_price(session, settlement_date=date(2026, 5, 12), price_usd="110")
+        _create_hedge_contract_via_api(client)
+
+        def fake_compute_pl(*args, **kwargs):
+            _ = args, kwargs
+            return PLResultResponse(realized_pl=Decimal("0"), unrealized_mtm=Decimal("1"))
+
+        monkeypatch.setattr(
+            "app.services.pl_snapshot_service.compute_pl",
+            fake_compute_pl,
+        )
+
+        with _without_signing_key():
+            failed = client.post(
+                "/finance/pipeline/run", json={"run_date": "2026-05-12"}
+            )
+
+        assert failed.status_code >= 500
+        session.expire_all()
+        assert (
+            session.query(FinancePipelineRun)
+            .filter(FinancePipelineRun.run_date == date(2026, 5, 12))
+            .count()
+            == 0
+        )
+        assert session.query(PLSnapshot).count() == 0
+
     def test_westmetall_single_and_bulk_emit_signed_audit_metadata(
         self, client, session, monkeypatch
     ) -> None:

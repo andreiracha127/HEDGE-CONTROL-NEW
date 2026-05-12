@@ -198,6 +198,7 @@ class FinancePipelineService:
                     entity_id=contract.id,
                     period_start=run_date,
                     period_end=run_date,
+                    commit=False,
                 )
                 processed += 1
             except Exception:  # noqa: BLE001
