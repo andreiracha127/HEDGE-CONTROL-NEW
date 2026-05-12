@@ -36,8 +36,8 @@ contract detail/status paths are fixed.
 - Do not add backend endpoints merely to match stale frontend strings.
 - Do not normalize failed loads into empty arrays, zero totals, or "no data"
   states when the backend returned non-2xx.
-- Do not broadly migrate the whole frontend to the typed client. Use typed
-  calls or static drift guards only for the call sites touched in this wave.
+- Do not broadly migrate the whole frontend to the typed client. This wave uses
+  a focused static drift guard for the repaired route literals.
 - Do not regenerate schemas blindly. If schema drift is discovered, document it
   and make the smallest required schema/update change in this wave only if it is
   necessary to type or guard the repaired paths.
@@ -160,19 +160,21 @@ Minimum acceptable behavior:
 
 - no `Liquidar` or `Liquidar Parcial` button may call
   `/contracts/hedge/{contract_id}/status`;
-- if settlement remains visible, it must be non-mutating or must call
-  `/cashflow/contracts/{contract_id}/settle` with the required ledger payload;
+- if settlement remains visible, it must be non-mutating/disabled;
 - do not fabricate `source_event_id`, `cashflow_date`, or `legs`.
 
-The default remediation for this wave is removal/disablement of settlement
-status buttons. A full settlement form remains out of scope unless the executor
-can provide the complete ledger payload and tests inside this PR.
+Removal or hard-disabling of settlement status buttons is mandatory. A full
+settlement form, ledger payload assembly, and ledger API submission are out of
+scope for this wave.
 
 ### Error Surfacing
 
 For the RFQ and market-data mutation handlers in `J-A6-05`:
 
 - parse backend error bodies on non-2xx;
+- extract the first non-empty value from `detail`, `error`, or `message`; if
+  `detail` is an array or object, render a concise serialized validation
+  summary; if no structured field exists, include the HTTP status code;
 - show `notifications.error(...)` or the established local error surface;
 - do not reset UI state in a way that implies success;
 - keep successful mutation reloads unchanged unless the current code races or
@@ -182,12 +184,13 @@ For the RFQ and market-data mutation handlers in `J-A6-05`:
 
 Add one narrow guard for the paths fixed in this wave:
 
-- preferred: migrate these repaired calls to `client.GET`, `client.POST`, and
-  `client.PATCH` from `frontend-svelte/src/lib/api/client.ts`; or
-- acceptable: add a focused static test that fails when the repaired stale path
-  literals reappear.
+- add a focused static test that fails when the repaired stale path literals
+  reappear under `frontend-svelte/src`.
 
 The guard must cover at least the seven stale paths listed in `J-A6-01`.
+Typed-client migration remains out of scope for this wave unless it is already
+needed for one of the repaired call sites and does not broaden beyond that
+file.
 
 ## 5. Acceptance Criteria
 
@@ -197,8 +200,8 @@ The guard must cover at least the seven stale paths listed in `J-A6-01`.
 - Each repaired page has an explicit non-2xx error state.
 - RFQ reject/cancel/refresh and market-data ingest show backend failure detail
   instead of silently clearing in-flight state.
-- Drift guard or typed calls prevent these exact stale paths from compiling or
-  passing tests again.
+- The focused static drift guard prevents these exact stale paths from passing
+  tests again.
 - Contract detail does not expose generic status-patch actions for `settled`
   or `partially_settled`.
 - MTM/P&L snapshot calls include the documented singleton query parameters or
@@ -222,7 +225,9 @@ Minimum coverage:
   parameters;
 - one non-2xx RFQ mutation response produces an operator-visible error;
 - one non-2xx market-data ingest response produces an operator-visible error;
-- static or typed-client guard fails if the stale path literals return.
+- error tests cover at least one structured `detail` response and one fallback
+  `message` or `error` response;
+- focused static drift guard fails if the stale path literals return.
 
 If Playwright route interception is the existing local pattern, use it. If unit
 tests are more stable for the path checks, prefer narrow unit tests and reserve
