@@ -82,7 +82,8 @@ Accepted evidence:
 - `frontend-svelte/src/lib/api/schema.d.ts:3291` allows
   `quantity_mt: number | string`.
 - `backend/app/schemas/_types.py:13` defines `MTQuantity` as a Decimal.
-- `frontend-svelte/src/lib/utils/format.ts:19` treats MT quantities as
+- `frontend-svelte/src/lib/utils/format.ts:74` exports `formatQuantityMT`,
+  which treats MT quantities as
   three-decimal precision.
 
 ## 4. Required Implementation Boundary
@@ -94,14 +95,14 @@ For P&L and MTM analytics:
 - replace `any` response parsing with typed or runtime-validated response
   objects;
 - use canonical fields from `frontend-svelte/src/lib/api/schema.d.ts`:
-  - `PLSnapshotResponse.realized_pl`;
-  - `PLSnapshotResponse.unrealized_mtm`;
-  - `PLSnapshotResponse.period_start`;
-  - `PLSnapshotResponse.period_end`;
-  - `MTMSnapshotResponse.mtm_value`;
-  - `MTMSnapshotResponse.as_of_date`;
-  - `MTMSnapshotResponse.object_id`;
-  - `MTMSnapshotResponse.object_type`;
+  - `PLSnapshotResponse.realized_pl: string` (required);
+  - `PLSnapshotResponse.unrealized_mtm: string` (required);
+  - `PLSnapshotResponse.period_start: string` (required date);
+  - `PLSnapshotResponse.period_end: string` (required date);
+  - `MTMSnapshotResponse.mtm_value: string` (required);
+  - `MTMSnapshotResponse.as_of_date: string` (required date);
+  - `MTMSnapshotResponse.object_id: string` (required);
+  - `MTMSnapshotResponse.object_type: MTMObjectType` (required);
 - remove alternate-field chains such as `realized_pnl ?? realized` and
   `mtm_value ?? value` unless the generated schema explicitly documents both
   names;
@@ -129,8 +130,9 @@ For RFQ quantity:
   from `step="0.01"` to `step="0.001"` unless a backend/product rule proves a
   different precision;
 - support three-decimal MT entry end to end;
-- preserve submitted quantity as a decimal string at the form boundary, or prove
-  the chosen representation cannot lose valid MT precision;
+- reject quantities with more than three decimal places at the frontend with a
+  visible validation error before submission;
+- preserve submitted quantity as a decimal string at the form boundary;
 - update preview and submit payloads consistently.
 
 ## 5. Acceptance Criteria
@@ -159,15 +161,14 @@ Minimum coverage:
 - P&L snapshot response includes valid `period_start` and `period_end`
   boundaries, verifies `period_start <= period_end`, and raises an error state
   if either boundary is missing;
-- MTM analytics rejects or errors on missing MTM required field;
+- MTM analytics rejects or errors on missing `mtm_value` or `as_of_date`;
 - true zero realized/unrealized/MTM values render as zero;
-- RFQ quantity accepts `123.456` MT and submits `"123.456"` or another
-  explicitly safe representation;
+- RFQ quantity accepts `123.456` MT and submits `"123.456"` as a decimal
+  string;
 - RFQ quantity input renders `step="0.001"` unless the PR documents and tests a
   stricter product rule;
 - RFQ quantity with four or more decimal places, such as `123.4567`, is either
-  rejected with a visible error or normalized to the documented product
-  precision before submission; the PR body must state the chosen behavior;
+  rejected with a visible error before submission;
 - RFQ preview and create use identical quantity precision behavior.
 
 ## 7. Required Verification
