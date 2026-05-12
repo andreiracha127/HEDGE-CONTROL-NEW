@@ -1005,8 +1005,17 @@ def test_worker_audit_missing_signing_key_rolls_back_auto_quote(
         assert session.query(AuditEvent).count() == 0
         durable = session.get(type(durable), durable_id)
         assert durable is not None
+        assert durable.processing_status == "failed"
+        assert durable.processing_completed_at is not None
+        assert durable.processing_result == {
+            "message_id": "wamid.worker-audit-fail",
+            "status": "auto_quote_finalize_failed",
+            "error": (
+                "Audit emission attempted without AUDIT_SIGNING_KEY configured. "
+                "Audit rows MUST be HMAC-signed; refusing to persist unsigned evidence."
+            ),
+        }
         assert durable.quote_id is None
-        assert durable.processing_result is None
 
 
 @patch("app.services.rfq_orchestrator.LLMAgent.parse_quote_message_with_trace")

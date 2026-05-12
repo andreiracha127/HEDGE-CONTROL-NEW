@@ -886,9 +886,44 @@ class RFQOrchestrator:
                 },
             )
             session.commit()
-        except Exception:
+        except Exception as exc:
             session.rollback()
+            RFQOrchestrator._mark_auto_quote_finalize_failed(session, msg, result, exc)
             raise
+
+    @staticmethod
+    def _mark_auto_quote_finalize_failed(
+        session: Session,
+        msg: WhatsAppInboundMessage,
+        result: dict,
+        exc: Exception,
+    ) -> None:
+        if msg.delivery_message_id is None:
+            return
+
+        try:
+            durable = session.get(InboundWebhookMessage, msg.delivery_message_id)
+            if durable is None:
+                return
+
+            durable.processing_status = "failed"
+            durable.processing_completed_at = now_utc()
+            durable.processing_result = {
+                "message_id": msg.message_id,
+                "status": "auto_quote_finalize_failed",
+                "error": str(exc),
+            }
+            durable.quote_id = None
+            session.commit()
+        except Exception as cleanup_exc:
+            session.rollback()
+            logger.exception(
+                "orchestrator_auto_quote_finalize_cleanup_failed",
+                message_id=msg.message_id,
+                delivery_message_id=str(msg.delivery_message_id),
+                attempted_result_status=result.get("status"),
+                error=str(cleanup_exc),
+            )
 
     @staticmethod
     def _process_single_message(
