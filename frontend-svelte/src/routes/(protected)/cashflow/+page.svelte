@@ -1,26 +1,37 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate } from '$lib/utils/format';
+	import { formatNumber, formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import { cashflowAnalyticPath, cashflowProjectionPath } from '$lib/api/paths';
 	import { describeApiError } from '$lib/api/errors';
-	import { type ColumnDef } from '@tanstack/table-core';
-	import DataTable from '$lib/components/table/DataTable.svelte';
-	import type { CashflowAnalyticsEntry, CashflowProjection, CashflowLedgerEntry, CashflowSummary } from '$lib/api/types/entities';
+	import type {
+		CashFlowItem,
+		CashFlowAnalyticResponse,
+		CashFlowProjectionItem,
+		CashFlowProjectionResponse,
+		CashFlowProjectionSummary,
+	} from '$lib/api/types/entities';
 
 	type TabState = 'idle' | 'loading' | 'ready' | 'missing-param' | 'error' | 'malformed';
 
 	let activeTab = $state<'analytics' | 'projections' | 'ledger'>('analytics');
 	let isLoading = $state(false);
 
-	// Data
-	let analytics = $state<CashflowAnalyticsEntry[]>([]);
-	let projections = $state<CashflowProjection[]>([]);
-	let ledger = $state<CashflowLedgerEntry[]>([]);
-	let summary = $state<CashflowSummary | null>(null);
+	// Canonical analytic response shape (CashFlowAnalyticResponse): a list of
+	// per-position `cashflow_items` plus a scalar `total_net_cashflow`.
+	let cashflowItems = $state<CashFlowItem[]>([]);
+	let totalNetCashflow = $state<string | null>(null);
+	let analyticAsOfDate = $state<string | null>(null);
 
-	// Tab states (load/empty/error/malformed/missing-param distinguished)
+	// Canonical projection response shape (CashFlowProjectionResponse): a
+	// list of `items` plus a `summary` with total_inflows, total_outflows,
+	// net_cashflow, instrument_count (all Decimal-as-string except count).
+	let projectionItems = $state<CashFlowProjectionItem[]>([]);
+	let projectionSummary = $state<CashFlowProjectionSummary | null>(null);
+	let projectionAsOfDate = $state<string | null>(null);
+
+	// Tab states distinguish loading / ready / error / malformed / missing-param.
 	let analyticsState = $state<TabState>('idle');
 	let projectionsState = $state<TabState>('idle');
 	let analyticsError = $state<string>('');
@@ -39,6 +50,18 @@
 		return `${d.getFullYear()}-${m}-${day}`;
 	}
 
+	function clearAnalytic() {
+		cashflowItems = [];
+		totalNetCashflow = null;
+		analyticAsOfDate = null;
+	}
+
+	function clearProjection() {
+		projectionItems = [];
+		projectionSummary = null;
+		projectionAsOfDate = null;
+	}
+
 	async function loadData(signal?: AbortSignal) {
 		const asOfDate = dateTo.trim();
 
@@ -47,9 +70,8 @@
 			projectionsState = 'missing-param';
 			analyticsError = 'Selecione a data "Até" (as_of_date) para carregar';
 			projectionsError = 'Selecione a data "Até" (as_of_date) para carregar';
-			analytics = [];
-			projections = [];
-			summary = null;
+			clearAnalytic();
+			clearProjection();
 			return;
 		}
 
@@ -65,20 +87,19 @@
 
 			if (analyticsRes.ok) {
 				try {
-					const data = await analyticsRes.json();
-					analytics = data.items ?? data.entries ?? data;
-					summary = data.summary ?? null;
+					const data = (await analyticsRes.json()) as CashFlowAnalyticResponse;
+					cashflowItems = Array.isArray(data?.cashflow_items) ? data.cashflow_items : [];
+					totalNetCashflow = typeof data?.total_net_cashflow === 'string' ? data.total_net_cashflow : null;
+					analyticAsOfDate = typeof data?.as_of_date === 'string' ? data.as_of_date : null;
 					analyticsState = 'ready';
 				} catch {
-					analytics = [];
-					summary = null;
+					clearAnalytic();
 					analyticsState = 'malformed';
 					analyticsError = 'Resposta do servidor não pôde ser interpretada';
 					notifications.error('Cashflow analytic: resposta malformada');
 				}
 			} else {
-				analytics = [];
-				summary = null;
+				clearAnalytic();
 				analyticsState = 'error';
 				analyticsError = await describeApiError(analyticsRes);
 				notifications.error(`Cashflow analytic: ${analyticsError}`);
@@ -86,17 +107,19 @@
 
 			if (projectionsRes.ok) {
 				try {
-					const data = await projectionsRes.json();
-					projections = data.items ?? data;
+					const data = (await projectionsRes.json()) as CashFlowProjectionResponse;
+					projectionItems = Array.isArray(data?.items) ? data.items : [];
+					projectionSummary = data?.summary ?? null;
+					projectionAsOfDate = typeof data?.as_of_date === 'string' ? data.as_of_date : null;
 					projectionsState = 'ready';
 				} catch {
-					projections = [];
+					clearProjection();
 					projectionsState = 'malformed';
 					projectionsError = 'Resposta do servidor não pôde ser interpretada';
 					notifications.error('Cashflow projection: resposta malformada');
 				}
 			} else {
-				projections = [];
+				clearProjection();
 				projectionsState = 'error';
 				projectionsError = await describeApiError(projectionsRes);
 				notifications.error(`Cashflow projection: ${projectionsError}`);
@@ -123,76 +146,19 @@
 
 	onDestroy(() => { abortController?.abort(); });
 
-	// ─── Ledger Columns ─────────────────────────────────────────────────
-	const ledgerColumns: ColumnDef<any, any>[] = [
-		{
-			accessorFn: (row) => row.date ?? row.settlement_date,
-			id: 'date',
-			header: 'Data',
-			cell: (info) => formatDate(info.getValue() as string),
-		},
-		{
-			accessorFn: (row) => row.contract_reference ?? row.reference,
-			id: 'reference',
-			header: 'Referência',
-		},
-		{
-			accessorFn: (row) => row.counterparty_name ?? row.counterparty,
-			id: 'counterparty',
-			header: 'Contraparte',
-		},
-		{
-			accessorFn: (row) => row.commodity,
-			id: 'commodity',
-			header: 'Commodity',
-		},
-		{
-			accessorFn: (row) => row.inflow ?? (row.amount > 0 ? row.amount : null),
-			id: 'inflow',
-			header: 'Entrada',
-			cell: (info) => {
-				const v = info.getValue() as number | null;
-				return v != null && v > 0 ? formatNumber(v) : '—';
-			},
-		},
-		{
-			accessorFn: (row) => row.outflow ?? (row.amount < 0 ? Math.abs(row.amount) : null),
-			id: 'outflow',
-			header: 'Saída',
-			cell: (info) => {
-				const v = info.getValue() as number | null;
-				return v != null && v > 0 ? formatNumber(v) : '—';
-			},
-		},
-		{
-			accessorFn: (row) => row.balance ?? row.running_balance,
-			id: 'balance',
-			header: 'Saldo',
-			cell: (info) => formatNumber(info.getValue() as number),
-		},
-	];
+	// Helpers for sign-based colouring on Decimal-as-string totals.
+	function signOf(value: string | null | undefined): number {
+		if (value == null || value === '') return Number.NaN;
+		const n = Number(value);
+		return Number.isFinite(n) ? n : Number.NaN;
+	}
+
+	const netSign = $derived(signOf(totalNetCashflow));
+	const projectionNetSign = $derived(signOf(projectionSummary?.net_cashflow ?? null));
 </script>
 
 <div class="p-6">
 	<h1 class="text-lg font-semibold text-surface-200">Cashflow</h1>
-
-	<!-- Summary cards -->
-	{#if summary}
-		<div class="mt-4 grid grid-cols-3 gap-4">
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Total Entradas</div>
-				<div class="text-lg font-semibold tabular-nums text-success">{formatNumber(summary.total_inflows)}</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Total Saídas</div>
-				<div class="text-lg font-semibold tabular-nums text-danger">{formatNumber(summary.total_outflows)}</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Saldo Líquido</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">{formatNumber(summary.net_balance)}</div>
-			</div>
-		</div>
-	{/if}
 
 	<!-- Date filter -->
 	<div class="mt-4 flex gap-3 items-end">
@@ -243,23 +209,64 @@
 				<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
 					Erro ao carregar analytic: {analyticsError}
 				</div>
-			{:else if Array.isArray(analytics) && analytics.length > 0}
-				<div class="space-y-3">
-					{#each analytics as entry (entry.id ?? entry.month ?? entry.period)}
-						<div class="rounded border border-surface-800 bg-surface-900 p-3">
-							<div class="flex items-center justify-between">
-								<span class="text-sm font-medium text-surface-200">{entry.period ?? entry.month ?? entry.commodity}</span>
-								<span class="text-sm tabular-nums text-surface-300">{formatNumber(entry.net_amount ?? entry.net)}</span>
-							</div>
-							<div class="mt-1 flex gap-4 text-xs text-surface-500">
-								<span class="text-success">+{formatNumber(entry.inflows ?? entry.total_inflows)}</span>
-								<span class="text-danger">-{formatNumber(entry.outflows ?? entry.total_outflows)}</span>
-							</div>
-						</div>
-					{/each}
-				</div>
 			{:else}
-				<div class="text-sm text-surface-500">Nenhum dado analítico disponível</div>
+				<!--
+					CashFlowAnalyticResponse: total_net_cashflow is a scalar
+					Decimal-string; cashflow_items is the per-position list.
+				-->
+				<div class="grid grid-cols-3 gap-4">
+					<div class="rounded border border-surface-800 bg-surface-900 p-3">
+						<div class="text-xs text-surface-500">Net Cashflow</div>
+						<div
+							class="text-lg font-semibold tabular-nums {Number.isFinite(netSign) && netSign >= 0 ? 'text-success' : 'text-danger'}"
+							data-testid="analytic-total-net-cashflow"
+						>
+							{formatNumber(totalNetCashflow)}
+						</div>
+					</div>
+					<div class="rounded border border-surface-800 bg-surface-900 p-3">
+						<div class="text-xs text-surface-500">As Of</div>
+						<div class="text-lg font-semibold text-surface-200">{formatDate(analyticAsOfDate)}</div>
+					</div>
+					<div class="rounded border border-surface-800 bg-surface-900 p-3">
+						<div class="text-xs text-surface-500">Itens</div>
+						<div class="text-lg font-semibold tabular-nums text-surface-200">{cashflowItems.length}</div>
+					</div>
+				</div>
+
+				{#if cashflowItems.length > 0}
+					<div class="mt-4 overflow-x-auto rounded border border-surface-800">
+						<table class="w-full text-sm">
+							<thead>
+								<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
+									<th class="px-3 py-2">Settlement</th>
+									<th class="px-3 py-2">Objeto</th>
+									<th class="px-3 py-2">Amount USD</th>
+									<th class="px-3 py-2">MTM</th>
+									<th class="px-3 py-2">Preço</th>
+									<th class="px-3 py-2">Fonte</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each cashflowItems as item, idx (item.object_id + ':' + item.settlement_date + ':' + idx)}
+									<tr class="border-b border-surface-800/50">
+										<td class="px-3 py-2 text-surface-300">{formatDate(item.settlement_date)}</td>
+										<td class="px-3 py-2 text-xs text-surface-400">
+											<span class="font-mono">{item.object_type}</span> /
+											<span class="font-mono">{item.object_id.slice(0, 8)}</span>
+										</td>
+										<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(item.amount_usd)}</td>
+										<td class="px-3 py-2 tabular-nums text-surface-300">{formatNumber(item.mtm_value)}</td>
+										<td class="px-3 py-2 tabular-nums text-xs text-surface-400">{formatPrice(item.price_value ?? null)}</td>
+										<td class="px-3 py-2 text-xs text-surface-500">{item.price_source ?? '—'}{item.price_symbol ? ` / ${item.price_symbol}` : ''}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else}
+					<div class="mt-4 text-sm text-surface-500">Nenhum item analítico disponível</div>
+				{/if}
 			{/if}
 
 		{:else if activeTab === 'projections'}
@@ -273,27 +280,83 @@
 				<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
 					Erro ao carregar projeção: {projectionsError}
 				</div>
-			{:else if projections.length > 0}
-				<div class="space-y-2">
-					{#each projections as proj (proj.id ?? proj.month)}
-						<div class="flex items-center gap-3 rounded border border-surface-800 bg-surface-900 px-4 py-2">
-							<span class="text-sm text-surface-300 w-24">{proj.month ?? proj.period}</span>
-							<div class="flex-1 h-4 rounded bg-surface-800 overflow-hidden">
-								{#if proj.projected_inflow || proj.inflow}
-									<div
-										class="h-full bg-success/60"
-										style="width: {Math.min(((proj.projected_inflow ?? proj.inflow ?? 0) / (Math.max(proj.projected_inflow ?? proj.inflow ?? 1, proj.projected_outflow ?? proj.outflow ?? 1))) * 100, 100)}%"
-									></div>
-								{/if}
-							</div>
-							<span class="text-xs tabular-nums text-surface-400 w-24 text-right">
-								{formatNumber(proj.net ?? proj.projected_net)}
-							</span>
-						</div>
-					{/each}
-				</div>
 			{:else}
-				<div class="text-sm text-surface-500">Nenhuma projeção disponível</div>
+				<!--
+					CashFlowProjectionResponse: summary carries total_inflows /
+					total_outflows / net_cashflow (Decimal strings) and
+					instrument_count (int). Items expose settlement_date,
+					reference, commodity, counterparty, amount_usd, etc.
+				-->
+				{#if projectionSummary}
+					<div class="grid grid-cols-4 gap-4">
+						<div class="rounded border border-surface-800 bg-surface-900 p-3">
+							<div class="text-xs text-surface-500">Total Entradas</div>
+							<div
+								class="text-lg font-semibold tabular-nums text-success"
+								data-testid="projection-total-inflows"
+							>
+								{formatNumber(projectionSummary.total_inflows)}
+							</div>
+						</div>
+						<div class="rounded border border-surface-800 bg-surface-900 p-3">
+							<div class="text-xs text-surface-500">Total Saídas</div>
+							<div
+								class="text-lg font-semibold tabular-nums text-danger"
+								data-testid="projection-total-outflows"
+							>
+								{formatNumber(projectionSummary.total_outflows)}
+							</div>
+						</div>
+						<div class="rounded border border-surface-800 bg-surface-900 p-3">
+							<div class="text-xs text-surface-500">Net Cashflow</div>
+							<div
+								class="text-lg font-semibold tabular-nums {Number.isFinite(projectionNetSign) && projectionNetSign >= 0 ? 'text-success' : 'text-danger'}"
+								data-testid="projection-net-cashflow"
+							>
+								{formatNumber(projectionSummary.net_cashflow)}
+							</div>
+						</div>
+						<div class="rounded border border-surface-800 bg-surface-900 p-3">
+							<div class="text-xs text-surface-500">Instrumentos</div>
+							<div class="text-lg font-semibold tabular-nums text-surface-200">{projectionSummary.instrument_count}</div>
+						</div>
+					</div>
+				{/if}
+
+				{#if projectionItems.length > 0}
+					<div class="mt-4 overflow-x-auto rounded border border-surface-800">
+						<table class="w-full text-sm">
+							<thead>
+								<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
+									<th class="px-3 py-2">Settlement</th>
+									<th class="px-3 py-2">Referência</th>
+									<th class="px-3 py-2">Commodity</th>
+									<th class="px-3 py-2">Contraparte</th>
+									<th class="px-3 py-2">Qty (MT)</th>
+									<th class="px-3 py-2">Preço / MT</th>
+									<th class="px-3 py-2">Amount USD</th>
+									<th class="px-3 py-2">Tipo</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each projectionItems as item, idx (item.instrument_id + ':' + idx)}
+									<tr class="border-b border-surface-800/50">
+										<td class="px-3 py-2 text-surface-300">{formatDate(item.settlement_date)}</td>
+										<td class="px-3 py-2 font-mono text-xs text-surface-400">{item.reference || '—'}</td>
+										<td class="px-3 py-2 text-surface-300">{item.commodity || '—'}</td>
+										<td class="px-3 py-2 text-surface-400">{item.counterparty || '—'}</td>
+										<td class="px-3 py-2 tabular-nums text-surface-300">{formatQuantityMT(item.quantity_mt)}</td>
+										<td class="px-3 py-2 tabular-nums text-surface-300">{formatPrice(item.price_per_mt)}</td>
+										<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(item.amount_usd)}</td>
+										<td class="px-3 py-2 text-xs text-surface-500">{item.instrument_type}</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else}
+					<div class="mt-4 text-sm text-surface-500">Nenhuma projeção disponível</div>
+				{/if}
 			{/if}
 
 		{:else}
@@ -307,14 +370,6 @@
 			-->
 			<div class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
 				Ledger requer um source_event_id. Acesse o ledger a partir de um evento ou contrato específico.
-			</div>
-			<div class="mt-3 opacity-60 pointer-events-none">
-				<DataTable
-					data={ledger}
-					columns={ledgerColumns}
-					isLoading={false}
-					emptyMessage="Selecione um evento ou contrato para visualizar o ledger"
-				/>
 			</div>
 		{/if}
 	</div>

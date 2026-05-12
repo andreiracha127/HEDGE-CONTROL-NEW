@@ -59,6 +59,40 @@ describe('cashflow page', () => {
 		expect(source).toMatch(/projectionsState\s*=\s*'error'/);
 		expect(source).toMatch(/'missing-param'/);
 	});
+
+	it('reads canonical CashFlowAnalyticResponse fields (cashflow_items, total_net_cashflow)', () => {
+		// /cashflow/analytic returns {as_of_date, cashflow_items[],
+		// total_net_cashflow}. The page must read those fields directly;
+		// the old `data.items ?? data.entries ?? data` fallback would put
+		// the response object into the analytics list and break
+		// Array.isArray rendering (Codex P2 catch).
+		expect(source).toContain('data.cashflow_items');
+		expect(source).toContain('data.total_net_cashflow');
+		expect(source).not.toMatch(/data\.items\s*\?\?\s*data\.entries\s*\?\?\s*data/);
+		expect(source).not.toMatch(/analytics\s*=\s*data\b/);
+	});
+
+	it('reads canonical CashFlowProjectionItem fields (no legacy month/period/net synthesis)', () => {
+		// /cashflow/projection items expose settlement_date / reference /
+		// commodity / counterparty / amount_usd. The page must render
+		// these directly rather than synthesise from missing month /
+		// period / net (Codex P2 catch).
+		expect(source).toContain('item.settlement_date');
+		expect(source).toContain('item.reference');
+		expect(source).toContain('item.amount_usd');
+		expect(source).not.toMatch(/proj\.month/);
+		expect(source).not.toMatch(/proj\.period/);
+		expect(source).not.toMatch(/proj\.projected_inflow/);
+		expect(source).not.toMatch(/proj\.projected_outflow/);
+		expect(source).not.toMatch(/proj\.projected_net/);
+	});
+
+	it('reads canonical CashFlowProjectionSummary fields (total_inflows / total_outflows / net_cashflow)', () => {
+		expect(source).toContain('projectionSummary.total_inflows');
+		expect(source).toContain('projectionSummary.total_outflows');
+		expect(source).toContain('projectionSummary.net_cashflow');
+		expect(source).not.toContain('summary.net_balance');
+	});
 });
 
 describe('MTM snapshot page', () => {

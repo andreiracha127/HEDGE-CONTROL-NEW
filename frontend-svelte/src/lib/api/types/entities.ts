@@ -95,52 +95,79 @@ export interface HedgeTask {
 }
 
 // ─── Cashflow ───────────────────────────────────────────────────────────
+//
+// Aligned with the canonical OpenAPI shapes in `schema.d.ts`. Decimal
+// columns (amount_usd, mtm_value, price_*, quantity_mt, totals) are
+// serialised as strings; the format helpers (`formatNumber`,
+// `formatPrice`, `formatQuantityMT`) preserve that precision when given
+// the raw string.
 
-export interface CashflowAnalyticsEntry {
-	id?: string;
-	period?: string;
-	month?: string;
-	commodity?: string;
-	net_amount?: number;
-	net?: number;
-	inflows?: number;
-	total_inflows?: number;
-	outflows?: number;
-	total_outflows?: number;
+/** Mirror of `components["schemas"]["CashFlowItem"]` (analytic items). */
+export interface CashFlowItem {
+	amount_usd: string;
+	mtm_value: string;
+	object_id: string;
+	object_type: string;
+	settlement_date: string;
+	price_settlement_date?: string | null;
+	price_source?: string | null;
+	price_symbol?: string | null;
+	price_value?: string | null;
 }
 
-export interface CashflowSummary {
-	total_inflows?: number;
-	total_outflows?: number;
-	net_balance?: number;
+/** Mirror of `components["schemas"]["CashFlowAnalyticResponse"]`. */
+export interface CashFlowAnalyticResponse {
+	as_of_date: string;
+	cashflow_items: CashFlowItem[];
+	total_net_cashflow: string;
 }
 
-export interface CashflowProjection {
-	id?: string;
-	month?: string;
-	period?: string;
-	projected_inflow?: number;
-	inflow?: number;
-	projected_outflow?: number;
-	outflow?: number;
-	net?: number;
-	projected_net?: number;
+/** Mirror of `components["schemas"]["CashFlowProjectionItem"]`. */
+export interface CashFlowProjectionItem {
+	amount_usd: string;
+	commodity: string;
+	counterparty: string;
+	deal_id?: string | null;
+	instrument_id: string;
+	instrument_type: string;
+	price_per_mt: string;
+	price_source: string;
+	quantity_mt: string;
+	reference: string;
+	settlement_date: string;
 }
 
-export interface CashflowLedgerEntry {
-	id?: string;
-	date?: string;
-	settlement_date?: string;
-	contract_reference?: string;
-	reference?: string;
-	counterparty_name?: string;
-	counterparty?: string;
-	commodity?: string;
-	inflow?: number;
-	outflow?: number;
-	amount?: number;
-	balance?: number;
-	running_balance?: number;
+/** Mirror of `components["schemas"]["CashFlowProjectionSummary"]`. */
+export interface CashFlowProjectionSummary {
+	instrument_count: number;
+	net_cashflow: string;
+	total_inflows: string;
+	total_outflows: string;
+}
+
+/** Mirror of `components["schemas"]["CashFlowProjectionResponse"]`. */
+export interface CashFlowProjectionResponse {
+	as_of_date: string;
+	items: CashFlowProjectionItem[];
+	summary: CashFlowProjectionSummary;
+}
+
+/** Mirror of `components["schemas"]["CashFlowLedgerEntryRead"]`. */
+export interface CashFlowLedgerEntry {
+	id: string;
+	hedge_contract_id: string;
+	leg_id: string;
+	cashflow_date: string;
+	created_at: string;
+	currency: string;
+	direction: string;
+	amount: string;
+	source_event_id: string | null;
+	source_event_type: string;
+	price_settlement_date?: string | null;
+	price_source?: string | null;
+	price_symbol?: string | null;
+	price_value?: string | null;
 }
 
 // ─── Contracts ──────────────────────────────────────────────────────────
