@@ -47,10 +47,14 @@ Accepted evidence:
   maps realized P&L with `e.realized_pnl ?? e.realized ?? 0`.
 - `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:56`
   maps unrealized P&L with `e.unrealized_pnl ?? e.unrealized ?? 0`.
+- `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:41`
+  maps response entries with `(e: any)`.
 - `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:83`
   totals missing realized/unrealized values as zero.
 - `frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:46`
   maps MTM values with `e.mtm_value ?? e.value ?? 0`.
+- `frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:39`
+  maps response entries with `(e: any)`.
 
 ### J-A6-06 - Westmetall price precision
 
@@ -64,6 +68,8 @@ Accepted evidence:
   plain two-decimal numbers.
 - `frontend-svelte/src/lib/utils/format.ts:79` exports the existing
   `formatPrice(value, unit?)` helper with six-decimal preservation.
+- `frontend-svelte/src/lib/utils/format.ts:84` shows `formatPrice` uses
+  `formatDecimalString(value, 6)`.
 - `frontend-svelte/src/lib/utils/format.test.ts:72` already has a
   `formatPrice` test block proving six-decimal behavior.
 
@@ -86,6 +92,9 @@ Accepted evidence:
 - `frontend-svelte/src/lib/utils/format.ts:74-76` exports `formatQuantityMT`,
   which treats MT quantities as
   three-decimal precision.
+- This makes the current `step="0.01"` input a two-decimal frontend boundary
+  mismatch against the backend three-decimal MT schema and existing
+  three-decimal display helper.
 
 ## 4. Required Implementation Boundary
 
