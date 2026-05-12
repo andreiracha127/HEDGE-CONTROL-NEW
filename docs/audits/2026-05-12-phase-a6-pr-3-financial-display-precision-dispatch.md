@@ -62,8 +62,10 @@ Accepted evidence:
   serialize as strings.
 - `frontend-svelte/src/lib/utils/format.ts:63` says `formatNumber` is for
   plain two-decimal numbers.
-- `frontend-svelte/src/lib/utils/format.ts:79` provides `formatPrice` with
-  six-decimal preservation.
+- `frontend-svelte/src/lib/utils/format.ts:79` exports the existing
+  `formatPrice(value, unit?)` helper with six-decimal preservation.
+- `frontend-svelte/src/lib/utils/format.test.ts:72` already has a
+  `formatPrice` test block proving six-decimal behavior.
 
 ### J-A6-11 - RFQ quantity precision
 
@@ -91,8 +93,18 @@ For P&L and MTM analytics:
 
 - replace `any` response parsing with typed or runtime-validated response
   objects;
-- remove alternate-field chains for primary values unless the backend contract
-  explicitly documents both names;
+- use canonical fields from `frontend-svelte/src/lib/api/schema.d.ts`:
+  - `PLSnapshotResponse.realized_pl`;
+  - `PLSnapshotResponse.unrealized_mtm`;
+  - `PLSnapshotResponse.period_start`;
+  - `PLSnapshotResponse.period_end`;
+  - `MTMSnapshotResponse.mtm_value`;
+  - `MTMSnapshotResponse.as_of_date`;
+  - `MTMSnapshotResponse.object_id`;
+  - `MTMSnapshotResponse.object_type`;
+- remove alternate-field chains such as `realized_pnl ?? realized` and
+  `mtm_value ?? value` unless the generated schema explicitly documents both
+  names;
 - render explicit error states when required fields are absent;
 - do not render missing financial values as zero;
 - keep true numeric zero display intact when the backend explicitly returns
@@ -102,8 +114,9 @@ For P&L and MTM analytics:
 
 For Westmetall/cash settlement prices:
 
-- use `formatPrice(...)` or a dedicated settlement price formatter that
-  preserves six decimals;
+- use the existing `formatPrice(...)` helper exported from
+  `frontend-svelte/src/lib/utils/format.ts`, or a dedicated settlement price
+  formatter if the executor can prove a narrower helper is safer;
 - keep change/delta formatting separate if it has a different precision rule;
 - add tests that prove decimal strings are not rounded to two decimals.
 
@@ -135,8 +148,8 @@ Add or update focused frontend tests.
 
 Minimum coverage:
 
-- `formatPrice` or the chosen settlement formatter preserves a six-decimal
-  string such as `2380.123456`;
+- existing `formatPrice` usage or the chosen settlement formatter preserves a
+  six-decimal string such as `2380.123456`;
 - market-data page renders settlement prices with six decimals;
 - P&L analytics rejects or errors on missing realized/unrealized required
   fields;
@@ -163,12 +176,14 @@ npm run build
 Also run and report:
 
 ```bash
-rg -n "\\?\\? 0|: any|formatNumber\\(price\\.price|formatNumber\\(price\\.value|step=\"0\\.01\"|quantityMt = \\$state<number" frontend-svelte/src/routes frontend-svelte/src/lib
+rg -n "\\?\\? 0|: any|formatNumber\\(price\\.price|formatNumber\\(price\\.value" "frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte" "frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte" "frontend-svelte/src/routes/(protected)/market-data/+page.svelte"
+rg -n "step=\"0\\.01\"|quantityMt = \\$state<number" "frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte"
 git diff --check
 ```
 
-The grep may still find legitimate unrelated defaults outside this wave. Report
-every remaining match under the touched files and adjudicate it.
+Report every remaining match in those in-scope files and adjudicate it in the
+PR body. Matches outside those files belong to later scope unless they are
+introduced by this PR.
 
 ## 8. Out of Scope
 
