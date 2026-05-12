@@ -63,6 +63,8 @@ def _compute_monthly_averages(
     now = datetime.now(timezone.utc)
     results: list[CashSettlementPriceRead] = []
     for (year, month), prices in sorted(monthly.items(), reverse=True):
+        if not prices:
+            continue
         last_day = calendar.monthrange(year, month)[1]
         avg_price = sum(prices, Decimal("0")) / Decimal(len(prices))
         month_id = _uuid.uuid5(_NS_MONTHLY, f"{year}-{month:02d}")
@@ -140,7 +142,7 @@ def ingest_cash_settlement_daily(
                     session, payload.settlement_date
                 )
             )
-            # Dispatch A5-2 requires no mutation audit row when no row is created.
+            # Skip audit: no row was persisted, so there is no durable mutation anchor.
             if inserted_id is not None:
                 mark_audit_success(request, inserted_id)
     except WestmetallLayoutError as exc:
@@ -191,7 +193,7 @@ def ingest_cash_settlement_bulk(
                     end_date=payload.end_date,
                 )
             )
-            # Dispatch A5-2 requires no mutation audit row when all rows are skipped.
+            # Skip audit: no rows were persisted, so there is no durable mutation anchor.
             if inserted_ids:
                 mark_audit_success(
                     request,
