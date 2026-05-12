@@ -736,6 +736,7 @@ def test_process_inbound_queue_updates_durable_message_processed(
             text=_canonical_text(rfq, "2550 USD/MT avg"),
         )
         rfq_id = rfq.id
+        rfq_number = rfq.rfq_number
         durable_id = durable.id
         session.commit()
 
@@ -755,6 +756,7 @@ def test_process_inbound_queue_updates_durable_message_processed(
         assert durable.processing_status == "processed"
         assert durable.processing_completed_at is not None
         assert durable.processing_result["status"] == "auto_quote_created"
+        assert durable.rfq_number == rfq_number
         assert durable.rfq_id == rfq_id
         assert durable.quote_id == mock_quote.id
 

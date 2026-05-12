@@ -841,10 +841,15 @@ class RFQOrchestrator:
 
             quote_id = _parse_uuid(result.get("quote_id"))
             rfq_id = _parse_uuid(result.get("rfq_id"))
+            canonical_numbers = _parse_canonical_ids(msg.text)
             durable.processing_status = "processed"
             durable.processing_completed_at = now_utc()
             durable.processing_result = _json_safe(result)
-            durable.rfq_number = result.get("canonical_number") or durable.rfq_number
+            durable.rfq_number = (
+                result.get("canonical_number")
+                or durable.rfq_number
+                or (canonical_numbers[0] if len(set(canonical_numbers)) == 1 else None)
+            )
             durable.rfq_id = rfq_id
             durable.quote_id = quote_id
 
