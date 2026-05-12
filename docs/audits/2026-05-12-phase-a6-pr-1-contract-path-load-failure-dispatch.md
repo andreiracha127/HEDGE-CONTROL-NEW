@@ -146,6 +146,9 @@ Minimum acceptable behavior:
     `object_id` (uuid), and `as_of_date` (date);
   - P&L `GET /pl/snapshots` requires query params `entity_type` (string),
     `entity_id` (uuid), `period_start` (date), and `period_end` (date).
+- Note: MTM uses `object_type`/`object_id`; P&L uses
+  `entity_type`/`entity_id`. Do not conflate these names or translate one
+  parameter shape into the other.
 - Example MTM query shape:
   `/mtm/snapshots?object_type=hedge_contract&object_id={contract_uuid}&as_of_date=2026-05-12`.
 - Example P&L query shape:
@@ -154,8 +157,8 @@ Minimum acceptable behavior:
   call the established local error surface, such as
   `notifications.error("Missing parameter: <name>")`, and render a locked or
   disabled missing-parameter/configuration state instead of issuing a 422
-  request or inventing defaults. `notifications.error` exists in
-  `frontend-svelte/src/lib/stores/notifications.svelte.ts:43`.
+  request or inventing defaults. Use the existing notification store in
+  `frontend-svelte/src/lib/stores/notifications.svelte.ts`.
 - Every repaired load path distinguishes:
   - loading;
   - successful empty data;
