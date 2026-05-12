@@ -140,6 +140,7 @@ def ingest_cash_settlement_daily(
                     session, payload.settlement_date
                 )
             )
+            # Dispatch A5-2 requires no mutation audit row when no row is created.
             if inserted_id is not None:
                 mark_audit_success(request, inserted_id)
     except WestmetallLayoutError as exc:
@@ -190,6 +191,7 @@ def ingest_cash_settlement_bulk(
                     end_date=payload.end_date,
                 )
             )
+            # Dispatch A5-2 requires no mutation audit row when all rows are skipped.
             if inserted_ids:
                 mark_audit_success(
                     request,

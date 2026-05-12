@@ -36,7 +36,7 @@ def trigger_pipeline(
     ),
     db: Session = Depends(get_session),
     _user: dict = Depends(get_current_user),
-):
+) -> PipelineRunRead:
     with unit_of_work(db, request=request):
         run = FinancePipelineService.run_daily_pipeline(
             db, body.run_date, commit=False
