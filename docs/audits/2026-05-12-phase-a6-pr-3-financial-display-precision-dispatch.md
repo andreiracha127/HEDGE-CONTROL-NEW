@@ -115,8 +115,9 @@ For P&L and MTM analytics:
 For Westmetall/cash settlement prices:
 
 - use the existing `formatPrice(...)` helper exported from
-  `frontend-svelte/src/lib/utils/format.ts`, or a dedicated settlement price
-  formatter if the executor can prove a narrower helper is safer;
+  `frontend-svelte/src/lib/utils/format.ts:79`;
+- do not create a new formatter unless the existing helper provably fails on a
+  concrete settlement-price value; justify any new formatter in the PR body;
 - keep change/delta formatting separate if it has a different precision rule;
 - add tests that prove decimal strings are not rounded to two decimals.
 
@@ -124,8 +125,10 @@ For Westmetall/cash settlement prices:
 
 For RFQ quantity:
 
-- support three-decimal MT entry with `step="0.001"` unless a backend/product
-  rule proves a different precision;
+- update `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:178`
+  from `step="0.01"` to `step="0.001"` unless a backend/product rule proves a
+  different precision;
+- support three-decimal MT entry end to end;
 - preserve submitted quantity as a decimal string at the form boundary, or prove
   the chosen representation cannot lose valid MT precision;
 - update preview and submit payloads consistently.
@@ -153,10 +156,15 @@ Minimum coverage:
 - market-data page renders settlement prices with six decimals;
 - P&L analytics rejects or errors on missing realized/unrealized required
   fields;
+- P&L snapshot response includes valid `period_start` and `period_end`
+  boundaries, verifies `period_start <= period_end`, and raises an error state
+  if either boundary is missing;
 - MTM analytics rejects or errors on missing MTM required field;
 - true zero realized/unrealized/MTM values render as zero;
 - RFQ quantity accepts `123.456` MT and submits `"123.456"` or another
   explicitly safe representation;
+- RFQ quantity input renders `step="0.001"` unless the PR documents and tests a
+  stricter product rule;
 - RFQ quantity with four or more decimal places, such as `123.4567`, is either
   rejected with a visible error or normalized to the documented product
   precision before submission; the PR body must state the chosen behavior;
