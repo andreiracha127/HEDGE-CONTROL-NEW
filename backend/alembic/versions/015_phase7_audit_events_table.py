@@ -71,12 +71,23 @@ def upgrade():
 
 
 def downgrade():
-    bind = op.get_bind()
-    dialect = bind.dialect.name
-    if dialect == "sqlite":
-        op.execute("DROP TRIGGER IF EXISTS audit_events_no_update")
-        op.execute("DROP TRIGGER IF EXISTS audit_events_no_delete")
-    else:
-        op.execute("DROP TRIGGER IF EXISTS audit_events_no_update_delete ON audit_events")
-        op.execute("DROP FUNCTION IF EXISTS audit_events_no_update_delete")
-    op.drop_table("audit_events")
+    # Append-only institutional invariant (J-A5-04):
+    # audit_events captures evidence the regulator and the institution may
+    # need to reconstruct historical state. A destructive downgrade — either
+    # dropping the table or dropping the append-only enforcement triggers —
+    # would silently erase or weaken that evidence. There is no operational
+    # scenario in which losing audit history is acceptable, including a
+    # rollback past this revision.
+    #
+    # Therefore this downgrade is intentionally a no-op:
+    #
+    #   * audit_events table is preserved with all rows intact;
+    #   * append-only triggers (UPDATE/DELETE rejection) are preserved;
+    #   * operators that need to roll back schema below this point must
+    #     first export and archive audit_events out-of-band, then drop the
+    #     table by hand. That deliberate, logged action is the only
+    #     supported path.
+    #
+    # See docs/audits/2026-05-11-phase-a5-jury-verdict.md (J-A5-04) and the
+    # backend/tests/test_audit_migration_non_destructive.py regression.
+    pass
