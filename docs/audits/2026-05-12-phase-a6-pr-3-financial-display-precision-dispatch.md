@@ -1,0 +1,190 @@
+# Phase A6 Remediation Dispatch - PR-A6-3 Financial Display and Numeric Precision
+
+**Phase:** A6 - Frontend Svelte institutional control surface
+**Wave:** PR-A6-3
+**Authoring date:** 2026-05-12
+**Repository:** `D:/Projetos/Hedge-Control-New`
+**Base branch:** `main`
+**Required branch:** `audit-a6/financial-display-numeric-precision`
+**Source verdict:** `docs/audits/2026-05-12-phase-a6-jury-verdict.md`
+
+## 1. Objective
+
+Close:
+
+- `J-A6-03` - Remove zero-default financial fallbacks from analytics displays.
+- `J-A6-06` - Preserve six-decimal Westmetall price precision in market-data
+  display.
+- `J-A6-11` - Align RFQ quantity input precision with backend MT precision.
+
+This wave removes silent financial display defaults and aligns frontend numeric
+entry/formatting with backend Decimal semantics.
+
+## 2. Non-Negotiable Constraints
+
+- Do not edit `docs/governance.md`.
+- Do not implement PR-A6-1 endpoint path cleanup except as needed to integrate
+  with already-merged path fixes.
+- Do not use `?? 0` to mask missing required economic values.
+- Do not coerce persisted decimal strings through `Number()` when the display
+  requires precision beyond plain two-decimal formatting.
+- Do not broaden RFQ quantity changes into RFQ lifecycle or actor identity
+  fixes. Those belong to PR-A6-2.
+- Do not invent product-level rounding rules. If a two-decimal MT rule is
+  desired, it must be enforced consistently in backend and frontend and called
+  out explicitly.
+
+Financial zeros, quantities, and settlement prices are institutional data, not
+decorative display values.
+
+## 3. Findings and Evidence
+
+### J-A6-03 - Zero-default analytics values
+
+Accepted evidence:
+
+- `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:49`
+  maps realized P&L with `e.realized_pnl ?? e.realized ?? 0`.
+- `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:56`
+  maps unrealized P&L with `e.unrealized_pnl ?? e.unrealized ?? 0`.
+- `frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:83`
+  totals missing realized/unrealized values as zero.
+- `frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:46`
+  maps MTM values with `e.mtm_value ?? e.value ?? 0`.
+
+### J-A6-06 - Westmetall price precision
+
+Accepted evidence:
+
+- `frontend-svelte/src/routes/(protected)/market-data/+page.svelte:112`
+  renders settlement prices through `formatNumber`.
+- `frontend-svelte/src/lib/utils/format.ts:61` says decimal economic columns
+  serialize as strings.
+- `frontend-svelte/src/lib/utils/format.ts:63` says `formatNumber` is for
+  plain two-decimal numbers.
+- `frontend-svelte/src/lib/utils/format.ts:79` provides `formatPrice` with
+  six-decimal preservation.
+
+### J-A6-11 - RFQ quantity precision
+
+Accepted evidence:
+
+- `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:10` stores
+  `quantityMt` as a JavaScript `number`.
+- `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:105` submits that
+  numeric value.
+- `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:177` uses
+  `type="number"`.
+- `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:178` uses
+  `step="0.01"`.
+- `frontend-svelte/src/lib/api/schema.d.ts:3291` allows
+  `quantity_mt: number | string`.
+- `backend/app/schemas/_types.py:13` defines `MTQuantity` as a Decimal.
+- `frontend-svelte/src/lib/utils/format.ts:19` treats MT quantities as
+  three-decimal precision.
+
+## 4. Required Implementation Boundary
+
+### P&L and MTM Required Fields
+
+For P&L and MTM analytics:
+
+- replace `any` response parsing with typed or runtime-validated response
+  objects;
+- remove alternate-field chains for primary values unless the backend contract
+  explicitly documents both names;
+- render explicit error states when required fields are absent;
+- do not render missing financial values as zero;
+- keep true numeric zero display intact when the backend explicitly returns
+  zero.
+
+### Market-Data Price Formatting
+
+For Westmetall/cash settlement prices:
+
+- use `formatPrice(...)` or a dedicated settlement price formatter that
+  preserves six decimals;
+- keep change/delta formatting separate if it has a different precision rule;
+- add tests that prove decimal strings are not rounded to two decimals.
+
+### RFQ Quantity Input
+
+For RFQ quantity:
+
+- support three-decimal MT entry with `step="0.001"` unless a backend/product
+  rule proves a different precision;
+- preserve submitted quantity as a decimal string at the form boundary, or prove
+  the chosen representation cannot lose valid MT precision;
+- update preview and submit payloads consistently.
+
+## 5. Acceptance Criteria
+
+- P&L/MTM required values missing from the response produce explicit error
+  states, not zeros.
+- True backend zero values still display as zero.
+- Westmetall settlement price strings preserve six-decimal display precision.
+- RFQ quantity input accepts and submits valid three-decimal MT quantities.
+- RFQ preview and create payloads use the same quantity representation.
+- No new use of `any` or `?? 0` is introduced in the touched financial display
+  code.
+- `docs/governance.md` has no diff.
+
+## 6. Required Tests
+
+Add or update focused frontend tests.
+
+Minimum coverage:
+
+- `formatPrice` or the chosen settlement formatter preserves a six-decimal
+  string such as `2380.123456`;
+- market-data page renders settlement prices with six decimals;
+- P&L analytics rejects or errors on missing realized/unrealized required
+  fields;
+- MTM analytics rejects or errors on missing MTM required field;
+- true zero realized/unrealized/MTM values render as zero;
+- RFQ quantity accepts `123.456` MT and submits `"123.456"` or another
+  explicitly safe representation;
+- RFQ preview and create use identical quantity precision behavior.
+
+## 7. Required Verification
+
+Run, at minimum:
+
+```bash
+cd frontend-svelte
+npm run check
+npm test
+npm run build
+```
+
+Also run and report:
+
+```bash
+rg -n "\\?\\? 0|: any|formatNumber\\(price\\.price|formatNumber\\(price\\.value|step=\"0\\.01\"|quantityMt = \\$state<number" frontend-svelte/src/routes frontend-svelte/src/lib
+git diff --check
+```
+
+The grep may still find legitimate unrelated defaults outside this wave. Report
+every remaining match under the touched files and adjudicate it.
+
+## 8. Out of Scope
+
+- Endpoint path repair and non-2xx route discipline. That is PR-A6-1.
+- Settlement/RFQ actor evidence. That is PR-A6-2.
+- Orders/audit pages and login gating. That is PR-A6-4.
+- Backend Decimal type redesign.
+- Broad charting or ECharts refactor.
+
+## 9. PR Requirements
+
+- Use branch `audit-a6/financial-display-numeric-precision`.
+- Push normally; do not use `--no-verify`.
+- Open a PR against `main`.
+- Include in the PR body:
+  - findings closed;
+  - files changed;
+  - tests run and results;
+  - numeric precision decisions;
+  - remaining grep matches and adjudication;
+  - hook artifact path;
+  - statement that `docs/governance.md` has no diff.
