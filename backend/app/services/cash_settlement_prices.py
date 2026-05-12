@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from typing import Optional
 
@@ -19,12 +20,12 @@ from app.services.westmetall_cash_settlement import (
 def ingest_westmetall_cash_settlement_daily_for_date(
     db: Session,
     settlement_date: date,
-) -> tuple[int, int, WestmetallFetchEvidence]:
+) -> tuple[uuid.UUID | None, int, int, WestmetallFetchEvidence]:
     html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
     rows = parse_westmetall_daily_rows(html)
     row = next((r for r in rows if r.settlement_date == settlement_date), None)
     if row is None:
-        return 0, 0, evidence
+        return None, 0, 0, evidence
 
     existing = (
         db.query(CashSettlementPrice)
@@ -36,7 +37,7 @@ def ingest_westmetall_cash_settlement_daily_for_date(
         .first()
     )
     if existing is not None:
-        return 0, 1, evidence
+        return None, 0, 1, evidence
 
     price = CashSettlementPrice(
         source=SOURCE_WESTMETALL,
@@ -48,19 +49,35 @@ def ingest_westmetall_cash_settlement_daily_for_date(
         fetched_at=evidence.fetched_at,
     )
     db.add(price)
-    db.commit()
-    return 1, 0, evidence
+    db.flush()
+    return price.id, 1, 0, evidence
+
+
+def _westmetall_batch_uuid(
+    *,
+    start_date: Optional[date],
+    end_date: Optional[date],
+    html_sha256: str,
+    inserted_dates: list[date],
+) -> uuid.UUID:
+    dates = ",".join(d.isoformat() for d in sorted(inserted_dates))
+    canonical_batch_key = (
+        f"source={SOURCE_WESTMETALL}|start={start_date.isoformat() if start_date else ''}|"
+        f"end={end_date.isoformat() if end_date else ''}|html_sha256={html_sha256}|"
+        f"inserted_dates={dates}"
+    )
+    return uuid.uuid5(uuid.NAMESPACE_URL, canonical_batch_key)
 
 
 def ingest_westmetall_cash_settlement_bulk(
     db: Session,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
-) -> tuple[int, int, WestmetallFetchEvidence]:
+) -> tuple[list[uuid.UUID], uuid.UUID, int, int, WestmetallFetchEvidence]:
     """Fetch Westmetall and ingest all available daily rows.
 
     Optionally restrict to ``[start_date, end_date]``.
-    Returns ``(ingested_count, skipped_count, evidence)``.
+    Returns ``(inserted_ids, batch_uuid, ingested_count, skipped_count, evidence)``.
     """
     html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
     rows = parse_westmetall_daily_rows(html)
@@ -71,7 +88,13 @@ def ingest_westmetall_cash_settlement_bulk(
         rows = [r for r in rows if r.settlement_date <= end_date]
 
     if not rows:
-        return 0, 0, evidence
+        batch_uuid = _westmetall_batch_uuid(
+            start_date=start_date,
+            end_date=end_date,
+            html_sha256=evidence.html_sha256,
+            inserted_dates=[],
+        )
+        return [], batch_uuid, 0, 0, evidence
 
     # Fetch existing dates in one query to avoid N+1
     existing_dates = set(
@@ -89,25 +112,33 @@ def ingest_westmetall_cash_settlement_bulk(
 
     ingested = 0
     skipped = 0
+    inserted_prices: list[CashSettlementPrice] = []
+    inserted_dates: list[date] = []
     for row in rows:
         if row.settlement_date in existing_dates:
             skipped += 1
             continue
-        db.add(
-            CashSettlementPrice(
-                source=SOURCE_WESTMETALL,
-                symbol=SYMBOL_DAILY,
-                settlement_date=row.settlement_date,
-                price_usd=row.price_usd,
-                source_url=evidence.source_url,
-                html_sha256=evidence.html_sha256,
-                fetched_at=evidence.fetched_at,
-            )
+        price = CashSettlementPrice(
+            source=SOURCE_WESTMETALL,
+            symbol=SYMBOL_DAILY,
+            settlement_date=row.settlement_date,
+            price_usd=row.price_usd,
+            source_url=evidence.source_url,
+            html_sha256=evidence.html_sha256,
+            fetched_at=evidence.fetched_at,
         )
+        db.add(price)
+        inserted_prices.append(price)
+        inserted_dates.append(row.settlement_date)
         ingested += 1
 
     if ingested:
-        db.commit()
+        db.flush()
 
-    return ingested, skipped, evidence
-
+    batch_uuid = _westmetall_batch_uuid(
+        start_date=start_date,
+        end_date=end_date,
+        html_sha256=evidence.html_sha256,
+        inserted_dates=inserted_dates,
+    )
+    return [price.id for price in inserted_prices], batch_uuid, ingested, skipped, evidence

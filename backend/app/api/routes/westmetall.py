@@ -2,7 +2,7 @@ import calendar
 import uuid as _uuid
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.auth import require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_SCRAPING, limiter
-from app.api.dependencies.audit import audit_event
+from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.models.market_data import CashSettlementPrice
 from app.services.cash_settlement_prices import (
     ingest_westmetall_cash_settlement_bulk,
@@ -62,6 +63,8 @@ def _compute_monthly_averages(
     now = datetime.now(timezone.utc)
     results: list[CashSettlementPriceRead] = []
     for (year, month), prices in sorted(monthly.items(), reverse=True):
+        if not prices:
+            continue
         last_day = calendar.monthrange(year, month)[1]
         avg_price = sum(prices, Decimal("0")) / Decimal(len(prices))
         month_id = _uuid.uuid5(_NS_MONTHLY, f"{year}-{month:02d}")
@@ -71,7 +74,9 @@ def _compute_monthly_averages(
                 source="computed",
                 symbol=SYMBOL_MONTHLY_AVG,
                 settlement_date=date(year, month, last_day),
-                price_usd=avg_price.quantize(Decimal("0.01")),
+                price_usd=avg_price.quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_EVEN
+                ),
                 source_url="computed_from_daily",
                 html_sha256="n/a",
                 fetched_at=now,
@@ -130,13 +135,16 @@ def ingest_cash_settlement_daily(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> CashSettlementIngestResponse:
-    del request
     try:
-        ingested_count, skipped_count, evidence = (
-            ingest_westmetall_cash_settlement_daily_for_date(
-                session, payload.settlement_date
+        with unit_of_work(session, request=request):
+            inserted_id, ingested_count, skipped_count, evidence = (
+                ingest_westmetall_cash_settlement_daily_for_date(
+                    session, payload.settlement_date
+                )
             )
-        )
+            # Skip audit: no row was persisted, so there is no durable mutation anchor.
+            if inserted_id is not None:
+                mark_audit_success(request, inserted_id)
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
@@ -176,15 +184,33 @@ def ingest_cash_settlement_bulk(
     __: None = Depends(require_role("trader")),
     session: Session = Depends(get_session),
 ) -> CashSettlementBulkIngestResponse:
-    del request
     try:
-        ingested_count, skipped_count, evidence = (
-            ingest_westmetall_cash_settlement_bulk(
-                session,
-                start_date=payload.start_date,
-                end_date=payload.end_date,
+        with unit_of_work(session, request=request):
+            inserted_ids, batch_uuid, ingested_count, skipped_count, evidence = (
+                ingest_westmetall_cash_settlement_bulk(
+                    session,
+                    start_date=payload.start_date,
+                    end_date=payload.end_date,
+                )
             )
-        )
+            # Skip audit: no rows were persisted, so there is no durable mutation anchor.
+            if inserted_ids:
+                mark_audit_success(
+                    request,
+                    batch_uuid,
+                    metadata={
+                        "batch_uuid": str(batch_uuid),
+                        "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
+                        "source": SOURCE_WESTMETALL,
+                        "requested_start_date": payload.start_date.isoformat()
+                        if payload.start_date
+                        else None,
+                        "requested_end_date": payload.end_date.isoformat()
+                        if payload.end_date
+                        else None,
+                        "html_sha256": evidence.html_sha256,
+                    },
+                )
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)

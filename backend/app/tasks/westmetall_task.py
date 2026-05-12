@@ -37,7 +37,11 @@ def run_westmetall_ingestion() -> None:
     logger.info("westmetall_task_start")
     session = SessionLocal()
     try:
-        ingested, skipped, evidence = ingest_westmetall_cash_settlement_bulk(session)
+        _, _, ingested, skipped, evidence = ingest_westmetall_cash_settlement_bulk(
+            session
+        )
+        if ingested:
+            session.commit()
         logger.info(
             "westmetall_task_success",
             ingested_count=ingested,

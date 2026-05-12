@@ -1,11 +1,13 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import require_any_role
 from app.core.database import get_session
 from app.core.pagination import paginate
+from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.models.counterparty import Counterparty
 from app.schemas.counterparty import (
     CounterpartyCreate,
@@ -21,7 +23,11 @@ router = APIRouter()
 @router.post("", response_model=CounterpartyRead, status_code=status.HTTP_201_CREATED)
 def create_counterparty(
     payload: CounterpartyCreate,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(entity_type="counterparty", event_type="created")
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
     if payload.tax_id and not CounterpartyService.check_tax_id_unique(
@@ -31,7 +37,9 @@ def create_counterparty(
             status_code=status.HTTP_409_CONFLICT,
             detail="tax_id already exists",
         )
-    cp = CounterpartyService.create(session, payload.model_dump())
+    with unit_of_work(session, request=request):
+        cp = CounterpartyService.create(session, payload.model_dump(), commit=False)
+        mark_audit_success(request, cp.id)
     return CounterpartyRead.model_validate(cp)
 
 
@@ -82,7 +90,11 @@ def get_counterparty(
 def update_counterparty(
     counterparty_id: UUID,
     payload: CounterpartyUpdate,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(entity_type="counterparty", event_type="updated")
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
     cp = CounterpartyService.get_by_id(session, counterparty_id)
@@ -99,14 +111,20 @@ def update_counterparty(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="tax_id already exists",
             )
-    cp = CounterpartyService.update(session, cp, update_data)
+    with unit_of_work(session, request=request):
+        cp = CounterpartyService.update(session, cp, update_data, commit=False)
+        mark_audit_success(request, cp.id)
     return CounterpartyRead.model_validate(cp)
 
 
 @router.delete("/{counterparty_id}", response_model=CounterpartyRead)
 def delete_counterparty(
     counterparty_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    request: Request,
+    _: None = Depends(
+        audit_event(entity_type="counterparty", event_type="deleted")
+    ),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
     cp = CounterpartyService.get_by_id(session, counterparty_id)
@@ -114,5 +132,7 @@ def delete_counterparty(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
         )
-    cp = CounterpartyService.soft_delete(session, cp)
+    with unit_of_work(session, request=request):
+        cp = CounterpartyService.soft_delete(session, cp, commit=False)
+        mark_audit_success(request, cp.id)
     return CounterpartyRead.model_validate(cp)

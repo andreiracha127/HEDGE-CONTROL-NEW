@@ -27,7 +27,9 @@ class FinancePipelineService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def run_daily_pipeline(db: Session, run_date: date) -> FinancePipelineRun:
+    def run_daily_pipeline(
+        db: Session, run_date: date, *, commit: bool = True
+    ) -> FinancePipelineRun:
         """Execute (or resume) the daily finance pipeline for *run_date*.
 
         Idempotent: if a run already exists for the same date and is
@@ -104,8 +106,10 @@ class FinancePipelineService:
             run.finished_at = datetime.now(timezone.utc)
             run.steps_completed = len(PIPELINE_STEPS)
 
-        db.commit()
-        db.refresh(run)
+        db.flush()
+        if commit:
+            db.commit()
+            db.refresh(run)
         return run
 
     @staticmethod
@@ -194,6 +198,7 @@ class FinancePipelineService:
                     entity_id=contract.id,
                     period_start=run_date,
                     period_end=run_date,
+                    commit=False,
                 )
                 processed += 1
             except Exception:  # noqa: BLE001
@@ -211,7 +216,10 @@ class FinancePipelineService:
 
         try:
             create_cashflow_baseline_snapshot(
-                db, as_of_date=run_date, correlation_id=str(run.id)
+                db,
+                as_of_date=run_date,
+                correlation_id=str(run.id),
+                commit=False,
             )
             return 1
         except Exception:  # noqa: BLE001

@@ -25,7 +25,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
-import pytest
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
@@ -43,9 +42,10 @@ from app.models.contracts import (
 from app.models.counterparty import Counterparty
 from app.models.deal import Deal, DealLink
 from app.models.exposure import HedgeTask, HedgeTaskStatus
+from app.models.finance_pipeline import FinancePipelineRun
 from app.models.market_data import CashSettlementPrice
 from app.models.mtm import MTMSnapshot
-from app.models.orders import Order, OrderType, PriceType
+from app.models.orders import Order, OrderType, PriceType, SoPoLink
 from app.models.pl import PLSnapshot
 from app.models.quotes import QuoteState, RFQQuote
 from app.models.reconciliation_run import (
@@ -53,9 +53,9 @@ from app.models.reconciliation_run import (
     ReconciliationRunStatus,
 )
 from app.models.rfqs import RFQ, RFQInvitation, RFQInvitationPurpose, RFQState
+from app.services import westmetall_cash_settlement
 from app.services.audit_trail_service import (
     AuditTrailService,
-    MissingAuditSigningKey,
     _get_signing_key,
     _reset_signing_key_cache,
     verify_signature,
@@ -397,46 +397,346 @@ class TestFailClosedAtRoute:
             _reset_signing_key_cache()
 
 
+class TestA5RouteWorkerCoverage:
+    def test_counterparty_create_update_delete_emit_signed_audit(
+        self, client, session
+    ) -> None:
+        created = client.post(
+            "/counterparties",
+            json={"type": "broker", "name": "A5 CP", "country": "BRA"},
+        )
+        assert created.status_code == 201, created.text
+        cp_id = UUID(created.json()["id"])
+
+        updated = client.patch(f"/counterparties/{cp_id}", json={"city": "Sao Paulo"})
+        assert updated.status_code == 200, updated.text
+
+        deleted = client.delete(f"/counterparties/{cp_id}")
+        assert deleted.status_code == 200, deleted.text
+
+        rows = _audit_rows(session, entity_type="counterparty", entity_id=cp_id)
+        assert [row.event_type for row in rows] == ["created", "updated", "deleted"]
+        for row in rows:
+            _assert_signed(row)
+
+    def test_counterparty_create_rolls_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        with _without_signing_key():
+            resp = client.post(
+                "/counterparties",
+                json={"type": "broker", "name": "A5 CP Rollback", "country": "BRA"},
+            )
+
+        assert resp.status_code >= 500
+        assert (
+            session.query(Counterparty)
+            .filter(Counterparty.name == "A5 CP Rollback")
+            .count()
+            == 0
+        )
+
+    def test_counterparty_update_delete_roll_back_when_signing_key_missing(
+        self, client, session
+    ) -> None:
+        cp_id = UUID(_create_counterparty_via_api(client, name="A5 CP Stable"))
+
+        with _without_signing_key():
+            update = client.patch(f"/counterparties/{cp_id}", json={"city": "Rio"})
+        assert update.status_code >= 500
+        session.expire_all()
+        assert session.get(Counterparty, cp_id).city is None
+
+        with _without_signing_key():
+            delete = client.delete(f"/counterparties/{cp_id}")
+        assert delete.status_code >= 500
+        session.expire_all()
+        persisted = session.get(Counterparty, cp_id)
+        assert persisted is not None
+        assert persisted.is_deleted is False
+
+    def test_sopo_link_create_emits_signed_audit_and_rolls_back_on_audit_failure(
+        self, client, session
+    ) -> None:
+        so = _create_variable_sales_order(client)
+        po_resp = client.post(
+            "/orders/purchase",
+            json={"price_type": "fixed", "quantity_mt": 5.0, "avg_entry_price": 101.0},
+        )
+        assert po_resp.status_code == 201, po_resp.text
+        po = po_resp.json()
+
+        created = client.post(
+            "/orders/links",
+            json={
+                "sales_order_id": so["id"],
+                "purchase_order_id": po["id"],
+                "linked_tons": 2.0,
+            },
+        )
+        assert created.status_code == 201, created.text
+        link_id = UUID(created.json()["id"])
+        rows = _audit_rows(session, entity_type="sopo_link", entity_id=link_id)
+        assert len(rows) == 1
+        assert rows[0].event_type == "created"
+        _assert_signed(rows[0])
+
+        so2 = _create_variable_sales_order(client)
+        po2_resp = client.post(
+            "/orders/purchase",
+            json={"price_type": "fixed", "quantity_mt": 5.0, "avg_entry_price": 102.0},
+        )
+        assert po2_resp.status_code == 201, po2_resp.text
+        with _without_signing_key():
+            failed = client.post(
+                "/orders/links",
+                json={
+                    "sales_order_id": so2["id"],
+                    "purchase_order_id": po2_resp.json()["id"],
+                    "linked_tons": 1.0,
+                },
+            )
+        assert failed.status_code >= 500
+        session.expire_all()
+        assert (
+            session.query(SoPoLink)
+            .filter(SoPoLink.sales_order_id == UUID(so2["id"]))
+            .count()
+            == 0
+        )
+
+    def test_finance_pipeline_manual_run_emits_audit_and_rolls_back_on_failure(
+        self, client, session
+    ) -> None:
+        ok = client.post("/finance/pipeline/run", json={"run_date": "2026-05-11"})
+        assert ok.status_code == 201, ok.text
+        run_id = UUID(ok.json()["id"])
+        rows = _audit_rows(
+            session, entity_type="finance_pipeline_run", entity_id=run_id
+        )
+        assert len(rows) == 1
+        assert rows[0].event_type == "manual_run_triggered"
+        _assert_signed(rows[0])
+
+        with _without_signing_key():
+            failed = client.post(
+                "/finance/pipeline/run", json={"run_date": "2026-05-12"}
+            )
+        assert failed.status_code >= 500
+        session.expire_all()
+        assert (
+            session.query(FinancePipelineRun)
+            .filter(FinancePipelineRun.run_date == date(2026, 5, 12))
+            .count()
+            == 0
+        )
+
+    def test_finance_pipeline_pl_snapshot_rolls_back_when_audit_fails(
+        self, client, session, monkeypatch
+    ) -> None:
+        from app.schemas.pl import PLResultResponse
+
+        _insert_price(session, settlement_date=date(2026, 5, 12), price_usd="110")
+        _create_hedge_contract_via_api(client)
+
+        def fake_compute_pl(*args, **kwargs):
+            _ = args, kwargs
+            return PLResultResponse(realized_pl=Decimal("0"), unrealized_mtm=Decimal("1"))
+
+        monkeypatch.setattr(
+            "app.services.pl_snapshot_service.compute_pl",
+            fake_compute_pl,
+        )
+
+        with _without_signing_key():
+            failed = client.post(
+                "/finance/pipeline/run", json={"run_date": "2026-05-12"}
+            )
+
+        assert failed.status_code >= 500
+        session.expire_all()
+        assert (
+            session.query(FinancePipelineRun)
+            .filter(FinancePipelineRun.run_date == date(2026, 5, 12))
+            .count()
+            == 0
+        )
+        assert session.query(PLSnapshot).count() == 0
+
+    def test_westmetall_single_and_bulk_emit_signed_audit_metadata(
+        self, client, session, monkeypatch
+    ) -> None:
+        _mock_westmetall_html(monkeypatch, [("30.01.2026", "2,567.50")])
+        single = client.post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+            json={"settlement_date": "2026-01-30"},
+        )
+        assert single.status_code == 200, single.text
+        single_price = (
+            session.query(CashSettlementPrice)
+            .filter(CashSettlementPrice.settlement_date == date(2026, 1, 30))
+            .one()
+        )
+        single_rows = _audit_rows(
+            session, entity_type="cash_settlement_price", entity_id=single_price.id
+        )
+        assert len(single_rows) == 1
+        assert single_rows[0].event_type == "ingested"
+        _assert_signed(single_rows[0])
+
+        _mock_westmetall_html(
+            monkeypatch,
+            [("02.02.2026", "2,600.00"), ("03.02.2026", "2,610.00")],
+        )
+        bulk = client.post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest-bulk",
+            json={"start_date": "2026-02-02", "end_date": "2026-02-03"},
+        )
+        assert bulk.status_code == 200, bulk.text
+        assert bulk.json()["ingested_count"] == 2
+        bulk_rows = (
+            session.query(AuditEvent)
+            .filter(
+                AuditEvent.entity_type == "cash_settlement_price",
+                AuditEvent.event_type == "bulk_ingested",
+            )
+            .all()
+        )
+        assert len(bulk_rows) == 1
+        metadata = bulk_rows[0].payload["metadata"]
+        assert metadata["source"] == "westmetall"
+        assert metadata["requested_start_date"] == "2026-02-02"
+        assert metadata["requested_end_date"] == "2026-02-03"
+        assert metadata["html_sha256"] == bulk.json()["html_sha256"]
+        assert len(metadata["inserted_ids"]) == 2
+        assert metadata["batch_uuid"] == str(bulk_rows[0].entity_id)
+        _assert_signed(bulk_rows[0])
+
+    def test_westmetall_rollback_and_noop_paths_do_not_emit_audit(
+        self, client, session, monkeypatch
+    ) -> None:
+        _mock_westmetall_html(monkeypatch, [("30.01.2026", "2,567.50")])
+        with _without_signing_key():
+            failed = client.post(
+                "/market-data/westmetall/aluminum/cash-settlement/ingest",
+                json={"settlement_date": "2026-01-30"},
+            )
+        assert failed.status_code >= 500
+        session.expire_all()
+        assert session.query(CashSettlementPrice).count() == 0
+        assert session.query(AuditEvent).count() == 0
+
+        ok = client.post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+            json={"settlement_date": "2026-01-30"},
+        )
+        assert ok.status_code == 200
+        skipped = client.post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+            json={"settlement_date": "2026-01-30"},
+        )
+        assert skipped.status_code == 200
+        assert skipped.json()["skipped_count"] == 1
+        assert session.query(AuditEvent).count() == 1
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Static assertion: every in-scope route has the audit_event Depends
 # ───────────────────────────────────────────────────────────────────────
 
 
 class TestRouteCoverageStatic:
-    """Static check that the in-scope economic mutation routes have an
-    ``audit_event`` dependency wired. This guards against future PRs
-    silently dropping the dependency."""
+    """Every mutating route must be inventory-classified.
 
-    EXPECTED = {
-        ("POST", "/deals"),
-        ("POST", "/deals/{deal_id}/links"),
-        ("DELETE", "/deals/{deal_id}/links/{link_id}"),
-        ("POST", "/deals/{deal_id}/pnl-snapshot"),
-        ("POST", "/exposures/reconcile"),
-        ("POST", "/exposures/tasks/{task_id}/execute"),
+    Routes classified as covered institutional mutations must wire the
+    route-level ``audit_event`` dependency. Behavioral tests above prove rows
+    are actually emitted for the newly covered A5-2 families.
+    """
+
+    CLASSIFICATION = {
+        ("POST", "/counterparties"): "covered institutional mutation",
+        ("PATCH", "/counterparties/{counterparty_id}"): "covered institutional mutation",
+        ("DELETE", "/counterparties/{counterparty_id}"): "covered institutional mutation",
+        ("POST", "/orders/sales"): "covered institutional mutation",
+        ("POST", "/orders/purchase"): "covered institutional mutation",
+        ("POST", "/orders/links"): "covered institutional mutation",
+        ("PATCH", "/orders/{order_id}/archive"): "covered institutional mutation",
+        ("POST", "/exposures/reconcile"): "covered institutional mutation",
+        ("POST", "/exposures/tasks/{task_id}/execute"): "covered institutional mutation",
+        ("POST", "/deals"): "covered institutional mutation",
+        ("POST", "/deals/pnl-breakdown"): "non-mutating analytical command",
+        ("POST", "/deals/{deal_id}/links"): "covered institutional mutation",
+        ("DELETE", "/deals/{deal_id}/links/{link_id}"): "covered institutional mutation",
+        ("POST", "/deals/{deal_id}/pnl-snapshot"): "covered institutional mutation",
+        ("POST", "/contracts/hedge"): "covered institutional mutation",
+        ("PATCH", "/contracts/hedge/{contract_id}/archive"): "covered institutional mutation",
+        ("PATCH", "/contracts/hedge/{contract_id}"): "covered institutional mutation",
+        ("PATCH", "/contracts/hedge/{contract_id}/status"): "covered institutional mutation",
+        ("DELETE", "/contracts/hedge/{contract_id}"): "covered institutional mutation",
+        ("POST", "/linkages"): "covered institutional mutation",
+        ("POST", "/rfqs"): "covered institutional mutation",
+        ("POST", "/rfqs/preview-text"): "non-mutating preview command",
+        ("POST", "/rfqs/{rfq_id}/quotes"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/reject"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/cancel"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/reject-quote"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/refresh-counterparty"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/refresh"): "covered institutional mutation",
+        ("POST", "/rfqs/{rfq_id}/actions/award"): "covered institutional mutation",
+        ("PATCH", "/rfqs/{rfq_id}/archive"): "covered institutional mutation",
+        ("POST", "/cashflow/baseline/snapshots"): "covered institutional mutation",
+        ("POST", "/cashflow/contracts/{contract_id}/settle"): "covered institutional mutation",
+        ("POST", "/pl/snapshots"): "covered institutional mutation",
+        ("POST", "/scenario/what-if/run"): "explicitly out of A5 mutation scope: analytical scenario",
+        (
+            "POST",
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+        ): "covered institutional mutation",
+        (
+            "POST",
+            "/market-data/westmetall/aluminum/cash-settlement/ingest-bulk",
+        ): "covered institutional mutation",
+        ("POST", "/mtm/snapshots"): "covered institutional mutation",
+        ("POST", "/webhooks/whatsapp"): "explicitly out of A5 route audit scope: inbound delivery evidence",
+        ("POST", "/finance/pipeline/run"): "covered institutional mutation",
     }
 
-    def test_every_in_scope_route_has_audit_event_dependency(self) -> None:
+    def test_mutating_route_inventory_is_classified_and_audited(self) -> None:
         from app.main import app
 
-        # Build a (method, path) → endpoint map.
+        actual = set()
         for route in app.routes:
             method_path_pairs = {(m, route.path) for m in getattr(route, "methods", []) or []}
-            for mp in method_path_pairs & self.EXPECTED:
-                # Check that the endpoint's dependant tree mentions audit_event.
-                deps = route.dependant.dependencies if hasattr(route, "dependant") else []
-                source_names = []
-                for dep in deps:
-                    fn = dep.call
-                    name = getattr(fn, "__name__", "")
-                    qual = getattr(fn, "__qualname__", "")
-                    source_names.append(f"{name}|{qual}")
-                # The audit_event factory returns a closure whose qualname
-                # contains "audit_event".
-                joined = " ".join(source_names)
-                assert "audit_event" in joined, (
-                    f"Route {mp} missing audit_event dependency; deps={source_names}"
-                )
+            actual |= {
+                mp
+                for mp in method_path_pairs
+                if mp[0] in {"POST", "PUT", "PATCH", "DELETE"}
+            }
+
+        assert actual == set(self.CLASSIFICATION), (
+            "Mutating route inventory changed; classify the new route explicitly"
+        )
+
+        for route in app.routes:
+            method_path_pairs = {(m, route.path) for m in getattr(route, "methods", []) or []}
+            covered = {
+                mp
+                for mp in method_path_pairs & actual
+                if self.CLASSIFICATION[mp] == "covered institutional mutation"
+            }
+            if not covered:
+                continue
+            deps = route.dependant.dependencies if hasattr(route, "dependant") else []
+            source_names = []
+            for dep in deps:
+                fn = dep.call
+                name = getattr(fn, "__name__", "")
+                qual = getattr(fn, "__qualname__", "")
+                source_names.append(f"{name}|{qual}")
+            joined = " ".join(source_names)
+            assert "audit_event" in joined, (
+                f"Route {covered} missing audit_event dependency; deps={source_names}"
+            )
 
 
 @contextmanager
@@ -575,6 +875,34 @@ def _settlement_payload(source_event_id: str) -> dict:
             {"leg_id": "FLOAT", "direction": "IN", "amount": "1320.000000"},
         ],
     }
+
+
+class _FakeWestmetallResponse:
+    def __init__(self, html: bytes) -> None:
+        self.content = html
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError("http error")
+
+
+def _mock_westmetall_html(monkeypatch, rows: list[tuple[str, str]]) -> None:
+    table_rows = "\n".join(
+        f"<tr><td>{settlement_date}</td><td>{price}</td></tr>"
+        for settlement_date, price in rows
+    )
+    html = (
+        b"<html><body><table><tr><th>Date</th><th>Cash Settlement</th></tr>"
+        + table_rows.encode("utf-8")
+        + b"</table></body></html>"
+    )
+
+    def _fake_get(url: str, timeout: float):
+        _ = url, timeout
+        return _FakeWestmetallResponse(html)
+
+    monkeypatch.setattr(westmetall_cash_settlement.httpx, "get", _fake_get)
 
 
 class TestA5FailClosedMutationFamilies:

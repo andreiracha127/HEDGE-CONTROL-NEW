@@ -59,6 +59,7 @@ from app.services.llm_agent import (
     LLMUnavailableError,
 )
 from app.services import llm_agent as llm_agent_module
+from app.services.audit_trail_service import AuditTrailService
 from app.services.rfq_service import (
     RFQService,
     _persist_outbox_queued,
@@ -417,6 +418,7 @@ def _add_llm_decision_artifact(
     except (TypeError, ValueError) as exc:
         raise ArtifactPayloadError(str(exc)) from exc
     session.add(artifact)
+    session.flush()
     return artifact
 
 
@@ -660,12 +662,19 @@ class RFQOrchestrator:
                         failed=True,
                     )
                     raise
-                RFQOrchestrator._finalize_durable_message(
-                    session,
-                    msg,
-                    result,
-                    failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
-                )
+                if result.get("status") == "auto_quote_created":
+                    RFQOrchestrator._finalize_auto_quote_success(
+                        session,
+                        msg,
+                        result,
+                    )
+                else:
+                    RFQOrchestrator._finalize_durable_message(
+                        session,
+                        msg,
+                        result,
+                        failed=result.get("status") in _DURABLE_FAILURE_STATUSES,
+                    )
                 results.append(result)
             finally:
                 mark_message_finished(msg)
@@ -813,6 +822,108 @@ class RFQOrchestrator:
         durable.rfq_id = _parse_uuid(result.get("rfq_id"))
         durable.quote_id = _parse_uuid(result.get("quote_id") or result.get("existing_quote_id"))
         session.commit()
+
+    @staticmethod
+    def _finalize_auto_quote_success(
+        session: Session,
+        msg: WhatsAppInboundMessage,
+        result: dict,
+    ) -> None:
+        if msg.delivery_message_id is None:
+            session.commit()
+            return
+
+        try:
+            durable = session.get(InboundWebhookMessage, msg.delivery_message_id)
+            if durable is None:
+                session.commit()
+                return
+
+            quote_id = _parse_uuid(result.get("quote_id"))
+            rfq_id = _parse_uuid(result.get("rfq_id"))
+            canonical_numbers = _parse_canonical_ids(msg.text)
+            durable.processing_status = "processed"
+            durable.processing_completed_at = now_utc()
+            durable.processing_result = _json_safe(result)
+            durable.rfq_number = (
+                result.get("canonical_number")
+                or durable.rfq_number
+                or (canonical_numbers[0] if len(set(canonical_numbers)) == 1 else None)
+            )
+            durable.rfq_id = rfq_id
+            durable.quote_id = quote_id
+
+            if quote_id is None:
+                raise AssertionError("auto quote success missing quote_id")
+
+            artifact = (
+                session.query(LLMDecisionArtifact)
+                .filter(
+                    LLMDecisionArtifact.inbound_message_id == durable.id,
+                    LLMDecisionArtifact.quote_id == quote_id,
+                    LLMDecisionArtifact.final_status == "auto_quote_created",
+                )
+                .order_by(LLMDecisionArtifact.attempt_number.desc())
+                .first()
+            )
+            AuditTrailService.record_worker_event(
+                session,
+                entity_type="rfq_quote",
+                entity_id=quote_id,
+                event_type="rfq.auto_quote_created",
+                actor="rfq_orchestrator",
+                source="inbound_webhook_worker",
+                metadata={
+                    "rfq_id": str(rfq_id) if rfq_id is not None else None,
+                    "quote_id": str(quote_id),
+                    "message_id": msg.message_id,
+                    "durable_message_id": str(durable.id),
+                    "llm_decision_artifact_id": result.get(
+                        "llm_decision_artifact_id"
+                    )
+                    or (str(artifact.id) if artifact is not None else None),
+                    "llm_decision_status": "auto_quote_created",
+                },
+            )
+            session.commit()
+        except Exception as exc:
+            session.rollback()
+            RFQOrchestrator._mark_auto_quote_finalize_failed(session, msg, result, exc)
+            raise
+
+    @staticmethod
+    def _mark_auto_quote_finalize_failed(
+        session: Session,
+        msg: WhatsAppInboundMessage,
+        result: dict,
+        exc: Exception,
+    ) -> None:
+        if msg.delivery_message_id is None:
+            return
+
+        try:
+            durable = session.get(InboundWebhookMessage, msg.delivery_message_id)
+            if durable is None:
+                return
+
+            durable.processing_status = "failed"
+            durable.processing_completed_at = now_utc()
+            durable.processing_result = {
+                "message_id": msg.message_id,
+                "status": "auto_quote_finalize_failed",
+                "error": str(exc),
+            }
+            durable.quote_id = None
+            session.commit()
+        except Exception as cleanup_exc:
+            session.rollback()
+            logger.exception(
+                "orchestrator_auto_quote_finalize_cleanup_failed",
+                message_id=msg.message_id,
+                delivery_message_id=str(msg.delivery_message_id),
+                attempted_result_status=result.get("status"),
+                error=str(cleanup_exc),
+            )
 
     @staticmethod
     def _process_single_message(
@@ -1561,7 +1672,7 @@ class RFQOrchestrator:
             quote_id_str = str(quote.id)
             counterparty_id_str = str(invitation.counterparty_id)
             quote_price_str = str(quote.fixed_price_value)
-            _add_llm_decision_artifact(
+            artifact = _add_llm_decision_artifact(
                 session,
                 durable=durable,
                 rfq=rfq,
@@ -1582,7 +1693,8 @@ class RFQOrchestrator:
                 parse_trace=parse_trace,
                 quote_id=quote.id,
             )
-            session.commit()
+            if durable is None:
+                session.commit()
         except (HTTPException, SQLAlchemyError, ArtifactPayloadError) as exc:
             session.rollback()
             if not isinstance(exc, ArtifactPayloadError):
@@ -1638,6 +1750,9 @@ class RFQOrchestrator:
             "status": "auto_quote_created",
             "rfq_id": rfq_id_str,
             "quote_id": quote_id_str,
+            "llm_decision_artifact_id": str(artifact.id)
+            if artifact is not None
+            else None,
             "confidence": parsed.confidence,
         }
 

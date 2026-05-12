@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
 from app.core.database import get_session
+from app.api.dependencies.audit import audit_event, mark_audit_success
+from app.api.dependencies.uow import unit_of_work
 from app.schemas.finance_pipeline import (
     PipelineRunDetailRead,
     PipelineRunListResponse,
@@ -25,10 +27,21 @@ router = APIRouter()
 )
 def trigger_pipeline(
     body: TriggerPipelineRequest,
+    request: Request,
+    _: None = Depends(
+        audit_event(
+            entity_type="finance_pipeline_run",
+            event_type="manual_run_triggered",
+        )
+    ),
     db: Session = Depends(get_session),
     _user: dict = Depends(get_current_user),
-):
-    run = FinancePipelineService.run_daily_pipeline(db, body.run_date)
+) -> PipelineRunRead:
+    with unit_of_work(db, request=request):
+        run = FinancePipelineService.run_daily_pipeline(
+            db, body.run_date, commit=False
+        )
+        mark_audit_success(request, run.id)
     return run
 
 

@@ -120,6 +120,34 @@ class AuditTrailService:
         return audit_event
 
     @staticmethod
+    def record_worker_event(
+        session: Session,
+        *,
+        entity_type: str,
+        entity_id: uuid.UUID,
+        event_type: str,
+        actor: str,
+        source: str,
+        metadata: dict | None = None,
+    ) -> AuditEvent:
+        payload = {
+            "actor": actor,
+            "source": source,
+            "metadata": metadata or {},
+        }
+        payload_raw, payload_obj = normalize_payload_raw(payload)
+        return AuditTrailService.record(
+            session,
+            event_id=uuid.uuid4(),
+            entity_type=entity_type,
+            entity_id=entity_id,
+            event_type=event_type,
+            payload_raw=payload_raw,
+            payload_obj=payload_obj,
+            commit=False,
+        )
+
+    @staticmethod
     def list_events(
         db: Session,
         *,
