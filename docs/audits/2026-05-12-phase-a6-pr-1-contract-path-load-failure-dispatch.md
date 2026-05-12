@@ -125,7 +125,7 @@ The jury accepted that typed generated schema exists but routed pages use
 
 ## 4. Required Implementation Boundary
 
-### Endpoint Corrections
+### 4.1 Endpoint Corrections (J-A6-01)
 
 Correct the route files identified above to use current contract paths.
 
@@ -134,6 +134,10 @@ Minimum acceptable behavior:
 - Cashflow page calls `/cashflow/analytic`, `/cashflow/projection`, and the
   existing ledger path.
 - Contracts list/detail/status calls use `/contracts/hedge...`.
+- Critical coupling: do not merge the
+  `/contracts/hedge/{contract_id}/status` URL repair unless the settlement
+  guard in §4.2 is implemented in the same PR. URL repair without that guard
+  creates a reachable status-only settlement bypass.
 - MTM and P&L pages call the documented singleton snapshot endpoints with the
   required query parameters. Do not treat `/mtm/snapshots` or `/pl/snapshots`
   as collections and do not select a synthetic latest snapshot in the
@@ -142,18 +146,23 @@ Minimum acceptable behavior:
     `object_id` (uuid), and `as_of_date` (date);
   - P&L `GET /pl/snapshots` requires query params `entity_type` (string),
     `entity_id` (uuid), `period_start` (date), and `period_end` (date).
+- Example MTM query shape:
+  `/mtm/snapshots?object_type=hedge_contract&object_id={contract_uuid}&as_of_date=2026-05-12`.
+- Example P&L query shape:
+  `/pl/snapshots?entity_type=hedge_contract&entity_id={contract_uuid}&period_start=2026-05-01&period_end=2026-05-31`.
 - If the current page has no reliable source for those required parameters,
   call the established local error surface, such as
   `notifications.error("Missing parameter: <name>")`, and render a locked or
   disabled missing-parameter/configuration state instead of issuing a 422
-  request or inventing defaults.
+  request or inventing defaults. `notifications.error` exists in
+  `frontend-svelte/src/lib/stores/notifications.svelte.ts:43`.
 - Every repaired load path distinguishes:
   - loading;
   - successful empty data;
   - backend non-2xx failure;
   - malformed response.
 
-### Settlement Guard
+### 4.2 Settlement Guard (J-A6-02 guard slice)
 
 When contract detail/status paths are repaired, remove or hard-disable generic
 status transitions to `settled` and `partially_settled`.
@@ -178,7 +187,7 @@ dedicated ledger settlement form that gathers `source_event_id`,
 `cashflow_date`, and `legs` from the operator or a verified upstream source. Do
 not synthesize those fields from contract state in PR-A6-1.
 
-### Error Surfacing
+### 4.3 Error Surfacing (J-A6-05)
 
 For the RFQ and market-data mutation handlers in `J-A6-05`:
 
@@ -191,7 +200,7 @@ For the RFQ and market-data mutation handlers in `J-A6-05`:
 - keep successful mutation reloads unchanged unless the current code races or
   double-submits.
 
-### Drift Guard
+### 4.4 Drift Guard (J-A6-07)
 
 Add one narrow guard for the paths fixed in this wave:
 
@@ -199,26 +208,44 @@ Add one narrow guard for the paths fixed in this wave:
   reappear under `frontend-svelte/src`.
 
 The guard must cover at least the seven stale paths listed in `J-A6-01`.
+The guard must fail closed on any match for those literals; it is not an
+advisory grep.
 Typed-client migration remains out of scope for this wave unless it is already
 needed for one of the repaired call sites and does not broaden beyond that
 file.
 
 ## 5. Acceptance Criteria
 
+### 5.1 J-A6-01 Endpoint Corrections
+
 - No routed page in this wave calls `/cashflow/analytics`,
   `/cashflow/projections`, `/contracts`, `/contracts/{id}`,
   `/contracts/{id}/status`, `/mtm/snapshots/latest`, or `/pl/snapshot/latest`.
 - Each repaired page has an explicit non-2xx error state.
-- RFQ reject/cancel/refresh and market-data ingest show backend failure detail
-  instead of silently clearing in-flight state.
-- The focused static drift guard prevents these exact stale paths from passing
-  tests again.
-- Contract detail does not expose generic status-patch actions for `settled`
-  or `partially_settled`.
 - MTM/P&L snapshot calls include the documented singleton query parameters or
   render an explicit missing-parameter state before making a request.
 - Missing snapshot parameters are surfaced through an operator-visible error
   and no backend request is submitted.
+
+### 5.2 J-A6-05 Error Surfacing
+
+- RFQ reject/cancel/refresh and market-data ingest show backend failure detail
+  instead of silently clearing in-flight state.
+- Error handling extracts `detail`, `error`, or `message` where available and
+  falls back to HTTP status if the backend body is unstructured.
+
+### 5.3 J-A6-07 Drift Guard
+
+- The focused static drift guard prevents these exact stale paths from passing
+  tests again.
+
+### 5.4 J-A6-02 Settlement Guard
+
+- Contract detail does not expose generic status-patch actions for `settled`
+  or `partially_settled`.
+
+### 5.5 General
+
 - The implementation does not create backend routes to satisfy stale frontend
   calls.
 - `docs/governance.md` has no diff.
