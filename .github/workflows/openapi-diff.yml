@@ -33,12 +33,17 @@ jobs:
         env:
           DATABASE_URL: "sqlite+pysqlite:///:memory:"
           SCHEDULER_DISABLED: "1"
+          # OpenAPI export is a build-time schema dump, not a deployment.
+          # APP_ENV=test keeps the auth/audit-signing fail-closed gates
+          # (J-A1-02, J-A5-06) from refusing to boot the in-memory app.
+          APP_ENV: "test"
         run: python backend/scripts/export_openapi.py > /tmp/openapi_pr.json
 
       - name: Export OpenAPI (main)
         env:
           DATABASE_URL: "sqlite+pysqlite:///:memory:"
           SCHEDULER_DISABLED: "1"
+          APP_ENV: "test"
         run: |
           # Overlay main's backend/ (incl. its requirements.txt) on the worktree.
           git checkout origin/main -- backend/

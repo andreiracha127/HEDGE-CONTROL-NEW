@@ -30,6 +30,12 @@ from datetime import date, datetime, timedelta, timezone
 # ── Make app importable ─────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///./dev.db")
+# Mark this process as local developer tooling so the auth/audit-signing
+# fail-closed gates (J-A1-02, J-A5-06) do not refuse to boot. APP_ENV is
+# the canonical environment marker; AUTH_DISABLED alone is no longer
+# honored under production/staging APP_ENV. Using setdefault preserves
+# any caller-set override (e.g. APP_ENV=test in CI).
+os.environ.setdefault("APP_ENV", "local")
 os.environ.setdefault("AUTH_DISABLED", "true")
 os.environ.setdefault("WHATSAPP_PROVIDER", "fake")
 

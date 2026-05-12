@@ -11,8 +11,14 @@ import httpx
 from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError, jwt
 
+from app.core.config import get_settings
+
 
 JWKS_CACHE_TTL_SECONDS = 300
+
+# APP_ENV values that require fully-configured JWT auth and reject anonymous
+# fallback. Canonical source is ``Settings.app_env`` (PR-A5-3 / J-A5-06).
+_FAIL_CLOSED_ENVS = {"production", "prod", "staging", "stage", "preprod", "pre-prod"}
 
 logger = logging.getLogger(__name__)
 
@@ -24,30 +30,80 @@ class AuthSettings:
     jwks_url: str
 
 
+def _canonical_env() -> str:
+    """Return the lowercased canonical APP_ENV from settings.
+
+    The legacy ``ENVIRONMENT`` os.getenv() lookup is intentionally NOT
+    consulted (J-A5-06): the auth fail-closed gate must agree with the
+    audit-signing fail-closed gate in ``config.py``, which reads
+    ``Settings.app_env`` only.
+    """
+    return (get_settings().app_env or "").strip().lower()
+
+
 def _auth_enabled() -> bool:
-    return bool(os.getenv("JWT_ISSUER"))
+    return bool(get_settings().jwt_issuer)
+
+
+def _auth_explicitly_disabled() -> bool:
+    return os.getenv("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
 
 
 def validate_auth_config() -> None:
-    """Call at startup. Fails if auth is disabled in production without explicit opt-out."""
+    """Call at startup. Fails closed in production/staging-like envs.
+
+    Behavior matrix (J-A5-06):
+
+    * ``APP_ENV`` in production/staging-like values:
+        * if JWT_ISSUER/JWT_AUDIENCE/JWKS_URL are all present → boot;
+        * otherwise → ``RuntimeError`` (fail-closed at startup);
+        * ``AUTH_DISABLED`` is **not** honored here — it cannot silently
+          downgrade a production deployment to anonymous access.
+    * ``APP_ENV`` in development/local/test:
+        * full JWT config present → boot;
+        * JWT_ISSUER unset → allowed; auth is disabled and an explicit
+          warning is emitted (especially if ``AUTH_DISABLED=true``).
+    """
+    s = get_settings()
+    env = _canonical_env()
+
     if _auth_enabled():
+        # Auth claims to be on; require full triplet, otherwise we'd fall
+        # back to anonymous on first JWKS dependency call in production.
+        if not (s.jwt_audience and s.jwks_url):
+            raise RuntimeError(
+                "JWT_ISSUER is set but JWT_AUDIENCE/JWKS_URL are missing — "
+                "auth would fail open. Configure the full triplet."
+            )
         return
-    if os.getenv("AUTH_DISABLED", "").lower() in ("1", "true", "yes"):
-        logger.warning("Authentication is explicitly disabled via AUTH_DISABLED")
-        return
-    env = os.getenv("ENVIRONMENT", "").lower()
-    if env in ("production", "prod"):
+
+    # Auth disabled. Fail closed in production/staging.
+    if env in _FAIL_CLOSED_ENVS:
+        if _auth_explicitly_disabled():
+            raise RuntimeError(
+                f"AUTH_DISABLED is not honored when APP_ENV={env!r}. "
+                "Configure JWT_ISSUER/JWT_AUDIENCE/JWKS_URL or change APP_ENV."
+            )
         raise RuntimeError(
-            "JWT_ISSUER is empty in production. Set JWT_ISSUER or explicitly set AUTH_DISABLED=true."
+            f"JWT_ISSUER is empty but APP_ENV={env!r}. "
+            "Set JWT_ISSUER/JWT_AUDIENCE/JWKS_URL — production/staging "
+            "auth is fail-closed."
+        )
+
+    if _auth_explicitly_disabled():
+        logger.warning(
+            "Authentication is explicitly disabled via AUTH_DISABLED (APP_ENV=%s)",
+            env or "<unset>",
         )
 
 
 def get_auth_settings() -> AuthSettings | None:
     if not _auth_enabled():
         return None
-    issuer = os.getenv("JWT_ISSUER")
-    audience = os.getenv("JWT_AUDIENCE")
-    jwks_url = os.getenv("JWKS_URL")
+    s = get_settings()
+    issuer = s.jwt_issuer
+    audience = s.jwt_audience
+    jwks_url = s.jwks_url
     if not issuer or not audience or not jwks_url:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -114,6 +170,11 @@ def _select_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
     )
 
 
+# Anonymous fallback identity. Used ONLY when auth is disabled in a
+# non-production/staging environment — see get_current_user(). The role
+# list intentionally includes ``auditor`` to keep local dev workflows
+# usable; the production/staging gate below prevents this identity from
+# ever being returned in a fail-closed environment.
 _ANONYMOUS_USER: dict[str, Any] = {
     "sub": "anonymous",
     "name": "Anonymous (auth disabled)",
@@ -126,6 +187,14 @@ def get_current_user(
     settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, Any]:
     if not _auth_enabled() or settings is None:
+        # Defense-in-depth (J-A5-06): even if validate_auth_config() was
+        # bypassed at startup, reject anonymous access at request time in
+        # production/staging-like environments.
+        if _canonical_env() in _FAIL_CLOSED_ENVS:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required",
+            )
         return _ANONYMOUS_USER
 
     token = _extract_token(request)
