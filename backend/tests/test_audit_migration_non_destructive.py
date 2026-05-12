@@ -67,8 +67,10 @@ def test_downgrade_does_not_drop_audit_events_table() -> None:
                         "audit history is institutional evidence."
                     )
                 pytest.fail(
-                    "downgrade() must not call op.drop_table() at all in this "
-                    "migration; the only droppable target is audit_events."
+                    "downgrade() must not call op.drop_table() in migration 015 — "
+                    "this revision exists only to create audit_events, so any "
+                    "drop_table() here would either remove audit_events itself "
+                    "or a sibling object that was never introduced."
                 )
 
 

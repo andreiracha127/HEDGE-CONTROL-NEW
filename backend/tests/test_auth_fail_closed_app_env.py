@@ -73,6 +73,16 @@ def test_validate_auth_config_fails_when_staging_app_env_and_no_jwt() -> None:
     assert "staging" in str(excinfo.value).lower()
 
 
+@pytest.mark.parametrize("env", ["prod", "stage", "preprod", "pre-prod"])
+def test_validate_auth_config_fails_for_other_fail_closed_env_aliases(env) -> None:
+    """Cover every alias enumerated in ``auth._FAIL_CLOSED_ENVS`` so that a
+    typo in ``APP_ENV`` (e.g. ``prod`` instead of ``production``) cannot
+    silently bypass the boot gate."""
+    with _settings_override(app_env=env, jwt_issuer="", jwt_audience="", jwks_url=""):
+        with pytest.raises(RuntimeError):
+            validate_auth_config()
+
+
 def test_validate_auth_config_does_not_consult_legacy_environment_var(monkeypatch) -> None:
     """Regression for the J-A5-06 mismatch: even with ENVIRONMENT unset (or
     set to a benign value), APP_ENV=production must still fail-closed."""
