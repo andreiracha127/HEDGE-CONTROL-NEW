@@ -138,13 +138,15 @@ Minimum acceptable behavior:
   required query parameters. Do not treat `/mtm/snapshots` or `/pl/snapshots`
   as collections and do not select a synthetic latest snapshot in the
   frontend:
-  - MTM `GET /mtm/snapshots` requires `object_type`, `object_id`, and
-    `as_of_date`;
-  - P&L `GET /pl/snapshots` requires `entity_type`, `entity_id`,
-    `period_start`, and `period_end`.
+  - MTM `GET /mtm/snapshots` requires query params `object_type` (enum/string),
+    `object_id` (uuid), and `as_of_date` (date);
+  - P&L `GET /pl/snapshots` requires query params `entity_type` (string),
+    `entity_id` (uuid), `period_start` (date), and `period_end` (date).
 - If the current page has no reliable source for those required parameters,
-  render an explicit missing-parameter/configuration state instead of issuing
-  a 422 request or inventing defaults.
+  call the established local error surface, such as
+  `notifications.error("Missing parameter: <name>")`, and render a locked or
+  disabled missing-parameter/configuration state instead of issuing a 422
+  request or inventing defaults.
 - Every repaired load path distinguishes:
   - loading;
   - successful empty data;
@@ -160,12 +162,21 @@ Minimum acceptable behavior:
 
 - no `Liquidar` or `Liquidar Parcial` button may call
   `/contracts/hedge/{contract_id}/status`;
-- if settlement remains visible, it must be non-mutating/disabled;
+- the settlement controls in
+  `frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:17-18`
+  must be removed or visibly disabled;
+- if settlement remains visible, it must be non-mutating/disabled and must not
+  submit a request;
 - do not fabricate `source_event_id`, `cashflow_date`, or `legs`.
 
 Removal or hard-disabling of settlement status buttons is mandatory. A full
 settlement form, ledger payload assembly, and ledger API submission are out of
 scope for this wave.
+
+If operator-facing settlement is needed in a future wave, it must be a
+dedicated ledger settlement form that gathers `source_event_id`,
+`cashflow_date`, and `legs` from the operator or a verified upstream source. Do
+not synthesize those fields from contract state in PR-A6-1.
 
 ### Error Surfacing
 
@@ -206,6 +217,8 @@ file.
   or `partially_settled`.
 - MTM/P&L snapshot calls include the documented singleton query parameters or
   render an explicit missing-parameter state before making a request.
+- Missing snapshot parameters are surfaced through an operator-visible error
+  and no backend request is submitted.
 - The implementation does not create backend routes to satisfy stale frontend
   calls.
 - `docs/governance.md` has no diff.
