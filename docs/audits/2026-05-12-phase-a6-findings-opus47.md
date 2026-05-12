@@ -80,14 +80,14 @@ Tier 1 (Blocking): 7. Tier 2 (High): 4. Tier 3 (Medium): 3. Tier 4: 0.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/cashflow/+page.svelte:33-35](frontend-svelte/src/routes/(protected)/cashflow/+page.svelte#L33-L35) —
+- [frontend-svelte/src/routes/(protected)/cashflow/+page.svelte:33-35](../../frontend-svelte/src/routes/(protected)/cashflow/+page.svelte#L33-L35) —
   page issues parallel GETs to `/cashflow/analytics${qs}`,
   `/cashflow/projections${qs}`, `/cashflow/ledger${qs}`.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — committed contract
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — committed contract
   defines `/cashflow/analytic` (singular), `/cashflow/projection` (singular),
   and `/cashflow/ledger`. There is no `/cashflow/analytics` and no
   `/cashflow/projections`.
-- [frontend-svelte/src/lib/api/schema.d.ts](frontend-svelte/src/lib/api/schema.d.ts) —
+- [frontend-svelte/src/lib/api/schema.d.ts](../../frontend-svelte/src/lib/api/schema.d.ts) —
   generated types contain `"/cashflow/analytic"`; the
   `apiFetch(string, init)` helper accepts any string and bypasses these types.
 
@@ -122,9 +122,9 @@ scope into a global refactor of every page in this PR.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:15](frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L15) —
+- [frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:15](../../frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L15) —
   `apiFetch('/mtm/snapshots/latest', { signal })`.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — defines
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — defines
   `/mtm/snapshots`, `/mtm/hedge-contracts/{contract_id}`,
   `/mtm/orders/{order_id}`. No `/mtm/snapshots/latest` path is published.
 
@@ -153,9 +153,9 @@ back.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:16](frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L16) —
+- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:16](../../frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L16) —
   `apiFetch('/pl/snapshot/latest', { signal })`.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — defines
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — defines
   `/pl/snapshots` (plural) and `/pl/{entity_type}/{entity_id}`. No
   `/pl/snapshot/latest` path exists.
 
@@ -184,11 +184,11 @@ projection (see J-A6-OPUS-06).
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/contracts/+page.svelte:19](frontend-svelte/src/routes/(protected)/contracts/+page.svelte#L19) —
+- [frontend-svelte/src/routes/(protected)/contracts/+page.svelte:19](../../frontend-svelte/src/routes/(protected)/contracts/+page.svelte#L19) —
   `apiFetch(\`/contracts?${params}\`, { signal })`.
-- [frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:55](frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte#L55) —
+- [frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:55](../../frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte#L55) —
   `apiFetch(\`/contracts/${contractId}\`, { signal })`.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — only
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — only
   `/contracts/hedge`, `/contracts/hedge/{contract_id}`,
   `/contracts/hedge/{contract_id}/archive`,
   `/contracts/hedge/{contract_id}/linkages`,
@@ -219,9 +219,9 @@ client-side "contracts vs hedge contracts" abstraction in this PR.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:70-72](frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte#L70-L72) —
+- [frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte:70-72](../../frontend-svelte/src/routes/(protected)/contracts/[id]/+page.svelte#L70-L72) —
   `apiFetch(\`/contracts/${contractId}/status\`, { method: 'PATCH', body: JSON.stringify({ status: targetStatus }) })`.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — canonical path is
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — canonical path is
   `/contracts/hedge/{contract_id}/status`.
 
 **Failure mode:**
@@ -249,14 +249,14 @@ non-2xx.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:41](frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L41) —
+- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:41](../../frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L41) —
   `data: entries.map((e: any) => e.commodity ?? e.label ?? '')`.
-- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:49](frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L49) —
+- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:49](../../frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L49) —
   `data: entries.map((e: any) => e.realized_pnl ?? e.realized ?? 0)`.
-- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:56](frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L56) —
+- [frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte:56](../../frontend-svelte/src/routes/(protected)/analytics/pnl/+page.svelte#L56) —
   `data: entries.map((e: any) => e.unrealized_pnl ?? e.unrealized ?? 0)`.
-- [frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:39](frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L39),
-  [:46](frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L46) —
+- [frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte:39](../../frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L39),
+  [:46](../../frontend-svelte/src/routes/(protected)/analytics/mtm/+page.svelte#L46) —
   `e.date ?? e.snapshot_date ?? e.label ?? ''` and
   `e.mtm_value ?? e.value ?? 0`.
 
@@ -294,15 +294,15 @@ generic "tolerant analytics renderer"; the rule is strict.
 **Severity:** Tier 1 / Blocking
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/lib/stores/auth.svelte.ts:31](frontend-svelte/src/lib/stores/auth.svelte.ts#L31) —
+- [frontend-svelte/src/lib/stores/auth.svelte.ts:31](../../frontend-svelte/src/lib/stores/auth.svelte.ts#L31) —
   `readonly userName = $derived(this.#claims?.name ?? this.#claims?.sub ?? '')`.
   When the JWT carries neither `name` nor `sub` the derived value is `''`.
-- [frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte:116-118](frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L116-L118) —
+- [frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte:116-118](../../frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L116-L118) —
   `apiFetch(\`/rfqs/${rfqId}/actions/award\`, { method: 'POST', body: JSON.stringify({ user_id: authStore.userName || 'trader' }) })`.
 - Same `user_id: authStore.userName || 'trader'` pattern at
-  [:142-144](frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L142-L144) (reject),
-  [:160-162](frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L160-L162) (cancel),
-  [:175-177](frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L175-L177) (refresh).
+  [:142-144](../../frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L142-L144) (reject),
+  [:160-162](../../frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L160-L162) (cancel),
+  [:175-177](../../frontend-svelte/src/routes/(protected)/rfq/[id]/+page.svelte#L175-L177) (refresh).
 
 **Failure mode:**
 The RFQ award/reject/cancel/refresh actions submit a body field `user_id`
@@ -351,15 +351,15 @@ closes.
 **Severity:** Tier 2 / High
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/lib/api/client.ts:1-7](frontend-svelte/src/lib/api/client.ts#L1-L7) —
+- [frontend-svelte/src/lib/api/client.ts:1-7](../../frontend-svelte/src/lib/api/client.ts#L1-L7) —
   defines a typed `openapi-fetch` `client<paths>(…)` import.
-- [frontend-svelte/src/lib/api/fetch.ts:9-24](frontend-svelte/src/lib/api/fetch.ts#L9-L24) —
+- [frontend-svelte/src/lib/api/fetch.ts:9-24](../../frontend-svelte/src/lib/api/fetch.ts#L9-L24) —
   exports `apiFetch(path: string, init?: RequestInit): Promise<Response>` —
   accepts any string path and returns an unstructured `Response`.
 - Every routed page uses `apiFetch(...)` with a string template literal,
   not `client.GET("/cashflow/analytic", …)`. Grep across
   `frontend-svelte/src/routes` shows zero `client.GET`/`client.POST` calls.
-- [frontend-svelte/scripts/check-schema-drift.sh](frontend-svelte/scripts/check-schema-drift.sh) —
+- [frontend-svelte/scripts/check-schema-drift.sh](../../frontend-svelte/scripts/check-schema-drift.sh) —
   drift detection requires a *running backend* at `${API_BASE_URL}/openapi.json`
   (default `http://localhost:8000`).
 
@@ -405,7 +405,7 @@ the whole codebase):
 **Status:** Open
 **Evidence:**
 - `Glob frontend-svelte/src/routes/**/*.svelte` — no `orders` route exists.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — defines `/orders`,
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — defines `/orders`,
   `/orders/purchase`, `/orders/sales`, `/orders/links`, `/orders/{order_id}`,
   `/orders/{order_id}/archive`.
 - `docs/governance.md` § Canonical Economic Model — "Sales Orders (SO)
@@ -444,9 +444,9 @@ in `docs/audit-protocol/` or roadmap, not silent.
 **Evidence:**
 - `Glob frontend-svelte/src/routes/**/*.svelte` — no `audit` route, no audit
   panel within RFQ/contract pages.
-- [docs/api/openapi_v1.json](docs/api/openapi_v1.json) — defines
+- [docs/api/openapi_v1.json](../../docs/api/openapi_v1.json) — defines
   `/audit/events` (list) and `/audit/events/{event_id}/verify`.
-- [frontend-svelte/src/lib/stores/auth.svelte.ts:3](frontend-svelte/src/lib/stores/auth.svelte.ts#L3) —
+- [frontend-svelte/src/lib/stores/auth.svelte.ts:3](../../frontend-svelte/src/lib/stores/auth.svelte.ts#L3) —
   `UserRole` includes `'auditor'`, implying the role is expected to have a
   workflow.
 
@@ -476,11 +476,11 @@ verification via `/audit/events/{event_id}/verify`. Gate it to the
 **Severity:** Tier 2 / High
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(public)/login/+page.svelte:30](frontend-svelte/src/routes/(public)/login/+page.svelte#L30) —
+- [frontend-svelte/src/routes/(public)/login/+page.svelte:30](../../frontend-svelte/src/routes/(public)/login/+page.svelte#L30) —
   copy reads "Cole seu token JWT para acessar a plataforma."
-- [:54](frontend-svelte/src/routes/(public)/login/+page.svelte#L54) —
+- [:54](../../frontend-svelte/src/routes/(public)/login/+page.svelte#L54) —
   "Ambiente de desenvolvimento — autenticação via token manual."
-- [:19](frontend-svelte/src/routes/(public)/login/+page.svelte#L19) —
+- [:19](../../frontend-svelte/src/routes/(public)/login/+page.svelte#L19) —
   `authStore.login(token.trim())` directly decodes the pasted JWT
   client-side; no backend call to `/auth/login` or equivalent.
 
@@ -512,11 +512,11 @@ as the only entry point.
 **Severity:** Tier 3 / Medium
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/lib/stores/auth.svelte.ts:13](frontend-svelte/src/lib/stores/auth.svelte.ts#L13) —
+- [frontend-svelte/src/lib/stores/auth.svelte.ts:13](../../frontend-svelte/src/lib/stores/auth.svelte.ts#L13) —
   `const SESSION_TOKEN_KEY = 'hedge-control.auth.token'`.
-- [:135-137](frontend-svelte/src/lib/stores/auth.svelte.ts#L135-L137) —
+- [:135-137](../../frontend-svelte/src/lib/stores/auth.svelte.ts#L135-L137) —
   storage backed by `sessionStorage`.
-- [frontend-svelte/src/lib/utils/sanitize.ts](frontend-svelte/src/lib/utils/sanitize.ts) —
+- [frontend-svelte/src/lib/utils/sanitize.ts](../../frontend-svelte/src/lib/utils/sanitize.ts) —
   only escapes HTML for chart tooltips; no global CSP, no `{@html}` audit.
 
 **Failure mode:**
@@ -584,11 +584,11 @@ the three GET URLs. Do not attempt full coverage in this PR.
 **Severity:** Tier 3 / Medium
 **Status:** Open
 **Evidence:**
-- [frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:180](frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte#L180) —
+- [frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:180](../../frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte#L180) —
   `bind:value={quantityMt}` on `<input type="number" step="0.01">`.
-- [:118-120](frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte#L118-L120) —
+- [:118-120](../../frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte#L118-L120) —
   the bound value is `JSON.stringify`d into the `/rfqs` body.
-- [frontend-svelte/src/lib/utils/format.ts:74-77](frontend-svelte/src/lib/utils/format.ts#L74-L77) —
+- [frontend-svelte/src/lib/utils/format.ts:74-77](../../frontend-svelte/src/lib/utils/format.ts#L74-L77) —
   display side uses `formatQuantityMT` with 3-decimal NUMERIC(_, 3) string
   arithmetic, indicating quantity is treated as NUMERIC(_, 3) backend-side.
 
