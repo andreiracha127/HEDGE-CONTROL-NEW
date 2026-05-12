@@ -30,9 +30,9 @@ entry/formatting with backend Decimal semantics.
   requires precision beyond plain two-decimal formatting.
 - Do not broaden RFQ quantity changes into RFQ lifecycle or actor identity
   fixes. Those belong to PR-A6-2.
-- Do not invent product-level rounding rules. If a two-decimal MT rule is
-  desired, it must be enforced consistently in backend and frontend and called
-  out explicitly.
+- Do not invent new rounding rules. MT quantities are three-decimal precision
+  per backend schema; any subsystem that requires a different MT precision must
+  be escalated instead of patched locally.
 
 Financial zeros, quantities, and settlement prices are institutional data, not
 decorative display values.
@@ -79,8 +79,8 @@ Accepted evidence:
   `type="number"`.
 - `frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:178` uses
   `step="0.01"`.
-- `frontend-svelte/src/lib/api/schema.d.ts:3291` allows
-  `quantity_mt: number | string`.
+- `frontend-svelte/src/lib/api/schema.d.ts:3291` defines
+  `RFQCreate.quantity_mt: number | string`.
 - `backend/app/schemas/_types.py:13` defines `MTQuantity` as a Decimal.
 - `frontend-svelte/src/lib/utils/format.ts:74-76` exports `formatQuantityMT`,
   which treats MT quantities as
@@ -106,6 +106,9 @@ For P&L and MTM analytics:
   - `MTMSnapshotResponse.as_of_date: string` (required date);
   - `MTMSnapshotResponse.object_id: string` (required);
   - `MTMSnapshotResponse.object_type: MTMObjectType` (required);
+- treat absent or `null` values for any required field above as malformed
+  response data. For P&L, missing `period_start` or `period_end` must render a
+  date-boundary error; do not substitute the current date or an empty label.
 - remove alternate-field chains such as `realized_pnl ?? realized` and
   `mtm_value ?? value` unless the generated schema explicitly documents both
   names;
@@ -118,8 +121,9 @@ For P&L and MTM analytics:
 
 For Westmetall/cash settlement prices:
 
-- use the existing `formatPrice(...)` helper exported from
-  `frontend-svelte/src/lib/utils/format.ts:79`;
+- use the existing `formatPrice(value, unit?)` helper exported from
+  `frontend-svelte/src/lib/utils/format.ts:79`; pass the unit argument, such as
+  `USD/MT`, when the market-data row has a unit;
 - do not create a new formatter unless the existing helper provably fails on a
   concrete settlement-price value; justify any new formatter in the PR body;
 - keep change/delta formatting separate if it has a different precision rule;
@@ -156,8 +160,8 @@ Add or update focused frontend tests.
 
 Minimum coverage:
 
-- existing `formatPrice` usage or the chosen settlement formatter preserves a
-  six-decimal string such as `2380.123456`;
+- existing `formatPrice` usage preserves a six-decimal string such as
+  `2380.123456`;
 - market-data page renders settlement prices with six decimals;
 - P&L analytics rejects or errors on missing realized/unrealized required
   fields;
