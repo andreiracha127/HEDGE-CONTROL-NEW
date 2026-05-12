@@ -91,7 +91,7 @@ def list_orders(
 def create_sopo_link(
     payload: SoPoLinkCreate,
     request: Request,
-    audit: None = Depends(
+    _: None = Depends(
         audit_event(
             entity_type="sopo_link",
             event_type="created",
@@ -100,7 +100,6 @@ def create_sopo_link(
     _user: dict = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> SoPoLinkRead:
-    _ = audit
     with unit_of_work(session, request=request):
         link = OrderService.create_sopo_link(session, payload, commit=False)
         mark_audit_success(request, link.id)

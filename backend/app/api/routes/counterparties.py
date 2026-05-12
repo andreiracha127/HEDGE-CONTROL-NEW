@@ -24,13 +24,12 @@ router = APIRouter()
 def create_counterparty(
     payload: CounterpartyCreate,
     request: Request,
-    audit: None = Depends(
+    _: None = Depends(
         audit_event(entity_type="counterparty", event_type="created")
     ),
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
-    _ = audit
     if payload.tax_id and not CounterpartyService.check_tax_id_unique(
         session, payload.tax_id
     ):
@@ -92,13 +91,12 @@ def update_counterparty(
     counterparty_id: UUID,
     payload: CounterpartyUpdate,
     request: Request,
-    audit: None = Depends(
+    _: None = Depends(
         audit_event(entity_type="counterparty", event_type="updated")
     ),
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
-    _ = audit
     cp = CounterpartyService.get_by_id(session, counterparty_id)
     if not cp:
         raise HTTPException(
@@ -123,13 +121,12 @@ def update_counterparty(
 def delete_counterparty(
     counterparty_id: UUID,
     request: Request,
-    audit: None = Depends(
+    _: None = Depends(
         audit_event(entity_type="counterparty", event_type="deleted")
     ),
-    _: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
-    _ = audit
     cp = CounterpartyService.get_by_id(session, counterparty_id)
     if not cp:
         raise HTTPException(

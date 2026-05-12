@@ -2,7 +2,7 @@ import calendar
 import uuid as _uuid
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_EVEN
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -72,7 +72,9 @@ def _compute_monthly_averages(
                 source="computed",
                 symbol=SYMBOL_MONTHLY_AVG,
                 settlement_date=date(year, month, last_day),
-                price_usd=avg_price.quantize(Decimal("0.01")),
+                price_usd=avg_price.quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_EVEN
+                ),
                 source_url="computed_from_daily",
                 html_sha256="n/a",
                 fetched_at=now,

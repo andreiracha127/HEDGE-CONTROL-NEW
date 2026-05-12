@@ -28,7 +28,7 @@ router = APIRouter()
 def trigger_pipeline(
     body: TriggerPipelineRequest,
     request: Request,
-    audit: None = Depends(
+    _: None = Depends(
         audit_event(
             entity_type="finance_pipeline_run",
             event_type="manual_run_triggered",
@@ -37,7 +37,6 @@ def trigger_pipeline(
     db: Session = Depends(get_session),
     _user: dict = Depends(get_current_user),
 ):
-    _ = audit
     with unit_of_work(db, request=request):
         run = FinancePipelineService.run_daily_pipeline(
             db, body.run_date, commit=False
