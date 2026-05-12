@@ -5,6 +5,7 @@
 	import { wsStore } from '$lib/stores/ws.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { apiFetch } from '$lib/api/fetch';
+	import { describeApiError } from '$lib/api/errors';
 	import { formatQuantityMT,
 		formatDate,
 		formatPrice,
@@ -146,7 +147,14 @@
 			if (res.ok) {
 				notifications.success('RFQ rejeitada');
 				await loadAll();
+			} else {
+				const message = await describeApiError(res);
+				notifications.error(`Falha ao rejeitar RFQ: ${message}`);
 			}
+		} catch (e) {
+			notifications.error(
+				`Erro de conexão ao rejeitar RFQ: ${e instanceof Error ? e.message : 'desconhecido'}`,
+			);
 		} finally {
 			operationInFlight = false;
 			boardMode = 'IDLE';
@@ -164,7 +172,14 @@
 			if (res.ok) {
 				notifications.success('RFQ cancelada');
 				await loadAll();
+			} else {
+				const message = await describeApiError(res);
+				notifications.error(`Falha ao cancelar RFQ: ${message}`);
 			}
+		} catch (e) {
+			notifications.error(
+				`Erro de conexão ao cancelar RFQ: ${e instanceof Error ? e.message : 'desconhecido'}`,
+			);
 		} finally {
 			operationInFlight = false;
 		}
@@ -179,9 +194,14 @@
 			if (res.ok) {
 				notifications.success('Convites reenviados');
 				await loadAll();
+			} else {
+				const message = await describeApiError(res);
+				notifications.error(`Falha ao reenviar convites: ${message}`);
 			}
-		} catch {
-			notifications.error('Erro ao reenviar convites');
+		} catch (e) {
+			notifications.error(
+				`Erro de conexão ao reenviar convites: ${e instanceof Error ? e.message : 'desconhecido'}`,
+			);
 		}
 	}
 

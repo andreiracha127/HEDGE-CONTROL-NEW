@@ -4,25 +4,50 @@
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
+	import { contractsHedgeListPath } from '$lib/api/paths';
+	import { describeApiError } from '$lib/api/errors';
 	import type { Contract } from '$lib/api/types/entities';
+
+	type ListState = 'loading' | 'ready' | 'error' | 'malformed';
 
 	let contracts = $state<Contract[]>([]);
 	let isLoading = $state(true);
+	let listState = $state<ListState>('loading');
+	let listError = $state<string>('');
 	let filterStatus = $state('');
 	let abortController: AbortController;
 
 	async function loadContracts(signal?: AbortSignal) {
 		isLoading = true;
+		listState = 'loading';
 		try {
-			const params = new URLSearchParams({ limit: '100' });
-			if (filterStatus) params.set('status', filterStatus);
-			const res = await apiFetch(`/contracts?${params}`, { signal });
+			const path = contractsHedgeListPath({
+				limit: 100,
+				status: filterStatus || undefined,
+			});
+			const res = await apiFetch(path, { signal });
 			if (res.ok) {
-				const data = await res.json();
-				contracts = data.items ?? data;
+				try {
+					const data = await res.json();
+					contracts = data.items ?? data;
+					listState = 'ready';
+				} catch {
+					contracts = [];
+					listState = 'malformed';
+					listError = 'Resposta do servidor não pôde ser interpretada';
+					notifications.error('Contratos: resposta malformada');
+				}
+			} else {
+				contracts = [];
+				listState = 'error';
+				listError = await describeApiError(res);
+				notifications.error(`Contratos: ${listError}`);
 			}
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') return;
+			contracts = [];
+			listState = 'error';
+			listError = e instanceof Error ? e.message : 'Erro de conexão';
 			notifications.error('Erro ao carregar contratos');
 		} finally {
 			isLoading = false;
@@ -52,6 +77,12 @@
 			<option value="cancelled">Cancelado</option>
 		</select>
 	</div>
+
+	{#if listState === 'error' || listState === 'malformed'}
+		<div class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+			Erro ao carregar contratos: {listError}
+		</div>
+	{/if}
 
 	<div class="mt-4 overflow-x-auto rounded border border-surface-800">
 		<table class="w-full text-sm">
@@ -85,7 +116,7 @@
 						<td class="px-3 py-2 text-xs text-surface-500">{formatDate(contract.trade_date ?? contract.created_at)}</td>
 					</tr>
 				{:else}
-					{#if !isLoading}
+					{#if !isLoading && listState === 'ready'}
 						<tr><td colspan="7" class="px-3 py-8 text-center text-surface-500">Nenhum contrato encontrado</td></tr>
 					{/if}
 				{/each}
