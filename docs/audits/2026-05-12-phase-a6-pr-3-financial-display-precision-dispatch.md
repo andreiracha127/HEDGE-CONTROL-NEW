@@ -82,7 +82,7 @@ Accepted evidence:
 - `frontend-svelte/src/lib/api/schema.d.ts:3291` allows
   `quantity_mt: number | string`.
 - `backend/app/schemas/_types.py:13` defines `MTQuantity` as a Decimal.
-- `frontend-svelte/src/lib/utils/format.ts:74` exports `formatQuantityMT`,
+- `frontend-svelte/src/lib/utils/format.ts:74-76` exports `formatQuantityMT`,
   which treats MT quantities as
   three-decimal precision.
 
@@ -95,11 +95,14 @@ For P&L and MTM analytics:
 - replace `any` response parsing with typed or runtime-validated response
   objects;
 - use canonical fields from `frontend-svelte/src/lib/api/schema.d.ts`:
-  - `PLSnapshotResponse.realized_pl: string` (required);
-  - `PLSnapshotResponse.unrealized_mtm: string` (required);
+  - `PLSnapshotResponse.realized_pl: string` in generated frontend types
+    (backend schema: `Decimal`; required);
+  - `PLSnapshotResponse.unrealized_mtm: string` in generated frontend types
+    (backend schema: `Decimal`; required);
   - `PLSnapshotResponse.period_start: string` (required date);
   - `PLSnapshotResponse.period_end: string` (required date);
-  - `MTMSnapshotResponse.mtm_value: string` (required);
+  - `MTMSnapshotResponse.mtm_value: string` in generated frontend types
+    (backend schema: `Decimal`; required);
   - `MTMSnapshotResponse.as_of_date: string` (required date);
   - `MTMSnapshotResponse.object_id: string` (required);
   - `MTMSnapshotResponse.object_type: MTMObjectType` (required);
