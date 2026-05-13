@@ -93,6 +93,22 @@
 
 	async function loadAll() {
 		const gen = ++loadGeneration;
+		// J-A6-12: evidence preservation on non-2xx reload is only valid
+		// when the user is reloading the SAME RFQ. On cross-RFQ navigation
+		// (SvelteKit reuses this component) `rfq?.id` still points at the
+		// previous RFQ; if /quotes or /state-events fails for the new one,
+		// we MUST clear stale evidence rather than display the previous
+		// RFQ's quotes/timeline under the new RFQ header.
+		const isFreshRfq = !rfq || rfq.id !== rfqId;
+		if (isFreshRfq) {
+			rfq = null;
+			invitations = [];
+			quotes = [];
+			stateEvents = [];
+			ranking = null;
+			isRankingStale = false;
+			boardMode = 'IDLE';
+		}
 		isLoading = true;
 		try {
 			const [rfqRes, quotesRes, eventsRes] = await Promise.all([
@@ -113,7 +129,8 @@
 
 			// J-A6-12: parse each list response exactly once. On non-2xx,
 			// surface an explicit error and PRESERVE existing quotes /
-			// state-events evidence — never replace with [] on failure.
+			// state-events evidence (same-RFQ reload only — cross-RFQ
+			// resets are handled at the top of loadAll).
 			if (quotesRes.ok) {
 				const parsed = await parseListBodyOnce(quotesRes);
 				if (parsed.ok) {

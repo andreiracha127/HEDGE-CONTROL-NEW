@@ -121,6 +121,27 @@ describe('RFQ detail page — single-parse + evidence preservation (J-A6-12 slic
 		expect(source).toMatch(/Falha ao recarregar timeline/);
 	});
 
+	it('resets evidence on cross-RFQ navigation so previous RFQ data does not leak under a new RFQ header', () => {
+		// Codex P2: SvelteKit reuses this component when navigating from
+		// /rfq/A to /rfq/B. The preservation branch above is correct for
+		// SAME-RFQ reloads but would otherwise display A's quotes /
+		// timeline under B's header if B's /quotes or /state-events
+		// returns non-2xx. loadAll() must therefore detect a fresh RFQ
+		// (rfq?.id !== rfqId) and clear stale evidence at the top.
+		expect(source).toMatch(/rfq\?\.id\s*!==\s*rfqId|rfq\.id\s*!==\s*rfqId/);
+		expect(source).toMatch(/isFreshRfq/);
+		// And on a fresh RFQ load, all evidence collections must be
+		// reset to their initial empty values BEFORE the await.
+		const freshBlock = source.match(/if\s*\(\s*isFreshRfq\s*\)\s*\{([\s\S]*?)\}/);
+		expect(freshBlock, 'isFreshRfq reset block must exist').toBeTruthy();
+		const block = freshBlock![1];
+		expect(block).toMatch(/rfq\s*=\s*null/);
+		expect(block).toMatch(/invitations\s*=\s*\[\s*\]/);
+		expect(block).toMatch(/quotes\s*=\s*\[\s*\]/);
+		expect(block).toMatch(/stateEvents\s*=\s*\[\s*\]/);
+		expect(block).toMatch(/ranking\s*=\s*null/);
+	});
+
 	it('parseListBodyOnce coerces both bare-array and {items:[]} backend shapes', () => {
 		// The backend canonical /quotes and /state-events return bare lists;
 		// older paginated envelopes use { items: [...] }. Helper must accept
