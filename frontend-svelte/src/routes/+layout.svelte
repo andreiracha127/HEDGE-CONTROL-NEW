@@ -26,16 +26,25 @@
 		}
 	}
 
-	const navItems = [
+	// J-A6-08/09: orders surface is visible to any authenticated user
+	// (read-only reconstructability), while audit is restricted to the
+	// `auditor` role both here and at the backend. The role gate is a UX
+	// courtesy — the security boundary is the backend's `require_role`
+	// check on `/audit/events` and `/audit/events/{id}/verify`.
+	const navItems = $derived([
 		{ href: '/', label: 'Dashboard', icon: '◉' },
 		{ href: '/rfq', label: 'RFQs', icon: '⇄' },
+		{ href: '/orders', label: 'Orders', icon: '⊟' },
 		{ href: '/exposures', label: 'Exposições', icon: '◧' },
 		{ href: '/cashflow', label: 'Cashflow', icon: '⊞' },
 		{ href: '/contracts', label: 'Contratos', icon: '◳' },
 		{ href: '/counterparties', label: 'Contrapartes', icon: '⊕' },
 		{ href: '/analytics/pnl', label: 'Analytics', icon: '◠' },
 		{ href: '/market-data', label: 'Market Data', icon: '◆' },
-	];
+		...(authStore.hasRole('auditor')
+			? [{ href: '/audit', label: 'Audit', icon: '⊜' }]
+			: []),
+	]);
 
 	let sidebarCollapsed = $state(false);
 

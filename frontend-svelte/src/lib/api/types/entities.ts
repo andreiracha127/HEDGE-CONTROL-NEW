@@ -283,3 +283,73 @@ export interface MarketPrice {
 	created_at: string;
 	fetched_at: string;
 }
+
+// ─── Orders (read-only PR-A6-4) ─────────────────────────────────────────
+//
+// Mirror of `components["schemas"]["OrderRead"]` and `OrderListResponse`.
+// Decimal columns (`quantity_mt`, `avg_entry_price`) arrive as strings;
+// pass them through `formatQuantityMT` / `formatPrice` rather than
+// `Number()`.
+
+export type OrderType = 'SO' | 'PO';
+export type PriceType = 'fixed' | 'variable';
+export type OrderPricingConvention = 'AVG' | 'AVGInter' | 'C2R';
+
+export interface OrderRead {
+	id: string;
+	order_type: OrderType;
+	commodity: string;
+	quantity_mt: string;
+	price_type: PriceType;
+	pricing_convention?: OrderPricingConvention | null;
+	pricing_type?: string | null;
+	avg_entry_price?: string | null;
+	currency: string;
+	counterparty_id?: string | null;
+	counterparty_name?: string | null;
+	reference_month?: string | null;
+	fixing_date?: string | null;
+	delivery_date_start?: string | null;
+	delivery_date_end?: string | null;
+	delivery_terms?: string | null;
+	observation_date_start?: string | null;
+	observation_date_end?: string | null;
+	payment_terms_days?: number | null;
+	notes?: string | null;
+	deleted_at?: string | null;
+	created_at: string;
+}
+
+export interface OrderListResponse {
+	items: OrderRead[];
+	next_cursor?: string | null;
+}
+
+// ─── Audit Events (read + verify PR-A6-4) ───────────────────────────────
+//
+// Mirror of `components["schemas"]["AuditEventRead"]`,
+// `AuditEventListResponse`, and `AuditVerifyResponse`. The signed `payload`
+// is intentionally `unknown` — auditors inspect raw evidence via the
+// detail view rather than typed property access.
+
+export interface AuditEventRead {
+	id: string;
+	entity_type: string;
+	entity_id: string;
+	event_type: string;
+	timestamp_utc: string;
+	checksum: string;
+	signature?: string | null;
+	payload: unknown;
+}
+
+export interface AuditEventListResponse {
+	events?: AuditEventRead[];
+	next_cursor?: string | null;
+}
+
+export interface AuditVerifyResponse {
+	event_id: string;
+	valid: boolean;
+	detail: string;
+}

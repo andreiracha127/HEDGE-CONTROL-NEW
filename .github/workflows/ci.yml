@@ -133,6 +133,13 @@ jobs:
           sleep 2
         env:
           VITE_API_BASE_URL: http://localhost:8000
+          # J-A6-10 opt-in: the E2E build is a production-mode bundle but
+          # the Playwright helpers use the dev-token paste login (see
+          # frontend-svelte/e2e/helpers.ts). This is the documented
+          # "explicit-opt-in" branch — the test harness signals that it
+          # understands the manual-token path is dev-only and is using
+          # it against a sandboxed backend on purpose.
+          VITE_ALLOW_MANUAL_TOKEN_LOGIN: '1'
 
       - name: Run Playwright tests
         working-directory: frontend-svelte
