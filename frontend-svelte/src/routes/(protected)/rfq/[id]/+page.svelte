@@ -44,17 +44,89 @@
 		try { return JSON.parse(raw); } catch { return []; }
 	}
 
+	// J-A6-04: never fabricate actor identity for RFQ mutation evidence.
+	// All award/reject/cancel/refresh bodies must carry the authenticated
+	// JWT subject (immutable claim). A missing sub blocks the mutation
+	// with an explicit auth error rather than sending a fallback string.
+	function requireActorSub(): string | null {
+		const sub = authStore.userSub;
+		if (!sub) {
+			notifications.error(
+				'Sessão sem identidade verificável (sub). Faça login novamente para agir nesta RFQ.',
+			);
+			return null;
+		}
+		return sub;
+	}
+
+	// J-A6-12: parse a Response body exactly once. The caller decides what
+	// to do on non-2xx; on success the parsed payload is returned.
+	//
+	// Canonical backend contract:
+	//   - GET /rfqs/{id}/quotes        → list[RFQQuoteRead]
+	//     (backend/app/api/routes/rfqs.py:222 — bare array)
+	//   - GET /rfqs/{id}/state-events  → list[RFQStateEventRead]
+	//     (backend/app/api/routes/rfqs.py:243 — bare array)
+	//
+	// We additionally coerce the legacy paginated `{ items: [...] }`
+	// envelope as a defence-in-depth fallback for older deployments still
+	// in flight; once all canonical clients have rolled out the bare-array
+	// shape, the items[] branch can be dropped.
+	async function parseListBodyOnce(res: Response): Promise<{ ok: true; items: unknown[] } | { ok: false; error: string }> {
+		try {
+			const body = await res.json();
+			if (Array.isArray(body)) return { ok: true, items: body };
+			if (body && typeof body === 'object' && Array.isArray((body as { items?: unknown[] }).items)) {
+				return { ok: true, items: (body as { items: unknown[] }).items };
+			}
+			return { ok: false, error: 'Resposta inesperada (não é lista)' };
+		} catch {
+			return { ok: false, error: 'Resposta malformada' };
+		}
+	}
+
+	async function describeListLoadFailure(res: Response): Promise<string> {
+		try {
+			const body = await res.json();
+			if (body && typeof body === 'object' && typeof (body as { detail?: unknown }).detail === 'string') {
+				return (body as { detail: string }).detail;
+			}
+		} catch {
+			// Fall through to default
+		}
+		return `HTTP ${res.status}`;
+	}
+
 	// ─── Data Fetching ──────────────────────────────────────────────────
 	let loadGeneration = 0;
+	let loadedEvidenceRfqId: string | null = null;
 
 	async function loadAll() {
+		const targetRfqId = rfqId;
 		const gen = ++loadGeneration;
+		// J-A6-12: evidence preservation on non-2xx reload is only valid
+		// when the user is reloading the SAME RFQ. On cross-RFQ navigation
+		// (SvelteKit reuses this component), clear stale evidence before
+		// awaiting. Use a non-reactive route-id marker here; reading `rfq`
+		// in this synchronous path would make the $effect depend on `rfq`
+		// and re-run every time the detail payload is assigned.
+		const isFreshRfq = loadedEvidenceRfqId !== targetRfqId;
+		if (isFreshRfq) {
+			loadedEvidenceRfqId = targetRfqId;
+			rfq = null;
+			invitations = [];
+			quotes = [];
+			stateEvents = [];
+			ranking = null;
+			isRankingStale = false;
+			boardMode = 'IDLE';
+		}
 		isLoading = true;
 		try {
 			const [rfqRes, quotesRes, eventsRes] = await Promise.all([
-				apiFetch(`/rfqs/${rfqId}`),
-				apiFetch(`/rfqs/${rfqId}/quotes`),
-				apiFetch(`/rfqs/${rfqId}/state-events`),
+				apiFetch(`/rfqs/${targetRfqId}`),
+				apiFetch(`/rfqs/${targetRfqId}/quotes`),
+				apiFetch(`/rfqs/${targetRfqId}/state-events`),
 			]);
 
 			if (gen !== loadGeneration) return; // Superseded by newer call
@@ -66,8 +138,34 @@
 
 			rfq = await rfqRes.json();
 			invitations = rfq?.invitations ?? [];
-			quotes = quotesRes.ok ? ((await quotesRes.json()).items ?? await quotesRes.json()) : [];
-			stateEvents = eventsRes.ok ? ((await eventsRes.json()).items ?? await eventsRes.json()) : [];
+
+			// J-A6-12: parse each list response exactly once. On non-2xx,
+			// surface an explicit error and PRESERVE existing quotes /
+			// state-events evidence (same-RFQ reload only — cross-RFQ
+			// resets are handled at the top of loadAll).
+			if (quotesRes.ok) {
+				const parsed = await parseListBodyOnce(quotesRes);
+				if (parsed.ok) {
+					quotes = parsed.items as RfqQuote[];
+				} else {
+					notifications.error(`Cotações: ${parsed.error}`);
+				}
+			} else {
+				const detail = await describeListLoadFailure(quotesRes);
+				notifications.error(`Falha ao recarregar cotações: ${detail}`);
+			}
+
+			if (eventsRes.ok) {
+				const parsed = await parseListBodyOnce(eventsRes);
+				if (parsed.ok) {
+					stateEvents = parsed.items as RfqStateEvent[];
+				} else {
+					notifications.error(`Timeline: ${parsed.error}`);
+				}
+			} else {
+				const detail = await describeListLoadFailure(eventsRes);
+				notifications.error(`Falha ao recarregar timeline: ${detail}`);
+			}
 
 			// Load ranking if in quotable state
 			if (rfq?.state === 'QUOTED') {
@@ -111,12 +209,14 @@
 	// ─── Actions ────────────────────────────────────────────────────────
 	async function awardRfq() {
 		if (!confirm('Confirma award automático (melhor ranking)?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		boardMode = 'AWARDING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/award`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ detail: 'Erro' }));
@@ -137,12 +237,14 @@
 
 	async function rejectRfq() {
 		if (!confirm('Rejeitar esta RFQ?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		boardMode = 'REJECTING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/reject`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('RFQ rejeitada');
@@ -163,11 +265,13 @@
 
 	async function cancelRfq() {
 		if (!confirm('Cancelar esta RFQ?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/cancel`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('RFQ cancelada');
@@ -186,10 +290,12 @@
 	}
 
 	async function refreshInvitations() {
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/refresh`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('Convites reenviados');

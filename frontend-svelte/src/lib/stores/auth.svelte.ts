@@ -29,6 +29,14 @@ class AuthStore {
 	readonly isAuthenticated = $derived(this.#token !== null);
 	readonly userRoles = $derived<UserRole[]>(this.#claims?.roles ?? []);
 	readonly userName = $derived(this.#claims?.name ?? this.#claims?.sub ?? '');
+	// J-A6-04: immutable subject accessor for evidence fields. Never falls back
+	// to display name or any other mutable claim. Returns null when no sub is
+	// present so callers MUST block the mutation rather than fabricate identity.
+	readonly userSub = $derived<string | null>(
+		typeof this.#claims?.sub === 'string' && this.#claims.sub.length > 0
+			? this.#claims.sub
+			: null,
+	);
 	readonly expiresAt = $derived(this.#claims?.exp ? this.#claims.exp * 1000 : null);
 
 	/** Session expiry warning flag — true when <5min remain */
