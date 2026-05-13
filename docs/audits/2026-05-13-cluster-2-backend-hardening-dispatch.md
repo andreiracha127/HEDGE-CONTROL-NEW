@@ -184,7 +184,7 @@ A merged PR closes Cluster 2 iff every item below is true on the final commit.
 - [ ] `backend/app/services/rfq_service.py` — every consumed method renamed parameter to `actor_sub`; internal callers updated.
 - [ ] Frontend mutation bodies under `frontend-svelte/src/routes/(protected)/rfq/` no longer contain `user_id` — this covers both the seven action endpoints and the POST `/rfqs` create body.
 - [ ] `rg -nP 'payload\.user_id' backend/app/api/routes/rfqs.py` returns zero matches.
-- [ ] `rg -nP "'user_id'\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/` returns zero matches.
+- [ ] `rg -nP "\buser_id\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/` returns zero matches. **Important:** the regex matches unquoted object-literal keys (`user_id: actorSub`), the JS/TS form actually used in the frontend (verified pre-amendment at `rfq/[id]/+page.svelte:219,247,274,298` and `rfq/new/+page.svelte:147`), not only string-quoted JSON keys (`'user_id':`). The pattern intentionally excludes read-side field references like `evt.user_id` because those have no `:` immediately after the field name — those remain legitimate on the RFQ detail page for displaying state-event actors (e.g. `<div>por {evt.user_id}</div>`).
 
 ### 6.2 D-2.2 acceptance
 
@@ -250,7 +250,7 @@ Before opening the PR:
 # Schema sweep — confirm user_id is gone from request schemas (only allowed mention: read-side RFQStateEventRead.user_id at line ~283)
 rg -nP "user_id" backend/app/schemas/rfq.py
 rg -nP "payload\\.user_id" backend/app/api/routes/rfqs.py
-rg -nP "'user_id'\\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/
+rg -nP "\\buser_id\\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/   # unquoted JS/TS object-literal keys, the actual form in the frontend
 
 # RFQCreate validator sweep — confirm a model_validator that rejects user_id is present
 rg -nP "user_id.*not accepted on POST /rfqs|model_validator.*before.*RFQCreate|RFQCreate.*user_id" backend/app/schemas/rfq.py
