@@ -249,7 +249,7 @@ class RFQCancelRequest(RFQUserActionBase):
 class RFQRefreshCounterpartyRequest(RFQUserActionBase):
     """Re-send invitation to a specific counterparty."""
 
-    counterparty_id: str = Field(..., max_length=100)
+    counterparty_id: UUID
 
 
 class RFQRead(BaseModel):

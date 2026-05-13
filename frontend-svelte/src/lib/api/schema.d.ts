@@ -3540,7 +3540,10 @@ export interface components {
          * @description Re-send invitation to a specific counterparty.
          */
         RFQRefreshCounterpartyRequest: {
-            /** Counterparty Id */
+            /**
+             * Counterparty Id
+             * Format: uuid
+             */
             counterparty_id: string;
         };
         /** RFQRefreshRequest */

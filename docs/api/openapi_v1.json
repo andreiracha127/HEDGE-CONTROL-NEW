@@ -5991,7 +5991,7 @@
         "description": "Re-send invitation to a specific counterparty.",
         "properties": {
           "counterparty_id": {
-            "maxLength": 100,
+            "format": "uuid",
             "title": "Counterparty Id",
             "type": "string"
           }
