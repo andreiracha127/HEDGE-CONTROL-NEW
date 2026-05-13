@@ -191,6 +191,14 @@ def test_get_current_actor_sub_rejects_missing_subject() -> None:
     assert excinfo.value.detail == "Authenticated subject is required"
 
 
+def test_get_current_actor_sub_rejects_subject_that_exceeds_evidence_sink() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        get_current_actor_sub({"sub": "x" * 65})
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authenticated subject must be at most 64 characters"
+
+
 def test_get_current_actor_sub_accepts_anonymous_fallback_subject() -> None:
     assert get_current_actor_sub(_ANONYMOUS_USER) == "anonymous"
 

@@ -234,7 +234,13 @@ def get_current_actor_sub(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authenticated subject is required",
         )
-    return sub.strip()
+    actor_sub = sub.strip()
+    if len(actor_sub) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated subject must be at most 64 characters",
+        )
+    return actor_sub
 
 
 def require_role(role: str):
