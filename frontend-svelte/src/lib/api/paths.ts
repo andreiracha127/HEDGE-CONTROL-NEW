@@ -88,6 +88,57 @@ export function pnlSnapshotsPath(params: {
 	return `/pl/snapshots?${qs}`;
 }
 
+// ─── Orders (read-only) ─────────────────────────────────────────────────
+//
+// `/orders` returns `OrderListResponse` with cursor pagination.
+// `/orders/{order_id}` returns a single `OrderRead`. PR-A6-4 surfaces
+// only the read endpoints — purchase/sales/archive mutations stay out of
+// scope.
+
+export function ordersListPath(params: {
+	cursor?: string | null;
+	limit?: number;
+} = {}): string {
+	const qs = new URLSearchParams();
+	if (params.limit != null) qs.set('limit', String(params.limit));
+	if (params.cursor) qs.set('cursor', params.cursor);
+	const tail = qs.toString();
+	return tail ? `/orders?${tail}` : '/orders';
+}
+
+export function orderDetailPath(orderId: string): string {
+	return `/orders/${requireParam(orderId, 'order_id')}`;
+}
+
+// ─── Audit (read-only + verify) ─────────────────────────────────────────
+//
+// `/audit/events` returns `AuditEventListResponse` with optional filters
+// + cursor pagination. `/audit/events/{event_id}/verify` returns
+// `AuditVerifyResponse { valid, detail, event_id }`.
+
+export function auditEventsPath(params: {
+	entity_type?: string | null;
+	entity_id?: string | null;
+	start?: string | null;
+	end?: string | null;
+	cursor?: string | null;
+	limit?: number;
+} = {}): string {
+	const qs = new URLSearchParams();
+	if (params.limit != null) qs.set('limit', String(params.limit));
+	if (params.entity_type) qs.set('entity_type', params.entity_type);
+	if (params.entity_id) qs.set('entity_id', params.entity_id);
+	if (params.start) qs.set('start', params.start);
+	if (params.end) qs.set('end', params.end);
+	if (params.cursor) qs.set('cursor', params.cursor);
+	const tail = qs.toString();
+	return tail ? `/audit/events?${tail}` : '/audit/events';
+}
+
+export function auditEventVerifyPath(eventId: string): string {
+	return `/audit/events/${requireParam(eventId, 'event_id')}/verify`;
+}
+
 // ─── Drift guard literals ───────────────────────────────────────────────
 //
 // Stale path literals retired by PR-A6-1. The drift guard test
