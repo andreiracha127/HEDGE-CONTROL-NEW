@@ -450,7 +450,7 @@ class TestRFQArchiveLifecycle:
         rfq_id = rfq_resp.json()["id"]
         cancel_resp = client.post(
             f"/rfqs/{rfq_id}/actions/cancel",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert cancel_resp.status_code == 200
         return rfq_id
@@ -477,7 +477,7 @@ class TestRFQArchiveLifecycle:
         # RFQ is in SENT (mocked WhatsApp succeeds in conftest)
         resp = client.patch(
             f"/rfqs/{rfq_id}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 409
         assert "CLOSED" in resp.json()["detail"]
@@ -486,7 +486,7 @@ class TestRFQArchiveLifecycle:
         rfq_id = self._create_archivable_rfq(client)
         resp = client.patch(
             f"/rfqs/{rfq_id}/archive",
-            json={"user_id": "alice"},
+            json={},
         )
         assert resp.status_code == 200, resp.text
 
@@ -494,7 +494,7 @@ class TestRFQArchiveLifecycle:
         archive_events = [e for e in events if e.get("trigger") == "archive"]
         assert len(archive_events) == 1
         evt = archive_events[0]
-        assert evt["user_id"] == "alice"
+        assert evt["user_id"] == "test-user"
         assert evt["event_timestamp"] is not None
         # Lifecycle marker is ``deleted_at``; ``RFQState`` itself does not
         # change on archive (the row is already CLOSED).
@@ -504,12 +504,12 @@ class TestRFQArchiveLifecycle:
         rfq_id = self._create_archivable_rfq(client)
         first = client.patch(
             f"/rfqs/{rfq_id}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert first.status_code == 200
         second = client.patch(
             f"/rfqs/{rfq_id}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert second.status_code == 409
         assert "already archived" in second.json()["detail"].lower()

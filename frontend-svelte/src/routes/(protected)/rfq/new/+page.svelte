@@ -122,10 +122,9 @@
 			return;
 		}
 
-		// J-A6-04: never fabricate actor identity. The RFQ create payload's
-		// user_id must be the authenticated JWT subject (immutable claim).
-		// If no sub is available, hard-fail visibly instead of sending a
-		// display name or literal 'trader' fallback.
+		// J-A6-04: never fabricate actor identity. Backend mutation evidence is
+		// derived from the authenticated JWT subject; the local sub check remains
+		// a UX preflight before issuing the request.
 		const actorSub = authStore.userSub;
 		if (!actorSub) {
 			notifications.error(
@@ -143,8 +142,7 @@
 				intent,
 				delivery_window_start: deliveryStart,
 				delivery_window_end: deliveryEnd,
-				counterparty_ids: selectedCounterpartyIds,
-				user_id: actorSub,
+				invitations: selectedCounterpartyIds.map((id) => ({ counterparty_id: id })),
 			};
 			if (intent === 'SPREAD') {
 				if (buyTradeId) body.buy_trade_id = buyTradeId;

@@ -224,6 +224,25 @@ def get_current_user(
     return payload
 
 
+def get_current_actor_sub(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> str:
+    """Authoritative actor identifier for mutation evidence."""
+    sub = user.get("sub") if isinstance(user, dict) else None
+    if not isinstance(sub, str) or not sub.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated subject is required",
+        )
+    actor_sub = sub.strip()
+    if len(actor_sub) > 64:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated subject must be at most 64 characters",
+        )
+    return actor_sub
+
+
 def require_role(role: str):
     return require_any_role(role)
 
@@ -232,6 +251,11 @@ def require_any_role(*roles: str):
     def _dependency(user: dict[str, Any] = Depends(get_current_user)) -> None:
         if not _auth_enabled():
             return
+        if not isinstance(user, dict):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authenticated user payload is invalid",
+            )
         user_roles = set(user.get("roles") or [])
         if not user_roles.intersection(set(roles)):
             raise HTTPException(

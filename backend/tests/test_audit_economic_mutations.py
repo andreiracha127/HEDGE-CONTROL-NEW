@@ -982,7 +982,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/reject",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500
@@ -998,7 +998,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/cancel",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500
@@ -1016,7 +1016,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500
@@ -1040,7 +1040,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/refresh-counterparty",
-                json={"counterparty_id": cp_id, "user_id": "U1"},
+                json={"counterparty_id": cp_id},
             )
 
         assert resp.status_code >= 500
@@ -1061,7 +1061,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/refresh",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500
@@ -1083,7 +1083,7 @@ class TestA5FailClosedMutationFamilies:
         with _without_signing_key():
             resp = client.post(
                 f"/rfqs/{rfq['id']}/actions/award",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500
@@ -1103,13 +1103,13 @@ class TestA5FailClosedMutationFamilies:
     ) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
-        closed = client.post(f"/rfqs/{rfq['id']}/actions/cancel", json={"user_id": "U1"})
+        closed = client.post(f"/rfqs/{rfq['id']}/actions/cancel", json={})
         assert closed.status_code == 200
 
         with _without_signing_key():
             resp = client.patch(
                 f"/rfqs/{rfq['id']}/archive",
-                json={"user_id": "U1"},
+                json={},
             )
 
         assert resp.status_code >= 500

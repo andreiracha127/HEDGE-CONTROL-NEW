@@ -151,7 +151,7 @@ def _close_rfq(client: TestClient, rfq_id: str) -> None:
     """Cancel an RFQ to drive it to ``CLOSED`` so it becomes archivable."""
     resp = client.post(
         f"/rfqs/{rfq_id}/actions/cancel",
-        json={"user_id": "test-user"},
+        json={},
     )
     assert resp.status_code == 200, resp.text
 
@@ -188,7 +188,7 @@ class TestRFQSoftDelete:
         _close_rfq(client, rfq["id"])
         resp = client.patch(
             f"/rfqs/{rfq['id']}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["deleted_at"] is not None
@@ -200,7 +200,7 @@ class TestRFQSoftDelete:
         _close_rfq(client, rfq["id"])
         client.patch(
             f"/rfqs/{rfq['id']}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         resp = client.get("/rfqs")
         assert resp.status_code == 200
@@ -214,7 +214,7 @@ class TestRFQSoftDelete:
         _close_rfq(client, rfq["id"])
         client.patch(
             f"/rfqs/{rfq['id']}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         resp = client.get("/rfqs?include_deleted=true")
         assert resp.status_code == 200
@@ -228,18 +228,18 @@ class TestRFQSoftDelete:
         _close_rfq(client, rfq["id"])
         client.patch(
             f"/rfqs/{rfq['id']}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         resp = client.patch(
             f"/rfqs/{rfq['id']}/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 409
 
     def test_archive_nonexistent_rfq_returns_404(self, client: TestClient):
         resp = client.patch(
             "/rfqs/00000000-0000-0000-0000-000000000000/archive",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 404
 
@@ -292,7 +292,7 @@ class TestArchivedRFQMutationsRejected:
 
         resp = client.post(
             f"/rfqs/{rfq['id']}/actions/refresh",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 409
         assert "archived" in resp.json()["detail"].lower()
@@ -308,7 +308,7 @@ class TestArchivedRFQMutationsRejected:
         resp = client.post(
             f"/rfqs/{rfq['id']}/actions/reject-quote"
             "?quote_id=00000000-0000-0000-0000-000000000000",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 409
         assert "archived" in resp.json()["detail"].lower()
@@ -321,7 +321,7 @@ class TestArchivedRFQMutationsRejected:
 
         resp = client.post(
             f"/rfqs/{rfq['id']}/actions/award",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert resp.status_code == 409
         assert "archived" in resp.json()["detail"].lower()
@@ -344,7 +344,7 @@ class TestArchivedRFQMutationsRejected:
 
         mutation_resp = client.post(
             f"/rfqs/{rfq['id']}/actions/cancel",
-            json={"user_id": "test-user"},
+            json={},
         )
         assert mutation_resp.status_code == 409
         assert "archived" in mutation_resp.json()["detail"].lower()
