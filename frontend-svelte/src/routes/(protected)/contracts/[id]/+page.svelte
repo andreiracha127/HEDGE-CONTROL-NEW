@@ -6,17 +6,25 @@
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
+	import { contractsHedgeDetailPath, contractsHedgeStatusPath } from '$lib/api/paths';
+	import { describeApiError } from '$lib/api/errors';
 	import type { Contract } from '$lib/api/types/entities';
 	const contractId = $derived(page.params.id ?? '');
 	let contract = $state<Contract | null>(null);
 	let isLoading = $state(true);
+	let loadError = $state<string>('');
 	let isTransitioning = $state(false);
 	let confirmAction = $state<string | null>(null);
 	let abortController: AbortController;
 
+	// J-A6-02 guard slice: settled / partially_settled are NOT exposed through
+	// the generic `/contracts/hedge/{id}/status` PATCH. Settlement must go
+	// through `/cashflow/contracts/{contract_id}/settle` (HedgeContractSettlementCreate
+	// with source_event_id + cashflow_date + legs) and is out of scope for
+	// PR-A6-1. Only `cancelled` remains here.
 	const VALID_TRANSITIONS: Record<string, string[]> = {
-		active: ['partially_settled', 'settled', 'cancelled'],
-		partially_settled: ['settled', 'cancelled'],
+		active: ['cancelled'],
+		partially_settled: ['cancelled'],
 	};
 
 	const STATUS_LABELS: Record<string, string> = {
@@ -26,17 +34,10 @@
 		cancelled: 'Cancelado',
 	};
 
+	// TRANSITION_CONFIG must not contain `settled` or `partially_settled`. The
+	// generic status endpoint must not be a settlement surface; settlement is
+	// a ledger-evidence operation that requires its own dedicated form.
 	const TRANSITION_CONFIG: Record<string, { label: string; style: string; confirm: string }> = {
-		partially_settled: {
-			label: 'Liquidar Parcial',
-			style: 'bg-warning/20 text-warning hover:bg-warning/30',
-			confirm: 'Confirma liquidação parcial deste contrato?',
-		},
-		settled: {
-			label: 'Liquidar',
-			style: 'bg-success/20 text-success hover:bg-success/30',
-			confirm: 'Confirma liquidação total deste contrato?',
-		},
 		cancelled: {
 			label: 'Cancelar',
 			style: 'bg-danger/20 text-danger hover:bg-danger/30',
@@ -48,15 +49,34 @@
 		contract?.status ? VALID_TRANSITIONS[contract.status] ?? [] : [],
 	);
 	const isTrader = $derived(authStore.hasRole('trader'));
+	const settlementOutOfScope = $derived(
+		contract?.status === 'active' || contract?.status === 'partially_settled',
+	);
 
 	async function loadContract(signal?: AbortSignal) {
 		isLoading = true;
+		loadError = '';
 		try {
-			const res = await apiFetch(`/contracts/${contractId}`, { signal });
-			if (res.ok) contract = await res.json();
-			else if (res.status === 404) goto('/contracts');
+			const res = await apiFetch(contractsHedgeDetailPath(contractId), { signal });
+			if (res.ok) {
+				try {
+					contract = await res.json();
+				} catch {
+					contract = null;
+					loadError = 'Resposta do servidor não pôde ser interpretada';
+					notifications.error('Contrato: resposta malformada');
+				}
+			} else if (res.status === 404) {
+				goto('/contracts');
+			} else {
+				contract = null;
+				loadError = await describeApiError(res);
+				notifications.error(`Erro ao carregar contrato: ${loadError}`);
+			}
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') return;
+			contract = null;
+			loadError = e instanceof Error ? e.message : 'Erro de conexão';
 			notifications.error('Erro ao carregar contrato');
 		} finally {
 			isLoading = false;
@@ -64,22 +84,37 @@
 	}
 
 	async function transitionStatus(targetStatus: string) {
+		// Defence-in-depth: even if a stale button somehow reaches this
+		// handler, settlement transitions must never traverse the generic
+		// status endpoint.
+		if (targetStatus === 'settled' || targetStatus === 'partially_settled') {
+			notifications.error('Liquidação exige formulário dedicado de ledger (out of scope)');
+			confirmAction = null;
+			return;
+		}
 		confirmAction = null;
 		isTransitioning = true;
 		try {
-			const res = await apiFetch(`/contracts/${contractId}/status`, {
+			const res = await apiFetch(contractsHedgeStatusPath(contractId), {
 				method: 'PATCH',
 				body: JSON.stringify({ status: targetStatus }),
 			});
 			if (res.ok) {
-				contract = await res.json();
+				try {
+					contract = await res.json();
+				} catch {
+					notifications.error('Status alterado mas resposta malformada — recarregando');
+					await loadContract();
+					return;
+				}
 				notifications.success(`Status alterado para ${STATUS_LABELS[targetStatus] ?? targetStatus}`);
 			} else if (res.status === 409) {
-				const data = await res.json().catch(() => null);
-				notifications.error(data?.detail ?? 'Transição de status não permitida');
+				const message = await describeApiError(res);
+				notifications.error(`Transição não permitida: ${message}`);
 				await loadContract();
 			} else {
-				notifications.error('Erro ao alterar status');
+				const message = await describeApiError(res);
+				notifications.error(`Erro ao alterar status: ${message}`);
 			}
 		} catch {
 			notifications.error('Erro de conexão ao alterar status');
@@ -116,6 +151,10 @@
 
 	{#if isLoading}
 		<div class="mt-4 text-surface-500">Carregando...</div>
+	{:else if loadError}
+		<div class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+			{loadError}
+		</div>
 	{:else if contract}
 		<div class="mt-4 flex items-center gap-3">
 			<h1 class="text-lg font-semibold text-surface-200">{contract.reference}</h1>
@@ -138,6 +177,16 @@
 						</button>
 					{/if}
 				{/each}
+			</div>
+		{/if}
+
+		{#if isTrader && settlementOutOfScope}
+			<div
+				class="mt-3 rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
+				data-testid="settlement-out-of-scope"
+			>
+				Liquidação total ou parcial exige formulário dedicado de ledger
+				(source_event_id, cashflow_date, legs). Indisponível neste wave.
 			</div>
 		{/if}
 

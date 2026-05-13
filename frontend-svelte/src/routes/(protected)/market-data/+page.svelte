@@ -4,6 +4,7 @@
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { formatNumber, formatDate } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
+	import { describeApiError } from '$lib/api/errors';
 	import EChart from '$lib/components/chart/EChart.svelte';
 	import type { MarketPrice } from '$lib/api/types/entities';
 
@@ -40,9 +41,14 @@
 			if (res.ok) {
 				notifications.success('Ingestão iniciada');
 				await loadPrices();
+			} else {
+				const message = await describeApiError(res);
+				notifications.error(`Falha na ingestão de market data: ${message}`);
 			}
-		} catch {
-			notifications.error('Erro ao iniciar ingestão');
+		} catch (e) {
+			notifications.error(
+				`Erro ao iniciar ingestão: ${e instanceof Error ? e.message : 'desconhecido'}`,
+			);
 		} finally {
 			isIngesting = false;
 		}
