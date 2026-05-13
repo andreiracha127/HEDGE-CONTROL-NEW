@@ -209,17 +209,16 @@
 			<div>
 				<label class="block text-sm font-medium text-surface-400" for="qty">Quantidade (MT)</label>
 				<!--
-					J-A6-11 (Sonnet hook v2 P2): `step` and `min` on a
-					`type="number"` input are a UX-only convenience layer —
-					browsers display spinner steps from them but do *not*
-					enforce precision on what is committed to `.value`. The
-					authoritative gate against >3-decimal MT input is the
+					J-A6-11: `step` and `min` on a `type="number"` input
+					are a UX convenience only — browsers expose spinner
+					steps from them but do *not* enforce precision on what
+					is committed to `.value`. The authoritative gate
+					against >3-decimal MT input is the
 					`validateMtQuantity` derivation below, which the
 					Preview/Submit buttons read through
-					`quantityValidation.ok`. Do not rely on the HTML5
-					step/min constraints for institutional precision; they
-					exist only to expose the desired step on the input
-					control.
+					`quantityValidation.ok` and which renders the inline
+					error on the field. Do not rely on the HTML5 step/min
+					constraints for institutional precision.
 				-->
 				<input
 					id="qty"
