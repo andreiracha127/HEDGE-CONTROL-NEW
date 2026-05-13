@@ -27,7 +27,7 @@ Commands run:
 Governance forbids fallback pricing regimes and hard-fails when price reference evidence is missing (`docs/governance.md:146`, `docs/governance.md:174-184`). The current branch returns a historical `DealPNLSnapshot` when all quotes are unprovable, and the hash check proves only the deal id, date, link ids, and persisted `price_references`, not the live economic content behind those links. Under §2.6 and §2.7, a compute endpoint cannot silently substitute a sealed historical valuation for an unprovable current valuation. Historical retrieval belongs in history endpoints; current computation must fail closed.
 
 **Implementation shape:**
-Remove the `if unprovable_errors:` candidate-probe branch in `DealEngineService.compute_deal_pnl` and raise the first `PriceReferenceUnprovable`. Invert the existing total-unavailability reuse tests so the expected result is a hard-fail and no new snapshot. If product later insists on outage repair, it must be a separate explicit request path with caller opt-in, signed `reused_during_outage` audit evidence, and a hash that includes canonical content of every linked Order / HedgeContract. Do not keep the current implicit repair branch.
+Remove the `if unprovable_errors:` candidate-probe branch in `DealEngineService.compute_deal_pnl` and raise the first `PriceReferenceUnprovable`. Invert the existing total-unavailability reuse tests so the expected result is a hard-fail and no new snapshot. **HTTP boundary: the route layer must map the propagated `PriceReferenceUnprovable` to HTTP `424 Failed Dependency` per `docs/governance.md:152` ("Hard-fail propagation: price reference unprovable → HTTP 424"). Any inline guidance in the Stage 1 Opus findings that names HTTP 422 for this case is overridden by this verdict — 422 is reserved by governance for missing zero-default economics (`avg_entry_price`, `fixed_price_value`) and missing settlement_date (governance lines 155-157), not for unprovable live prices.** If product later insists on outage repair, it must be a separate explicit request path with caller opt-in, signed `reused_during_outage` audit evidence, and a hash that includes canonical content of every linked Order / HedgeContract. Do not keep the current implicit repair branch.
 
 ### D-1.4 — Scenario duplicates A1 exposure aggregation
 
@@ -197,7 +197,8 @@ Extract the shared pure primitive, keep Decimal/`quantize_mt` at the boundary, a
 ### PR-CL1-2 — Deal P&L hard-fails on total price unavailability
 - Findings: J-CL1-03
 - Scope boundary: remove candidate-probe reuse from `compute_deal_pnl`, update snapshot-reuse tests, add mutation/outage regression.
-- Required verification: `pytest -q backend/tests/test_pnl_provenance.py backend/tests/test_pnl_price_evidence.py`.
+- **HTTP contract (binding per `docs/governance.md:152`):** the propagated `PriceReferenceUnprovable` must reach the caller as HTTP `424 Failed Dependency`. Wave dispatch and implementing PR must assert this code in route-level tests. **Do not** use HTTP 422 — governance reserves 422 for the distinct "missing zero-default economics" / "missing settlement_date" cases (governance lines 155-157), not for unprovable live prices. The Stage 1 Opus findings doc contains a 422 reference for this case that is overridden by this verdict and by governance §152.
+- Required verification: `pytest -q backend/tests/test_pnl_provenance.py backend/tests/test_pnl_price_evidence.py`; new route-level test asserting `424 Failed Dependency` on the total-unavailability path.
 
 ### PR-CL1-3 — Shared exposure primitive for scenario and live A1
 - Findings: J-CL1-04, J-CL1-05
