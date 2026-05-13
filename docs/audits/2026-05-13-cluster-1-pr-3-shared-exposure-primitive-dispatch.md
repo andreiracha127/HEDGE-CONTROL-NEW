@@ -125,7 +125,23 @@ Behavior must be byte-equivalent to today on every existing fixture. The unit te
 
 - **`_load_orders`** at `:213-217` (approx; verify line range): change `session.query(Order).all()` to `session.query(Order).filter(Order.deleted_at.is_(None)).all()`. The archived-orders block becomes invisible to scenario.
 - **`_load_contracts`** at `:219-223` (approx): change `session.query(HedgeContract).all()` to `session.query(HedgeContract).filter(HedgeContract.deleted_at.is_(None), HedgeContract.status.in_([HedgeContractStatus.active, HedgeContractStatus.partially_settled])).all()`. The status filter mirrors `exposure_service.py:351-378`.
-- **`_load_linkages`** at `:225-229` (approx): change to `session.query(HedgeOrderLinkage).join(Order, Order.id == HedgeOrderLinkage.order_id).filter(Order.deleted_at.is_(None)).all()` (or the equivalent SQL join that drops orphan linkages whose parent Order is archived). Verify whether HedgeOrderLinkage has its own lifecycle column at HEAD; if it does, AND it on; if not, the join-against-live-Orders is sufficient.
+- **`_load_linkages`** at `:225-229` (approx): the linkage filter must mirror `ExposureService._linked_by_order_subquery` in `backend/app/services/exposure_service.py:31-57` exactly. That subquery joins **both the order side AND the hedge side** and applies the hedge-side lifecycle filter (`HedgeContract.deleted_at IS NULL` plus status in `{active, partially_settled}`). Without the hedge-side filter, scenario will continue to subtract quantities from settled / cancelled / archived hedges' linkages from order residuals, while live exposure (which uses the subquery) will not — empty-delta parity will silently drift on any fixture with a linkage to an inactive or archived hedge. Replace with:
+
+  ```python
+  session.query(HedgeOrderLinkage)
+      .join(Order, Order.id == HedgeOrderLinkage.order_id)
+      .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+      .filter(
+          Order.deleted_at.is_(None),
+          HedgeContract.deleted_at.is_(None),
+          HedgeContract.status.in_(
+              [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+          ),
+      )
+      .all()
+  ```
+
+  If `HedgeOrderLinkage` itself gains a lifecycle column at HEAD verification time, AND it on as well; today the joins-against-live-parents are sufficient because `_linked_by_order_subquery` defines the canonical shape and operates without a linkage-side column.
 
 #### 4.3.2 Apply deltas at input shaping, not inside the primitive
 
@@ -145,7 +161,8 @@ Add `backend/tests/test_scenario_live_exposure_parity.py`:
 2. **`test_empty_delta_global_parity`**: same fixture; assert `GlobalExposureRead` rows are deeply equal.
 3. **`test_archived_order_excluded_from_scenario`**: archive one of the variable-price Orders, call scenario with empty deltas, assert the archived Order does not appear in either commercial or global exposure.
 4. **`test_settled_hedge_excluded_from_scenario`**: mark one HedgeContract as `settled`, call scenario with empty deltas, assert the settled hedge does not contribute to global exposure (mirrors live).
-5. **`test_orphan_linkage_excluded`**: archive the Order referenced by a HedgeOrderLinkage, call scenario, assert the orphan linkage is not consumed.
+5. **`test_orphan_linkage_excluded_via_archived_order`**: archive the Order referenced by a HedgeOrderLinkage, call scenario, assert the orphan linkage is not consumed.
+6. **`test_orphan_linkage_excluded_via_settled_hedge`**: leave the Order live, mark the linked HedgeContract `settled` (or `cancelled`, in a parametrized variant), call scenario with empty deltas, assert the linkage's quantity is **not** subtracted from the Order's residual exposure. This is the parity case Codex caught on the v1 dispatch — without the hedge-side filter on `_load_linkages`, scenario would still consume the inactive-hedge linkage while live exposure (via `_linked_by_order_subquery`) would not. Run as a parametrized test across `{settled, cancelled}` HedgeContractStatus values; the archived-hedge case is also a candidate fixture, exercised here or in test 4 above.
 
 The parity tests are the structural protection J-CL1-05 demands. They must call the **public** scenario / live endpoints (not the new primitives directly) so that the primitive is exercised through both callers.
 
@@ -183,14 +200,14 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 
 - [ ] `_load_orders` filters `Order.deleted_at.is_(None)`.
 - [ ] `_load_contracts` filters `HedgeContract.deleted_at.is_(None)` AND status in {`active`, `partially_settled`}.
-- [ ] `_load_linkages` excludes linkages whose parent Order is archived.
+- [ ] `_load_linkages` mirrors `ExposureService._linked_by_order_subquery`'s lifecycle filtering: excludes linkages whose parent Order is archived (`Order.deleted_at IS NULL`) **and** linkages whose linked HedgeContract is archived or not in `{active, partially_settled}` status. The query joins both `Order` and `HedgeContract`. Filter symmetry with the live subquery is the structural guarantee against scenario/live drift on the linked-quantity reduction.
 - [ ] `_compute_commercial_exposure` and `_compute_global_exposure` no longer exist as separate aggregation implementations (or are reduced to thin delegations).
 - [ ] No `float(...)` cast remains inside scenario aggregation paths.
 
 ### 6.4 Tests
 
-- [ ] `backend/tests/test_scenario_live_exposure_parity.py` exists with the 5 tests in §4.4.
-- [ ] All 5 parity tests pass.
+- [ ] `backend/tests/test_scenario_live_exposure_parity.py` exists with the 6 tests in §4.4 (parametrized variants count as one test).
+- [ ] All parity tests pass, including the inactive-hedge linkage variants (test 6) which exercise the hedge-side filter symmetry with `_linked_by_order_subquery`.
 - [ ] `backend/tests/test_scenario_whatif_run.py` and `backend/tests/test_exposure*.py` continue to pass.
 
 ### 6.5 Sweeps
@@ -198,6 +215,7 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 - [ ] `rg -nP "session\\.query\\(Order\\)\\.all\\(\\)" backend/app/services/scenario_whatif_service.py` returns zero matches.
 - [ ] `rg -nP "session\\.query\\(HedgeContract\\)\\.all\\(\\)" backend/app/services/scenario_whatif_service.py` returns zero matches.
 - [ ] `rg -nP "session\\.query\\(HedgeOrderLinkage\\)\\.all\\(\\)" backend/app/services/scenario_whatif_service.py` returns zero matches.
+- [ ] `rg -nP "HedgeOrderLinkage" backend/app/services/scenario_whatif_service.py` shows the new `_load_linkages` query joining BOTH `Order` AND `HedgeContract` with the hedge-side lifecycle filter (`HedgeContract.deleted_at` filter present, `HedgeContract.status.in_([...active..., ...partially_settled...])` present). A query that only joins `Order` is incomplete and will fail the parity tests in §4.4.
 - [ ] `rg -nP "float\\(" backend/app/services/scenario_whatif_service.py` returns zero new matches in aggregation paths (matches in MTM or unchanged paths are allowed).
 - [ ] `rg -nP "compute_commercial_exposure_pure|compute_global_exposure_pure" backend/app/services/` returns matches in both `exposure_service.py` (definition) and `scenario_whatif_service.py` (call site).
 - [ ] `python -m alembic heads` prints `043_a5_audit_payload_input`.
@@ -214,7 +232,7 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 
 §4.4 + §6.4 enumerate the tests. Restated as a checklist:
 
-1. `backend/tests/test_scenario_live_exposure_parity.py` (new) — 5 tests.
+1. `backend/tests/test_scenario_live_exposure_parity.py` (new) — 6 tests, where test 6 (inactive-hedge linkage variants) is parametrized over `{settled, cancelled}` HedgeContractStatus values.
 2. `backend/tests/test_scenario_whatif_run.py` (existing) — passes unchanged or with trivial fixture updates if a previous test asserted that scenario reads archived entities.
 3. `backend/tests/test_exposure_service.py` and any other `test_exposure*.py` — pass unchanged. Any test failure on these files is a regression in the live-side refactor (§4.2) and must be fixed before opening the PR.
 
@@ -311,6 +329,6 @@ The PR body must include:
   - **Scenario-input lifecycle filter mismatch**: the verdict's J-CL1-04 evidence cites three live-A1 filters (Order archived, HedgeContract archived, hedge status in {active, partially_settled}). The implementation must apply **all three** at the scenario input boundary, not just the Order filter. Codex will spot a missing status filter.
   - **`float(...)` cast survival**: if any of the old `float(item["..."])` lines in `_compute_commercial_exposure` / `_compute_global_exposure` survives the refactor (e.g. in a leftover helper), Codex will flag it.
   - **Parity test depth**: the parity tests must assert **deep equality** on Decimal fields, not float-tolerant equality. A `pytest.approx` in the parity tests would silently allow a representation-drift bug to land.
-  - **Orphan linkage handling**: J-CL1-04 §evidence calls out HedgeOrderLinkage rows whose parent Order is archived. Verify the `_load_linkages` filter actually excludes those. Codex may spot a query that filters Orders but keeps the linkage join open.
+  - **Orphan linkage handling — both sides**: J-CL1-04 §evidence calls out HedgeOrderLinkage rows whose parent Order is archived. Verify the `_load_linkages` filter actually excludes those. **Equally important — and the exact gap Codex caught on the v1 dispatch (this PR review)**: the linkage filter must also exclude rows whose linked HedgeContract is archived or not in `{active, partially_settled}` status, mirroring `ExposureService._linked_by_order_subquery`'s join+filter shape verbatim. A scenario `_load_linkages` that filters Orders but lets settled / cancelled / archived hedges' linkages through will silently subtract their quantities from order residuals while live exposure does not, breaking empty-delta parity. Sweep `rg -nP "HedgeContract" backend/app/services/scenario_whatif_service.py` and confirm `_load_linkages` joins HedgeContract with the lifecycle filter present.
 - The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies. The two surfaces — `exposure_service.py` (primitive + live-side delegation) and `scenario_whatif_service.py` (input boundary + delegation) — must be enumerated consistently across §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow. Drift between sections is the canonical authoring failure mode.
 - **The largest authoring risk** is accidentally changing live-side behavior during the refactor. Mitigation: write tests first (or run them between every refactor step). The parity tests are the structural guarantee; they should still pass even if the live-side refactor is incomplete, because the primitive is shared.
