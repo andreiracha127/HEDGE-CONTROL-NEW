@@ -127,14 +127,17 @@ describe('RFQ detail page — single-parse + evidence preservation (J-A6-12 slic
 		// SAME-RFQ reloads but would otherwise display A's quotes /
 		// timeline under B's header if B's /quotes or /state-events
 		// returns non-2xx. loadAll() must therefore detect a fresh RFQ
-		// (rfq?.id !== rfqId) and clear stale evidence at the top.
-		expect(source).toMatch(/rfq\?\.id\s*!==\s*rfqId|rfq\.id\s*!==\s*rfqId/);
+		// via a non-reactive route-id marker and clear stale evidence at
+		// the top without reading `rfq` in the $effect-triggered sync path.
+		expect(source).toMatch(/loadedEvidenceRfqId\s*!==\s*targetRfqId/);
+		expect(source).not.toMatch(/rfq\?\.id\s*!==\s*rfqId|rfq\.id\s*!==\s*rfqId/);
 		expect(source).toMatch(/isFreshRfq/);
 		// And on a fresh RFQ load, all evidence collections must be
 		// reset to their initial empty values BEFORE the await.
 		const freshBlock = source.match(/if\s*\(\s*isFreshRfq\s*\)\s*\{([\s\S]*?)\}/);
 		expect(freshBlock, 'isFreshRfq reset block must exist').toBeTruthy();
 		const block = freshBlock![1];
+		expect(block).toMatch(/loadedEvidenceRfqId\s*=\s*targetRfqId/);
 		expect(block).toMatch(/rfq\s*=\s*null/);
 		expect(block).toMatch(/invitations\s*=\s*\[\s*\]/);
 		expect(block).toMatch(/quotes\s*=\s*\[\s*\]/);

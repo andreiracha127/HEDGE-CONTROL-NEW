@@ -99,17 +99,20 @@
 
 	// ─── Data Fetching ──────────────────────────────────────────────────
 	let loadGeneration = 0;
+	let loadedEvidenceRfqId: string | null = null;
 
 	async function loadAll() {
+		const targetRfqId = rfqId;
 		const gen = ++loadGeneration;
 		// J-A6-12: evidence preservation on non-2xx reload is only valid
 		// when the user is reloading the SAME RFQ. On cross-RFQ navigation
-		// (SvelteKit reuses this component) `rfq?.id` still points at the
-		// previous RFQ; if /quotes or /state-events fails for the new one,
-		// we MUST clear stale evidence rather than display the previous
-		// RFQ's quotes/timeline under the new RFQ header.
-		const isFreshRfq = !rfq || rfq.id !== rfqId;
+		// (SvelteKit reuses this component), clear stale evidence before
+		// awaiting. Use a non-reactive route-id marker here; reading `rfq`
+		// in this synchronous path would make the $effect depend on `rfq`
+		// and re-run every time the detail payload is assigned.
+		const isFreshRfq = loadedEvidenceRfqId !== targetRfqId;
 		if (isFreshRfq) {
+			loadedEvidenceRfqId = targetRfqId;
 			rfq = null;
 			invitations = [];
 			quotes = [];
@@ -121,9 +124,9 @@
 		isLoading = true;
 		try {
 			const [rfqRes, quotesRes, eventsRes] = await Promise.all([
-				apiFetch(`/rfqs/${rfqId}`),
-				apiFetch(`/rfqs/${rfqId}/quotes`),
-				apiFetch(`/rfqs/${rfqId}/state-events`),
+				apiFetch(`/rfqs/${targetRfqId}`),
+				apiFetch(`/rfqs/${targetRfqId}/quotes`),
+				apiFetch(`/rfqs/${targetRfqId}/state-events`),
 			]);
 
 			if (gen !== loadGeneration) return; // Superseded by newer call
