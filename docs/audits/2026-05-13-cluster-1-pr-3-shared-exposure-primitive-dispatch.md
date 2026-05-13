@@ -117,7 +117,7 @@ Constraints on the primitives:
 
 Both methods continue to do their SQL-side lifecycle filtering (this is correct — live exposure benefits from query-level filters for performance and atomicity). After the SQL query produces filtered `(Order, Decimal)` tuples / `HedgeContract` rows, **delegate aggregation to the new primitive** rather than doing it inline.
 
-Behavior must be byte-equivalent to today on every existing fixture. The unit tests for `test_exposure_service.py` should not need changes; if they do, the refactor introduced a regression.
+Behavior must be byte-equivalent to today on every existing fixture. The existing tests in `backend/tests/test_exposures_commercial.py` (covers `compute_commercial_snapshot`) and `backend/tests/test_exposures_global.py` (covers `compute_global_snapshot`) should not need changes; if they do, the refactor introduced a regression. `backend/tests/test_exposure_engine.py` and `backend/tests/test_compute_net_exposure.py` cover the engine and net-exposure paths respectively and are not directly exercised by this refactor, but must continue to pass.
 
 ### 4.3 Refactor scenario input boundary in `backend/app/services/scenario_whatif_service.py`
 
@@ -234,7 +234,7 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 
 1. `backend/tests/test_scenario_live_exposure_parity.py` (new) — 6 tests, where test 6 (inactive-hedge linkage variants) is parametrized over `{settled, cancelled}` HedgeContractStatus values.
 2. `backend/tests/test_scenario_whatif_run.py` (existing) — passes unchanged or with trivial fixture updates if a previous test asserted that scenario reads archived entities.
-3. `backend/tests/test_exposure_service.py` and any other `test_exposure*.py` — pass unchanged. Any test failure on these files is a regression in the live-side refactor (§4.2) and must be fixed before opening the PR.
+3. The four existing exposure test files — `backend/tests/test_exposures_commercial.py`, `backend/tests/test_exposures_global.py`, `backend/tests/test_exposure_engine.py`, `backend/tests/test_compute_net_exposure.py` — pass unchanged. Any test failure on `test_exposures_commercial.py` or `test_exposures_global.py` is a regression in the live-side refactor (§4.2) and must be fixed before opening the PR. The engine and net-exposure suites should pass unchanged because this wave does not touch them.
 
 ## 8. Required Verification
 
@@ -258,8 +258,10 @@ cd backend ; python -m alembic heads ; cd ..
 # Test suite
 pytest -q backend/tests/test_scenario_live_exposure_parity.py
 pytest -q backend/tests/test_scenario_whatif_run.py
-pytest -q backend/tests/test_exposure_service.py
+pytest -q backend/tests/test_exposures_commercial.py
+pytest -q backend/tests/test_exposures_global.py
 pytest -q backend/tests/test_exposure_engine.py
+pytest -q backend/tests/test_compute_net_exposure.py
 pytest -q backend/tests
 
 # Cross-wave isolation
@@ -279,7 +281,7 @@ All cross-wave / cross-service diffs against main must be empty except the four 
 - `backend/app/services/exposure_service.py` (refactor + new primitives)
 - `backend/app/services/scenario_whatif_service.py` (input boundary + delegation)
 - `backend/tests/test_scenario_live_exposure_parity.py` (new)
-- Possibly `backend/tests/test_scenario_whatif_run.py` and `backend/tests/test_exposure_service.py` (trivial fixture updates only)
+- Possibly `backend/tests/test_scenario_whatif_run.py`, `backend/tests/test_exposures_commercial.py`, and `backend/tests/test_exposures_global.py` (trivial fixture updates only — any non-trivial change indicates a regression that must be reverted, not accommodated).
 
 ## 9. Out of Scope
 
@@ -313,8 +315,8 @@ The PR body must include:
 ## 11. Workflow
 
 1. `git checkout -b audit-followup/cluster-1-shared-exposure-primitive` from `main` (or post-PR-CL1-1 / PR-CL1-2 if either lands first — this wave's diff does not overlap theirs at file level, but always base off latest main).
-2. Apply §4.1 — add the two new primitives to `exposure_service.py`. Run focused tests on `test_exposure_service.py` to confirm the **definition** itself doesn't change behavior (the primitive is dead code at this point).
-3. Apply §4.2 — refactor `compute_commercial_snapshot` and `compute_global_snapshot` to delegate. Re-run `test_exposure_service.py`; behavior must be byte-equivalent.
+2. Apply §4.1 — add the two new primitives to `exposure_service.py`. Run focused tests on `backend/tests/test_exposures_commercial.py` and `backend/tests/test_exposures_global.py` to confirm the **definition** itself doesn't change behavior (the primitive is dead code at this point).
+3. Apply §4.2 — refactor `compute_commercial_snapshot` and `compute_global_snapshot` to delegate. Re-run both `test_exposures_commercial.py` and `test_exposures_global.py`; behavior must be byte-equivalent.
 4. Apply §4.3 — scenario input boundary lifecycle filters + delete duplicate aggregation. Re-run `test_scenario_whatif_run.py`; some existing tests may need fixture updates if they relied on scenario reading archived entities (a pre-fix bug).
 5. Add `test_scenario_live_exposure_parity.py` per §4.4. Run it.
 6. Run §8 verification sweeps locally; fix every hook v2 P1/P2 in place.
@@ -325,7 +327,7 @@ The PR body must include:
 
 - **Expected hook v2 surface area**: medium diff (one new primitive function in `exposure_service.py`, one refactor of `ExposureService.compute_*_snapshot`, one refactor of `scenario_whatif_service.py`, one new test file). Hook may flag prescription-vs-evidence on the new primitive function names (`compute_commercial_exposure_pure` doesn't exist yet) — known FP class.
 - **Expected Codex catches**:
-  - **Live-side aggregation regression**: if the refactor of `compute_commercial_snapshot` accidentally changes the residual-clamping order, the commodity canonicalization, or the quantize boundary, existing `test_exposure_service.py` tests catch it — but Codex may also spot the regression by reading the diff. Verify byte-equivalence before pushing.
+  - **Live-side aggregation regression**: if the refactor of `compute_commercial_snapshot` or `compute_global_snapshot` accidentally changes the residual-clamping order, the commodity canonicalization, or the quantize boundary, existing tests in `backend/tests/test_exposures_commercial.py` and `backend/tests/test_exposures_global.py` catch it — but Codex may also spot the regression by reading the diff. Verify byte-equivalence before pushing.
   - **Scenario-input lifecycle filter mismatch**: the verdict's J-CL1-04 evidence cites three live-A1 filters (Order archived, HedgeContract archived, hedge status in {active, partially_settled}). The implementation must apply **all three** at the scenario input boundary, not just the Order filter. Codex will spot a missing status filter.
   - **`float(...)` cast survival**: if any of the old `float(item["..."])` lines in `_compute_commercial_exposure` / `_compute_global_exposure` survives the refactor (e.g. in a leftover helper), Codex will flag it.
   - **Parity test depth**: the parity tests must assert **deep equality** on Decimal fields, not float-tolerant equality. A `pytest.approx` in the parity tests would silently allow a representation-drift bug to land.
