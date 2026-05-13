@@ -60,9 +60,18 @@
 	}
 
 	// J-A6-12: parse a Response body exactly once. The caller decides what
-	// to do on non-2xx; on success the parsed payload is returned. Backend
-	// returns either a bare array (canonical /quotes, /state-events) or a
-	// paginated `{ items: [...] }` envelope, so we coerce both shapes here.
+	// to do on non-2xx; on success the parsed payload is returned.
+	//
+	// Canonical backend contract:
+	//   - GET /rfqs/{id}/quotes        → list[RFQQuoteRead]
+	//     (backend/app/api/routes/rfqs.py:222 — bare array)
+	//   - GET /rfqs/{id}/state-events  → list[RFQStateEventRead]
+	//     (backend/app/api/routes/rfqs.py:243 — bare array)
+	//
+	// We additionally coerce the legacy paginated `{ items: [...] }`
+	// envelope as a defence-in-depth fallback for older deployments still
+	// in flight; once all canonical clients have rolled out the bare-array
+	// shape, the items[] branch can be dropped.
 	async function parseListBodyOnce(res: Response): Promise<{ ok: true; items: unknown[] } | { ok: false; error: string }> {
 		try {
 			const body = await res.json();
