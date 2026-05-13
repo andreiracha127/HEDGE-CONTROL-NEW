@@ -76,7 +76,17 @@ Only execute this section if the §3 pre-step produced zero rows.
 
 - `backend/app/models/deal.py:160-163` — remove the `is_deleted` and `deleted_at` columns from `Deal`.
 
-### 4.2 Migration
+### 4.2 Schema (DealRead) — required, not optional
+
+`backend/app/schemas/deal.py:83-96` defines `DealRead` with `is_deleted: bool` as a required field at line 97. After Path A drops the model column, every Deal response (`GET /deals`, `POST /deals`, `GET /deals/by-linked-entity`, `GET /deals/{id}`, plus any consumer of `DealDetailRead` which inherits from `DealRead`) would fail Pydantic validation in `from_attributes` mode because the ORM object no longer carries the field. Path A must therefore:
+
+- Remove the `is_deleted: bool` line from `DealRead` in `backend/app/schemas/deal.py`.
+- Verify `DealDetailRead` (and any other subclass of `DealRead`) inherits the cleanup automatically; remove any local override of `is_deleted` if present.
+- The schema currently has **no** `deleted_at` field, so no `deleted_at` removal is required at the schema layer (it never existed there).
+- Regenerate `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` after the schema edit. The OpenAPI delta is bounded to dropping `is_deleted` from the Deal-related response components; no other endpoint shape changes.
+- Verify no frontend route consumes `Deal.is_deleted` (verified clean at HEAD `ea08d9868` via `rg "deal.*is_deleted|deal.*deleted_at|\\.is_deleted\\b" frontend-svelte/src/routes/` returning zero matches; the implementer must re-confirm at branch tip; if a new consumer has appeared, add it to the wave's frontend follow-up scope).
+
+### 4.3 Migration
 
 Add one alembic revision `044_drop_deal_lifecycle_fields.py` (or equivalent name) with:
 
@@ -94,15 +104,15 @@ def downgrade() -> None:
 
 `down_revision` must be the current single head (`043_a5_audit_payload_input`). New head `044_drop_deal_lifecycle_fields`. Single head invariant preserved.
 
-### 4.3 Service filters
+### 4.4 Service filters
 
 - `backend/app/services/deal_engine.py:886`, `:893`, `:1183`, `:1194` — remove the `.filter(Deal.is_deleted == False)` / equivalent clauses. The readers no longer need a soft-delete predicate.
 
-### 4.4 Route filter (`find_deal_by_linked_entity`)
+### 4.5 Route filter (`find_deal_by_linked_entity`)
 
 - `backend/app/api/routes/deals.py:71-87` — already does not filter `is_deleted`. Path A makes that absence consistent: no action required at this site.
 
-### 4.5 Tests
+### 4.6 Tests
 
 - Any test that asserts a Deal can be soft-deleted via direct model mutation (e.g. `deal.is_deleted = True` in a fixture) must be updated to either:
   - Hard-delete the Deal via `session.delete(deal)`, OR
@@ -113,6 +123,15 @@ Sweep `rg -nP "Deal\\.is_deleted|\\.is_deleted = True" backend/tests/` and resol
 ## 5. Required Implementation Boundary — Path B
 
 Only execute this section if the §3 pre-step produced at least one row, or if Andrei explicitly authorizes Path B based on product roadmap intent.
+
+### 5.0 Schema (DealRead)
+
+Path B preserves `Deal.is_deleted` and `Deal.deleted_at` on the model. The current `DealRead` schema (`backend/app/schemas/deal.py:83-96`) already exposes `is_deleted: bool` (line 97) but **does not** expose `deleted_at`. The archive route added in §5.1 sets `Deal.deleted_at = now_utc()`; without a corresponding read field, the operator-visible response cannot show when the archive happened. Path B must:
+
+- Add `deleted_at: Optional[datetime] = None` to `DealRead` immediately after `is_deleted: bool`. Use `Optional[datetime]` with default `None` so existing pre-archive rows continue to validate (their `deleted_at` is `NULL`).
+- Inherited subclasses (`DealDetailRead`) pick up the new field automatically.
+- Regenerate `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts`. The OpenAPI delta is bounded to adding the optional `deleted_at` field on Deal-related response components.
+- The frontend currently does not consume `Deal.deleted_at` (verified clean at HEAD via `rg "deal.*deleted_at" frontend-svelte/src/routes/`); the new field surface is available for future operator UI work but is not a frontend follow-up requirement of this wave.
 
 ### 5.1 Route
 
@@ -171,11 +190,15 @@ No changes to `docs/governance.md` are part of this wave.
 
 - [ ] §3 pre-step recorded both counts as zero. Counts cited in the PR body.
 - [ ] `backend/app/models/deal.py` — `is_deleted` and `deleted_at` columns removed.
+- [ ] `backend/app/schemas/deal.py` — `DealRead.is_deleted: bool` field removed (line 97). `DealDetailRead` and any other subclass cleaned automatically via inheritance; verify no local override remains.
+- [ ] `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` regenerated; diff is bounded to dropping `is_deleted` from Deal-related response components.
 - [ ] One new migration `044_drop_deal_lifecycle_fields` (or equivalent) with `down_revision = "043_a5_audit_payload_input"`. `python -m alembic heads` prints the new single head.
 - [ ] `backend/app/services/deal_engine.py` — all `Deal.is_deleted` filter clauses removed (sweep returns zero matches in this file).
 - [ ] `backend/app/api/routes/deals.py` — no change to `find_deal_by_linked_entity` body needed; verify it still passes its existing tests.
 - [ ] No new endpoint added.
 - [ ] `rg -nP "Deal\\.is_deleted|deal\\.is_deleted" backend/app backend/tests` returns zero matches outside the migration file.
+- [ ] `rg -nP "is_deleted\\s*:\\s*bool" backend/app/schemas/deal.py` returns zero matches.
+- [ ] `rg -nP "deal.*is_deleted|\\.is_deleted" frontend-svelte/src/routes/` returns zero matches (verify no frontend regression added a Deal-archive consumer between v1 dispatch authoring and implementation; verified clean at HEAD `ea08d9868`).
 - [ ] No edit to `docs/governance.md`.
 
 ### 7.2 Path B acceptance
@@ -183,6 +206,8 @@ No changes to `docs/governance.md` are part of this wave.
 - [ ] §3 pre-step recorded at least one non-zero count, OR Andrei explicitly authorized Path B in the PR body.
 - [ ] `PATCH /deals/{deal_id}/archive` route exists with `audit_event(entity_type="deal", event_type="archived")` decorator and `require_role` RBAC.
 - [ ] Archive writes both `Deal.is_deleted = True` and `Deal.deleted_at = now_utc()` inside `unit_of_work` + `mark_audit_success`.
+- [ ] `backend/app/schemas/deal.py` — `DealRead.deleted_at: Optional[datetime] = None` field added immediately after `is_deleted: bool`. `DealDetailRead` inherits.
+- [ ] `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` regenerated; diff is bounded to adding the optional `deleted_at` field on Deal-related response components.
 - [ ] DealLink cascade semantics chosen and implemented (exactly one of the three options in §5.2; documented in the PR body).
 - [ ] If cascade-with-soft-delete chosen: one new migration adding `DealLink.deleted_at`. Single-head preserved.
 - [ ] If cascade-with-hard-delete or block-on-active-links: no migration.
@@ -200,7 +225,7 @@ No changes to `docs/governance.md` are part of this wave.
 
 ## 8. Required Tests
 
-§4.5 (Path A) and §5.5 (Path B). The implementer runs only the section matching their chosen path.
+§4.6 (Path A) and §5.5 (Path B). The implementer runs only the section matching their chosen path.
 
 ## 9. Required Verification
 
@@ -214,10 +239,13 @@ No changes to `docs/governance.md` are part of this wave.
 # Path A sweeps
 rg -nP "Deal\\.is_deleted|deal\\.is_deleted" backend/app backend/tests
 rg -nP "Deal\\.deleted_at|deal\\.deleted_at" backend/app backend/tests
+rg -nP "is_deleted\\s*:\\s*bool" backend/app/schemas/deal.py    # must return zero
+rg -nP "deal.*is_deleted|\\.is_deleted" frontend-svelte/src/routes/    # must return zero (frontend isolation)
 
 # Path B sweeps
 rg -nP "/deals/\\{.+\\}/archive|PATCH.*deals.*archive" backend/app/api/routes/deals.py
 rg -nP "entity_type=\"deal\".*event_type=\"archived\"" backend/app/api/routes/deals.py
+rg -nP "deleted_at.*Optional\\[datetime\\]|deleted_at: datetime \\| None" backend/app/schemas/deal.py    # must return at least one (the new DealRead.deleted_at field)
 
 # Alembic invariant (both paths)
 cd backend ; python -m alembic heads ; cd ..
@@ -276,12 +304,13 @@ The PR body must include:
    - If either count is non-zero → Path B (with severity promotion to Tier 2 acknowledged).
    - If no DB is accessible → stop and escalate to Andrei.
 2. `git checkout -b audit-followup/cluster-1-deal-soft-delete-cleanup`.
-3. Execute §4 (Path A) or §5 (Path B). Do not mix.
-4. Add the chosen-path test file (§4.5 / §5.5).
-5. Run §9 verification locally. The alembic single-head check is mandatory before opening the PR.
-6. Fix every hook v2 P1/P2 in place.
-7. Push branch and open PR per §11.
-8. Codex Connector review is the final gate. Address every Codex inline catch. **Do not merge** — Andrei merges with explicit authorization only.
+3. Execute §4 (Path A) or §5 (Path B). Do not mix. The schema layer (§4.2 for Path A, §5.0 for Path B) is mandatory in either path — without it the API responses will fail validation (Path A) or silently omit the archive timestamp (Path B).
+4. Add the chosen-path test file (§4.6 / §5.5).
+5. Regenerate `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` after the schema edit (mandatory both paths).
+6. Run §9 verification locally. The alembic single-head check is mandatory before opening the PR. The schema sweep (§9 Path A `is_deleted: bool` returns zero; Path B `deleted_at: Optional[datetime]` returns at least one) is also mandatory.
+7. Fix every hook v2 P1/P2 in place.
+8. Push branch and open PR per §11.
+9. Codex Connector review is the final gate. Address every Codex inline catch. **Do not merge** — Andrei merges with explicit authorization only.
 
 ## 13. Hook v2 + Codex calibration notes
 
@@ -290,8 +319,11 @@ The PR body must include:
   - Path B: new route + new audit decorator + cascade semantics + tests. Larger diff; hook may flag schema drift on OpenAPI regen if the new route's response model differs from existing patterns. Use existing `archive_order` / `archive_hedge_contract` as the precedent.
 - **Expected Codex catches**:
   - Path A: a leftover filter on `Deal.is_deleted` in a less-trafficked code path (e.g. an analytics query, a serializer). Sweep `rg -nP "is_deleted" backend/app | rg -i deal` to find every site before pushing.
+  - Path A: **schema cleanup missed** — if the model column drops but `DealRead.is_deleted: bool` stays, every Deal response fails Pydantic `from_attributes` validation. This is the v1 dispatch gap Codex caught (PR #74 review). The §4.2 schema subsection plus the §7.1 `is_deleted: bool` sweep are the structural protection; cross-section sweep must verify both before pushing.
   - Path B: missing RBAC on the archive route; missing audit event on the cascade column writes; reader inconsistency (`find_deal_by_linked_entity` filter applied but another reader missed); missing `actor_sub` in the audit payload (Cluster 2 established the JWT-sub pattern; archive must use it).
+  - Path B: **schema field missing** — if the archive route writes `Deal.deleted_at = now_utc()` but `DealRead` doesn't expose `deleted_at`, the operator-visible response cannot show when the archive happened. The §5.0 schema subsection adds the field; the §7.2 + §9 sweeps verify it landed.
   - Either path: a migration that fails `python -m alembic heads` because the `down_revision` is wrong; this would surface in CI on the openapi_diff job and in the §9 sweep.
+  - Either path: OpenAPI / `schema.d.ts` regeneration skipped — would surface in CI's `openapi_diff` job. Mandatory regen step is §12 step 5.
 - The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies, but with a twist: this wave has **two non-overlapping implementation sections** (§4 Path A, §5 Path B). The implementer chooses one; the dispatch reviewer (jury / Codex) should treat the chosen path's section as binding and the unchosen section as out-of-scope text. Do not authorize both.
 - **Single-head invariant** is the load-bearing institutional check. If Path B requires more than one migration, stop and defer. Do not bundle multiple migrations into PR-CL1-4 even if they look small individually.
 - **Severity promotion**: if the pre-step records non-zero rows, J-CL1-02 is implicitly Tier 2 (per verdict self-bias confession). The wave should be implemented before any new lifecycle work; if PR-CL1-1 / PR-CL1-2 / PR-CL1-3 have not yet shipped, the implementer should still pursue this wave in parallel rather than chain it strictly after.
