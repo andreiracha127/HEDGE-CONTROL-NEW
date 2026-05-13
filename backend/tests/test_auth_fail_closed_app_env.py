@@ -31,6 +31,7 @@ from app.core.auth import (
     get_auth_settings,
     get_current_actor_sub,
     get_current_user,
+    require_any_role,
     validate_auth_config,
 )
 from app.main import app
@@ -201,6 +202,16 @@ def test_get_current_actor_sub_rejects_subject_that_exceeds_evidence_sink() -> N
 
 def test_get_current_actor_sub_accepts_anonymous_fallback_subject() -> None:
     assert get_current_actor_sub(_ANONYMOUS_USER) == "anonymous"
+
+
+def test_require_any_role_rejects_malformed_user_payload() -> None:
+    dependency = require_any_role("trader")
+
+    with pytest.raises(HTTPException) as excinfo:
+        dependency(user="not-a-dict")
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authenticated user payload is invalid"
 
 
 # ── audit endpoints — anonymous rejection under production/staging ─────────

@@ -251,6 +251,11 @@ def require_any_role(*roles: str):
     def _dependency(user: dict[str, Any] = Depends(get_current_user)) -> None:
         if not _auth_enabled():
             return
+        if not isinstance(user, dict):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authenticated user payload is invalid",
+            )
         user_roles = set(user.get("roles") or [])
         if not user_roles.intersection(set(roles)):
             raise HTTPException(
