@@ -121,15 +121,19 @@ describe('layout — J-A6-08/09 navigation visibility', () => {
 	});
 
 	it('only lists /audit in the nav when authStore.hasRole(\'auditor\') is true', () => {
-		// The nav array spread must depend on hasRole('auditor') so
-		// non-auditors (e.g. risk_manager, trader) do not see the link.
-		expect(source).toMatch(/hasRole\(\s*['"]auditor['"]\s*\)/);
-		expect(source).toMatch(/href:\s*['"]\/audit['"]/);
-		// The unconditional listing pattern would be a flat array entry
-		// outside the ternary spread — guard against that.
-		const idxAudit = source.indexOf("href: '/audit'");
-		const idxRole = source.indexOf("hasRole('auditor')");
-		expect(idxAudit, '/audit href should appear after the hasRole check').toBeGreaterThan(idxRole);
+		// The nav array must spread the /audit entry from a hasRole
+		// ternary so non-auditors (risk_manager, trader) never see the
+		// link. Asserted as a structural match — the spread `...(... ?
+		// [{href:'/audit',...}] : [])` must appear in the source — not
+		// as an index-order heuristic that breaks if `/audit` is later
+		// referenced anywhere else in the file.
+		expect(source).toMatch(
+			/\.\.\.\(\s*authStore\.hasRole\(\s*['"]auditor['"]\s*\)[\s\S]*?href:\s*['"]\/audit['"][\s\S]*?\)/,
+		);
+		// And it must NOT appear as an unconditional flat array entry.
+		expect(source).not.toMatch(
+			/\{\s*href:\s*['"]\/audit['"][^}]*\}\s*,\s*(?!\s*\])/,
+		);
 	});
 });
 
