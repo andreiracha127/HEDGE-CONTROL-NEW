@@ -43,6 +43,7 @@ Settlement state and actor identity are institutional evidence. After this wave 
 Accepted evidence (verified at HEAD `aa255e2be`):
 
 - `backend/app/schemas/rfq.py:211-213` defines `RFQUserActionBase` with a required, client-supplied `user_id: str = Field(..., max_length=64)`.
+- `backend/app/schemas/rfq.py:85-130` defines `RFQCreate`. `RFQCreate` has no `user_id` field, but it also declares no restriction on extra keys. The frontend currently sends `user_id: actorSub` in the POST `/rfqs` body (`frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:147`) and Pydantic silently drops it. The backend `create_rfq` route (`backend/app/api/routes/rfqs.py:101-128`) does not consume `payload.user_id` — verified by Serena symbolic survey of `RFQService.create` at `backend/app/services/rfq_service.py:455-709`: the service body never reads `user_id` from the payload. POST `/rfqs` is therefore also part of the silent-drop surface and must be closed in the same wave so the contract is unambiguous across **every** RFQ-mutation route, not only the six body-actor routes.
 - Six request schemas inherit from `RFQUserActionBase` and therefore require client `user_id`:
   - `RFQRejectRequest` (`backend/app/schemas/rfq.py:215-216`)
   - `RFQRefreshRequest` (`backend/app/schemas/rfq.py:219-220`)
@@ -111,6 +112,14 @@ def get_current_actor_sub(
 - Derived classes inherit the empty base. `RFQRefreshCounterpartyRequest` keeps its `counterparty_id` field.
 - Leave `RFQStateEventRead.user_id` (read-side schema at line 283) untouched.
 
+**Tighten `RFQCreate`** in `backend/app/schemas/rfq.py` (closes the POST `/rfqs` silent-drop gap surfaced in §3 D-2.1):
+
+- Add a targeted `@model_validator(mode="before")` to `RFQCreate` that raises `ValueError("user_id is not accepted on POST /rfqs; actor identity is derived from the authenticated JWT sub")` if the incoming dict contains a `user_id` key (any value, including empty string or null). FastAPI translates the `ValueError` into a 422 response automatically.
+- Do **not** add `extra="forbid"` to `RFQCreate`. The frontend currently sends an additional `counterparty_ids` extra (`frontend-svelte/src/routes/(protected)/rfq/new/+page.svelte:146`) that the backend silently drops; that gap is a pre-existing frontend/backend contract mismatch outside Cluster 2 scope (this dispatch closes only the `user_id` silent-drop, not the broader extras posture on `RFQCreate`). The targeted validator scopes the fix narrowly to the actor-identity attack vector.
+- Leave the other `RFQCreate` fields (`intent`, `commodity`, `quantity_mt`, `delivery_window_start`, `delivery_window_end`, `direction`, `order_id`, `buy_trade_id`, `sell_trade_id`, `invitations`, `text_en`, `text_pt`) untouched.
+
+**`create_rfq` route is not actor-rewired** — verified by the survey: `RFQService.create` (`backend/app/services/rfq_service.py:455-709`) never consumes `payload.user_id` and never writes the actor onto the `RFQStateEvent` it emits for the `created → sent` transition. Capturing creation-actor evidence on the create-state-event row would be a behavioral expansion outside Cluster 2 scope (record it as a future Cluster-1 / A1-followup-adjacent observation). For Cluster 2, closing POST `/rfqs` means **only** rejecting body `user_id` via the validator above. Audit evidence on the create path continues to flow through the existing `audit_event(entity_type="rfq", event_type="created")` decorator at `backend/app/api/routes/rfqs.py:106-110`, which reads the actor from the authenticated request state independently of the request body.
+
 **Update seven RFQ routes** in `backend/app/api/routes/rfqs.py`:
 
 - Add `actor_sub: str = Depends(get_current_actor_sub)` as a route parameter on all seven mutation handlers listed in §3 D-2.1.
@@ -168,10 +177,12 @@ A merged PR closes Cluster 2 iff every item below is true on the final commit.
 ### 6.1 D-2.1 acceptance
 
 - [ ] `backend/app/schemas/rfq.py` — `RFQUserActionBase` has no `user_id` field and declares `model_config = ConfigDict(extra="forbid")`.
+- [ ] `backend/app/schemas/rfq.py` — `RFQCreate` defines a `@model_validator(mode="before")` (or equivalent root validator) that raises `ValueError` on any incoming `user_id` key. The class itself does **not** declare `extra="forbid"`; the validator is the narrow gate, scoped to `user_id` only, leaving the pre-existing `counterparty_ids` extra unblocked.
 - [ ] `backend/app/core/auth.py` — `get_current_actor_sub` exists, returns `str`, raises 401 when `sub` is missing/empty.
 - [ ] `backend/app/api/routes/rfqs.py` — every one of the seven mutation handlers in §3 D-2.1 binds `actor_sub: str = Depends(get_current_actor_sub)` and passes it to `RFQService` instead of `payload.user_id`.
+- [ ] `backend/app/api/routes/rfqs.py` — `create_rfq` (POST `/rfqs`) is unchanged in signature; the new validator on `RFQCreate` is the only enforcement point for the create-path body `user_id`.
 - [ ] `backend/app/services/rfq_service.py` — every consumed method renamed parameter to `actor_sub`; internal callers updated.
-- [ ] Frontend mutation bodies under `frontend-svelte/src/routes/(protected)/rfq/` no longer contain `user_id`.
+- [ ] Frontend mutation bodies under `frontend-svelte/src/routes/(protected)/rfq/` no longer contain `user_id` — this covers both the seven action endpoints and the POST `/rfqs` create body.
 - [ ] `rg -nP 'payload\.user_id' backend/app/api/routes/rfqs.py` returns zero matches.
 - [ ] `rg -nP "'user_id'\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/` returns zero matches.
 
@@ -201,18 +212,19 @@ A merged PR closes Cluster 2 iff every item below is true on the final commit.
 1. Authenticated mutation derives actor from JWT — POST `/rfqs/{id}/actions/reject` with a valid bearer carrying `sub=sub-abc` and an empty JSON body produces `RFQStateEvent.user_id == "sub-abc"`.
 2. Same test repeated for the other six mutation routes (cancel, reject-quote, refresh-counterparty, refresh, award, archive). Use parametrization.
 3. Body that supplies `user_id` is rejected with 422 — POST `/rfqs/{id}/actions/reject` with `{"user_id": "spoof"}` returns 422 and does not transition state (`RFQ.state` unchanged, no new `RFQStateEvent`).
-4. Missing `sub` claim is rejected with 401 — a JWT-decoded payload without `sub` produces 401 with detail `"Authenticated subject is required"`.
-5. Dev/anonymous environment writes `sub == "anonymous"` — when auth is disabled and env is not fail-closed, the same routes write `"anonymous"` into `RFQStateEvent.user_id` (regression guard for the existing `_ANONYMOUS_USER` fallback contract from Phase A5).
-6. `RFQStateEventRead.user_id` is preserved on the read-side — GET `/rfqs/{id}/state-events` after a mutation returns the actor sub.
+4. **POST `/rfqs` with body `user_id` is rejected with 422** — POST `/rfqs` with a valid `RFQCreate` body augmented by `{"user_id": "spoof"}` returns 422 with the validator's detail message ("user_id is not accepted on POST /rfqs; actor identity is derived from the authenticated JWT sub"). No `RFQ` row, no `RFQInvitation` row, and no `RFQStateEvent` row are created. Sanity counter-test: a POST `/rfqs` body **without** `user_id` succeeds (subject to the existing 400/404 validation surface — counterparty existence, intent/direction, etc.).
+5. Missing `sub` claim is rejected with 401 — a JWT-decoded payload without `sub` produces 401 with detail `"Authenticated subject is required"`.
+6. Dev/anonymous environment writes `sub == "anonymous"` — when auth is disabled and env is not fail-closed, the same routes write `"anonymous"` into `RFQStateEvent.user_id` (regression guard for the existing `_ANONYMOUS_USER` fallback contract from Phase A5).
+7. `RFQStateEventRead.user_id` is preserved on the read-side — GET `/rfqs/{id}/state-events` after a mutation returns the actor sub.
 
 **Backend regression** — extend `backend/tests/test_outbound_evidence.py` (or the existing RFQ action test files) to:
 
-7. Confirm `user_id` is rejected on every existing action test that previously supplied it. Strict assertion: previously passing tests that included a `user_id` body field must now fail closed unless updated.
+8. Confirm `user_id` is rejected on every existing action test that previously supplied it. Strict assertion: previously passing tests that included a `user_id` body field must now fail closed unless updated. Same guarantee applies to any existing test that POSTs `/rfqs` with a `user_id` body field — those tests must be updated to omit `user_id` (the validator now 422s them).
 
 **Frontend** — extend `frontend-svelte/src/lib/api/rfq-evidence-integrity.test.ts`:
 
-8. Source-scan invariant: every call site under `frontend-svelte/src/routes/(protected)/rfq/` that issues an RFQ mutation must not contain `user_id` in its request body literal.
-9. `requireActorSub()` still gates every mutation locally (regression guard for the local UX preflight contract).
+9. Source-scan invariant: every call site under `frontend-svelte/src/routes/(protected)/rfq/` that issues an RFQ mutation must not contain `user_id` in its request body literal. The invariant must explicitly cover `rfq/new/+page.svelte` (POST `/rfqs`) in addition to the six action paths under `rfq/[id]/+page.svelte`.
+10. `requireActorSub()` still gates every mutation (including create) locally (regression guard for the local UX preflight contract).
 
 ### 7.2 D-2.2 tests
 
@@ -235,10 +247,13 @@ A merged PR closes Cluster 2 iff every item below is true on the final commit.
 Before opening the PR:
 
 ```bash
-# Schema sweep
+# Schema sweep — confirm user_id is gone from request schemas (only allowed mention: read-side RFQStateEventRead.user_id at line ~283)
 rg -nP "user_id" backend/app/schemas/rfq.py
 rg -nP "payload\\.user_id" backend/app/api/routes/rfqs.py
-rg -nP "user_id" frontend-svelte/src/routes/\\(protected\\)/rfq/
+rg -nP "'user_id'\\s*:" frontend-svelte/src/routes/\\(protected\\)/rfq/
+
+# RFQCreate validator sweep — confirm a model_validator that rejects user_id is present
+rg -nP "user_id.*not accepted on POST /rfqs|model_validator.*before.*RFQCreate|RFQCreate.*user_id" backend/app/schemas/rfq.py
 
 # Lifecycle sweep
 rg -nP "VALID_STATUS_TRANSITIONS|GENERIC_STATUS_TRANSITIONS" backend/app
@@ -254,7 +269,7 @@ git diff -- docs/api/openapi_v1.json frontend-svelte/src/lib/api/schema.d.ts
 git diff --check
 ```
 
-The first three sweeps must return zero unexpected matches per §6.1 and §6.2.
+The schema sweep must return zero matches for `payload.user_id` in routes and zero matches for `'user_id':` in the frontend RFQ routes. The `user_id` mention in `backend/app/schemas/rfq.py` must collapse to (a) the new validator literal in `RFQCreate` and (b) the read-side `RFQStateEventRead.user_id` field — both are intentional and must remain.
 
 ## 9. Out of Scope
 
@@ -282,7 +297,7 @@ The PR body must include:
 - **Findings closed:** explicit list of D-2.1 (J-A6-04 backend slice) and D-2.2 (J-A6-02 backend slice).
 - **Files changed:** full inventory grouped by backend / frontend / tests.
 - **Verification matrix:** results of the §8 sweeps and the test suites.
-- **Generated-artifact diff:** explicit summary of the OpenAPI / `schema.d.ts` removal of `user_id` from the six request schemas.
+- **Generated-artifact diff:** explicit summary of the OpenAPI / `schema.d.ts` removal of `user_id` from the six action-request schemas, plus the new `RFQCreate` validator that 422s body `user_id` on POST `/rfqs` (the OpenAPI shape of `RFQCreate` itself does not change because `user_id` was never a declared field; the OpenAPI delta surfaces only through the six action schemas).
 - **Hook artifact path:** `.cache/dispatch_review/audit-followup-cluster-2-backend-hardening-{sha}.json` for every push.
 - **Governance statement:** `docs/governance.md` diff is empty.
 
@@ -291,9 +306,9 @@ The PR body must include:
 1. Branch off `main` at HEAD `aa255e2be` (or later if main advances before work begins): `git checkout -b audit-followup/cluster-2-backend-hardening`.
 2. Implement §4.1 D-2.1 in this order to minimize churn:
    1. Add `get_current_actor_sub` in `backend/app/core/auth.py`.
-   2. Update `RFQUserActionBase` and remove the field from the six derived schemas.
+   2. Update `RFQUserActionBase` and remove the field from the six derived schemas; add the targeted `@model_validator(mode="before")` to `RFQCreate` that 422s a body `user_id`. **Do not** add `extra="forbid"` to `RFQCreate` (per §4.1 boundary rule).
    3. Wire `actor_sub` into the seven RFQ routes and update `RFQService` signatures.
-   4. Drop `user_id` from frontend mutation bodies and update `rfq-evidence-integrity.test.ts`.
+   4. Drop `user_id` from frontend mutation bodies (all seven actions **and** the POST `/rfqs` create body) and update `rfq-evidence-integrity.test.ts`.
    5. Regenerate OpenAPI + `schema.d.ts`.
 3. Implement §4.2 D-2.2:
    1. Define `GENERIC_STATUS_TRANSITIONS` in `backend/app/services/contract_service.py`.
@@ -308,6 +323,6 @@ The PR body must include:
 ## 12. Hook v2 + Codex calibration notes
 
 - This wave touches three layers (backend schemas, backend routes, frontend) but is single-PR-shaped because both findings share the same `actor / lifecycle authority` constitutional concern.
-- Expected hook v2 surface area: schema-shape drift (extra="forbid" enforcement), route-handler signature drift, frontend body-literal drift, OpenAPI regen drift. The 8-section sweep checklist from [[feedback_dispatch_self_consistency]] applies — confirm §3 evidence, §4 boundary, §6 acceptance, §7 tests, §10 PR body, and §11 workflow all enumerate the same seven RFQ routes and both target lifecycle transitions every time the list is rewritten.
-- Expected Codex catches: missing call site for one of the seven RFQ routes; `RFQUserActionBase` derived class missed; worker / service-internal caller of an `RFQService` method missed; settlement-related test missing the partial state's regression case.
+- Expected hook v2 surface area: schema-shape drift (extra="forbid" enforcement on `RFQUserActionBase` + the narrow `RFQCreate` validator), route-handler signature drift, frontend body-literal drift across **both** the seven action routes and POST `/rfqs`, OpenAPI regen drift. The 8-section sweep checklist from [[feedback_dispatch_self_consistency]] applies — confirm §3 evidence, §4 boundary, §6 acceptance, §7 tests, §10 PR body, and §11 workflow all enumerate the same seven RFQ action routes **plus** POST `/rfqs` and both target lifecycle transitions every time the list is rewritten.
+- Expected Codex catches: missing call site for one of the seven RFQ action routes; `RFQUserActionBase` derived class missed; worker / service-internal caller of an `RFQService` method missed; settlement-related test missing the partial state's regression case; **POST `/rfqs` create-body `user_id` silent-drop missed if the implementing PR only enforces `extra="forbid"` on the action base but not the targeted validator on `RFQCreate`** (this is the exact gap Codex caught on the v1 dispatch — see PR #70 review).
 - Pre-emptive dispatch rigor pattern from [[feedback_dispatch_self_consistency]] applies: cross-section sweep before publishing the dispatch is mandatory. The institutional FP class around partial-diff blindness from [[reference_pre_push_hook_calibration]] will likely surface when the implementing branch pushes test-only or schema-only follow-ups.
