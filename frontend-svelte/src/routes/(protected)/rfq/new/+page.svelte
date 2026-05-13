@@ -98,6 +98,18 @@
 			return;
 		}
 
+		// J-A6-04: never fabricate actor identity. The RFQ create payload's
+		// user_id must be the authenticated JWT subject (immutable claim).
+		// If no sub is available, hard-fail visibly instead of sending a
+		// display name or literal 'trader' fallback.
+		const actorSub = authStore.userSub;
+		if (!actorSub) {
+			notifications.error(
+				'Sessão sem identidade verificável (sub). Faça login novamente para criar RFQs.',
+			);
+			return;
+		}
+
 		submitting = true;
 		try {
 			const body: Record<string, unknown> = {
@@ -108,7 +120,7 @@
 				delivery_window_start: deliveryStart,
 				delivery_window_end: deliveryEnd,
 				counterparty_ids: selectedCounterpartyIds,
-				user_id: authStore.userName || 'trader',
+				user_id: actorSub,
 			};
 			if (intent === 'SPREAD') {
 				if (buyTradeId) body.buy_trade_id = buyTradeId;

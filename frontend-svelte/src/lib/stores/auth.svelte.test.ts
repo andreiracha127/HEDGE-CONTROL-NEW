@@ -101,6 +101,47 @@ describe('AuthStore', () => {
 		});
 	});
 
+	describe('userSub (J-A6-04)', () => {
+		it('returns the JWT sub claim when present', () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			authStore.login(token);
+			expect(authStore.userSub).toBe('user-1');
+		});
+
+		it('does NOT fall back to display name when sub is missing', () => {
+			const token = fakeJwt({
+				name: 'Test User',
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			authStore.login(token);
+			// userName falls back to '' (no sub, no name accessor mismatch),
+			// but userSub must be null so callers hard-fail rather than
+			// fabricate identity from a mutable claim.
+			expect(authStore.userSub).toBeNull();
+		});
+
+		it('returns null when sub is empty string', () => {
+			const token = fakeJwt({ sub: '', exp: Math.floor(Date.now() / 1000) + 3600 });
+			authStore.login(token);
+			expect(authStore.userSub).toBeNull();
+		});
+
+		it('returns null before login', () => {
+			expect(authStore.userSub).toBeNull();
+		});
+
+		it('returns null after logout', () => {
+			const token = fakeJwt({ sub: 'user-1', exp: Math.floor(Date.now() / 1000) + 3600 });
+			authStore.login(token);
+			authStore.logout();
+			expect(authStore.userSub).toBeNull();
+		});
+	});
+
 	describe('roles', () => {
 		it('hasRole returns true for matching role', () => {
 			const token = fakeJwt({ sub: 'u', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });

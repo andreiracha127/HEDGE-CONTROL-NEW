@@ -44,6 +44,50 @@
 		try { return JSON.parse(raw); } catch { return []; }
 	}
 
+	// J-A6-04: never fabricate actor identity for RFQ mutation evidence.
+	// All award/reject/cancel/refresh bodies must carry the authenticated
+	// JWT subject (immutable claim). A missing sub blocks the mutation
+	// with an explicit auth error rather than sending a fallback string.
+	function requireActorSub(): string | null {
+		const sub = authStore.userSub;
+		if (!sub) {
+			notifications.error(
+				'Sessão sem identidade verificável (sub). Faça login novamente para agir nesta RFQ.',
+			);
+			return null;
+		}
+		return sub;
+	}
+
+	// J-A6-12: parse a Response body exactly once. The caller decides what
+	// to do on non-2xx; on success the parsed payload is returned. Backend
+	// returns either a bare array (canonical /quotes, /state-events) or a
+	// paginated `{ items: [...] }` envelope, so we coerce both shapes here.
+	async function parseListBodyOnce(res: Response): Promise<{ ok: true; items: unknown[] } | { ok: false; error: string }> {
+		try {
+			const body = await res.json();
+			if (Array.isArray(body)) return { ok: true, items: body };
+			if (body && typeof body === 'object' && Array.isArray((body as { items?: unknown[] }).items)) {
+				return { ok: true, items: (body as { items: unknown[] }).items };
+			}
+			return { ok: false, error: 'Resposta inesperada (não é lista)' };
+		} catch {
+			return { ok: false, error: 'Resposta malformada' };
+		}
+	}
+
+	async function describeListLoadFailure(res: Response): Promise<string> {
+		try {
+			const body = await res.json();
+			if (body && typeof body === 'object' && typeof (body as { detail?: unknown }).detail === 'string') {
+				return (body as { detail: string }).detail;
+			}
+		} catch {
+			// Fall through to default
+		}
+		return `HTTP ${res.status}`;
+	}
+
 	// ─── Data Fetching ──────────────────────────────────────────────────
 	let loadGeneration = 0;
 
@@ -66,8 +110,33 @@
 
 			rfq = await rfqRes.json();
 			invitations = rfq?.invitations ?? [];
-			quotes = quotesRes.ok ? ((await quotesRes.json()).items ?? await quotesRes.json()) : [];
-			stateEvents = eventsRes.ok ? ((await eventsRes.json()).items ?? await eventsRes.json()) : [];
+
+			// J-A6-12: parse each list response exactly once. On non-2xx,
+			// surface an explicit error and PRESERVE existing quotes /
+			// state-events evidence — never replace with [] on failure.
+			if (quotesRes.ok) {
+				const parsed = await parseListBodyOnce(quotesRes);
+				if (parsed.ok) {
+					quotes = parsed.items as RfqQuote[];
+				} else {
+					notifications.error(`Cotações: ${parsed.error}`);
+				}
+			} else {
+				const detail = await describeListLoadFailure(quotesRes);
+				notifications.error(`Falha ao recarregar cotações: ${detail}`);
+			}
+
+			if (eventsRes.ok) {
+				const parsed = await parseListBodyOnce(eventsRes);
+				if (parsed.ok) {
+					stateEvents = parsed.items as RfqStateEvent[];
+				} else {
+					notifications.error(`Timeline: ${parsed.error}`);
+				}
+			} else {
+				const detail = await describeListLoadFailure(eventsRes);
+				notifications.error(`Falha ao recarregar timeline: ${detail}`);
+			}
 
 			// Load ranking if in quotable state
 			if (rfq?.state === 'QUOTED') {
@@ -111,12 +180,14 @@
 	// ─── Actions ────────────────────────────────────────────────────────
 	async function awardRfq() {
 		if (!confirm('Confirma award automático (melhor ranking)?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		boardMode = 'AWARDING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/award`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ detail: 'Erro' }));
@@ -137,12 +208,14 @@
 
 	async function rejectRfq() {
 		if (!confirm('Rejeitar esta RFQ?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		boardMode = 'REJECTING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/reject`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('RFQ rejeitada');
@@ -163,11 +236,13 @@
 
 	async function cancelRfq() {
 		if (!confirm('Cancelar esta RFQ?')) return;
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		operationInFlight = true;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/cancel`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('RFQ cancelada');
@@ -186,10 +261,12 @@
 	}
 
 	async function refreshInvitations() {
+		const actorSub = requireActorSub();
+		if (!actorSub) return;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/refresh`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: authStore.userName || 'trader' }),
+				body: JSON.stringify({ user_id: actorSub }),
 			});
 			if (res.ok) {
 				notifications.success('Convites reenviados');
