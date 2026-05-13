@@ -4,10 +4,15 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { apiFetch } from '$lib/api/fetch';
+	import { validateMtQuantity } from '$lib/rfq/quantity';
 
 	// ─── Form State ─────────────────────────────────────────────────────
 	let commodity = $state('ALUMINIUM');
-	let quantityMt = $state<number>(0);
+	// J-A6-11: MT quantity is a three-decimal Decimal on the backend
+	// (`MTQuantity`, `MT_NUMERIC_SCALE = 3`). Keep the raw literal the
+	// user typed as a string so neither the bind nor the JSON payload
+	// routes it through `Number()` and silently truncates digits.
+	let quantityMtRaw = $state<string>('');
 	let direction = $state('BUY');
 	let intent = $state('COMMERCIAL_HEDGE');
 	let deliveryStart = $state('');
@@ -28,6 +33,11 @@
 	let showPreview = $state(false);
 
 	let submitting = $state(false);
+
+	let quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
+	let quantityError = $derived(
+		quantityValidation.ok ? null : quantityValidation.reason,
+	);
 
 	// ─── Fetch counterparties ───────────────────────────────────────────
 	async function fetchCounterparties() {
@@ -69,12 +79,20 @@
 
 	// ─── Preview ────────────────────────────────────────────────────────
 	async function loadPreview() {
+		// J-A6-11: never generate a preview for a quantity that exceeds the
+		// three-decimal MT scale. The same canonical decimal string used
+		// here is the one that will be submitted on create — preview and
+		// submit must share precision behaviour.
+		if (!quantityValidation.ok) {
+			notifications.warning(`Quantidade inválida: ${quantityValidation.reason}`);
+			return;
+		}
 		try {
 			const response = await apiFetch('/rfqs/preview-text', {
 				method: 'POST',
 				body: JSON.stringify({
 					commodity,
-					quantity_mt: quantityMt,
+					quantity_mt: quantityValidation.canonical,
 					direction,
 					intent,
 					delivery_window_start: deliveryStart,
@@ -93,6 +111,12 @@
 	// ─── Submit ─────────────────────────────────────────────────────────
 	async function handleSubmit(e: SubmitEvent) {
 		e.preventDefault();
+		// J-A6-11: gate submission on the same MT-precision rule the
+		// preview applies, before any payload construction.
+		if (!quantityValidation.ok) {
+			notifications.warning(`Quantidade inválida: ${quantityValidation.reason}`);
+			return;
+		}
 		if (selectedCounterpartyIds.length === 0) {
 			notifications.warning('Selecione pelo menos uma contraparte');
 			return;
@@ -114,7 +138,7 @@
 		try {
 			const body: Record<string, unknown> = {
 				commodity,
-				quantity_mt: quantityMt,
+				quantity_mt: quantityValidation.canonical,
 				direction,
 				intent,
 				delivery_window_start: deliveryStart,
@@ -187,12 +211,25 @@
 				<input
 					id="qty"
 					type="number"
-					step="0.01"
+					step="0.001"
 					min="0"
-					bind:value={quantityMt}
+					value={quantityMtRaw}
+					oninput={(e) => (quantityMtRaw = e.currentTarget.value)}
 					required
+					aria-invalid={quantityError != null}
+					aria-describedby={quantityError ? 'qty-error' : undefined}
+					data-testid="rfq-quantity-input"
 					class="mt-1 w-full rounded border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-surface-200 tabular-nums"
 				/>
+				{#if quantityMtRaw !== '' && quantityError}
+					<p
+						id="qty-error"
+						class="mt-1 text-xs text-danger"
+						data-testid="rfq-quantity-error"
+					>
+						{quantityError}
+					</p>
+				{/if}
 			</div>
 
 			<div>
@@ -286,13 +323,16 @@
 			<button
 				type="button"
 				onclick={loadPreview}
-				class="rounded border border-surface-700 px-4 py-2 text-sm text-surface-400 hover:bg-surface-800"
+				disabled={!quantityValidation.ok}
+				data-testid="rfq-preview-button"
+				class="rounded border border-surface-700 px-4 py-2 text-sm text-surface-400 hover:bg-surface-800 disabled:opacity-50"
 			>
 				Preview WhatsApp
 			</button>
 			<button
 				type="submit"
-				disabled={submitting}
+				disabled={submitting || !quantityValidation.ok}
+				data-testid="rfq-submit-button"
 				class="rounded bg-accent px-4 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
 			>
 				{submitting ? 'Criando...' : 'Criar RFQ'}

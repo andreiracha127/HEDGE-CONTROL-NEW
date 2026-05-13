@@ -263,11 +263,23 @@ export interface WhatIfResult {
 }
 
 // ─── Market Data ────────────────────────────────────────────────────────
+//
+// Mirror of `components["schemas"]["CashSettlementPriceRead"]` from the
+// generated `schema.d.ts`. `price_usd` is a Decimal serialised as a
+// string (NUMERIC(18, 6) per migrations 025/033), so the table display
+// must route through `formatPrice` to preserve six fractional digits.
+// The legacy `price` / `value` / `change` / `date` fields never existed
+// on this endpoint; the prior shape used `?? 0` defaults that silently
+// rendered missing prices as zero (J-A6-06).
 
 export interface MarketPrice {
-	id?: string;
-	date?: string;
-	price?: number;
-	value?: number;
-	change?: number;
+	id: string;
+	settlement_date: string;
+	price_usd: string;
+	source: string;
+	source_url: string;
+	symbol: string;
+	html_sha256: string;
+	created_at: string;
+	fetched_at: string;
 }

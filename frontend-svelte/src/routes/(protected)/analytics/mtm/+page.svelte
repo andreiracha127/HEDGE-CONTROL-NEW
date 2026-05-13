@@ -6,6 +6,7 @@
 	import { mtmSnapshotsPath } from '$lib/api/paths';
 	import { describeApiError } from '$lib/api/errors';
 	import type { MtmSnapshot } from '$lib/api/types/entities';
+	import { validateMtmSnapshot } from '$lib/api/analytics-response-shape';
 
 	type ViewState = 'idle' | 'missing-param' | 'loading' | 'ready' | 'error' | 'malformed';
 
@@ -46,15 +47,29 @@
 				{ signal },
 			);
 			if (res.ok) {
+				let body: unknown;
 				try {
-					mtmData = await res.json();
-					viewState = 'ready';
+					body = await res.json();
 				} catch {
 					mtmData = null;
 					viewState = 'malformed';
 					viewError = 'Resposta do servidor não pôde ser interpretada';
 					notifications.error(`MTM: ${viewError}`);
+					return;
 				}
+				// J-A6-03: missing required Decimal/identifier fields must
+				// surface as an explicit malformed state — never let the
+				// formatter render `undefined` as a blank/zero MTM value.
+				const validation = validateMtmSnapshot(body);
+				if (!validation.ok) {
+					mtmData = null;
+					viewState = 'malformed';
+					viewError = `Snapshot MTM com campos obrigatórios ausentes ou inválidos: ${validation.missing.join(', ')}`;
+					notifications.error(`MTM: ${viewError}`);
+					return;
+				}
+				mtmData = validation.value;
+				viewState = 'ready';
 			} else {
 				mtmData = null;
 				viewState = 'error';

@@ -2,7 +2,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate } from '$lib/utils/format';
+	import { formatNumber, formatDate, formatPrice } from '$lib/utils/format';
 	import { apiFetch } from '$lib/api/fetch';
 	import { describeApiError } from '$lib/api/errors';
 	import EChart from '$lib/components/chart/EChart.svelte';
@@ -14,13 +14,28 @@
 	let isRiskManager = $derived(authStore.hasRole('risk_manager'));
 	let abortController: AbortController;
 
+	// J-A6-06: /market-data/westmetall/aluminum/cash-settlement/prices
+	// returns `CashSettlementPriceRead[]` directly — `price_usd` is a
+	// Decimal-as-string with six fractional digits. Discard rows that
+	// lack the required identifiers/economics instead of zeroing them.
+	function isValidMarketPrice(row: unknown): row is MarketPrice {
+		if (!row || typeof row !== 'object') return false;
+		const r = row as Record<string, unknown>;
+		return (
+			typeof r.id === 'string' &&
+			typeof r.settlement_date === 'string' &&
+			typeof r.price_usd === 'string'
+		);
+	}
+
 	async function loadPrices(signal?: AbortSignal) {
 		isLoading = true;
 		try {
 			const res = await apiFetch('/market-data/westmetall/aluminum/cash-settlement/prices?limit=90', { signal });
 			if (res.ok) {
-				const data = await res.json();
-				prices = data.items ?? data;
+				const data: unknown = await res.json();
+				const arr = Array.isArray(data) ? data : [];
+				prices = arr.filter(isValidMarketPrice);
 			}
 		} catch (e) {
 			if (e instanceof DOMException && e.name === 'AbortError') return;
@@ -61,17 +76,34 @@
 
 	onDestroy(() => { abortController?.abort(); });
 
+	// Chronological ordering for both the chart and the row-to-row delta
+	// computation in the table.
+	let sortedPrices = $derived(
+		[...prices].sort(
+			(a, b) =>
+				new Date(a.settlement_date).getTime() -
+				new Date(b.settlement_date).getTime(),
+		),
+	);
+
+	// `price_usd` is a six-decimal Decimal-as-string. The chart axis is
+	// a visual aid where ~15 sig-fig IEEE-754 precision is acceptable
+	// (the institutional precision concern is the tabular display, which
+	// renders the raw string via formatPrice). Drop rows whose numeric
+	// parse fails — those would otherwise plot as NaN points.
 	let chartOptions = $derived(() => {
-		if (prices.length === 0) return {};
-		const sorted = [...prices].sort((a, b) => new Date(a.date ?? '').getTime() - new Date(b.date ?? '').getTime());
+		if (sortedPrices.length === 0) return {};
 		return {
 			tooltip: { trigger: 'axis' as const },
-			xAxis: { type: 'category' as const, data: sorted.map((p) => p.date ?? '') },
+			xAxis: {
+				type: 'category' as const,
+				data: sortedPrices.map((p) => p.settlement_date),
+			},
 			yAxis: { type: 'value' as const, name: 'USD/MT' },
 			series: [{
 				name: 'LME Aluminium',
 				type: 'line' as const,
-				data: sorted.map((p) => p.price ?? p.value ?? 0),
+				data: sortedPrices.map((p) => Number(p.price_usd)),
 				smooth: true,
 				itemStyle: { color: '#3b82f6' },
 				areaStyle: { opacity: 0.05 },
@@ -79,6 +111,26 @@
 			dataZoom: [{ type: 'inside' as const }, { type: 'slider' as const }],
 		};
 	});
+
+	// Most-recent-first for the table view, with the row-to-row change
+	// computed against the previous chronological row. `change` is a
+	// derived delta of two USD prices; rendered with two fractional
+	// digits (settlement-price precision is preserved separately on the
+	// `price_usd` column itself).
+	let pricesForTable = $derived(
+		sortedPrices
+			.map((p, idx, arr) => {
+				const prev = idx > 0 ? arr[idx - 1] : null;
+				const prevN = prev ? Number(prev.price_usd) : Number.NaN;
+				const curN = Number(p.price_usd);
+				const change =
+					Number.isFinite(prevN) && Number.isFinite(curN)
+						? curN - prevN
+						: null;
+				return { ...p, change };
+			})
+			.reverse(),
+	);
 </script>
 
 <div class="p-6">
@@ -112,11 +164,11 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each prices.slice(0, 30) as price, idx (price.id ?? idx)}
+					{#each pricesForTable.slice(0, 30) as price (price.id)}
 						<tr class="border-b border-surface-800/50">
-							<td class="px-3 py-2 text-surface-400 text-xs">{formatDate(price.date)}</td>
-							<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(price.price ?? price.value)}</td>
-							<td class="px-3 py-2 tabular-nums text-xs {(price.change ?? 0) >= 0 ? 'text-success' : 'text-danger'}">
+							<td class="px-3 py-2 text-surface-400 text-xs">{formatDate(price.settlement_date)}</td>
+							<td class="px-3 py-2 tabular-nums text-surface-200" data-testid="market-price-usd">{formatPrice(price.price_usd, 'USD/MT')}</td>
+							<td class="px-3 py-2 tabular-nums text-xs {price.change != null && price.change >= 0 ? 'text-success' : 'text-danger'}">
 								{price.change != null ? (price.change >= 0 ? '+' : '') + formatNumber(price.change) : '—'}
 							</td>
 						</tr>
