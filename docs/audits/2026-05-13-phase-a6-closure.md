@@ -106,8 +106,10 @@ CI `Backend: pytest` ran green on the merge commit. No A6 PR touched backend cod
 
 | Surface | Tests at A6 entry | Tests at A6 closure | Delta |
 |---|---|---|---|
-| `npm test` total | 113 (baseline pre-PR-A6-1) | **215** | **+102** |
-| Test files | 9 | 18 | +9 |
+| `npm test` total | 113 (baseline pre-PR-A6-1) | **274** | **+161** |
+| Test files | 9 | 21 | +12 |
+
+Measurement command: `cd frontend-svelte && npm test -- --reporter=dot` against `main @ aa255e2be`. Individual PR bodies (PR-A6-3 reported 235/18, PR-A6-4 reported 215/18) measured intermediate states on review commits, not the final merged HEAD; the canonical post-closure counts above are the authoritative baseline for the next audit cycle.
 
 New test files landed during A6:
 
