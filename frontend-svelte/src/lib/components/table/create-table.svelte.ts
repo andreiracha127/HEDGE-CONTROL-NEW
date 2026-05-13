@@ -25,9 +25,10 @@ export function createSvelteTable<TData extends RowData>(
 		tableState = typeof updater === 'function' ? updater(tableState) : updater;
 	}
 
+	const initialOptions = optionsFn();
 	const table = createTable({
-		...optionsFn(),
-		state: { ...(tableState as TableState), ...optionsFn().state },
+		...initialOptions,
+		state: initialOptions.state ?? {},
 		onStateChange: handleStateChange,
 		renderFallbackValue: null,
 	} as TableOptionsResolved<TData>);
