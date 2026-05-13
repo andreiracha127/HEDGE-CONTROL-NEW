@@ -224,6 +224,19 @@ def get_current_user(
     return payload
 
 
+def get_current_actor_sub(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> str:
+    """Authoritative actor identifier for mutation evidence."""
+    sub = user.get("sub") if isinstance(user, dict) else None
+    if not isinstance(sub, str) or not sub.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated subject is required",
+        )
+    return sub.strip()
+
+
 def require_role(role: str):
     return require_any_role(role)
 

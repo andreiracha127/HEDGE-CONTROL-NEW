@@ -29,6 +29,7 @@ from app.core import config as config_module
 from app.core.auth import (
     _ANONYMOUS_USER,
     get_auth_settings,
+    get_current_actor_sub,
     get_current_user,
     validate_auth_config,
 )
@@ -174,6 +175,24 @@ def test_get_current_user_returns_anonymous_in_development() -> None:
     with _settings_override(app_env="development", jwt_issuer="", jwt_audience="", jwks_url=""):
         result = _user_dep(_Req())
     assert result == _ANONYMOUS_USER
+
+
+def test_get_current_actor_sub_returns_trimmed_subject() -> None:
+    result = get_current_actor_sub({"sub": "  subject-123  "})
+
+    assert result == "subject-123"
+
+
+def test_get_current_actor_sub_rejects_missing_subject() -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        get_current_actor_sub({"roles": ["trader"]})
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authenticated subject is required"
+
+
+def test_get_current_actor_sub_accepts_anonymous_fallback_subject() -> None:
+    assert get_current_actor_sub(_ANONYMOUS_USER) == "anonymous"
 
 
 # ── audit endpoints — anonymous rejection under production/staging ─────────
