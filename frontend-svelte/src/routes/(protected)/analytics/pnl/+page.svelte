@@ -6,6 +6,7 @@
 	import { pnlSnapshotsPath } from '$lib/api/paths';
 	import { describeApiError } from '$lib/api/errors';
 	import type { PnlSnapshot } from '$lib/api/types/entities';
+	import { validatePnlSnapshot } from '$lib/api/analytics-response-shape';
 
 	type ViewState = 'idle' | 'missing-param' | 'loading' | 'ready' | 'error' | 'malformed';
 
@@ -58,15 +59,30 @@
 				{ signal },
 			);
 			if (res.ok) {
+				let body: unknown;
 				try {
-					pnlData = await res.json();
-					viewState = 'ready';
+					body = await res.json();
 				} catch {
 					pnlData = null;
 					viewState = 'malformed';
 					viewError = 'Resposta do servidor não pôde ser interpretada';
 					notifications.error(`P&L: ${viewError}`);
+					return;
 				}
+				// J-A6-03: never substitute missing required economic values
+				// with zero defaults. A malformed snapshot must surface as
+				// an explicit error state rather than render `formatNumber`
+				// over `undefined`.
+				const validation = validatePnlSnapshot(body);
+				if (!validation.ok) {
+					pnlData = null;
+					viewState = 'malformed';
+					viewError = `Snapshot P&L com campos obrigatórios ausentes ou inválidos: ${validation.missing.join(', ')}`;
+					notifications.error(`P&L: ${viewError}`);
+					return;
+				}
+				pnlData = validation.value;
+				viewState = 'ready';
 			} else {
 				pnlData = null;
 				viewState = 'error';
