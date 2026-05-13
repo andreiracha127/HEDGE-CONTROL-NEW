@@ -83,7 +83,7 @@ def _submit_quote(client, rfq_id: str, counterparty_id: str) -> dict:
 
 
 def _award(client, rfq_id: str) -> dict:
-    resp = client.post(f"/rfqs/{rfq_id}/actions/award", json={"user_id": "U1"})
+    resp = client.post(f"/rfqs/{rfq_id}/actions/award", json={})
     assert resp.status_code == 200
     return resp.json()
 

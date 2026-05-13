@@ -457,6 +457,7 @@ class RFQService:
     def create(
         session: Session,
         payload: RFQCreate,
+        actor_sub: str,
         audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> RFQ:
         """Create an RFQ, its invitations and initial state events.
@@ -703,6 +704,7 @@ class RFQService:
                     rfq_id=rfq.id,
                     from_state=RFQState.created,
                     to_state=RFQState.sent,
+                    user_id=actor_sub,
                     event_timestamp=now_utc(),
                 )
             )
@@ -759,7 +761,7 @@ class RFQService:
         return rfq
 
     @staticmethod
-    def archive(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+    def archive(session: Session, rfq_id: UUID, actor_sub: str) -> RFQ:
         """Archive an RFQ. Allowed only from the terminal ``CLOSED`` state.
 
         ``RFQState.closed`` is the unique terminal state — both
@@ -797,7 +799,7 @@ class RFQService:
                 from_state=rfq.state,
                 to_state=rfq.state,
                 trigger="archive",
-                user_id=user_id,
+                user_id=actor_sub,
                 event_timestamp=archive_time,
             )
         )
@@ -918,7 +920,7 @@ class RFQService:
         return quote
 
     @staticmethod
-    def reject(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+    def reject(session: Session, rfq_id: UUID, actor_sub: str) -> RFQ:
         """Reject an RFQ (QUOTED → CLOSED).
 
         The caller must ``session.commit()`` afterwards.
@@ -936,7 +938,7 @@ class RFQService:
                 rfq_id=rfq.id,
                 from_state=RFQState.quoted,
                 to_state=RFQState.closed,
-                user_id=user_id,
+                user_id=actor_sub,
                 reason="USER_REJECTED",
                 event_timestamp=now_utc(),
             )
@@ -944,7 +946,7 @@ class RFQService:
         return rfq
 
     @staticmethod
-    def cancel(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+    def cancel(session: Session, rfq_id: UUID, actor_sub: str) -> RFQ:
         """Cancel an RFQ (CREATED/SENT → CLOSED).
 
         The caller must ``session.commit()`` afterwards.
@@ -963,7 +965,7 @@ class RFQService:
                 rfq_id=rfq.id,
                 from_state=prev_state,
                 to_state=RFQState.closed,
-                user_id=user_id,
+                user_id=actor_sub,
                 reason="USER_CANCELLED",
                 event_timestamp=now_utc(),
             )
@@ -974,7 +976,7 @@ class RFQService:
     def refresh(
         session: Session,
         rfq_id: UUID,
-        user_id: str,
+        actor_sub: str,
         audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> RFQ:
         """Re-send invitations for an RFQ in SENT or QUOTED state.
@@ -1104,7 +1106,7 @@ class RFQService:
         session: Session,
         rfq_id: UUID,
         quote_id: UUID,
-        user_id: str,
+        actor_sub: str,
         reason: str = "manual_reject",
         audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> None:
@@ -1160,7 +1162,7 @@ class RFQService:
         quote.state = QuoteState.rejected
         quote.rejected_at = now
         quote.rejected_reason = reason
-        quote.rejected_by = user_id
+        quote.rejected_by = actor_sub
 
         # ── (2) Build the prefixed outbound body and stage the queued row.
         raw_body = _pick_action_message(cp, "reject")
@@ -1222,6 +1224,7 @@ class RFQService:
                     from_state=RFQState.quoted,
                     to_state=RFQState.sent,
                     reason="ALL_QUOTES_REJECTED",
+                    user_id=actor_sub,
                     event_timestamp=now,
                 )
             )
@@ -1269,7 +1272,7 @@ class RFQService:
         session: Session,
         rfq_id: UUID,
         counterparty_id: str,
-        user_id: str,
+        actor_sub: str,
         audit_checkpoint: Callable[[UUID], None] | None = None,
     ) -> RFQ:
         """Re-send invitation to a specific counterparty.
@@ -1380,7 +1383,7 @@ class RFQService:
         return rfq
 
     @staticmethod
-    def award(session: Session, rfq_id: UUID, user_id: str) -> RFQ:
+    def award(session: Session, rfq_id: UUID, actor_sub: str) -> RFQ:
         """Award an RFQ: create contracts, linkages and close.
 
         The caller must ``session.commit()`` afterwards.
@@ -1555,7 +1558,7 @@ class RFQService:
                 rfq_id=rfq.id,
                 from_state=RFQState.quoted,
                 to_state=RFQState.awarded,
-                user_id=user_id,
+                user_id=actor_sub,
                 winning_quote_ids=json.dumps(winning_quote_ids, sort_keys=True),
                 winning_counterparty_ids=json.dumps(
                     winning_counterparty_ids, sort_keys=True
@@ -1602,7 +1605,7 @@ class RFQService:
                         from_state=previous_state,
                         to_state=RFQState.closed,
                         trigger="closed_by_parent_spread",
-                        user_id=user_id,
+                        user_id=actor_sub,
                         event_timestamp=now_utc(),
                         reason=f"PARENT_SPREAD_AWARDED:{rfq.rfq_number}",
                         # Codex P2 fix: record the child's own contract id

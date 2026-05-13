@@ -134,7 +134,7 @@ def test_refresh_invitation_body_contains_canonical_id(client) -> None:
     rfq_number = rfq["rfq_number"]
 
     resp = client.post(
-        f"/rfqs/{rfq['id']}/actions/refresh", json={"user_id": "U1"}
+        f"/rfqs/{rfq['id']}/actions/refresh", json={}
     )
     assert resp.status_code == 200
     refreshed = resp.json()
@@ -155,7 +155,7 @@ def test_refresh_counterparty_invitation_body_contains_canonical_id(
 
     resp = client.post(
         f"/rfqs/{rfq['id']}/actions/refresh-counterparty",
-        json={"user_id": "U1", "counterparty_id": cp_id},
+        json={"counterparty_id": cp_id},
     )
     assert resp.status_code == 200, resp.text
     refreshed = resp.json()
@@ -249,7 +249,7 @@ def test_reject_quote_preserves_evidence_via_state_not_delete(client) -> None:
 
     resp = client.post(
         f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
-        json={"user_id": "trader-x"},
+        json={},
     )
     assert resp.status_code == 200, resp.text
 
@@ -260,7 +260,7 @@ def test_reject_quote_preserves_evidence_via_state_not_delete(client) -> None:
         assert q.state == QuoteState.rejected
         assert q.rejected_at is not None
         assert q.rejected_reason == "manual_reject"
-        assert q.rejected_by == "trader-x"
+        assert q.rejected_by == "test-user"
 
 
 def test_reject_quote_outbound_persisted_with_canonical_id(client) -> None:
@@ -270,7 +270,7 @@ def test_reject_quote_outbound_persisted_with_canonical_id(client) -> None:
 
     resp = client.post(
         f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
-        json={"user_id": "trader-x"},
+        json={},
     )
     assert resp.status_code == 200, resp.text
     refreshed = resp.json()
@@ -296,7 +296,7 @@ def test_ranking_excludes_rejected_quotes(client) -> None:
     # Reject CP-A's quote.
     rej = client.post(
         f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={qa['id']}",
-        json={"user_id": "trader-x"},
+        json={},
     )
     assert rej.status_code == 200, rej.text
 
@@ -347,7 +347,7 @@ def test_reject_quote_revert_lands_in_same_checkpoint_as_outbox(client) -> None:
     ):
         resp = client.post(
             f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={quote['id']}",
-            json={"user_id": "trader-x"},
+            json={},
         )
     assert resp.status_code == 200, resp.text
 
@@ -380,7 +380,7 @@ def test_post_reject_remaining_count_filters_active(client) -> None:
     # Reject CP-A first — there is still CP-B active, so RFQ stays QUOTED.
     r1 = client.post(
         f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={qa['id']}",
-        json={"user_id": "trader-x"},
+        json={},
     )
     assert r1.status_code == 200
     assert r1.json()["state"] == "QUOTED"
@@ -388,7 +388,7 @@ def test_post_reject_remaining_count_filters_active(client) -> None:
     # Reject CP-B — every active quote is now rejected → revert to SENT.
     r2 = client.post(
         f"/rfqs/{rfq['id']}/actions/reject-quote?quote_id={qb['id']}",
-        json={"user_id": "trader-x"},
+        json={},
     )
     assert r2.status_code == 200
     assert r2.json()["state"] == "SENT", (

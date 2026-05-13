@@ -5230,31 +5230,15 @@
         "type": "string"
       },
       "RFQAwardRequest": {
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "title": "RFQAwardRequest",
         "type": "object"
       },
       "RFQCancelRequest": {
+        "additionalProperties": false,
         "description": "Cancel an RFQ in CREATED or SENT state.",
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "properties": {},
         "title": "RFQCancelRequest",
         "type": "object"
       },
@@ -6003,66 +5987,37 @@
         "type": "object"
       },
       "RFQRefreshCounterpartyRequest": {
+        "additionalProperties": false,
         "description": "Re-send invitation to a specific counterparty.",
         "properties": {
           "counterparty_id": {
             "maxLength": 100,
             "title": "Counterparty Id",
             "type": "string"
-          },
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
           }
         },
         "required": [
-          "user_id",
           "counterparty_id"
         ],
         "title": "RFQRefreshCounterpartyRequest",
         "type": "object"
       },
       "RFQRefreshRequest": {
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "title": "RFQRefreshRequest",
         "type": "object"
       },
       "RFQRejectQuoteRequest": {
+        "additionalProperties": false,
         "description": "Reject a specific counterparty quote without closing the RFQ.",
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "properties": {},
         "title": "RFQRejectQuoteRequest",
         "type": "object"
       },
       "RFQRejectRequest": {
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "title": "RFQRejectRequest",
         "type": "object"
       },
@@ -6387,16 +6342,8 @@
         "type": "string"
       },
       "RFQUserActionBase": {
-        "properties": {
-          "user_id": {
-            "maxLength": 64,
-            "title": "User Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "user_id"
-        ],
+        "additionalProperties": false,
+        "properties": {},
         "title": "RFQUserActionBase",
         "type": "object"
       },

@@ -3244,18 +3244,12 @@ export interface components {
          */
         QuoteState: "active" | "rejected";
         /** RFQAwardRequest */
-        RFQAwardRequest: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQAwardRequest: Record<string, never>;
         /**
          * RFQCancelRequest
          * @description Cancel an RFQ in CREATED or SENT state.
          */
-        RFQCancelRequest: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQCancelRequest: Record<string, never>;
         /** RFQCreate */
         RFQCreate: {
             /**
@@ -3548,27 +3542,16 @@ export interface components {
         RFQRefreshCounterpartyRequest: {
             /** Counterparty Id */
             counterparty_id: string;
-            /** User Id */
-            user_id: string;
         };
         /** RFQRefreshRequest */
-        RFQRefreshRequest: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQRefreshRequest: Record<string, never>;
         /**
          * RFQRejectQuoteRequest
          * @description Reject a specific counterparty quote without closing the RFQ.
          */
-        RFQRejectQuoteRequest: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQRejectQuoteRequest: Record<string, never>;
         /** RFQRejectRequest */
-        RFQRejectRequest: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQRejectRequest: Record<string, never>;
         /**
          * RFQSideEnum
          * @enum {string}
@@ -3674,10 +3657,7 @@ export interface components {
          */
         RFQTradeTypeEnum: "Swap" | "Forward";
         /** RFQUserActionBase */
-        RFQUserActionBase: {
-            /** User Id */
-            user_id: string;
-        };
+        RFQUserActionBase: Record<string, never>;
         /** ReconcileResponse */
         ReconcileResponse: {
             /**

@@ -51,6 +51,7 @@ def reset_database() -> None:
 @pytest.fixture()
 def client() -> TestClient:
     app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "test-user",
         "roles": ["trader", "risk_manager", "auditor"]
     }
     return _DefaultCommodityTestClient(app)

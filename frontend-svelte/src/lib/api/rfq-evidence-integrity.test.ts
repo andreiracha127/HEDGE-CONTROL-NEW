@@ -8,8 +8,8 @@
  * J-A6-04 (actor identity)
  *   - No frontend RFQ create/award/reject/cancel/refresh body contains
  *     `authStore.userName || 'trader'` or any literal actor fallback.
- *   - RFQ actor payloads use the immutable JWT `sub` exposed by
- *     `authStore.userSub`.
+ *   - RFQ mutation bodies never send `user_id`; backend evidence derives
+ *     actor identity from the authenticated JWT sub.
  *   - Missing `sub` short-circuits the mutation with an explicit
  *     notification before any apiFetch is dispatched.
  *
@@ -40,20 +40,25 @@ describe('RFQ create page — actor identity (J-A6-04 slice)', () => {
 		expect(source).not.toMatch(/\|\|\s*['"]trader['"]/);
 	});
 
-	it("does not send display name (userName) as user_id evidence", () => {
+	it("does not send display name (userName) as actor evidence", () => {
 		expect(source).not.toMatch(/user_id\s*:\s*authStore\.userName/);
 	});
 
-	it('uses authStore.userSub for the user_id evidence field', () => {
-		// We bind sub to a local actorSub variable, then send it as user_id.
+	it('uses authStore.userSub as a local UX preflight only', () => {
 		expect(source).toMatch(/authStore\.userSub/);
-		expect(source).toMatch(/user_id\s*:\s*actorSub/);
+		expect(source).not.toMatch(/user_id\s*:/);
 	});
 
 	it('blocks submit when sub is missing with an explicit auth-error notification', () => {
 		// Pattern: `if (!actorSub) { notifications.error(...); return; }`
 		expect(source).toMatch(/if\s*\(\s*!\s*actorSub\s*\)/);
 		expect(source).toMatch(/notifications\.error\(\s*['"`][^'"`]*sub[^'"`]*['"`]/i);
+	});
+
+	it('POST /rfqs body uses canonical invitations mapping and not legacy counterparty_ids', () => {
+		expect(source).not.toMatch(/counterparty_ids\s*:/);
+		expect(source).toMatch(/invitations\s*:/);
+		expect(source).toMatch(/selectedCounterpartyIds\.map\(\(id\)\s*=>\s*\(\{\s*counterparty_id:\s*id\s*\}\)\)/);
 	});
 });
 
@@ -64,7 +69,7 @@ describe('RFQ detail page — actor identity (J-A6-04 slice)', () => {
 		expect(source).not.toMatch(/\|\|\s*['"]trader['"]/);
 	});
 
-	it('does not send authStore.userName as user_id in any mutation body', () => {
+	it('does not send authStore.userName as actor evidence in any mutation body', () => {
 		expect(source).not.toMatch(/user_id\s*:\s*authStore\.userName/);
 	});
 
@@ -79,13 +84,27 @@ describe('RFQ detail page — actor identity (J-A6-04 slice)', () => {
 		// appears at least four times — once per gated mutation.
 		const requireOccurrences = source.match(/requireActorSub\s*\(\s*\)/g) ?? [];
 		expect(requireOccurrences.length).toBeGreaterThanOrEqual(4);
-		// And every gated mutation sends user_id: actorSub, not a fallback.
-		const actorSubBodies = source.match(/user_id\s*:\s*actorSub/g) ?? [];
-		expect(actorSubBodies.length).toBeGreaterThanOrEqual(4);
+		expect(source).not.toMatch(/user_id\s*:/);
 	});
 
 	it('requireActorSub raises an explicit auth-error notification on missing sub', () => {
 		expect(source).toMatch(/notifications\.error\(\s*['"`][^'"`]*sub[^'"`]*['"`]/i);
+	});
+});
+
+describe('RFQ mutation bodies — backend-derived actor identity (Cluster 2)', () => {
+	const createSource = read(RFQ_NEW);
+	const detailSource = read(RFQ_DETAIL);
+
+	it('does not send user_id in create or detail mutation body literals', () => {
+		expect(createSource).not.toMatch(/user_id\s*:/);
+		expect(detailSource).not.toMatch(/user_id\s*:/);
+	});
+
+	it('keeps the local actor-sub preflight on create and existing detail mutations', () => {
+		expect(createSource).toMatch(/authStore\.userSub/);
+		const requireOccurrences = detailSource.match(/requireActorSub\s*\(\s*\)/g) ?? [];
+		expect(requireOccurrences.length).toBeGreaterThanOrEqual(4);
 	});
 });
 

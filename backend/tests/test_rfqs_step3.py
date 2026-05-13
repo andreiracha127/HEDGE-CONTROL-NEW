@@ -167,7 +167,7 @@ def test_refresh_keeps_state_and_persists_refresh_invitations(client) -> None:
     rfq_after_quote = _get_rfq(client, rfq["id"])
     assert rfq_after_quote["state"] == "QUOTED"
 
-    refresh = client.post(f"/rfqs/{rfq['id']}/actions/refresh", json={"user_id": "U1"})
+    refresh = client.post(f"/rfqs/{rfq['id']}/actions/refresh", json={})
     assert refresh.status_code == 200
     refreshed = refresh.json()
     assert refreshed["state"] == "QUOTED"
@@ -205,7 +205,7 @@ def test_reject_closes_rfq_without_exposure_change(client) -> None:
         },
     )
 
-    reject = client.post(f"/rfqs/{rfq['id']}/actions/reject", json={"user_id": "U1"})
+    reject = client.post(f"/rfqs/{rfq['id']}/actions/reject", json={})
     assert reject.status_code == 200
     assert reject.json()["state"] == "CLOSED"
 
@@ -246,7 +246,7 @@ def test_award_creates_contract_and_reduces_exposure_via_linkage(client) -> None
     )
 
     before = _get_commercial_exposure(client)
-    award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"})
+    award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={})
     assert award.status_code == 200
     assert award.json()["state"] == "CLOSED"
 
@@ -331,7 +331,7 @@ def test_award_spread_creates_two_contracts(client) -> None:
         },
     )
 
-    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"})
+    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={})
     assert award.status_code == 200
     assert award.json()["state"] == "CLOSED"
 
@@ -375,7 +375,7 @@ def test_award_acquires_row_lock_postgres(client) -> None:
     with patch.object(
         RFQService, "get_live_for_update", wraps=RFQService.get_live_for_update
     ) as locked_get:
-        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"})
+        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={})
 
     assert award.status_code == 200
     locked_get.assert_called_once()
@@ -412,7 +412,7 @@ def test_award_uses_locked_live_loader(client) -> None:
     with patch.object(
         RFQService, "get_live_for_update", wraps=RFQService.get_live_for_update
     ) as locked_get:
-        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"})
+        award = client.post(f"/rfqs/{rfq['id']}/actions/award", json={})
 
     assert award.status_code == 200
     locked_get.assert_called_once()
@@ -427,7 +427,7 @@ def test_concurrent_award_rfq_only_one_succeeds(client) -> None:
 def test_spread_award_closes_both_child_rfqs(client) -> None:
     buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
 
-    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"})
+    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={})
     assert award.status_code == 200
 
     assert _get_rfq(client, buy_trade["id"])["state"] == "CLOSED"
@@ -453,14 +453,14 @@ def test_spread_award_closes_both_child_rfqs(client) -> None:
 def test_spread_child_award_blocked_after_parent_award(client) -> None:
     buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
 
-    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"})
+    award = client.post(f"/rfqs/{spread['id']}/actions/award", json={})
     assert award.status_code == 200
 
     buy_award = client.post(
-        f"/rfqs/{buy_trade['id']}/actions/award", json={"user_id": "U2"}
+        f"/rfqs/{buy_trade['id']}/actions/award", json={}
     )
     sell_award = client.post(
-        f"/rfqs/{sell_trade['id']}/actions/award", json={"user_id": "U2"}
+        f"/rfqs/{sell_trade['id']}/actions/award", json={}
     )
 
     assert buy_award.status_code == 409
@@ -477,13 +477,13 @@ def test_spread_award_blocked_when_child_already_closed(client) -> None:
     buy_trade, sell_trade, spread = _create_spread_with_quotes(client)
 
     child_award = client.post(
-        f"/rfqs/{buy_trade['id']}/actions/award", json={"user_id": "U0"}
+        f"/rfqs/{buy_trade['id']}/actions/award", json={}
     )
     assert child_award.status_code == 200
     assert _get_rfq(client, buy_trade["id"])["state"] == "CLOSED"
 
     parent_award = client.post(
-        f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"}
+        f"/rfqs/{spread['id']}/actions/award", json={}
     )
     assert parent_award.status_code == 409
     assert "already" in parent_award.json()["detail"].lower()
@@ -521,7 +521,7 @@ def test_award_quote_endpoint_deleted_returns_404(client) -> None:
 
     response = client.post(
         f"/rfqs/{rfq['id']}/actions/award-quote",
-        json={"quote_id": quote["id"], "user_id": "U1"},
+        json={"quote_id": quote["id"]},
     )
     assert response.status_code == 404
 
@@ -566,7 +566,7 @@ def test_award_trade_date_uses_utc(client) -> None:
     frozen = _frozen_award_time()
     with patch("app.services.rfq_service.now_utc", return_value=frozen):
         award = client.post(
-            f"/rfqs/{rfq['id']}/actions/award", json={"user_id": "U1"}
+            f"/rfqs/{rfq['id']}/actions/award", json={}
         )
     assert award.status_code == 200
 
@@ -650,7 +650,7 @@ def test_spread_award_three_contracts_consistent_trade_date(client) -> None:
     frozen = _frozen_award_time()
     with patch("app.services.rfq_service.now_utc", return_value=frozen):
         award = client.post(
-            f"/rfqs/{spread['id']}/actions/award", json={"user_id": "U1"}
+            f"/rfqs/{spread['id']}/actions/award", json={}
         )
     assert award.status_code == 200
 

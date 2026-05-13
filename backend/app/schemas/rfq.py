@@ -105,6 +105,16 @@ class RFQCreate(BaseModel):
     text_en: str | None = Field(None, description="English LME text for brokers")
     text_pt: str | None = Field(None, description="Portuguese text for BR banks")
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_body_user_id(cls, data):
+        if isinstance(data, dict) and "user_id" in data:
+            raise ValueError(
+                "user_id is not accepted on POST /rfqs; actor identity is derived "
+                "from the authenticated JWT sub"
+            )
+        return data
+
     @model_validator(mode="after")
     def validate_intent(self) -> "RFQCreate":
         if self.quantity_mt <= 0:
@@ -209,7 +219,7 @@ class TradeRankingRead(BaseModel):
 
 
 class RFQUserActionBase(BaseModel):
-    user_id: str = Field(..., max_length=64)
+    model_config = ConfigDict(extra="forbid")
 
 
 class RFQRejectRequest(RFQUserActionBase):

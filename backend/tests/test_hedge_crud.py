@@ -8,6 +8,7 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.counterparty import Counterparty
+from app.models.contracts import HedgeContract, HedgeContractStatus
 
 
 ENDPOINT = "/contracts/hedge"
@@ -199,17 +200,22 @@ class TestUpdateHedgeContract:
 
 
 class TestStatusTransitions:
-    def test_valid_transition_active_to_settled(self, client, session):
+    def test_generic_transition_active_to_settled_is_rejected(self, client, session):
         cp_id = _create_counterparty(session)
         r = client.post(ENDPOINT, json=_make_contract_payload(cp_id))
         contract_id = r.json()["id"]
         r2 = client.patch(
             f"{ENDPOINT}/{contract_id}/status", json={"status": "settled"}
         )
-        assert r2.status_code == 200
-        assert r2.json()["status"] == "settled"
+        assert r2.status_code == 409
+        assert (
+            r2.json()["detail"]
+            == "Settlement transitions must go through POST /cashflow/contracts/{contract_id}/settle"
+        )
 
-    def test_valid_transition_active_to_partially_settled(self, client, session):
+    def test_generic_transition_active_to_partially_settled_is_rejected(
+        self, client, session
+    ):
         cp_id = _create_counterparty(session)
         r = client.post(ENDPOINT, json=_make_contract_payload(cp_id))
         contract_id = r.json()["id"]
@@ -217,14 +223,15 @@ class TestStatusTransitions:
             f"{ENDPOINT}/{contract_id}/status",
             json={"status": "partially_settled"},
         )
-        assert r2.status_code == 200
-        assert r2.json()["status"] == "partially_settled"
+        assert r2.status_code == 409
 
     def test_invalid_transition_settled_to_active(self, client, session):
         cp_id = _create_counterparty(session)
         r = client.post(ENDPOINT, json=_make_contract_payload(cp_id))
         contract_id = r.json()["id"]
-        client.patch(f"{ENDPOINT}/{contract_id}/status", json={"status": "settled"})
+        contract = session.get(HedgeContract, uuid.UUID(contract_id))
+        contract.status = HedgeContractStatus.settled
+        session.commit()
         r2 = client.patch(f"{ENDPOINT}/{contract_id}/status", json={"status": "active"})
         assert r2.status_code == 409
 
@@ -242,15 +249,13 @@ class TestStatusTransitions:
         cp_id = _create_counterparty(session)
         r = client.post(ENDPOINT, json=_make_contract_payload(cp_id))
         contract_id = r.json()["id"]
-        client.patch(
-            f"{ENDPOINT}/{contract_id}/status",
-            json={"status": "partially_settled"},
-        )
+        contract = session.get(HedgeContract, uuid.UUID(contract_id))
+        contract.status = HedgeContractStatus.partially_settled
+        session.commit()
         r2 = client.patch(
             f"{ENDPOINT}/{contract_id}/status", json={"status": "settled"}
         )
-        assert r2.status_code == 200
-        assert r2.json()["status"] == "settled"
+        assert r2.status_code == 409
 
 
 # -----------------------------------------------------------------------

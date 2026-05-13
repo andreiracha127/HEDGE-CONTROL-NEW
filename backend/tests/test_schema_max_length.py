@@ -156,8 +156,8 @@ class TestRFQQuoteMaxLength:
 
 
 class TestRFQUserActionMaxLength:
-    def test_user_id_too_long(self):
-        with pytest.raises(ValidationError, match=_ERR):
+    def test_user_id_is_rejected_as_extra_field(self):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             RFQUserActionBase(user_id=_too_long(64))
 
 

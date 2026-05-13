@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.auth import require_any_role, require_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
@@ -111,12 +111,14 @@ def create_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     try:
         rfq = RFQService.create(
             session,
             payload,
+            actor_sub=actor_sub,
             audit_checkpoint=lambda entity_id: record_audit_checkpoint(
                 request, entity_id
             ),
@@ -326,10 +328,11 @@ def reject_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     with unit_of_work(session, request=request):
-        RFQService.reject(session, rfq_id, payload.user_id)
+        RFQService.reject(session, rfq_id, actor_sub)
         mark_audit_success(request, rfq_id)
     return _build_rfq_read(session, rfq_id)
 
@@ -347,11 +350,12 @@ async def cancel_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Cancel an RFQ in CREATED or SENT state."""
     with unit_of_work(session, request=request):
-        RFQService.cancel(session, rfq_id, payload.user_id)
+        RFQService.cancel(session, rfq_id, actor_sub)
         mark_audit_success(request, rfq_id)
     await ws_manager.broadcast(
         "rfq",
@@ -379,6 +383,7 @@ def reject_quote(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Reject a specific counterparty quote without closing the RFQ."""
@@ -387,7 +392,7 @@ def reject_quote(
             session,
             rfq_id,
             quote_id,
-            payload.user_id,
+            actor_sub,
             audit_checkpoint=lambda entity_id: record_audit_checkpoint(
                 request, entity_id
             ),
@@ -412,6 +417,7 @@ def refresh_counterparty(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     """Re-send invitation to a specific counterparty."""
@@ -420,7 +426,7 @@ def refresh_counterparty(
             session,
             rfq_id,
             payload.counterparty_id,
-            payload.user_id,
+            actor_sub,
             audit_checkpoint=lambda entity_id: record_audit_checkpoint(
                 request, entity_id
             ),
@@ -445,13 +451,14 @@ def refresh_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     try:
         RFQService.refresh(
             session,
             rfq_id,
-            payload.user_id,
+            actor_sub,
             audit_checkpoint=lambda entity_id: record_audit_checkpoint(
                 request, entity_id
             ),
@@ -476,10 +483,11 @@ def award_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     with unit_of_work(session, request=request):
-        RFQService.award(session, rfq_id, payload.user_id)
+        RFQService.award(session, rfq_id, actor_sub)
         mark_audit_success(request, rfq_id)
     return _build_rfq_read(session, rfq_id)
 
@@ -497,9 +505,10 @@ def archive_rfq(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     with unit_of_work(session, request=request):
-        rfq = RFQService.archive(session, rfq_id, user_id=payload.user_id)
+        rfq = RFQService.archive(session, rfq_id, actor_sub=actor_sub)
         mark_audit_success(request, rfq.id)
     return _build_rfq_read(session, rfq_id)

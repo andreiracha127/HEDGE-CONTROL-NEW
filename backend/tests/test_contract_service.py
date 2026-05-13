@@ -287,29 +287,42 @@ def test_update_deleted_contract_raises_404(session: Session) -> None:
 # ── Status transition tests ─────────────────────────────────────────────
 
 
-def test_valid_transition_active_to_settled(session: Session) -> None:
+def test_generic_transition_active_to_settled_is_rejected(session: Session) -> None:
+    from fastapi import HTTPException
+
     contract = ContractService.create(session, _make_payload())
-    result = ContractService.transition_status(
-        session, contract.id, HedgeContractStatusUpdate(status="settled")
+    with pytest.raises(HTTPException) as exc:
+        ContractService.transition_status(
+            session, contract.id, HedgeContractStatusUpdate(status="settled")
+        )
+    assert exc.value.status_code == 409
+    assert (
+        exc.value.detail
+        == "Settlement transitions must go through POST /cashflow/contracts/{contract_id}/settle"
     )
-    assert result.status == HedgeContractStatus.settled
+    assert contract.status == HedgeContractStatus.active
 
 
-def test_valid_transition_active_to_partially_settled(session: Session) -> None:
+def test_generic_transition_active_to_partially_settled_is_rejected(
+    session: Session,
+) -> None:
+    from fastapi import HTTPException
+
     contract = ContractService.create(session, _make_payload())
-    result = ContractService.transition_status(
-        session, contract.id, HedgeContractStatusUpdate(status="partially_settled")
-    )
-    assert result.status == HedgeContractStatus.partially_settled
+    with pytest.raises(HTTPException) as exc:
+        ContractService.transition_status(
+            session, contract.id, HedgeContractStatusUpdate(status="partially_settled")
+        )
+    assert exc.value.status_code == 409
+    assert contract.status == HedgeContractStatus.active
 
 
 def test_invalid_transition_settled_to_active(session: Session) -> None:
     from fastapi import HTTPException
 
     contract = ContractService.create(session, _make_payload())
-    ContractService.transition_status(
-        session, contract.id, HedgeContractStatusUpdate(status="settled")
-    )
+    contract.status = HedgeContractStatus.settled
+    session.flush()
 
     with pytest.raises(HTTPException) as exc:
         ContractService.transition_status(

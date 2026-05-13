@@ -38,6 +38,14 @@ from app.schemas.contracts import (
 )
 
 
+GENERIC_STATUS_TRANSITIONS: dict[HedgeContractStatus, set[HedgeContractStatus]] = {
+    HedgeContractStatus.active: {HedgeContractStatus.cancelled},
+    HedgeContractStatus.partially_settled: {HedgeContractStatus.cancelled},
+    HedgeContractStatus.settled: set(),
+    HedgeContractStatus.cancelled: set(),
+}
+
+
 def _generate_reference() -> str:
     """Generate a unique HC-XXXXXXXX reference."""
     return f"HC-{_uuid.uuid4().hex[:8].upper()}"
@@ -264,7 +272,19 @@ class ContractService:
                 detail=f"Invalid status: {payload.status}",
             )
 
-        allowed = VALID_STATUS_TRANSITIONS.get(contract.status, set())
+        if target in {
+            HedgeContractStatus.settled,
+            HedgeContractStatus.partially_settled,
+        }:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Settlement transitions must go through POST "
+                    "/cashflow/contracts/{contract_id}/settle"
+                ),
+            )
+
+        allowed = GENERIC_STATUS_TRANSITIONS.get(contract.status, set())
         if target not in allowed:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

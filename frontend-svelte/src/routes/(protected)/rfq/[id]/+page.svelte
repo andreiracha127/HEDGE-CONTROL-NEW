@@ -209,14 +209,13 @@
 	// ─── Actions ────────────────────────────────────────────────────────
 	async function awardRfq() {
 		if (!confirm('Confirma award automático (melhor ranking)?')) return;
-		const actorSub = requireActorSub();
-		if (!actorSub) return;
+		if (!requireActorSub()) return;
 		operationInFlight = true;
 		boardMode = 'AWARDING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/award`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: actorSub }),
+				body: JSON.stringify({}),
 			});
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ detail: 'Erro' }));
@@ -237,14 +236,13 @@
 
 	async function rejectRfq() {
 		if (!confirm('Rejeitar esta RFQ?')) return;
-		const actorSub = requireActorSub();
-		if (!actorSub) return;
+		if (!requireActorSub()) return;
 		operationInFlight = true;
 		boardMode = 'REJECTING';
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/reject`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: actorSub }),
+				body: JSON.stringify({}),
 			});
 			if (res.ok) {
 				notifications.success('RFQ rejeitada');
@@ -265,13 +263,12 @@
 
 	async function cancelRfq() {
 		if (!confirm('Cancelar esta RFQ?')) return;
-		const actorSub = requireActorSub();
-		if (!actorSub) return;
+		if (!requireActorSub()) return;
 		operationInFlight = true;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/cancel`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: actorSub }),
+				body: JSON.stringify({}),
 			});
 			if (res.ok) {
 				notifications.success('RFQ cancelada');
@@ -290,12 +287,11 @@
 	}
 
 	async function refreshInvitations() {
-		const actorSub = requireActorSub();
-		if (!actorSub) return;
+		if (!requireActorSub()) return;
 		try {
 			const res = await apiFetch(`/rfqs/${rfqId}/actions/refresh`, {
 				method: 'POST',
-				body: JSON.stringify({ user_id: actorSub }),
+				body: JSON.stringify({}),
 			});
 			if (res.ok) {
 				notifications.success('Convites reenviados');
