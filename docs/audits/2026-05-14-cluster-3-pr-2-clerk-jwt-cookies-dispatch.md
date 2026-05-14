@@ -17,7 +17,7 @@ Three coupled deliverables:
 1. **Clerk JWKS validator** — point JWKS fetch at Clerk's FAPI host (`clerk.<random>.lcl.dev` provisional per Andrei's authorization, with `# TODO(post-cluster-3)` marker for custom domain swap). Validate Clerk-issued session JWTs server-side. Extract roles from Clerk org metadata claim.
 2. **httpOnly session cookie management** — replace Bearer token from header with httpOnly + Secure + SameSite=Lax cookie. Cookie set after Clerk session-token exchange at `/auth/session` endpoint, refreshed on each authenticated request, cleared at `/auth/logout`. CSRF token rotation alongside.
 3. **Auditor-exclusive validation at JWT-validation time** — per governance.md "Role combinability" subsection ("JWT validator MUST reject mixed sets at validation time, BEFORE any route gate is evaluated"). This wave adds the check inside `get_current_user` for strict compliance with the constitutional wording.
-4. **Service-account JWT issuance** — backend mints short-lived (~5min) JWT for the 3 internal-issued identities (westmetall_ingest, rfq_outbound, cashflow_pipeline). Issuer = backend, audience = backend, sub = `service:<name>`. Same signing key as the JWKS that backend serves to itself.
+4. **Service-account JWT issuance** — backend mints short-lived (~5min) JWT for the 3 internal-issued identities (westmetall_ingest, rfq_outbound, cashflow_pipeline). Issuer = backend, audience = backend, sub = `service:<name>`. Signing uses `SERVICE_JWT_SIGNING_KEY`; verification uses `SERVICE_JWT_PUBLIC_KEY`.
 
 ## 2. Non-Negotiable Constraints
 
@@ -127,6 +127,8 @@ def _extract_token_with_source(request: Request) -> tuple[str, str]:
 
 The Bearer fallback is service-token transport only. `_extract_token_with_source` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
 
+Mandatory integration point in `backend/app/core/auth.py`: update `get_current_user` to call `token, source = _extract_token_with_source(request)` exactly as shown in the full §4.6 function body. The old `token = _extract_token(request)` line must not remain.
+
 Create new file `backend/app/api/routes/auth.py` as a new route module with these routes: `POST /auth/session`, `POST /auth/refresh`, `POST /auth/logout`, and `GET /auth/me`.
 
 Complete file template:
@@ -219,6 +221,14 @@ async def read_current_identity(
     return {"actor_sub": user["sub"], "roles": user.get("roles", [])}
 ```
 
+Register the new route module in `backend/app/main.py`:
+
+```python
+from app.api.routes import auth
+
+app.include_router(auth.router)
+```
+
 ### 4.3 CSRF middleware
 
 Create new file `backend/app/core/csrf.py` with the following function:
@@ -265,16 +275,16 @@ This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Tok
 
 ### 4.4 Auditor-exclusive validation duplicated at JWT-validation time
 
-Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. For strict constitutional compliance, add the check inside `get_current_user`.
+Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. For strict constitutional compliance, add the check inside the Clerk-human branch of `get_current_user` after `_validate_clerk_token` succeeds. Do not run this check against backend service JWTs.
 
-Always define `_VALID_HUMAN_ROLES` in this PR and add the auditor-exclusive check to `get_current_user` unconditionally. Do not add route-gate helpers in this wave.
+Always define `_VALID_HUMAN_ROLES` in this PR and add the auditor-exclusive check to the Clerk validation path in `get_current_user`. Do not add route-gate helpers in this wave.
 
 ```python
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
 
 
 def get_current_user(...) -> dict[str, Any]:
-    # ... existing JWT validation ...
+    # ... service-token branch has already returned before this block ...
 
     payload = jwt.decode(token, jwk, algorithms=["RS256"], audience=..., issuer=...)
 
@@ -363,6 +373,7 @@ Implementation: inspect the `iss` claim from the unverified payload to route to 
 ```python
 def _validate_service_token(token: str) -> dict[str, Any]:
     public_key = os.environ["SERVICE_JWT_PUBLIC_KEY"]
+    # python-jose[cryptography] accepts PEM-formatted RSA public keys here.
     return jwt.decode(
         token,
         public_key,
@@ -419,19 +430,11 @@ For PR-CL3-2 simplicity, load the backend service public key from `SERVICE_JWT_P
 
 Missing any → fail-closed at startup (raise `RuntimeError`).
 
-Concrete shape:
+Do not replace the existing `validate_auth_config()` wholesale. Preserve the current J-A5-06 docstring, behavior matrix, `_auth_explicitly_disabled()` / `AUTH_DISABLED` guard, and existing `JWT_ISSUER`/`JWT_AUDIENCE`/`JWKS_URL` startup checks. Add the Cluster 3 checks as an incremental block inside the existing function after the current fail-closed/auth-disabled checks:
 
 ```python
-def validate_auth_config() -> None:
-    env = _canonical_env()
-    if _auth_enabled():
-        s = get_settings()
-        if not (s.jwt_audience and s.jwks_url):
-            raise RuntimeError("JWT auth enabled but JWT_AUDIENCE/JWKS_URL missing")
-        if not os.getenv("CLERK_FAPI_HOST"):
-            raise RuntimeError("JWT auth enabled but CLERK_FAPI_HOST missing")
-
-    missing: list[str] = []
+# inside existing validate_auth_config(), after the current J-A5-06 checks
+cluster3_missing: list[str] = []
     if env in _FAIL_CLOSED_ENVS:
         for name in (
             "CLERK_FAPI_HOST",
@@ -442,14 +445,16 @@ def validate_auth_config() -> None:
             "BACKEND_SERVICE_AUDIENCE",
         ):
             if not os.getenv(name):
-                missing.append(name)
+                cluster3_missing.append(name)
 
-    if missing:
+    if cluster3_missing:
         raise RuntimeError(
             "Missing required auth configuration in fail-closed environment: "
-            + ", ".join(sorted(missing))
-        )
+            + ", ".join(sorted(cluster3_missing))
+    )
 ```
+
+Cookie domain policy: do not set a broad `Domain=` attribute by default. The backend API origin sets these cookies and browsers will send host-only cookies back to that API origin when frontend requests use `credentials: "include"`. If deployment later requires sharing across sibling subdomains, add an explicit audited `COOKIE_DOMAIN` setting in a separate hardening PR.
 
 ## 5. Constitutional Rules
 
@@ -551,6 +556,8 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 7.4 New file `backend/tests/test_service_token_minting.py`
 
 - **`test_mint_service_token_westmetall`** — `mint_service_token("westmetall_ingest")` returns RS256 JWT. Decode and assert `sub == "service:westmetall_ingest"`, `exp == now+300`.
+- **`test_mint_service_token_rfq_outbound`** — `mint_service_token("rfq_outbound")` returns RS256 JWT with `sub == "service:rfq_outbound"`.
+- **`test_mint_service_token_cashflow_pipeline`** — `mint_service_token("cashflow_pipeline")` returns RS256 JWT with `sub == "service:cashflow_pipeline"`.
 - **`test_mint_service_token_unknown_raises`** — `mint_service_token("not_a_real_identity")` raises ValueError.
 - **`test_get_current_user_routes_service_token_to_service_validator`** — fixture: service-minted Bearer JWT. `get_current_user` returns payload with `sub="service:westmetall_ingest"`.
 - **`test_service_token_with_clerk_issuer_401`** — fixture: JWT signed with service key but `iss=clerk-fapi`. Returns 401.
