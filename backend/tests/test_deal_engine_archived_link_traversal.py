@@ -352,6 +352,60 @@ def test_order_archive_recomputes_linked_deal_totals(session: Session) -> None:
     assert deal.status == DealStatus.open
 
 
+def test_sales_order_archive_rejects_orphaned_short_hedge(
+    session: Session,
+) -> None:
+    deal = _create_deal(session)
+    order = _create_order(
+        session,
+        OrderType.sales,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+    )
+    hedge = _create_hedge(
+        session,
+        qty=Decimal("10"),
+        classification=HedgeClassification.short,
+    )
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, order.id
+    )
+    DealEngineService.add_link(session, deal.id, DealLinkedType.hedge.value, hedge.id)
+
+    with pytest.raises(HTTPException) as exc:
+        OrderService.archive(session, order.id, commit=False)
+
+    assert exc.value.status_code == 422
+    assert "requires a SO" in str(exc.value.detail)
+
+
+def test_purchase_order_archive_rejects_orphaned_long_hedge(
+    session: Session,
+) -> None:
+    deal = _create_deal(session)
+    order = _create_order(
+        session,
+        OrderType.purchase,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+    )
+    hedge = _create_hedge(
+        session,
+        qty=Decimal("10"),
+        classification=HedgeClassification.long,
+    )
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.purchase_order.value, order.id
+    )
+    DealEngineService.add_link(session, deal.id, DealLinkedType.hedge.value, hedge.id)
+
+    with pytest.raises(HTTPException) as exc:
+        OrderService.archive(session, order.id, commit=False)
+
+    assert exc.value.status_code == 422
+    assert "requires a PO" in str(exc.value.detail)
+
+
 def test_hedge_archive_recomputes_linked_deal_totals(session: Session) -> None:
     deal = _create_deal(session)
     order = _create_order(

@@ -520,10 +520,36 @@ class DealEngineService:
         linked_id: _uuid.UUID,
     ) -> None:
         """Refresh persisted deal aggregates for deals linked to one entity."""
+        deals = DealEngineService._deals_for_linked_entity(
+            session, linked_types, linked_id
+        )
+        for deal in deals:
+            DealEngineService._recompute_tons(session, deal)
+
+    @staticmethod
+    def validate_deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> None:
+        """Re-run hedge-direction validation for deals linked to one entity."""
+        deals = DealEngineService._deals_for_linked_entity(
+            session, linked_types, linked_id
+        )
+        for deal in deals:
+            DealEngineService._validate_hedge_direction(session, deal)
+
+    @staticmethod
+    def _deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> list[Deal]:
+        """Return deals that have a link row for one entity."""
         type_filter = or_(
             *(DealLink.linked_type == linked_type for linked_type in linked_types)
         )
-        deals = (
+        return (
             session.query(Deal)
             .join(DealLink, DealLink.deal_id == Deal.id)
             .filter(
@@ -532,8 +558,6 @@ class DealEngineService:
             )
             .all()
         )
-        for deal in deals:
-            DealEngineService._recompute_tons(session, deal)
 
     # ------------------------------------------------------------------
     # P&L SNAPSHOT

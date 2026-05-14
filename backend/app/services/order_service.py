@@ -120,6 +120,12 @@ class OrderService:
                 detail="Order already archived",
             )
         order.deleted_at = datetime.now(timezone.utc)
+        with session.no_autoflush:
+            DealEngineService.validate_deals_for_linked_entity(
+                session,
+                (DealLinkedType.sales_order, DealLinkedType.purchase_order),
+                order.id,
+            )
         session.flush()
         DealEngineService.recompute_deals_for_linked_entity(
             session,
