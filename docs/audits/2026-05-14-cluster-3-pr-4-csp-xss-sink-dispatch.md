@@ -23,7 +23,7 @@ This wave closes the last Cluster 3 finding (D-3.3 token storage hardening — C
 ## 2. Non-Negotiable Constraints
 
 - Do **not** edit `docs/governance.md`.
-- Do **not** edit backend route gates, auth.py, or any Cluster 3 PR-CL3-1/2/3 territory beyond adding the `/csp/report` endpoint.
+- Do **not** edit backend route gates, auth.py, or any Cluster 3 PR-CL3-1/2/3 territory. Allowed backend changes in this PR are limited to the `/csp/report` router, `main.py` router registration, and the CSRF middleware exempt-list entry required for that unauthenticated browser-report endpoint.
 - Do **not** edit frontend code beyond what's strictly needed for CSP compatibility (e.g. removing inline scripts that violate the new CSP). PR-CL3-3 owns the SDK integration.
 - Do **not** flip CSP to enforce mode in this PR. Report-only ramp is a sustained period (1-2 sprints) before enforce flip; the flip is a separate follow-up wave.
 - Do **not** add `'unsafe-eval'` to `script-src`. Production explicitly excludes it per Clerk docs.
@@ -196,7 +196,7 @@ from app.api.routes import csp_report
 app.include_router(csp_report.router)
 ```
 
-CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/csp/report` to the exempt list (small backend addendum; document as such in the PR body). Do not mount the FastAPI router at `/api/csp`: the app's `_StripApiPrefixMiddleware` strips `/api/*` before routing, and routers are registered without the `/api` prefix.
+CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/csp/report` to the exempt list as a required backend infrastructure change for the new unauthenticated reporting endpoint. Document that change in the PR body. Do not mount the FastAPI router at `/api/csp`: the app's `_StripApiPrefixMiddleware` strips `/api/*` before routing, and routers are registered without the `/api` prefix.
 
 Rate limit: use existing rate-limit decorator if available in backend; otherwise a simple in-memory token bucket per source IP (50/min). If no rate-limit infrastructure exists, document as a follow-up TODO and proceed without it (CSP reports are low-frequency in practice).
 

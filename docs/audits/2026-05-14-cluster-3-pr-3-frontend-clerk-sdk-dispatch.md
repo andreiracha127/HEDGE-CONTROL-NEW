@@ -51,9 +51,9 @@ PR-CL3-3 consumes (does NOT modify):
 - `POST /auth/session` (PR-CL3-2) — exchange Clerk session token for httpOnly cookie + CSRF token.
 - `POST /auth/refresh` (PR-CL3-2) — rotate cookies + CSRF.
 - `POST /auth/logout` (PR-CL3-2) — clear cookies.
-- `GET /me` or equivalent — returns actor identity (sub, roles) for the auth store. If endpoint doesn't exist, PR-CL3-3 may need to add it (small backend addendum) OR rely on the response of `/auth/session` to seed the store.
+- `GET /auth/me` (PR-CL3-2) — returns actor identity (sub, roles) for the auth store. This must be provided by PR-CL3-2; PR-CL3-3 does not add backend auth endpoints.
 
-Dependency gate: at the baseline cited by this dispatch (`main @ e3ad0dffb`), the PR-CL3-2 backend auth endpoints may not exist yet. That is expected sequencing, not evidence that PR-CL3-3 can run independently. Before implementing PR-CL3-3, rebase on live `main` after PR-CL3-2 merges and verify `/auth/session`, `/auth/refresh`, `/auth/logout`, and CSRF middleware exist. If they do not, stop and report that PR-CL3-2 is still blocking.
+Dependency gate: at the baseline cited by this dispatch (`main @ e3ad0dffb`), the PR-CL3-2 backend auth endpoints may not exist yet. That is expected sequencing, not evidence that PR-CL3-3 can run independently. Before implementing PR-CL3-3, rebase on live `main` after PR-CL3-2 merges and verify `/auth/session`, `/auth/refresh`, `/auth/logout`, `/auth/me`, and CSRF middleware exist. If they do not, stop and report that PR-CL3-2 is still blocking.
 
 Every frontend call to those backend auth endpoints MUST go through the configured backend origin (`VITE_API_BASE_URL`, currently exposed as `API_BASE` in `frontend-svelte/src/lib/api/fetch.ts`) or a shared API wrapper that prefixes it. Do not use relative `fetch("/auth/...")` from the static frontend; `frontend-svelte/nginx.conf` intentionally has no `/auth` or `/api` proxy in this wave.
 
@@ -63,7 +63,7 @@ Sweep for `GET /me` or `/auth/me` or `/users/me`:
 rg -nP '"/me"|"/auth/me"|"/users/me"' backend/app/api/routes/
 ```
 
-If no current endpoint, the executor MUST add `GET /auth/me` as part of this PR (minimal backend addition acceptable since it is session-introspection, not RBAC). Do not seed `authStore.roles` from `/auth/session` unless PR-CL3-2 has explicitly expanded that response contract to include `roles: string[]`.
+If `GET /auth/me` is not present after PR-CL3-2 merges, PR-CL3-3 CANNOT proceed. Do not add it in PR-CL3-3 and do not seed `authStore.roles` from `/auth/session` unless PR-CL3-2 has explicitly expanded that response contract to include `roles: string[]`.
 
 ## 4. Required Implementation Boundary
 
@@ -351,7 +351,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `docs/governance.md` diff is empty.
 - [ ] `nginx.conf` diff is empty.
-- [ ] No backend code change beyond `GET /auth/me` if it is not already provided by PR-CL3-2; otherwise zero backend diff.
+- [ ] No backend code change; `/auth/me` and the other auth endpoints are PR-CL3-2 prerequisites.
 - [ ] Frontend tests pass (`npm test` in `frontend-svelte/`).
 - [ ] No new alembic migration.
 
@@ -442,7 +442,7 @@ PR body:
 - **Env vars added:** `VITE_CLERK_PUBLISHABLE_KEY`.
 - **TODO markers:** every `TODO(post-cluster-3)` site cited.
 - **Killed legacy:** explicit statement that `manualTokenLoginEnabled` (and Phase A6 PR #67's three reason codes) removed.
-- **`/auth/me` decision:** document that roles are loaded from `GET /auth/me` before seeding the store; do not assume `/auth/session` returns roles unless PR-CL3-2 explicitly changes that contract.
+- **`/auth/me` dependency:** document that roles are loaded from PR-CL3-2's `GET /auth/me` before seeding the store; do not assume `/auth/session` returns roles unless PR-CL3-2 explicitly changes that contract.
 - **Hook artifact paths:** `.cache/dispatch_review/audit-followup-cluster-3-frontend-clerk-sdk-{sha}.json` per push.
 - **Governance + alembic + nginx statements:** diffs empty.
 
