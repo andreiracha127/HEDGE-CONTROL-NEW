@@ -121,6 +121,9 @@ class OrderService:
             )
         order.deleted_at = datetime.now(timezone.utc)
         session.flush()
+        # Validate after the flush so hedge-direction checks see the same
+        # post-archive state that read/P&L paths see: this order is no longer
+        # a live SO/PO that can justify an attached hedge.
         DealEngineService.validate_deals_for_linked_entity(
             session,
             (DealLinkedType.sales_order, DealLinkedType.purchase_order),

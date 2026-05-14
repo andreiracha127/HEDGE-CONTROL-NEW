@@ -679,6 +679,8 @@ def test_unarchived_order_returns_to_deal_pnl(session: Session) -> None:
     with pytest.raises(HTTPException):
         DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
 
+    # Direct mutation for this regression only; a production un-archive path
+    # would need a service method that re-runs validate/recompute.
     order.deleted_at = None
     session.commit()
 
