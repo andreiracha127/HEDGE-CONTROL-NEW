@@ -520,6 +520,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] Human Clerk sessions read from cookie, NOT from Bearer header; Clerk JWTs delivered by Bearer are rejected in `get_current_user` before `_validate_clerk_token`.
 - [ ] Backend service JWTs retain Bearer transport through the source-aware extractor and service issuer branch; service JWTs delivered by cookie are rejected.
 - [ ] Old `_extract_token(request) -> str` helper is deleted or has zero call sites; human paths use `_extract_token_with_source` only.
+- [ ] New `_extract_token_with_source(request: Request) -> tuple[str, str]` helper exists; both Clerk-human and service-token branches destructure `token, source = _extract_token_with_source(request)` in `get_current_user`.
 
 ### 6.3 CSRF middleware
 
@@ -527,7 +528,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] Middleware registered in `backend/app/main.py`.
 - [ ] Exempt paths: `/auth/session`, `/webhooks/`, `/healthz`.
 - [ ] CSRF mismatch returns 403 with `detail="CSRF token missing or mismatch"`.
-- [ ] `CORSMiddleware` allows credentialed frontend requests (`allow_credentials=True`) and includes `X-CSRF-Token` in allowed headers.
+- [ ] `CORSMiddleware` allows credentialed frontend requests (`allow_credentials=True`) and preserves existing allowed headers while adding CSRF: `["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"]`.
 
 ### 6.4 Auditor-exclusive at JWT-validation time
 
