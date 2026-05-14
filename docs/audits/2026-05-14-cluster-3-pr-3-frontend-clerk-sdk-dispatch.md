@@ -53,6 +53,8 @@ PR-CL3-3 consumes (does NOT modify):
 - `POST /auth/logout` (PR-CL3-2) — clear cookies.
 - `GET /me` or equivalent — returns actor identity (sub, roles) for the auth store. If endpoint doesn't exist, PR-CL3-3 may need to add it (small backend addendum) OR rely on the response of `/auth/session` to seed the store.
 
+Dependency gate: at the baseline cited by this dispatch (`main @ e3ad0dffb`), the PR-CL3-2 backend auth endpoints may not exist yet. That is expected sequencing, not evidence that PR-CL3-3 can run independently. Before implementing PR-CL3-3, rebase on live `main` after PR-CL3-2 merges and verify `/auth/session`, `/auth/refresh`, `/auth/logout`, and CSRF middleware exist. If they do not, stop and report that PR-CL3-2 is still blocking.
+
 Every frontend call to those backend auth endpoints MUST go through the configured backend origin (`VITE_API_BASE_URL`, currently exposed as `API_BASE` in `frontend-svelte/src/lib/api/fetch.ts`) or a shared API wrapper that prefixes it. Do not use relative `fetch("/auth/...")` from the static frontend; `frontend-svelte/nginx.conf` intentionally has no `/auth` or `/api` proxy in this wave.
 
 Sweep for `GET /me` or `/auth/me` or `/users/me`:

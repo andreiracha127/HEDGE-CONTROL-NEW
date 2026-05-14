@@ -33,6 +33,8 @@ This wave closes the last Cluster 3 finding (D-3.3 token storage hardening — C
 
 Verified at HEAD `e3ad0dffb`.
 
+Dependency gate: PR-CL3-4 is intentionally sequenced after PR-CL3-2 and PR-CL3-3. At the baseline cited here, the `/auth/*` routes and CSRF middleware introduced by PR-CL3-2 may not exist yet. Before executing PR-CL3-4, rebase on live `main` after PR-CL3-2 and PR-CL3-3 merge, then verify the auth endpoints and CSRF middleware are present. If either prerequisite is missing, stop; do not implement this dispatch against the older baseline.
+
 ### Current CSP at `frontend-svelte/nginx.conf`
 
 Per `nginx.conf` head, current CSP is enforce mode (Content-Security-Policy header) with baseline:
@@ -167,10 +169,15 @@ async def csp_report(request: Request) -> JSONResponse:
         # Reports have a "csp-report" subkey under the legacy spec or
         # are direct under the modern Reporting API spec.
         violation = report.get("csp-report", report)
+        if not isinstance(violation, dict):
+            return JSONResponse(status_code=400, content={"detail": "invalid CSP report"})
+        directive = violation.get("violated-directive") or violation.get("effective-directive")
+        if not violation.get("document-uri") or not directive:
+            return JSONResponse(status_code=400, content={"detail": "missing required CSP report fields"})
         logger.warning(
             "csp_violation",
             blocked_uri=violation.get("blocked-uri"),
-            violated_directive=violation.get("violated-directive"),
+            violated_directive=directive,
             document_uri=violation.get("document-uri"),
             source_file=violation.get("source-file"),
             line_number=violation.get("line-number"),
@@ -179,6 +186,8 @@ async def csp_report(request: Request) -> JSONResponse:
 
     return JSONResponse(status_code=204, content=None)
 ```
+
+Field handling: `document-uri` and `violated-directive`/`effective-directive` are required for a useful report and missing/non-object reports return 400. `blocked-uri`, `source-file`, `line-number`, and `referrer` are optional per browser/reporting variation and may log as null. The structured log MUST include all seven keys above even when optional values are absent.
 
 Register router in `backend/app/main.py`:
 
@@ -308,6 +317,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 
 1. **`backend/tests/test_csp_report_endpoint.py`**:
    - `test_csp_report_post_valid_logs_violation` — POST a valid CSP report shape; assert structlog log emitted with `csp_violation` key.
+   - `test_csp_report_logs_all_fields` — assert the structured `csp_violation` log includes `blocked_uri`, `violated_directive`, `document_uri`, `source_file`, `line_number`, `referrer`, and the event name.
    - `test_csp_report_post_returns_204` — assert response status_code == 204.
    - `test_csp_report_post_invalid_json_returns_400` — POST malformed body; assert 400.
    - `test_csp_report_csrf_exempt` — POST without CSRF token; assert 204 (NOT 403).
@@ -335,6 +345,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 # nginx CSP shape
 rg -nP "Content-Security-Policy-Report-Only" frontend-svelte/nginx.conf
 rg -nP "frame-ancestors 'none'|frame-src.*challenges.cloudflare.com|worker-src 'self' blob:|report-to csp-endpoint" frontend-svelte/nginx.conf
+rg -nP "form-action 'self'" frontend-svelte/nginx.conf
 rg -nP "'unsafe-eval'" frontend-svelte/nginx.conf    # MUST be zero
 rg -nP "connect-src.*https:" frontend-svelte/nginx.conf    # MUST be zero (no permissive wildcard)
 
@@ -398,7 +409,7 @@ PR body:
 
 ## 11. Workflow
 
-1. **Pre-step:** verify PR-CL3-3 has merged. Frontend Clerk integration must be live so CSP can validate against actual Clerk requests.
+1. **Pre-step:** verify PR-CL3-2 and PR-CL3-3 have both merged. Frontend Clerk integration must be live so CSP can validate against actual Clerk requests, and PR-CL3-2 must provide `/auth/*` + CSRF middleware before this PR can add the `/csp/report` exemption. If either prerequisite is absent on live `main`, stop and report the dependency blocker.
 2. `git checkout -b audit-followup/cluster-3-csp-xss-sink`.
 3. Apply §4.1 (nginx CSP swap) + verify env-var substitution at container start.
 4. Apply §4.2 (backend `/csp/report` endpoint + CSRF exempt list update).
