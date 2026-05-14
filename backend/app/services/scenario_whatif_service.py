@@ -257,6 +257,8 @@ def _load_exposure_contracts(db: Session) -> list[HedgeContract]:
 
 
 def _load_linkages(db: Session) -> list[HedgeOrderLinkage]:
+    # Mirrors ExposureService linkage extraction: join Order + HedgeContract,
+    # then require live orders and live active/partially_settled hedge contracts.
     return (
         db.query(HedgeOrderLinkage)
         .join(Order, Order.id == HedgeOrderLinkage.order_id)
@@ -312,6 +314,8 @@ def run_what_if(
     )
 
     orders = _load_orders(db, order_overrides)
+    # Full contract universe is required for PL and virtual-id collision checks.
+    # Exposure uses the filtered loader below.
     contracts = base_contracts
     exposure_contracts = _load_exposure_contracts(db)
 
@@ -461,13 +465,16 @@ def run_what_if(
                 db, req.period_end, lookup, contract.commodity
             ),
         ).mtm_value
+        virtual_realized_pl = Decimal("0.000000")
         pl_snapshots.append(
             ScenarioPLSnapshotItem(
                 entity_type="hedge_contract",
                 entity_id=contract.id,
                 period_start=req.period_start,
                 period_end=req.period_end,
-                realized_pl=Decimal("0.000000"),
+                # Virtual contract PL is scenario-only; it is returned here but
+                # never materialized into ledger or snapshot tables.
+                realized_pl=virtual_realized_pl,
                 unrealized_mtm=quantize_money(unrealized),
             )
         )

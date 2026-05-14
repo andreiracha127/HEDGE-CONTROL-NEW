@@ -171,6 +171,14 @@ def compute_global_exposure_pure(
             item["reduced_passive"] = Decimal(item["reduced_passive"]) + residual
 
     for contract in [*contracts, *virtual_contracts]:
+        if contract.classification not in (
+            HedgeClassification.long,
+            HedgeClassification.short,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Hedge contract classification is invalid for exposure",
+            )
         item = ensure_row(contract.commodity)
         item["entities_count"] = int(item["entities_count"]) + 1
         total_qty = _to_decimal(contract.quantity_mt)
@@ -250,9 +258,7 @@ class ExposureService:
         hedge contract is still live (active / partially_settled, not deleted).
 
         Hedge-side filter only — the order-side filter is upstream of every
-        consumer (compute_commercial_snapshot already filters
-        Order.deleted_at IS NULL per §3.1), so this stays focused on the
-        hedge-side lifecycle which has no upstream filter (§3.4).
+        consumer, so this stays focused on hedge-side lifecycle filtering.
         """
         return (
             session.query(
