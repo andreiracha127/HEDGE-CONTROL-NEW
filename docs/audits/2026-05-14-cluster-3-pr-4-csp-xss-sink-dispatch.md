@@ -237,6 +237,12 @@ Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with
 
 Rate limit: add `RATE_LIMIT_CSP_REPORT` / `rate_limit_csp_report` to the existing settings surface with default `"50/minute"`, then use the existing `app.core.rate_limit.limiter` decorator shown above. If local naming differs after rebasing, follow the same backend configurable `@limiter.limit(...)` pattern already used by mutation routes; do not leave this endpoint unbounded.
 
+Add to `backend/app/core/rate_limit.py` beside the existing rate-limit constants:
+
+```python
+RATE_LIMIT_CSP_REPORT = os.getenv("RATE_LIMIT_CSP_REPORT", "50/minute")
+```
+
 ### 4.3 XSS-sink inventory doc
 
 Create `docs/security/xss-sink-inventory.md`:
