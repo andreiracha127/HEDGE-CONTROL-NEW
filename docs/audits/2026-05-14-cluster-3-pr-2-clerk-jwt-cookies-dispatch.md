@@ -97,7 +97,14 @@ def _auth_enabled() -> bool:
 def get_auth_settings() -> AuthSettings | None:
     if not _auth_enabled():
         return None
-    fapi_host = os.environ["CLERK_FAPI_HOST"]
+    fapi_host = os.getenv("CLERK_FAPI_HOST")
+    if not fapi_host:
+        s = get_settings()
+        return AuthSettings(
+            jwks_url=s.jwks_url,
+            audience=s.jwt_audience,
+            issuer=s.jwt_issuer,
+        )
     return AuthSettings(
         jwks_url=f"https://{fapi_host}/.well-known/jwks.json",
         audience=os.environ.get("CLERK_AUDIENCE", ""),
@@ -160,12 +167,13 @@ Complete file template:
 import secrets
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 
 from app.core.auth import (
     CSRF_COOKIE_NAME,
     SESSION_COOKIE_NAME,
     _FAIL_CLOSED_ENVS,
+    AuthSettings,
     get_current_user,
     _canonical_env,
     _validate_clerk_token,
@@ -201,6 +209,7 @@ async def create_session(
     request: Request,
     session_token: str = Body(..., embed=True),  # Clerk session token from frontend SDK
     response: Response,
+    settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, str]:
     """Exchange Clerk session token for httpOnly cookie.
 
@@ -209,7 +218,9 @@ async def create_session(
     and returns a fresh CSRF token for double-submit.
     """
     # Validate the Clerk session token (same JWKS validation as get_current_user)
-    payload = _validate_clerk_token(session_token)
+    if settings is None:
+        raise HTTPException(status_code=401, detail="Authentication disabled")
+    payload = _validate_clerk_token(session_token, settings)
 
     # Mint a CSRF token (cryptographically random, returned in body + cookie)
     csrf = secrets.token_urlsafe(32)
@@ -222,9 +233,12 @@ async def refresh_session(
     request: Request,
     session_token: str = Body(..., embed=True),  # fresh Clerk session token from frontend SDK
     response: Response,
+    settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, str]:
     """Refresh httpOnly cookie + CSRF token using a fresh Clerk JWT."""
-    payload = _validate_clerk_token(session_token)
+    if settings is None:
+        raise HTTPException(status_code=401, detail="Authentication disabled")
+    payload = _validate_clerk_token(session_token, settings)
     csrf = secrets.token_urlsafe(32)
     _set_auth_cookies(response, session_token, csrf)
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
