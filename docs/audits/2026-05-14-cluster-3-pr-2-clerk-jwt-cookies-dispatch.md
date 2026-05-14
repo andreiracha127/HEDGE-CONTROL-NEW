@@ -252,18 +252,24 @@ def get_current_user(...) -> dict[str, Any]:
 
     # Auditor-exclusive role combinability check (governance §"Role combinability")
     raw_roles = payload.get("roles") if isinstance(payload, dict) else None
-    if isinstance(raw_roles, list):
-        roles = {r for r in raw_roles if isinstance(r, str) and r in _VALID_HUMAN_ROLES}
-        if "auditor" in roles and len(roles) > 1:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid role combination: auditor must be exclusive",
-            )
+    if not isinstance(raw_roles, list) or any(not isinstance(r, str) for r in raw_roles):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid roles claim",
+        )
+    roles = {r for r in raw_roles if r in _VALID_HUMAN_ROLES}
+    if "auditor" in roles and len(roles) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid role combination: auditor must be exclusive",
+        )
 
     return payload
 ```
 
 If `get_current_actor_roles` from PR-CL3-1 is already present, it keeps its own redundant check — defense in depth, no harm if the JWT-time check fires first. If it is not present, PR-CL3-2 does not create it.
+
+Malformed human role claims fail closed before any role set construction: missing, scalar, object, null, or list-with-non-string `roles` values MUST raise `HTTPException(401, detail="Invalid roles claim")`. Service tokens are validated on the service branch and do not use Clerk human role claims.
 
 ### 4.5 Service-account JWT minting
 
@@ -324,25 +330,7 @@ target process's environment (e.g. WESTMETALL_INGEST_TOKEN env var).
 
 PR-CL3-1 added `require_service_identity(name)`. PR-CL3-2 adds the JWT verification flow that backs it: when `get_current_user` validates a token whose `iss` matches the backend's own service issuer (not Clerk), it MUST validate against backend's own public key (different JWKS), not Clerk's.
 
-Pattern:
-
-```python
-def get_current_user(...) -> dict[str, Any]:
-    # Try Clerk JWKS first
-    try:
-        return _validate_clerk_token(token)
-    except HTTPException as clerk_err:
-        # Fall through to backend service JWKS
-        pass
-
-    try:
-        return _validate_service_token(token)
-    except HTTPException as service_err:
-        # Both validators failed — re-raise the Clerk error (more user-facing)
-        raise clerk_err
-```
-
-OR (preferred): inspect the `iss` claim from the unverified header to route to the right validator:
+Implementation: inspect the `iss` claim from the unverified payload to route to the right validator before signature verification. This routing point is also where the cookie-only transport rule for Clerk human sessions is enforced.
 
 ```python
 def get_current_user(...) -> dict[str, Any]:
@@ -359,7 +347,7 @@ def get_current_user(...) -> dict[str, Any]:
     return _validate_clerk_token(token)
 ```
 
-The latter is cleaner — single code path per token type.
+This is the only accepted validator routing strategy for this wave: single code path per token type, with transport-source enforcement before Clerk validation.
 
 For PR-CL3-2 simplicity, load the backend service public key from `SERVICE_JWT_PUBLIC_KEY` (public key PEM) and skip a service JWKS endpoint until a later distributed-deploy hardening wave if needed.
 
@@ -470,41 +458,42 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 
 ### 7.1 New file `backend/tests/test_clerk_jwt_validation.py`
 
-1. **`test_clerk_jwt_valid_returns_user`** — fixture: signed JWT with valid Clerk-shape claims (sub, iss, aud, roles). Returns user dict.
-2. **`test_clerk_jwt_invalid_signature_401`** — fixture: JWT signed with wrong key. Returns 401.
-3. **`test_clerk_jwt_expired_401`** — fixture: JWT with `exp` in past.
-4. **`test_clerk_jwt_wrong_audience_401`** — fixture: JWT with `aud` mismatch.
-5. **`test_clerk_jwt_wrong_issuer_401`** — fixture: JWT with `iss` mismatch.
-6. **`test_clerk_jwt_auditor_exclusive_401`** — fixture: JWT with `roles=["auditor", "trader"]`. Returns 401 at JWT validation (NOT at route gate).
-7. **`test_clerk_jwt_auditor_alone_passes`** — fixture: JWT with `roles=["auditor"]`. Returns user dict (no 401).
-8. **`test_clerk_jwt_trader_plus_risk_manager_passes`** — fixture: JWT with `roles=["trader", "risk_manager"]`. Returns user dict.
+- **`test_clerk_jwt_valid_returns_user`** — fixture: signed JWT with valid Clerk-shape claims (sub, iss, aud, roles). Returns user dict.
+- **`test_clerk_jwt_invalid_signature_401`** — fixture: JWT signed with wrong key. Returns 401.
+- **`test_clerk_jwt_expired_401`** — fixture: JWT with `exp` in past.
+- **`test_clerk_jwt_wrong_audience_401`** — fixture: JWT with `aud` mismatch.
+- **`test_clerk_jwt_wrong_issuer_401`** — fixture: JWT with `iss` mismatch.
+- **`test_clerk_jwt_auditor_exclusive_401`** — fixture: JWT with `roles=["auditor", "trader"]`. Returns 401 at JWT validation (NOT at route gate).
+- **`test_clerk_jwt_auditor_alone_passes`** — fixture: JWT with `roles=["auditor"]`. Returns user dict (no 401).
+- **`test_clerk_jwt_trader_plus_risk_manager_passes`** — fixture: JWT with `roles=["trader", "risk_manager"]`. Returns user dict.
+- **`test_clerk_jwt_malformed_roles_claim_401`** — fixtures with missing, scalar, object, null, and list-with-non-string `roles`; each returns 401 with `detail="Invalid roles claim"`.
 
 ### 7.2 New file `backend/tests/test_cookie_session.py`
 
-9. **`test_session_endpoint_sets_httponly_cookie`** — POST `/auth/session` with valid Clerk session token. Assert `Set-Cookie` header includes `__Session=...` with `HttpOnly`, `Secure` (in prod env), `SameSite=Lax`, `Path=/`, `Max-Age=300`.
-10. **`test_session_endpoint_returns_csrf_token_in_body_and_cookie`** — same. Assert response body has `csrf_token`, and Set-Cookie has `csrf_token=...` with `HttpOnly` NOT set.
-11. **`test_authenticated_request_uses_cookie_not_bearer`** — call any auth-required endpoint with cookie, no Authorization header. Returns 200.
-12. **`test_authenticated_human_bearer_only_401`** — call any human auth-required endpoint with Clerk Bearer header but no cookie. Returns 401 with `detail="Session cookie missing"`.
-13. **`test_logout_clears_cookies`** — POST `/auth/logout`. Assert Set-Cookie header sets both cookies to expired (Max-Age=0 or similar).
-14. **`test_refresh_reexchanges_fresh_clerk_token_and_rotates_csrf`** — POST `/auth/refresh` with a fresh Clerk session token. Assert session cookie is reset and new `csrf_token` differs from prior.
-15. **`test_auth_me_returns_actor_and_roles`** — GET `/auth/me` with valid session cookie. Assert response has `actor_sub` and `roles`.
+- **`test_session_endpoint_sets_httponly_cookie`** — POST `/auth/session` with valid Clerk session token. Assert `Set-Cookie` header includes `__Session=...` with `HttpOnly`, `Secure` (in prod env), `SameSite=Lax`, `Path=/`, `Max-Age=300`.
+- **`test_session_endpoint_returns_csrf_token_in_body_and_cookie`** — same. Assert response body has `csrf_token`, and Set-Cookie has `csrf_token=...` with `HttpOnly` NOT set.
+- **`test_authenticated_request_uses_cookie_not_bearer`** — call any auth-required endpoint with cookie, no Authorization header. Returns 200.
+- **`test_authenticated_human_bearer_only_401`** — call any human auth-required endpoint with Clerk Bearer header but no cookie. Returns 401 with `detail="Session cookie missing"`.
+- **`test_logout_clears_cookies`** — POST `/auth/logout`. Assert Set-Cookie header sets both cookies to expired (Max-Age=0 or similar).
+- **`test_refresh_reexchanges_fresh_clerk_token_and_rotates_csrf`** — POST `/auth/refresh` with a fresh Clerk session token. Assert session cookie is reset and new `csrf_token` differs from prior.
+- **`test_auth_me_returns_actor_and_roles`** — GET `/auth/me` with valid session cookie. Assert response has `actor_sub` and `roles`.
 
 ### 7.3 New file `backend/tests/test_csrf_middleware.py`
 
-16. **`test_csrf_middleware_get_passes_without_token`** — GET endpoint, no CSRF token. Returns 200.
-17. **`test_csrf_middleware_post_missing_token_403`** — POST endpoint, no CSRF cookie. Returns 403 with `detail="CSRF token missing or mismatch"`.
-18. **`test_csrf_middleware_post_mismatch_403`** — POST endpoint, cookie value ≠ header value. Returns 403.
-19. **`test_csrf_middleware_post_match_passes`** — POST endpoint, cookie value == header value. Returns 200.
-20. **`test_csrf_middleware_session_endpoint_exempt`** — POST `/auth/session` without CSRF token. Returns 200 (exempt).
-21. **`test_csrf_middleware_webhook_exempt`** — POST `/webhooks/whatsapp` with HMAC but no CSRF. Returns 200 (exempt).
-22. **`test_cors_allows_credentials_and_csrf_header`** — OPTIONS preflight from allowed frontend origin with `X-CSRF-Token`; assert credentialed CORS response permits it.
+- **`test_csrf_middleware_get_passes_without_token`** — GET endpoint, no CSRF token. Returns 200.
+- **`test_csrf_middleware_post_missing_token_403`** — POST endpoint, no CSRF cookie. Returns 403 with `detail="CSRF token missing or mismatch"`.
+- **`test_csrf_middleware_post_mismatch_403`** — POST endpoint, cookie value != header value. Returns 403.
+- **`test_csrf_middleware_post_match_passes`** — POST endpoint, cookie value == header value. Returns 200.
+- **`test_csrf_middleware_session_endpoint_exempt`** — POST `/auth/session` without CSRF token. Returns 200 (exempt).
+- **`test_csrf_middleware_webhook_exempt`** — POST `/webhooks/whatsapp` with HMAC but no CSRF. Returns 200 (exempt).
+- **`test_cors_allows_credentials_and_csrf_header`** — OPTIONS preflight from allowed frontend origin with `X-CSRF-Token`; assert credentialed CORS response permits it.
 
 ### 7.4 New file `backend/tests/test_service_token_minting.py`
 
-23. **`test_mint_service_token_westmetall`** — `mint_service_token("westmetall_ingest")` returns RS256 JWT. Decode and assert `sub == "service:westmetall_ingest"`, `exp == now+300`.
-24. **`test_mint_service_token_unknown_raises`** — `mint_service_token("not_a_real_identity")` raises ValueError.
-25. **`test_get_current_user_routes_service_token_to_service_validator`** — fixture: service-minted Bearer JWT. `get_current_user` returns payload with `sub="service:westmetall_ingest"`.
-26. **`test_service_token_with_clerk_issuer_401`** — fixture: JWT signed with service key but `iss=clerk-fapi`. Returns 401.
+- **`test_mint_service_token_westmetall`** — `mint_service_token("westmetall_ingest")` returns RS256 JWT. Decode and assert `sub == "service:westmetall_ingest"`, `exp == now+300`.
+- **`test_mint_service_token_unknown_raises`** — `mint_service_token("not_a_real_identity")` raises ValueError.
+- **`test_get_current_user_routes_service_token_to_service_validator`** — fixture: service-minted Bearer JWT. `get_current_user` returns payload with `sub="service:westmetall_ingest"`.
+- **`test_service_token_with_clerk_issuer_401`** — fixture: JWT signed with service key but `iss=clerk-fapi`. Returns 401.
 
 ### 7.5 Existing test fixture migration
 
@@ -512,8 +501,8 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 
 ### 7.6 Production fail-closed
 
-25. **`test_validate_auth_config_missing_clerk_host_fails_closed`** — set env to production, unset CLERK_FAPI_HOST. `validate_auth_config()` raises RuntimeError.
-26. **`test_validate_auth_config_missing_service_keys_fails_closed`** — same, with each of the 4 service env vars unset individually.
+- **`test_validate_auth_config_missing_clerk_host_fails_closed`** — set env to production, unset CLERK_FAPI_HOST. `validate_auth_config()` raises RuntimeError.
+- **`test_validate_auth_config_missing_service_keys_fails_closed`** — same, with each of the 4 service env vars unset individually.
 
 ## 8. Required Verification
 
