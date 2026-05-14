@@ -18,7 +18,7 @@ from app.models.contracts import (
     HedgeLegSide,
 )
 from app.models.linkages import HedgeOrderLinkage
-from app.models.orders import Order, OrderPricingConvention, OrderType, PriceType
+from app.models.orders import Order, OrderPricingConvention, PriceType
 from app.schemas.cashflow import CashFlowAnalyticResponse, CashFlowItem
 from app.schemas.exposure import CommercialExposureRead, GlobalExposureRead
 from app.schemas.mtm import MTMObjectType, MTMResultResponse
@@ -32,9 +32,12 @@ from app.schemas.scenario import (
     ScenarioWhatIfRunResponse,
 )
 from app.services.cashflow_ledger_service import SOURCE_EVENT_TYPE
+from app.services.exposure_service import (
+    compute_commercial_exposure_pure,
+    compute_global_exposure_pure,
+)
 from app.services.price_lookup_service import (
     PriceQuote,
-    canonical_commodity,
     get_cash_settlement_price_d1_with_provenance,
     resolve_symbol,
 )
@@ -213,7 +216,12 @@ def _apply_deltas(
 def _load_orders(
     db: Session, quantity_overrides: dict[UUID, Decimal]
 ) -> list[tuple[Order, Decimal]]:
-    orders = db.query(Order).order_by(Order.created_at.asc()).all()
+    orders = (
+        db.query(Order)
+        .filter(Order.deleted_at.is_(None))
+        .order_by(Order.created_at.asc())
+        .all()
+    )
     result: list[tuple[Order, Decimal]] = []
     for order in orders:
         quantity = quantity_overrides.get(order.id, Decimal(str(order.quantity_mt)))
@@ -221,12 +229,47 @@ def _load_orders(
     return result
 
 
+def _load_base_orders(db: Session) -> list[Order]:
+    return (
+        db.query(Order)
+        .filter(Order.deleted_at.is_(None))
+        .order_by(Order.created_at.asc())
+        .all()
+    )
+
+
 def _load_contracts(db: Session) -> list[HedgeContract]:
     return db.query(HedgeContract).order_by(HedgeContract.created_at.asc()).all()
 
 
+def _load_exposure_contracts(db: Session) -> list[HedgeContract]:
+    return (
+        db.query(HedgeContract)
+        .filter(
+            HedgeContract.deleted_at.is_(None),
+            HedgeContract.status.in_(
+                [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+            ),
+        )
+        .order_by(HedgeContract.created_at.asc())
+        .all()
+    )
+
+
 def _load_linkages(db: Session) -> list[HedgeOrderLinkage]:
-    return db.query(HedgeOrderLinkage).all()
+    return (
+        db.query(HedgeOrderLinkage)
+        .join(Order, Order.id == HedgeOrderLinkage.order_id)
+        .join(HedgeContract, HedgeContract.id == HedgeOrderLinkage.contract_id)
+        .filter(
+            Order.deleted_at.is_(None),
+            HedgeContract.deleted_at.is_(None),
+            HedgeContract.status.in_(
+                [HedgeContractStatus.active, HedgeContractStatus.partially_settled]
+            ),
+        )
+        .all()
+    )
 
 
 def _compute_commercial_exposure(
@@ -234,72 +277,11 @@ def _compute_commercial_exposure(
     linkages: list[HedgeOrderLinkage],
     calculation_timestamp: datetime,
 ) -> list[CommercialExposureRead]:
-    linked_by_order: dict[UUID, Decimal] = {}
-    for linkage in linkages:
-        linked_by_order[linkage.order_id] = linked_by_order.get(
-            linkage.order_id, Decimal("0")
-        ) + Decimal(str(linkage.quantity_mt))
-
-    rows: dict[str, dict[str, Decimal | int]] = {}
-
-    def ensure_row(commodity: str) -> dict[str, Decimal | int]:
-        key = canonical_commodity(commodity) or commodity
-        if key not in rows:
-            rows[key] = {
-                "pre_active": Decimal("0"),
-                "pre_passive": Decimal("0"),
-                "residual_active": Decimal("0"),
-                "residual_passive": Decimal("0"),
-                "reduction_active": Decimal("0"),
-                "reduction_passive": Decimal("0"),
-                "order_count": 0,
-            }
-        return rows[key]
-
-    for order, quantity in orders:
-        if order.price_type != PriceType.variable:
-            continue
-        item = ensure_row(order.commodity)
-        item["order_count"] = int(item["order_count"]) + 1
-        if order.order_type == OrderType.sales:
-            item["pre_active"] = Decimal(item["pre_active"]) + quantity
-        else:
-            item["pre_passive"] = Decimal(item["pre_passive"]) + quantity
-
-        linked_qty = linked_by_order.get(order.id, Decimal("0"))
-        residual = quantity - linked_qty
-        if residual < 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Residual exposure cannot be negative",
-            )
-        if order.order_type == OrderType.sales:
-            item["residual_active"] = Decimal(item["residual_active"]) + residual
-            item["reduction_active"] = Decimal(item["reduction_active"]) + linked_qty
-        else:
-            item["residual_passive"] = Decimal(item["residual_passive"]) + residual
-            item["reduction_passive"] = Decimal(item["reduction_passive"]) + linked_qty
-
-    result: list[CommercialExposureRead] = []
-    for commodity in sorted(rows):
-        item = rows[commodity]
-        residual_active = Decimal(item["residual_active"])
-        residual_passive = Decimal(item["residual_passive"])
-        result.append(
-            CommercialExposureRead(
-                commodity=commodity,
-                pre_reduction_commercial_active_mt=float(item["pre_active"]),
-                pre_reduction_commercial_passive_mt=float(item["pre_passive"]),
-                reduction_applied_active_mt=float(item["reduction_active"]),
-                reduction_applied_passive_mt=float(item["reduction_passive"]),
-                commercial_active_mt=float(residual_active),
-                commercial_passive_mt=float(residual_passive),
-                commercial_net_mt=float(residual_active - residual_passive),
-                calculation_timestamp=calculation_timestamp,
-                order_count_considered=int(item["order_count"]),
-            )
-        )
-    return result
+    return compute_commercial_exposure_pure(
+        orders=orders,
+        linkages=linkages,
+        calculation_timestamp=calculation_timestamp,
+    )
 
 
 def _compute_global_exposure(
@@ -309,147 +291,20 @@ def _compute_global_exposure(
     linkages: list[HedgeOrderLinkage],
     calculation_timestamp: datetime,
 ) -> list[GlobalExposureRead]:
-    linked_by_order: dict[UUID, Decimal] = {}
-    for linkage in linkages:
-        linked_by_order[linkage.order_id] = linked_by_order.get(
-            linkage.order_id, Decimal("0")
-        ) + Decimal(str(linkage.quantity_mt))
-
-    linked_by_contract: dict[UUID, Decimal] = {}
-    for linkage in linkages:
-        linked_by_contract[linkage.contract_id] = linked_by_contract.get(
-            linkage.contract_id, Decimal("0")
-        ) + Decimal(str(linkage.quantity_mt))
-
-    rows: dict[str, dict[str, Decimal | int]] = {}
-
-    def ensure_row(commodity: str) -> dict[str, Decimal | int]:
-        key = canonical_commodity(commodity) or commodity
-        if key not in rows:
-            rows[key] = {
-                "pre_active": Decimal("0"),
-                "pre_passive": Decimal("0"),
-                "reduced_active": Decimal("0"),
-                "reduced_passive": Decimal("0"),
-                "total_hedge_long": Decimal("0"),
-                "total_hedge_short": Decimal("0"),
-                "unlinked_hedge_long": Decimal("0"),
-                "unlinked_hedge_short": Decimal("0"),
-                "entities_count": 0,
-            }
-        return rows[key]
-
-    for order, quantity in orders:
-        if order.price_type != PriceType.variable:
-            continue
-        item = ensure_row(order.commodity)
-        item["entities_count"] = int(item["entities_count"]) + 1
-        if order.order_type == OrderType.sales:
-            item["pre_active"] = Decimal(item["pre_active"]) + quantity
-        else:
-            item["pre_passive"] = Decimal(item["pre_passive"]) + quantity
-
-        linked_qty = linked_by_order.get(order.id, Decimal("0"))
-        residual = quantity - linked_qty
-        if residual < 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Residual exposure cannot be negative",
-            )
-        if order.order_type == OrderType.sales:
-            item["reduced_active"] = Decimal(item["reduced_active"]) + residual
-        else:
-            item["reduced_passive"] = Decimal(item["reduced_passive"]) + residual
-
-    for contract in contracts:
-        item = ensure_row(contract.commodity)
-        item["entities_count"] = int(item["entities_count"]) + 1
-        total_qty = Decimal(str(contract.quantity_mt))
-        if contract.classification == HedgeClassification.long:
-            item["total_hedge_long"] = Decimal(item["total_hedge_long"]) + total_qty
-        else:
-            item["total_hedge_short"] = Decimal(item["total_hedge_short"]) + total_qty
-        linked_qty = linked_by_contract.get(contract.id, Decimal("0"))
-        residual = total_qty - linked_qty
-        if residual < 0:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Residual hedge quantity cannot be negative",
-            )
-        if contract.classification == HedgeClassification.long:
-            item["unlinked_hedge_long"] = (
-                Decimal(item["unlinked_hedge_long"]) + residual
-            )
-        else:
-            item["unlinked_hedge_short"] = (
-                Decimal(item["unlinked_hedge_short"]) + residual
-            )
-
-    for contract in virtual_contracts:
-        item = ensure_row(contract.commodity)
-        item["entities_count"] = int(item["entities_count"]) + 1
-        if contract.classification == HedgeClassification.long:
-            item["total_hedge_long"] = (
-                Decimal(item["total_hedge_long"]) + contract.quantity_mt
-            )
-            item["unlinked_hedge_long"] = (
-                Decimal(item["unlinked_hedge_long"]) + contract.quantity_mt
-            )
-        else:
-            item["total_hedge_short"] = (
-                Decimal(item["total_hedge_short"]) + contract.quantity_mt
-            )
-            item["unlinked_hedge_short"] = (
-                Decimal(item["unlinked_hedge_short"]) + contract.quantity_mt
-            )
-
-    result: list[GlobalExposureRead] = []
-    for commodity in sorted(rows):
-        item = rows[commodity]
-        pre_global_active = Decimal(item["pre_active"]) + Decimal(
-            item["total_hedge_short"]
-        )
-        pre_global_passive = Decimal(item["pre_passive"]) + Decimal(
-            item["total_hedge_long"]
-        )
-        post_global_active = Decimal(item["reduced_active"]) + Decimal(
-            item["unlinked_hedge_short"]
-        )
-        post_global_passive = Decimal(item["reduced_passive"]) + Decimal(
-            item["unlinked_hedge_long"]
-        )
-        result.append(
-            GlobalExposureRead(
-                commodity=commodity,
-                pre_reduction_global_active_mt=float(pre_global_active),
-                pre_reduction_global_passive_mt=float(pre_global_passive),
-                reduction_applied_active_mt=float(
-                    pre_global_active - post_global_active
-                ),
-                reduction_applied_passive_mt=float(
-                    pre_global_passive - post_global_passive
-                ),
-                global_active_mt=float(post_global_active),
-                global_passive_mt=float(post_global_passive),
-                global_net_mt=float(post_global_active - post_global_passive),
-                commercial_active_mt=float(item["reduced_active"]),
-                commercial_passive_mt=float(item["reduced_passive"]),
-                hedge_long_mt=float(item["unlinked_hedge_long"]),
-                hedge_short_mt=float(item["unlinked_hedge_short"]),
-                calculation_timestamp=calculation_timestamp,
-                entities_count_considered=int(item["entities_count"]),
-            )
-        )
-    return result
+    return compute_global_exposure_pure(
+        orders=orders,
+        contracts=contracts,
+        virtual_contracts=virtual_contracts,
+        linkages=linkages,
+        calculation_timestamp=calculation_timestamp,
+    )
 
 
 def run_what_if(
     db: Session, req: ScenarioWhatIfRunRequest
 ) -> ScenarioWhatIfRunResponse:
-    base_orders = db.query(Order).order_by(Order.created_at.asc()).all()
-    base_contracts = (
-        db.query(HedgeContract).order_by(HedgeContract.created_at.asc()).all()
-    )
+    base_orders = _load_base_orders(db)
+    base_contracts = _load_contracts(db)
     linkages = _load_linkages(db)
 
     virtual_contracts, order_overrides, price_overrides = _apply_deltas(
@@ -458,6 +313,7 @@ def run_what_if(
 
     orders = _load_orders(db, order_overrides)
     contracts = base_contracts
+    exposure_contracts = _load_exposure_contracts(db)
 
     lookup = _build_price_lookup(price_overrides)
 
@@ -534,7 +390,11 @@ def run_what_if(
         orders, linkages, calculation_timestamp
     )
     global_exposure = _compute_global_exposure(
-        orders, contracts, virtual_contracts, linkages, calculation_timestamp
+        orders,
+        exposure_contracts,
+        virtual_contracts,
+        linkages,
+        calculation_timestamp,
     )
 
     pl_snapshots: list[ScenarioPLSnapshotItem] = []
