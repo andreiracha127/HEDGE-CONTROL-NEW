@@ -329,8 +329,14 @@ Authorization invariants:
   must use the explicit trader-only condition instead.
 - Audit log writes are immutable. No role — including risk_manager — can
   delete audit events. The auditor role is the read-only oversight layer.
-- Service identities follow the same actor_sub JWT pattern as human auth
-  (uniformity established by Cluster 2 backend hardening).
+- Internal-issued service identities (`service:westmetall_ingest`,
+  `service:rfq_outbound`, `service:cashflow_pipeline`) follow the same
+  `actor_sub` JWT pattern as human auth (uniformity established by
+  Cluster 2 backend hardening). `service:webhook_inbound` is explicitly
+  exempt from this JWT invariant: `/webhooks/whatsapp` preserves the
+  provider-authentication protocol at ingress, and
+  `service:webhook_inbound` is only the downstream internal audit
+  attribution context after that provider authentication succeeds.
 - The RBAC matrix is canonical. A per-route deviation is a constitutional
   amendment requiring this section's update, not a silent override in code.
 
