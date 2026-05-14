@@ -197,7 +197,7 @@ def get_contract_linkages(
     deals_out: list[LinkedDealSummary] = []
     for deal_id in deal_ids:
         deal = session.get(Deal, deal_id)
-        if deal is None or deal.is_deleted:
+        if deal is None:
             continue
 
         # 2) Get order links for this deal

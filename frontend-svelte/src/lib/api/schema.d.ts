@@ -1883,8 +1883,6 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /** Is Deleted */
-            is_deleted: boolean;
             latest_pnl?: components["schemas"]["DealPNLSnapshotRead"] | null;
             /**
              * Links
@@ -2036,8 +2034,6 @@ export interface components {
              * Format: uuid
              */
             id: string;
-            /** Is Deleted */
-            is_deleted: boolean;
             /** Name */
             name: string;
             /** Reference */

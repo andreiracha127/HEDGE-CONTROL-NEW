@@ -980,17 +980,12 @@ class DealEngineService:
         if explicit_deal_filter:
             deals = (
                 session.query(Deal)
-                .filter(Deal.id.in_(deal_ids), Deal.is_deleted == False)  # noqa: E712
+                .filter(Deal.id.in_(deal_ids))
                 .order_by(Deal.created_at.desc())
                 .all()
             )
         else:
-            deals = (
-                session.query(Deal)
-                .filter(Deal.is_deleted == False)  # noqa: E712
-                .order_by(Deal.created_at.desc())
-                .all()
-            )
+            deals = session.query(Deal).order_by(Deal.created_at.desc()).all()
 
         tot_revenue = Decimal("0")
         tot_cost = Decimal("0")
@@ -1286,7 +1281,7 @@ class DealEngineService:
         status_filter: str | None = None,
     ):
         """Return query for deals with filters."""
-        q = session.query(Deal).filter(Deal.is_deleted == False)  # noqa: E712
+        q = session.query(Deal)
         if commodity:
             q = q.filter(Deal.commodity == commodity)
         if status_filter:
@@ -1295,11 +1290,7 @@ class DealEngineService:
 
     @staticmethod
     def get_by_id(session: Session, deal_id: _uuid.UUID) -> Deal | None:
-        return (
-            session.query(Deal)
-            .filter(Deal.id == deal_id, Deal.is_deleted == False)  # noqa: E712
-            .first()
-        )
+        return session.query(Deal).filter(Deal.id == deal_id).first()
 
     @staticmethod
     def get_detail(session: Session, deal_id: _uuid.UUID) -> dict:
@@ -1336,7 +1327,6 @@ class DealEngineService:
             "hedge_ratio": deal.hedge_ratio,
             "created_at": deal.created_at,
             "updated_at": deal.updated_at,
-            "is_deleted": deal.is_deleted,
             "links": links,
             "latest_pnl": latest_pnl,
         }

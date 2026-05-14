@@ -41,7 +41,6 @@ import sqlalchemy as sa
 from sqlalchemy import (
     JSON,
     BigInteger,
-    Boolean,
     Date,
     DateTime,
     Enum,
@@ -156,10 +155,6 @@ class Deal(Base):
     )
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=func.now(), nullable=True
-    )
-    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, default=None
     )
 
 
