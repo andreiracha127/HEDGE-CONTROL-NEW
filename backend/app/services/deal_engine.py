@@ -31,6 +31,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.precision import quantize_money, quantize_mt, quantize_price, quantize_ratio
@@ -511,6 +512,28 @@ class DealEngineService:
 
         DealEngineService._recompute_tons(session, deal)
         session.flush()
+
+    @staticmethod
+    def recompute_deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> None:
+        """Refresh persisted deal aggregates for deals linked to one entity."""
+        type_filter = or_(
+            *(DealLink.linked_type == linked_type for linked_type in linked_types)
+        )
+        deals = (
+            session.query(Deal)
+            .join(DealLink, DealLink.deal_id == Deal.id)
+            .filter(
+                type_filter,
+                DealLink.linked_id == linked_id,
+            )
+            .all()
+        )
+        for deal in deals:
+            DealEngineService._recompute_tons(session, deal)
 
     # ------------------------------------------------------------------
     # P&L SNAPSHOT

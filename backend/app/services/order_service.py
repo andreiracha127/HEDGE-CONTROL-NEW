@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
 from app.core.precision import quantize_price
+from app.models.deal import DealLinkedType
 from app.models.orders import (
     Order,
     OrderPricingConvention,
@@ -20,6 +21,7 @@ from app.models.orders import (
     PriceType,
     SoPoLink,
 )
+from app.services.deal_engine import DealEngineService
 from app.schemas.orders import (
     OrderListResponse,
     OrderRead,
@@ -118,6 +120,12 @@ class OrderService:
                 detail="Order already archived",
             )
         order.deleted_at = datetime.now(timezone.utc)
+        session.flush()
+        DealEngineService.recompute_deals_for_linked_entity(
+            session,
+            (DealLinkedType.sales_order, DealLinkedType.purchase_order),
+            order.id,
+        )
         if commit:
             session.commit()
             session.refresh(order)

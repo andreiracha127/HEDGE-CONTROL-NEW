@@ -17,11 +17,13 @@ from app.models.contracts import (
     HedgeLegSide,
 )
 from app.models.counterparty import Counterparty
-from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot
+from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot, DealStatus
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
+from app.services.contract_service import ContractService
 from app.services.deal_engine import DealEngineService
 from app.services.exposure_engine import ExposureEngineService
+from app.services.order_service import OrderService
 from app.services.price_lookup_service import PriceReferenceUnprovable
 
 
@@ -321,6 +323,77 @@ def test_recompute_tons_excludes_archived_order_via_public_add_link(
     session.refresh(deal)
     assert deal.total_physical_tons == Decimal("13.000")
     assert deal.total_hedge_tons == Decimal("0.000")
+
+
+def test_order_archive_recomputes_linked_deal_totals(session: Session) -> None:
+    deal = _create_deal(session)
+    order = _create_order(session, OrderType.sales, qty=Decimal("10"))
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, order.id
+    )
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("10.000")
+
+    OrderService.archive(session, order.id, commit=False)
+
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("0.000")
+    assert deal.total_hedge_tons == Decimal("0.000")
+    assert deal.hedge_ratio == Decimal("0.00")
+    assert deal.status == DealStatus.open
+
+
+def test_hedge_archive_recomputes_linked_deal_totals(session: Session) -> None:
+    deal = _create_deal(session)
+    order = _create_order(
+        session,
+        OrderType.sales,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+    )
+    hedge = _create_hedge(session, qty=Decimal("10"))
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, order.id
+    )
+    DealEngineService.add_link(session, deal.id, DealLinkedType.hedge.value, hedge.id)
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("10.000")
+    assert deal.total_hedge_tons == Decimal("10.000")
+    assert deal.hedge_ratio == Decimal("1.00")
+
+    ContractService.archive(session, hedge.id)
+
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("10.000")
+    assert deal.total_hedge_tons == Decimal("0.000")
+    assert deal.hedge_ratio == Decimal("0.00")
+    assert deal.status == DealStatus.open
+
+
+def test_hedge_delete_recomputes_linked_deal_totals(session: Session) -> None:
+    deal = _create_deal(session)
+    order = _create_order(
+        session,
+        OrderType.sales,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+    )
+    hedge = _create_hedge(session, qty=Decimal("10"))
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, order.id
+    )
+    DealEngineService.add_link(session, deal.id, DealLinkedType.hedge.value, hedge.id)
+    session.refresh(deal)
+    assert deal.total_hedge_tons == Decimal("10.000")
+    assert deal.hedge_ratio == Decimal("1.00")
+
+    ContractService.delete(session, hedge.id)
+
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("10.000")
+    assert deal.total_hedge_tons == Decimal("0.000")
+    assert deal.hedge_ratio == Decimal("0.00")
+    assert deal.status == DealStatus.open
 
 
 def test_add_link_requires_live_order_for_hedge_direction_validation(
