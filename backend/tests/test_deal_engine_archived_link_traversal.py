@@ -636,9 +636,10 @@ def test_compute_deal_pnl_partial_price_failure_raises_unprovable(
     _link(session, deal, DealLinkedType.hedge, live_hedge_without_quote.id)
     before_count = session.query(DealPNLSnapshot).filter_by(deal_id=deal.id).count()
 
-    with pytest.raises(PriceReferenceUnprovable):
+    with pytest.raises(PriceReferenceUnprovable) as exc:
         DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
 
+    assert "LME_CU_CASH_SETTLEMENT_DAILY" in str(exc.value)
     after_count = session.query(DealPNLSnapshot).filter_by(deal_id=deal.id).count()
     assert after_count == before_count
 

@@ -119,8 +119,8 @@ class OrderService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Order already archived",
             )
-        order.deleted_at = datetime.now(timezone.utc)
         with session.no_autoflush:
+            order.deleted_at = datetime.now(timezone.utc)
             DealEngineService.validate_deals_for_linked_entity(
                 session,
                 (DealLinkedType.sales_order, DealLinkedType.purchase_order),
