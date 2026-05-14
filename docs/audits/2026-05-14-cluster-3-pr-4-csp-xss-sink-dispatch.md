@@ -162,14 +162,14 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, Response
 import structlog
 
-from app.core.rate_limit import limiter
+from app.core.rate_limit import RATE_LIMIT_CSP_REPORT, limiter
 
 router = APIRouter(tags=["csp"])
 logger = structlog.get_logger(__name__)
 
 
 @router.post("/report")
-@limiter.limit("50/minute")
+@limiter.limit(RATE_LIMIT_CSP_REPORT)
 async def csp_report(request: Request) -> Response:
     """Receive CSP violation reports from browser.
 
@@ -180,7 +180,7 @@ async def csp_report(request: Request) -> Response:
 
     Auth: NONE — browsers post these without credentials. CSRF-exempt
     (handled in CSRF middleware exempt list, PR-CL3-2).
-    Rate-limited (50 req/min/IP) to prevent abuse.
+    Rate-limited via configured `RATE_LIMIT_CSP_REPORT` to prevent abuse.
     """
     try:
         body = await request.json()
@@ -235,7 +235,7 @@ Dependency gate: before implementing this PR, verify PR-CL3-2 has merged and int
 
 Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with the command above. If PR-CL3-2 introduced a centralized file such as `backend/app/core/csrf.py`, add `/csp/report` to the same exempt route collection as `/webhooks/*`. If PR-CL3-2 uses a decorator-based exemption, apply the equivalent `@csrf_exempt` (or local helper name) directly to `csp_report`. The implementation must cite the actual file/pattern in the PR body; do not invent a second CSRF exemption mechanism.
 
-Rate limit: use the existing `app.core.rate_limit.limiter` decorator shown above with a concrete `50/minute` per-IP limit. If local naming differs after rebasing, follow the same backend `@limiter.limit(...)` pattern already used by mutation routes; do not leave this endpoint unbounded.
+Rate limit: add `RATE_LIMIT_CSP_REPORT` / `rate_limit_csp_report` to the existing settings surface with default `"50/minute"`, then use the existing `app.core.rate_limit.limiter` decorator shown above. If local naming differs after rebasing, follow the same backend configurable `@limiter.limit(...)` pattern already used by mutation routes; do not leave this endpoint unbounded.
 
 ### 4.3 XSS-sink inventory doc
 
@@ -332,7 +332,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 - [ ] CSRF middleware (PR-CL3-2) exempt list includes `/csp/report`.
 - [ ] PR body cites the actual CSRF middleware file/pattern updated for `/csp/report` (central exempt route collection or decorator-based exemption), discovered via `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`.
 - [ ] Endpoint logs structured `csp_violation` events with all 7 fields per §4.2.
-- [ ] Rate-limit applied: `@limiter.limit("50/minute")` decorator present on the POST endpoint.
+- [ ] Rate-limit applied via configured `RATE_LIMIT_CSP_REPORT` defaulting to `"50/minute"`; no hardcoded magic threshold in tests.
 - [ ] Returns 204 (no body) on success.
 
 ### 6.3 XSS-sink inventory
@@ -361,7 +361,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
    - `test_csp_report_post_returns_204` — assert response status_code == 204.
    - `test_csp_report_post_invalid_json_returns_400` — POST malformed body; assert 400.
    - `test_csp_report_csrf_exempt` — POST without CSRF token; assert 204 (NOT 403).
-   - `test_csp_report_rate_limit_kicks_in_at_50_per_min` — POST 51 reports rapidly; assert 51st returns 429.
+   - `test_csp_report_rate_limit_uses_configured_limit` — set `RATE_LIMIT_CSP_REPORT=50/minute`, POST 51 reports rapidly, assert 51st returns 429.
 
 ### 7.2 Frontend e2e (Playwright)
 
