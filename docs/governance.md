@@ -303,7 +303,14 @@ Anomalies to be retired upon Cluster 3 implementation closure:
 
 - Westmetall ingest routes (formerly `trader`-gated → `service:westmetall_ingest`)
 - WhatsApp webhook (formerly unauthed → `service:webhook_inbound` formalized)
-- Counterparty CRUD (formerly all-roles open → per-type for trader)
+- Counterparty CRUD (formerly all-roles open → per-type for trader, with read filter)
+- RFQ workflow (formerly `trader`-gated across 10 sites in
+  `backend/app/api/routes/rfqs.py` — POST /rfqs, /preview-text, action
+  endpoints reject/cancel/reject-quote/refresh-counterparty/refresh/award/
+  archive — now `risk_manager`-gated, since RFQs cotam derivativos which
+  are risk_manager territory by matrix definition; the `trader`-gating
+  was inherited from an earlier prototype where commercial actors drove
+  RFQ entry, before the risk_manager-as-system-owner model was set)
 
 ────────────────────────────────────────
 EXECUTION DISCIPLINE
