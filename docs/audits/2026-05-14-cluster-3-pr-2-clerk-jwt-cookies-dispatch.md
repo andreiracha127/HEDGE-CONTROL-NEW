@@ -16,7 +16,7 @@ Three coupled deliverables:
 
 1. **Clerk JWKS validator** — point JWKS fetch at Clerk's FAPI host (`clerk.<random>.lcl.dev` provisional per Andrei's authorization, with `# TODO(post-cluster-3)` marker for custom domain swap). Validate Clerk-issued session JWTs server-side. Extract roles from Clerk org metadata claim.
 2. **httpOnly session cookie management** — replace Bearer token from header with httpOnly + Secure + SameSite=Lax cookie. Cookie set after Clerk session-token exchange at `/auth/session` endpoint, refreshed on each authenticated request, cleared at `/auth/logout`. CSRF token rotation alongside.
-3. **Auditor-exclusive validation moved to JWT-validation time** — per governance.md "Role combinability" subsection ("JWT validator MUST reject mixed sets at validation time, BEFORE any route gate is evaluated"). PR-CL3-1 enforced this inside `get_current_actor_roles`; this wave moves it earlier into `get_current_user` for strict compliance with the constitutional wording.
+3. **Auditor-exclusive validation duplicated at JWT-validation time** — per governance.md "Role combinability" subsection ("JWT validator MUST reject mixed sets at validation time, BEFORE any route gate is evaluated"). PR-CL3-1 keeps the defensive check inside `get_current_actor_roles`; this wave adds the same check earlier inside `get_current_user` for strict compliance with the constitutional wording.
 4. **Service-account JWT issuance** — backend mints short-lived (~5min) JWT for the 3 internal-issued identities (westmetall_ingest, rfq_outbound, cashflow_pipeline). Issuer = backend, audience = backend, sub = `service:<name>`. Same signing key as the JWKS that backend serves to itself.
 
 ## 2. Non-Negotiable Constraints
@@ -231,9 +231,9 @@ Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_
 
 This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Token` cross-origin from the static frontend.
 
-### 4.4 Auditor-exclusive validation moved earlier
+### 4.4 Auditor-exclusive validation duplicated at JWT-validation time
 
-Per governance "Role combinability": validation MUST happen at JWT-validation time, not at route-gate time. PR-CL3-1 enforced inside `get_current_actor_roles` (called as Depends BEFORE route handler but AFTER `get_current_user` succeeds). For strict constitutional compliance, move the check inside `get_current_user`:
+Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. PR-CL3-1 keeps a redundant defensive check inside `get_current_actor_roles`. For strict constitutional compliance, add the same check inside `get_current_user`; do not remove the PR-CL3-1 helper check.
 
 ```python
 def get_current_user(...) -> dict[str, Any]:
@@ -563,7 +563,7 @@ PR body must include:
   - **CSRF middleware exempt list completeness** — `/auth/session`, `/webhooks/`, `/healthz` MUST all be exempt. Missing `/healthz` → frontend can't probe liveness without CSRF.
   - **Bearer→cookie test fixture migration** — every test that hardcoded `headers={"Authorization": "Bearer ..."}` MUST be migrated. Codex will inspect test files and flag any survivor.
   - **Service-token issuer routing** — if `get_current_user` doesn't inspect `iss` to route to right validator, both Clerk and service tokens may collide / mis-validate. Codex will trace the validator routing.
-  - **Auditor-exclusive double-check** — PR-CL3-1 puts the check in `get_current_actor_roles`; PR-CL3-2 moves it to `get_current_user`. Codex may flag the redundancy as unnecessary; respond that it's defense-in-depth + governance compliance (matrix says "BEFORE any route gate").
+  - **Auditor-exclusive double-check** — PR-CL3-1 puts the check in `get_current_actor_roles`; PR-CL3-2 adds the same check to `get_current_user`. Codex may flag the redundancy as unnecessary; respond that it's defense-in-depth + governance compliance (matrix says "BEFORE any route gate").
   - **`secrets.compare_digest`** — CSRF cookie/header comparison MUST use constant-time comparison. Codex will flag a `==` fallback as a timing oracle.
   - **`# TODO(post-cluster-3)` markers** — every site that hardcodes dev FAPI host MUST have the marker; missing marker → Codex catches as "tech debt without trail".
   - **Production fail-closed env coverage** — every new env var MUST be in `validate_auth_config`'s required list. Codex will trace each.
