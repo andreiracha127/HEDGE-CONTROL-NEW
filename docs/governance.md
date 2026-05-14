@@ -362,24 +362,28 @@ scope — this list is the known set, not an exhaustive guarantee):
   identities above for full per-method protocol)
 - Counterparty CRUD (formerly all-roles open → per-type for trader,
   with read filter)
-- RFQ workflow (`rfqs.py` 10 sites: POST /rfqs, /preview-text, actions
-  reject/cancel/reject-quote/refresh-counterparty/refresh/award/archive)
-  formerly `trader`-gated → `risk_manager`-gated (RFQs price derivatives
-  = risk_manager territory by matrix definition)
-- HedgeContract lifecycle (`contracts.py` 5 sites: `:41` POST hedge create,
-  `:100` PATCH archive, `:121` PATCH update, `:144` PATCH status, `:164`
-  DELETE) formerly `require_role("trader")` → `require_role("risk_manager")`.
-  HedgeContracts are risk_manager territory (matrix line "Cannot:
-  HedgeContracts" for trader)
-- Deal lifecycle (`deals.py` 4 sites: `:104` POST deal create, `:186` POST
-  deal links, `:208` DELETE deal link, `:235` POST deal action) formerly
-  `require_any_role("trader", "risk_manager")` → `require_role("risk_manager")`
-  (drop trader from the gate). Deals/Links are risk_manager territory
-  (matrix line "Cannot: Deals, Links" for trader)
-- Hedge-Order Linkage create (`linkages.py:56` POST) formerly
-  `require_role("trader")` → `require_role("risk_manager")`. Linkages
-  affect commercial+global exposure reduction (governance §"Linkage")
-  and are risk_manager territory.
+- RFQ workflow and visibility (`rfqs.py`: reads at `:69`, `:218`, `:227`,
+  `:248`, `:292`, `:311`; mutating/POST gates at `:113`, `:137`, `:280`,
+  `:330`, `:352`, `:385`, `:419`, `:453`, `:485`, `:507`) formerly admit
+  `trader` → remove `trader` from every RFQ route. RFQ reads remain
+  `require_any_role("risk_manager", "auditor")`; RFQ writes/actions become
+  `require_role("risk_manager")`. RFQs price derivatives = risk_manager
+  territory by matrix definition.
+- HedgeContract lifecycle and visibility (`contracts.py`: reads at `:65`,
+  `:82`, `:181`; writes at `:41`, `:100`, `:121`, `:144`, `:164`) formerly
+  admit `trader` → remove `trader` from every HedgeContract route.
+  HedgeContract reads remain `require_any_role("risk_manager", "auditor")`;
+  HedgeContract writes become `require_role("risk_manager")`.
+- Deal lifecycle and visibility (`deals.py`: reads/analytics at `:64`,
+  `:125`, `:146`, `:167`, `:254`; writes at `:104`, `:186`, `:208`, `:235`)
+  formerly admit `trader` → remove `trader` from every Deal route.
+  Deal reads/analytics remain `require_any_role("risk_manager", "auditor")`;
+  Deal writes/actions become `require_role("risk_manager")`.
+- Hedge-Order Linkage lifecycle and visibility (`linkages.py`: reads at
+  `:27`, `:70`; create at `:56`) formerly admit `trader` → remove `trader`
+  from every Hedge-Order Linkage route. Linkage reads remain
+  `require_any_role("risk_manager", "auditor")`; create becomes
+  `require_role("risk_manager")`.
 - Scenario what-if execution (`scenario.py:26` POST `/what-if/run`) formerly
   `require_any_role("risk_manager", "auditor")` → `require_role("risk_manager")`.
   Scenario execution is a mutation/write-like analytical operation; auditor
