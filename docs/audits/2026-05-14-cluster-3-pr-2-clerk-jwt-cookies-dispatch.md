@@ -223,7 +223,7 @@ Register in `backend/app/main.py`:
 app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
 ```
 
-Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_API_BASE_URL`:
+Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_API_BASE_URL`. Current `backend/app/main.py` has `allow_credentials=False`; that must change because httpOnly cookie auth cannot work cross-origin unless the browser is allowed to attach cookies to API requests:
 
 - `allow_credentials=True`
 - allowed headers include `X-CSRF-Token`
@@ -235,7 +235,7 @@ This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Tok
 
 Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. PR-CL3-1 keeps a redundant defensive check inside `get_current_actor_roles`. For strict constitutional compliance, add the same check inside `get_current_user`; do not remove the PR-CL3-1 helper check.
 
-Do not assume PR-CL3-1 has already landed. This PR may define `_VALID_HUMAN_ROLES` itself for the JWT-time check; if `get_current_actor_roles` from PR-CL3-1 is present, it keeps its redundant check. If it is absent, do not add route-gate helpers in this wave.
+Do not assume PR-CL3-1 has already landed. Always define `_VALID_HUMAN_ROLES` in this PR and add the auditor-exclusive check to `get_current_user` unconditionally. If `get_current_actor_roles` from PR-CL3-1 is present, it keeps its redundant check. If it is absent, this JWT-time check is the sole enforcement until PR-CL3-1 lands; do not add route-gate helpers in this wave.
 
 ```python
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
@@ -267,6 +267,12 @@ Add to `backend/app/core/auth.py`:
 
 ```python
 SERVICE_TOKEN_TTL_SECONDS = 300  # 5 min per governance "TTL ~5min"
+_INTERNAL_SERVICE_IDENTITIES = frozenset({
+    "service:westmetall_ingest",
+    "service:rfq_outbound",
+    "service:cashflow_pipeline",
+})
+
 
 def mint_service_token(identity: str) -> str:
     """Mint a short-lived JWT for an internal-issued service identity.
@@ -565,14 +571,14 @@ PR body must include:
 - **Files changed:** inventory grouped by core auth / cookie endpoints / CSRF middleware / service minting / tests.
 - **Env vars added:** CLERK_FAPI_HOST, CLERK_AUDIENCE, SERVICE_JWT_SIGNING_KEY, SERVICE_JWT_PUBLIC_KEY, BACKEND_SERVICE_ISSUER, BACKEND_SERVICE_AUDIENCE. Document each + production-required marker.
 - **TODO markers landed:** every `TODO(post-cluster-3): swap to clerk.<custom-domain>` site cited.
-- **Bearer→Cookie migration:** explicit statement that Authorization header path was removed; test fixture migration done.
+- **Bearer→Cookie migration:** explicit statement that human Clerk Authorization Bearer fallback was removed, while service-token Bearer transport remains; test fixture migration done.
 - **Service-account JWKS endpoint:** explicit statement that endpoint NOT added (env-var public key used instead); follow-up flag if distributed deploy needs it.
 - **Hook artifact paths:** `.cache/dispatch_review/audit-followup-cluster-3-clerk-jwt-cookies-{sha}.json` per push.
 - **Governance + alembic statements:** diffs empty.
 
 ## 11. Workflow
 
-1. **Pre-step:** check whether PR-CL3-1 has merged (`git log --oneline main | head -5`). If merged, reuse its `_VALID_HUMAN_ROLES` constant and keep helper checks. If not merged, define `_VALID_HUMAN_ROLES` in this PR and do not add PR-CL3-1 route-gate helpers.
+1. **Pre-step:** check whether PR-CL3-1 has merged (`git log --oneline main | head -5`). In all cases, ensure `_VALID_HUMAN_ROLES` exists in `backend/app/core/auth.py` and add the JWT-time auditor-exclusive check to `get_current_user`. If PR-CL3-1 is present, its `get_current_actor_roles` check remains redundant defense-in-depth; if absent, this PR's JWT-time check is the sole enforcement until PR-CL3-1 lands.
 2. `git checkout -b audit-followup/cluster-3-clerk-jwt-cookies`.
 3. Provision dev Clerk project: get `CLERK_FAPI_HOST` value (e.g. `clerk.abcdef12.lcl.dev`), set in `.env.example` and local dev.
 4. Apply §4.1 (Clerk JWKS swap). Run `pytest -q backend/tests/test_clerk_jwt_validation.py` (write tests first).
