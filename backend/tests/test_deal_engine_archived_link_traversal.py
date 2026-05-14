@@ -399,7 +399,9 @@ def test_sales_order_archive_rejects_orphaned_short_hedge(
         OrderService.archive(session, order.id, commit=False)
 
     assert exc.value.status_code == 422
-    assert "requires a SO" in str(exc.value.detail)
+    assert "sell/short hedge contract requires a SO" in str(exc.value.detail)
+    session.refresh(order)
+    assert order.deleted_at is None
 
 
 def test_purchase_order_archive_rejects_orphaned_long_hedge(
@@ -426,7 +428,9 @@ def test_purchase_order_archive_rejects_orphaned_long_hedge(
         OrderService.archive(session, order.id, commit=False)
 
     assert exc.value.status_code == 422
-    assert "requires a PO" in str(exc.value.detail)
+    assert "buy/long hedge contract requires a PO" in str(exc.value.detail)
+    session.refresh(order)
+    assert order.deleted_at is None
 
 
 def test_hedge_archive_recomputes_linked_deal_totals(session: Session) -> None:

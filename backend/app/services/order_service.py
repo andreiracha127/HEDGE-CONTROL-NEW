@@ -119,16 +119,19 @@ class OrderService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Order already archived",
             )
-        order.deleted_at = datetime.now(timezone.utc)
+        with session.no_autoflush:
+            order.deleted_at = datetime.now(timezone.utc)
+            # Validate before the first flush so a rejected archive does not
+            # leak a soft-delete before the audit unit-of-work can roll back.
+            # The identity map still exposes this order as archived to the
+            # hedge-direction validator, matching the intended post-archive
+            # state for live SO/PO checks.
+            DealEngineService.validate_deals_for_linked_entity(
+                session,
+                (DealLinkedType.sales_order, DealLinkedType.purchase_order),
+                order.id,
+            )
         session.flush()
-        # Validate after the flush so hedge-direction checks see the same
-        # post-archive state that read/P&L paths see: this order is no longer
-        # a live SO/PO that can justify an attached hedge.
-        DealEngineService.validate_deals_for_linked_entity(
-            session,
-            (DealLinkedType.sales_order, DealLinkedType.purchase_order),
-            order.id,
-        )
         DealEngineService.recompute_deals_for_linked_entity(
             session,
             (DealLinkedType.sales_order, DealLinkedType.purchase_order),
