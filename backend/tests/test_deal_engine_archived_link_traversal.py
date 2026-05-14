@@ -182,6 +182,7 @@ def test_compute_deal_pnl_excludes_archived_variable_order(session: Session) -> 
     snap = DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
 
     assert snap.physical_revenue == Decimal("25000.000000")
+    assert snap.price_references is None
     assert "COPPER" not in (snap.price_references or {})
 
 

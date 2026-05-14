@@ -859,6 +859,8 @@ class DealEngineService:
                         else tons * (market_price - price)
                     )
 
+                if contract.status == HedgeContractStatus.cancelled:
+                    continue
                 if contract.status == HedgeContractStatus.settled:
                     hedge_pnl_realized += mtm
                 else:
@@ -1121,7 +1123,9 @@ class DealEngineService:
                             else tons * (hedge_market_price - price)
                         )
 
-                    if contract.status == HedgeContractStatus.settled:
+                    if contract.status == HedgeContractStatus.cancelled:
+                        pass
+                    elif contract.status == HedgeContractStatus.settled:
                         hedge_pnl_realized += pnl
                     else:
                         hedge_pnl_mtm += pnl
