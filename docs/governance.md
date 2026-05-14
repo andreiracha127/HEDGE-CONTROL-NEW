@@ -195,11 +195,11 @@ matrix; deviation requires constitutional amendment, not silent override.
 Human roles (3, no admin/viewer):
 
 - `trader` (commercial team)
-  - Counterparty CRUD limited to type ∈ {customer, supplier}
+  - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier}
   - Order CRUD (Sales Orders + Purchase Orders)
-  - Read of operational primitives (orders, counterparties)
+  - Read of operational primitives (orders, customer/supplier counterparties)
   - Cannot: HedgeContracts, RFQs, Deals, Links, Scenario, MTM/P&L writes,
-    Counterparty {broker, bank_br}, audit log
+    Counterparty {broker, bank_br} read or write, audit log
 
 - `risk_manager` (system owner)
   - Counterparty CRUD all 4 types
@@ -246,6 +246,16 @@ Authorization invariants:
     `existing.type ∈ {customer, supplier}` when actor lacks risk_manager.
     DELETE has no request body; the stored-type check is the only
     authorization layer beyond the route gate.
+- Counterparty reads by `trader` are also type-restricted (the prohibition
+  is read-and-write, not write-only — broker/bank rows must be invisible
+  to commercial actors):
+  - GET /counterparties (list): when actor lacks risk_manager, the list
+    query MUST filter `type IN (customer, supplier)` server-side. The
+    response never contains broker/bank rows, never even leaks counts.
+  - GET /counterparties/{id}: when actor lacks risk_manager, load the
+    existing counterparty + assert `existing.type ∈ {customer, supplier}`;
+    raise HTTP 404 (NOT 403) if the stored type is broker/bank, to avoid
+    leaking existence of the row.
 - Audit log writes are immutable. No role — including risk_manager — can
   delete audit events. The auditor role is the read-only oversight layer.
 - Service identities follow the same actor_sub JWT pattern as human auth
