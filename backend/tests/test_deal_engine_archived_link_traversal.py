@@ -360,6 +360,84 @@ def test_add_link_requires_live_order_for_hedge_direction_validation(
     assert hedge_link is None
 
 
+def test_add_link_rejects_archived_order_target(session: Session) -> None:
+    deal = _create_deal(session)
+    archived_order = _create_order(
+        session, OrderType.sales, qty=Decimal("10"), archived=True
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        DealEngineService.add_link(
+            session, deal.id, DealLinkedType.sales_order.value, archived_order.id
+        )
+
+    assert exc.value.status_code == 422
+    assert "archived" in str(exc.value.detail)
+    assert session.query(DealLink).filter_by(deal_id=deal.id).count() == 0
+
+
+def test_add_link_rejects_archived_hedge_target(session: Session) -> None:
+    deal = _create_deal(session)
+    archived_hedge = _create_hedge(session, archived=True)
+
+    with pytest.raises(HTTPException) as exc:
+        DealEngineService.add_link(
+            session, deal.id, DealLinkedType.hedge.value, archived_hedge.id
+        )
+
+    assert exc.value.status_code == 422
+    assert "archived" in str(exc.value.detail)
+    assert session.query(DealLink).filter_by(deal_id=deal.id).count() == 0
+
+
+def test_create_deal_rejects_initial_archived_order_link(session: Session) -> None:
+    archived_order = _create_order(
+        session, OrderType.sales, qty=Decimal("10"), archived=True
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        DealEngineService.create_deal(
+            session,
+            {
+                "name": "InitialArchivedOrder",
+                "commodity": "ALUMINUM",
+                "links": [
+                    {
+                        "linked_type": DealLinkedType.sales_order.value,
+                        "linked_id": archived_order.id,
+                    }
+                ],
+            },
+        )
+
+    assert exc.value.status_code == 422
+    assert "archived" in str(exc.value.detail)
+    assert session.query(DealLink).count() == 0
+
+
+def test_create_deal_rejects_initial_archived_hedge_link(session: Session) -> None:
+    archived_hedge = _create_hedge(session, archived=True)
+
+    with pytest.raises(HTTPException) as exc:
+        DealEngineService.create_deal(
+            session,
+            {
+                "name": "InitialArchivedHedge",
+                "commodity": "ALUMINUM",
+                "links": [
+                    {
+                        "linked_type": DealLinkedType.hedge.value,
+                        "linked_id": archived_hedge.id,
+                    }
+                ],
+            },
+        )
+
+    assert exc.value.status_code == 422
+    assert "archived" in str(exc.value.detail)
+    assert session.query(DealLink).count() == 0
+
+
 def test_exposure_and_deal_pnl_converge_after_order_archive(
     session: Session,
 ) -> None:

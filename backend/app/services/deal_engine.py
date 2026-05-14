@@ -168,6 +168,37 @@ def _resolve_live_linked_entities(
     return live_links, resolved_orders, resolved_contracts
 
 
+def _reject_archived_link_target(
+    session: Session, linked_type: DealLinkedType, linked_id: _uuid.UUID
+) -> None:
+    if linked_type in (
+        DealLinkedType.sales_order,
+        DealLinkedType.purchase_order,
+    ):
+        order = session.get(Order, linked_id)
+        if order is not None and order.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Cannot link archived {linked_type.value} {linked_id}; "
+                    "un-archive it before linking to a deal."
+                ),
+            )
+    elif linked_type in (
+        DealLinkedType.hedge,
+        DealLinkedType.contract,
+    ):
+        contract = session.get(HedgeContract, linked_id)
+        if contract is not None and contract.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Cannot link archived {linked_type.value} {linked_id}; "
+                    "un-archive it before linking to a deal."
+                ),
+            )
+
+
 class DealEngineService:
     """Stateless service for Deal operations."""
 
@@ -193,6 +224,7 @@ class DealEngineService:
         for link_data in links_data:
             resolved_type = DealLinkedType(link_data["linked_type"])
             linked_id = link_data["linked_id"]
+            _reject_archived_link_target(session, resolved_type, linked_id)
 
             # Cross-deal uniqueness: entity must not be in another deal
             cross_deal = (
@@ -334,6 +366,7 @@ class DealEngineService:
             )
 
         resolved_type = DealLinkedType(linked_type)
+        _reject_archived_link_target(session, resolved_type, linked_id)
 
         # ── Duplicate within same deal ──
         existing = (
