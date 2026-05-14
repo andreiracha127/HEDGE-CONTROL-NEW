@@ -979,14 +979,6 @@ class DealEngineService:
                     contract = resolved_contracts.get(link.id)
                     if contract is None:
                         continue
-                    if contract.status in (
-                        HedgeContractStatus.settled,
-                        HedgeContractStatus.cancelled,
-                    ):
-                        # Closed/cancelled hedges contribute no current
-                        # MTM; exclude them from price lookup so the
-                        # valuation pass below short-circuits to pnl=0.
-                        continue
                     # Only OPEN hedges (active OR partially_settled)
                     # require a current market quote — both have
                     # remaining open quantity contributing unrealized
@@ -1084,6 +1076,7 @@ class DealEngineService:
                     price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
+                    hedge_market_price: Decimal | None = None
                     # Closed hedges contribute zero unrealized MTM
                     # and require no current quote (Codex P1 PR #22 —
                     # narrowed from the prior overbroad "non-active"
@@ -1099,7 +1092,6 @@ class DealEngineService:
                     # ``exposure_engine``.
                     if not _hedge_is_open_for_mtm(contract):
                         pnl = Decimal("0")
-                        hedge_market_price: Decimal | None = None
                     else:
                         quote = quotes_by_commodity.get(contract.commodity)
                         if quote is None:
