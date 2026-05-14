@@ -279,9 +279,10 @@ attribution, NOT the request authentication mechanism):
   applies ONLY to internal-issued service identities.
 
 Service-account scope is per-identity-confined: `service:westmetall_ingest`
-cannot write orders (only its own ingest endpoint), `service:webhook_inbound`
-cannot write outside webhook-processor sinks (no direct Order/RFQ writes
-from the webhook entrypoint), etc.
+cannot write orders (only Westmetall market-data ingest, whether invoked by
+the HTTP ingest routes or by the scheduled `run_westmetall_ingestion` task),
+`service:webhook_inbound` cannot write outside webhook-processor sinks (no
+direct Order/RFQ writes from the webhook entrypoint), etc.
 
 Authorization invariants:
 
@@ -350,7 +351,11 @@ matrix and add any newly-discovered anomaly to the implementation
 scope — this list is the known set, not an exhaustive guarantee):
 
 - Westmetall ingest routes (`westmetall.py:135`, `:184`) formerly
-  `trader`-gated → `service:westmetall_ingest`
+  `trader`-gated → `service:westmetall_ingest`. The same service identity
+  also covers scheduled production ingestion (`scheduler.py:38-43` registers
+  `run_westmetall_ingestion`; `westmetall_task.py:38-44` persists fetched
+  settlement prices), so the cron path has authorized audit attribution
+  without widening `service:westmetall_ingest` beyond Westmetall market data.
 - WhatsApp webhook (`webhooks.py:309` GET challenge, `:339` POST inbound):
   ingress preserves provider's documented authentication protocol per
   HTTP method — POST stays HMAC-authed (Meta `X-Hub-Signature-256` /
