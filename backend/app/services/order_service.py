@@ -132,11 +132,12 @@ class OrderService:
             (DealLinkedType.sales_order, DealLinkedType.purchase_order),
             order.id,
         )
+        # ``commit=False`` callers still need recomputed Deal columns flushed
+        # before they refresh/read the affected deal in the same transaction.
+        session.flush()
         if commit:
             session.commit()
             session.refresh(order)
-        else:
-            session.flush()
         return order
 
     # ------------------------------------------------------------------

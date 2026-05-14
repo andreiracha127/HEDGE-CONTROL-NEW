@@ -324,6 +324,7 @@ def test_recompute_tons_excludes_archived_order_via_public_add_link(
     assert deal.total_physical_tons == Decimal("17.000")
 
     archived_order.deleted_at = datetime.now(timezone.utc)
+    session.flush()
     extra_live_order = _create_order(session, OrderType.purchase, qty=Decimal("3"))
     DealEngineService.add_link(
         session, deal.id, DealLinkedType.purchase_order.value, extra_live_order.id
@@ -345,6 +346,25 @@ def test_order_archive_recomputes_linked_deal_totals(session: Session) -> None:
 
     OrderService.archive(session, order.id, commit=False)
 
+    session.refresh(deal)
+    assert deal.total_physical_tons == Decimal("0.000")
+    assert deal.total_hedge_tons == Decimal("0.000")
+    assert deal.hedge_ratio == Decimal("0.00")
+    assert deal.status == DealStatus.open
+
+
+def test_order_archive_commit_recomputes_and_refreshes_order(
+    session: Session,
+) -> None:
+    deal = _create_deal(session)
+    order = _create_order(session, OrderType.sales, qty=Decimal("10"))
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, order.id
+    )
+
+    archived = OrderService.archive(session, order.id)
+
+    assert archived.deleted_at is not None
     session.refresh(deal)
     assert deal.total_physical_tons == Decimal("0.000")
     assert deal.total_hedge_tons == Decimal("0.000")
