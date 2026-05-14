@@ -284,6 +284,7 @@ If a CSP report DURING THIS PR's local testing reveals a critical violation that
 
 - `docs/governance.md` AUTHORIZATION MATRIX — frontend security headers part of platform hardening (D-3.3).
 - `docs/governance.md` §"GOVERNANCE HARD FAILS" — no silent fallback. CSP report-only mode is NOT a fallback; it's an explicit collection phase before enforce.
+- CSP report-only mode is a data-collection phase (1-2 sprints) before enforce mode; it does not suppress CSP violations, it records them. This aligns with the governance hard-fail stance on missing evidence: collect evidence first, enforce second.
 
 No changes to `docs/governance.md` are part of this wave.
 
@@ -310,7 +311,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 - [ ] CSRF middleware (PR-CL3-2) exempt list includes `/csp/report`.
 - [ ] PR body cites the actual CSRF middleware file/pattern updated for `/csp/report` (central exempt route collection or decorator-based exemption), discovered via `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`.
 - [ ] Endpoint logs structured `csp_violation` events with all 7 fields per §4.2.
-- [ ] Rate-limit applied (or follow-up TODO if no infra).
+- [ ] Rate-limit applied: `@limiter.limit("50/minute")` decorator present on the POST endpoint.
 - [ ] Returns 204 (no body) on success.
 
 ### 6.3 XSS-sink inventory
