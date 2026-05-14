@@ -343,7 +343,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 
 ### 7.2 Frontend e2e (Playwright)
 
-2. **`frontend-svelte/tests/e2e/csp.spec.ts`** (NEW):
+2. **`frontend-svelte/e2e/csp.spec.ts`** (NEW; repo Playwright `testDir` is `./e2e`):
    - `test_csp_report_only_header_present` — load any page, assert response includes `Content-Security-Policy-Report-Only` header with the bindado directives.
    - `test_csp_enforce_header_NOT_present` — assert no `Content-Security-Policy` (enforce) header (only the -Report-Only variant).
    - `test_report_to_header_present` — assert `Report-To` header points at the backend-origin `${VITE_API_BASE_URL}/csp/report`.
