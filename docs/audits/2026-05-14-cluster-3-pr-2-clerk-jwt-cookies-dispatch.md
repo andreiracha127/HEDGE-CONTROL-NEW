@@ -290,10 +290,12 @@ async def csrf_middleware(request: Request, call_next):
     return await call_next(request)
 ```
 
-In `backend/app/main.py`, import `BaseHTTPMiddleware` and `csrf_middleware`, then register the CSRF middleware after existing middleware setup and before route handling:
+In `backend/app/main.py`, import `csrf_middleware`, then register it with the same decorator style used by the existing HTTP middleware stack:
 
 ```python
-app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
+@app.middleware("http")
+async def csrf_http_middleware(request: Request, call_next):
+    return await csrf_middleware(request, call_next)
 ```
 
 Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_API_BASE_URL`. Current `backend/app/main.py` has `allow_credentials=False`; that must change because httpOnly cookie auth cannot work cross-origin unless the browser is allowed to attach cookies to API requests:
@@ -532,7 +534,8 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] Middleware registered in `backend/app/main.py`.
 - [ ] Exempt paths: `/auth/session`, `/webhooks/`, `/healthz`.
 - [ ] CSRF mismatch returns 403 with `detail="CSRF token missing or mismatch"`.
-- [ ] `CORSMiddleware` allows credentialed frontend requests (`allow_credentials=True`) and preserves existing allowed headers while adding CSRF: `["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"]`.
+- [ ] `CORSMiddleware` sets `allow_credentials=True` (changed from current `False`).
+- [ ] `CORSMiddleware` preserves existing allowed headers while adding CSRF: `["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"]`.
 
 ### 6.4 Auditor-exclusive at JWT-validation time
 
@@ -569,8 +572,8 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - **`test_clerk_jwt_expired_401`** — fixture: JWT with `exp` in past.
 - **`test_clerk_jwt_wrong_audience_401`** — fixture: JWT with `aud` mismatch.
 - **`test_clerk_jwt_wrong_issuer_401`** — fixture: JWT with `iss` mismatch.
-- **`test_clerk_jwt_auditor_exclusive_401`** — fixture: JWT with `roles=["auditor", "trader"]`. Returns 401 at JWT validation (NOT at route gate).
-- **`test_clerk_jwt_auditor_alone_passes`** — fixture: JWT with `roles=["auditor"]`. Returns user dict (no 401).
+- **`test_clerk_jwt_auditor_with_trader_roles_returns_401`** — fixture: JWT with `roles=["auditor", "trader"]`. Returns 401 at JWT validation (NOT at route gate).
+- **`test_clerk_jwt_auditor_alone_succeeds_user_dict`** — fixture: JWT with `roles=["auditor"]`. Returns user dict (no 401).
 - **`test_clerk_jwt_trader_plus_risk_manager_passes`** — fixture: JWT with `roles=["trader", "risk_manager"]`. Returns user dict.
 - **`test_clerk_jwt_malformed_roles_claim_401`** — fixtures with missing, scalar, object, null, and list-with-non-string `roles`; each returns 401 with `detail="Invalid roles claim"`.
 
