@@ -31,7 +31,7 @@ Three coupled deliverables:
 
 ## 3. Findings and Evidence
 
-Verified at HEAD `e3ad0dffb` (assume PR-CL3-1 has merged before this wave; if not, base off pre-PR-CL3-1 main and adapt — see §11).
+Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 MUST be executed after PR-CL3-1 has merged; otherwise `get_current_actor_roles`, `_VALID_HUMAN_ROLES`, and `require_service_identity` are not valid assumptions. If those identifiers are absent on live `main`, stop and report PR-CL3-1 as a blocking dependency rather than improvising a second helper surface.
 
 ### Existing JWT validator (to be swapped)
 
@@ -235,6 +235,8 @@ This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Tok
 
 Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. PR-CL3-1 keeps a redundant defensive check inside `get_current_actor_roles`. For strict constitutional compliance, add the same check inside `get_current_user`; do not remove the PR-CL3-1 helper check.
 
+Dependency assertion before editing: `rg -nP "def get_current_actor_roles|_VALID_HUMAN_ROLES|def require_service_identity" backend/app/core/auth.py` MUST find the PR-CL3-1 helper surface. If it does not, PR-CL3-2 is running on the wrong base.
+
 ```python
 def get_current_user(...) -> dict[str, Any]:
     # ... existing JWT validation ...
@@ -355,6 +357,32 @@ Add `/api/.well-known/service-jwks.json` endpoint (or include service public key
 - `BACKEND_SERVICE_AUDIENCE` is set
 
 Missing any → fail-closed at startup (raise `RuntimeError`).
+
+Concrete shape:
+
+```python
+def validate_auth_config() -> None:
+    env = _canonical_env()
+    if env not in _FAIL_CLOSED_ENVS:
+        return
+
+    missing: list[str] = []
+    for name in (
+        "CLERK_FAPI_HOST",
+        "SERVICE_JWT_SIGNING_KEY",
+        "SERVICE_JWT_PUBLIC_KEY",
+        "BACKEND_SERVICE_ISSUER",
+        "BACKEND_SERVICE_AUDIENCE",
+    ):
+        if not os.getenv(name):
+            missing.append(name)
+
+    if missing:
+        raise RuntimeError(
+            "Missing required auth configuration in fail-closed environment: "
+            + ", ".join(sorted(missing))
+        )
+```
 
 ## 5. Constitutional Rules
 
