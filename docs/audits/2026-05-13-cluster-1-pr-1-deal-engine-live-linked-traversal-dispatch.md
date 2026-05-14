@@ -22,7 +22,7 @@ The fix is narrow: at every linked-entity read inside the three methods, skip ro
 - Do **not** widen scope to wave PR-CL1-3 (scenario / shared exposure primitive). Scenario reads its own primitives and is fixed in its own wave.
 - Do **not** alter the soft-delete contract for `Order` or `HedgeContract`. Those models already expose `deleted_at`; only the DealEngine traversal side changes.
 - Do **not** change the public response shape of `compute_deal_pnl`, `compute_pnl_breakdown`, or `_recompute_tons` beyond what is implied by skipping archived rows. The integer counts and Decimal aggregates simply exclude archived entities.
-- Do **not** silently produce a zero P&L for a deal whose only links are now archived. If the archive sweep removes every linked entity, propagate the existing "no linked entities" code path (or hard-fail consistent with the empty-link contract); do not coerce the result to a fake zero.
+- Do **not** silently produce a zero P&L for a deal whose only links are now archived. The implementing PR must rebuild the live link set explicitly (drop archived link IDs from `link_ids` before any downstream use) AND must `HTTPException(409)` when the live set is empty per §4.3. There is no pre-existing graceful "no linked entities" path in `compute_deal_pnl` to fall into; the v1 dispatch's vague "follow the existing path" guidance is corrected by §4.3.
 
 Live economics across the system must remain coherent: if exposure has retired an Order, deal-level reads must agree.
 
@@ -83,13 +83,25 @@ The existing `if entity is None: ...` handler (where present) stays; the only ad
 
 ### 4.2 Method-by-method changes
 
-- **`compute_deal_pnl` (`deal_engine.py:559-611`)**: filter at both the Order and the HedgeContract traversal. If the archived entity was the source of a variable-price quote requirement, the price lookup for that link is also skipped (the link is gone from the computation entirely). The `unprovable_errors` aggregation continues to apply to the **remaining live** entities only — this is the natural composition and is not in tension with wave PR-CL1-2's scope.
-- **`compute_pnl_breakdown` (`deal_engine.py:918-957` and `:1036`)**: filter at both sites. Archived links produce no breakdown row.
-- **`_recompute_tons` (`deal_engine.py:1245-1269`)**: filter before adding to `total_physical_tons` / `total_hedge_tons`. Archived links contribute zero tons.
+- **`compute_deal_pnl` (`deal_engine.py:559-611`)**: filter at both the Order and the HedgeContract traversal. **Critical: also rebuild the `link_ids` list from the live subset.** Today (`:559-560`), `links` and `link_ids` are constructed before any filter pass; both are passed to `_compute_inputs_hash` (`:698`, `:725`) and form the persisted snapshot key. If `link_ids` keeps the archived UUIDs, two failures emerge: (1) the hash binds the archived link, so a snapshot reuse path could collide with a stale row, and (2) when *every* link is archived, the per-link aggregation loop runs zero times and produces a zero-totals snapshot **keyed by the archived link IDs** — exactly the fake-zero state §2 forbids. Pattern: replace `links = ...` and `link_ids = [lk.id for lk in links]` with a two-step rebuild that resolves each link to its `(Order|HedgeContract, deleted_at)` and keeps only those with `deleted_at is None`. Then derive `link_ids` from the rebuilt live set. The `unprovable_errors` aggregation continues to apply to the live entities only — this is the natural composition and is not in tension with wave PR-CL1-2's scope.
+- **`compute_pnl_breakdown` (`deal_engine.py:918-957` and `:1036`)**: filter at both sites. Same rebuild discipline as `compute_deal_pnl` for any local `link_ids` / `links` variable used downstream of the filter.
+- **`_recompute_tons` (`deal_engine.py:1245-1269`)**: filter before adding to `total_physical_tons` / `total_hedge_tons`. Archived links contribute zero tons. `_recompute_tons` does not touch `_compute_inputs_hash`, so the rebuild concern there is limited to making sure the iteration set itself is the live subset.
 
-### 4.3 Behavior when every link is archived
+### 4.3 Behavior when every link is archived — explicit hard-fail
 
-If after filtering, no live links remain, `compute_deal_pnl` and `compute_pnl_breakdown` follow the pre-existing "no linked entities" path (whichever it is — currently the deal degenerates to zero P&L / empty breakdown). Do **not** introduce a new error condition. `_recompute_tons` produces `total_physical_tons = 0` and `total_hedge_tons = 0`. This is a real economic state (the deal has no live exposure) and is consistent with what `ExposureEngineService.reconcile_from_orders` already reports for the same archived Orders.
+After filtering, if zero live links remain, `compute_deal_pnl` and `compute_pnl_breakdown` must **hard-fail** with `HTTPException(status_code=409, detail=f"Deal {deal_id} has no live linked entities; un-archive at least one Order/HedgeContract or remove the deal.")`. Do **not** fall through into a zero-everything snapshot that gets persisted with the archived link_ids — that state is exactly what §2 forbids ("do not coerce the result to a fake zero"). The 409 response gives the operator a recoverable signal: they can un-archive the entity, remove the dead links via the existing `remove_link` route, or delete the deal entirely.
+
+`_recompute_tons` is the only exception: it runs synchronously inside `add_link` / `remove_link` / `update_deal_status` and is expected to handle empty link lists silently (it pre-existed the archive-aware contract). It produces `total_physical_tons = 0` and `total_hedge_tons = 0` on an empty live set, which is correct for tonnage tracking — tonnage is descriptive, not a persisted P&L snapshot.
+
+There is no pre-existing "no linked entities" graceful path in `compute_deal_pnl` to fall into — verified at HEAD `ea08d9868` by tracing the function body. If the implementer believes one exists, they must cite the line range; otherwise the 409 hard-fail is mandatory.
+
+### 4.3a Verification of the rebuild-and-hard-fail pattern
+
+The implementing PR must demonstrate, before opening review:
+
+1. The new `link_ids` list passed to `_compute_inputs_hash` at `:725` (and `:698` if PR-CL1-2 has not yet landed) is derived from the rebuilt live set, not the raw `session.query(DealLink)` result.
+2. A unit test (per §7 test 3) constructs a deal whose every link is archived, calls `compute_deal_pnl`, and asserts `pytest.raises(HTTPException)` with `exc.value.status_code == 409`. The same test asserts no `DealPNLSnapshot` row was written.
+3. The `compute_pnl_breakdown` analog raises the same 409 on the same fixture.
 
 ### 4.4 Logging / observability (optional, narrow)
 
@@ -110,9 +122,10 @@ A merged PR closes J-CL1-01 iff every item below is true.
 
 ### 6.1 Code
 
-- [ ] `backend/app/services/deal_engine.py` — `compute_deal_pnl` skips links whose resolved Order or HedgeContract has `deleted_at is not None`.
-- [ ] `backend/app/services/deal_engine.py` — `compute_pnl_breakdown` applies the same filter at both linked-entity read sites.
-- [ ] `backend/app/services/deal_engine.py` — `_recompute_tons` applies the same filter before accumulating `total_physical_tons` / `total_hedge_tons`.
+- [ ] `backend/app/services/deal_engine.py` — `compute_deal_pnl` skips links whose resolved Order or HedgeContract has `deleted_at is not None`, **and rebuilds `link_ids` from the live subset** so the snapshot key does not bind archived UUIDs.
+- [ ] `backend/app/services/deal_engine.py` — `compute_deal_pnl` raises `HTTPException(status_code=409, detail=f"Deal {deal_id} has no live linked entities; ...")` when the rebuilt live link set is empty. No `DealPNLSnapshot` row is persisted on this branch.
+- [ ] `backend/app/services/deal_engine.py` — `compute_pnl_breakdown` applies the same filter at both linked-entity read sites, rebuilds any local `link_ids` from the live subset, and raises the same 409 on an empty live set.
+- [ ] `backend/app/services/deal_engine.py` — `_recompute_tons` applies the same filter before accumulating `total_physical_tons` / `total_hedge_tons`. `_recompute_tons` does **not** raise on an empty live set (it produces zero tons; it is descriptive tonnage tracking, not a persisted P&L snapshot).
 - [ ] No new column, no new model, no migration. `python -m alembic heads` must still print `043_a5_audit_payload_input`.
 - [ ] No edit to `backend/app/models/deal.py`, no `DealLink.is_deleted` introduction.
 - [ ] No edit to `backend/app/services/scenario_whatif_service.py`, `backend/app/services/exposure_service.py`, or `backend/app/services/exposure_engine.py`.
@@ -130,7 +143,8 @@ New test file: `backend/tests/test_deal_engine_archived_link_traversal.py`. Mark
 
 1. **Archive a linked Order, recompute deal P&L** — create a Deal with two Orders linked (one variable-price, one fixed-price). Archive the variable-price Order. Call `compute_deal_pnl`. Assert the returned `DealPNLSnapshot` excludes the archived Order from its contribution and its `price_references` does not contain a quote for the archived Order's commodity (when the archived Order was the only consumer of that commodity).
 2. **Archive a linked HedgeContract, recompute deal P&L** — same setup but archive a HedgeContract. Assert P&L excludes the archived hedge.
-3. **Archive all links, recompute deal P&L** — assert no `PriceReferenceUnprovable` is raised solely because of the archive; the deal degenerates to the pre-existing no-link branch.
+3. **Archive all links, recompute deal P&L → 409** — create a Deal with two linked entities, archive both. Call `compute_deal_pnl`. Assert `pytest.raises(HTTPException)` with `exc.value.status_code == 409` and detail containing `"no live linked entities"`. Assert no new `DealPNLSnapshot` row was written (query the table before/after). Assert no `PriceReferenceUnprovable` is raised — the empty-live-set hard-fail must short-circuit before any price lookup is attempted, so the operator-visible error is the 409, not the price unprovable.
+3a. **Archive all links, recompute breakdown → 409** — same fixture, call `compute_pnl_breakdown`, assert the same 409 shape. The breakdown function must not return an empty list silently when the live set is empty; it must raise.
 4. **Archive a linked Order, recompute breakdown** — call `compute_pnl_breakdown`. Assert the returned breakdown does not contain a row for the archived Order, and that the global aggregates exclude the archived Order's contribution.
 5. **Archive a linked Order, recompute tons** — call `_recompute_tons` via the existing public path (`add_link` / `remove_link` / `update_deal_status` recomputes; pick the shape that already exercises `_recompute_tons`). Assert `Deal.total_physical_tons` and `Deal.total_hedge_tons` exclude the archived Order's quantity.
 6. **Exposure / deal-P&L convergence** — full-loop test: archive an Order, run `ExposureEngineService.reconcile_from_orders`, then call `compute_deal_pnl` on a Deal linking the archived Order. Assert that the Order does not appear in either the live exposure aggregation OR the deal P&L computation. This is the institutional convergence proof.
@@ -210,6 +224,6 @@ The PR body must include:
 ## 12. Hook v2 + Codex calibration notes
 
 - **Expected hook v2 surface area**: the diff is single-file backend with three filter sites. Hook may surface false positives around "Tipo-I fact mismatch" for the new helper / inline predicate (prescription-vs-evidence class — see `feedback_codex_companion_doc_not_yet_merged` for the FP class precedent on dispatch authoring; this is the implementation-side equivalent). Hook may also flag partial-diff blindness on test-only follow-up pushes.
-- **Expected Codex catches**: missed filter at one of the three methods (e.g. `_recompute_tons` skipped while `compute_deal_pnl` filtered); a helper inadvertently used elsewhere that bypasses the filter; a `session.get(Order, ...)` introduced later in the file that doesn't follow the new pattern; the un-archive regression test missing if an un-archive path exists; the exposure / deal-P&L convergence test missing or weak; **a `DealLinkedType.order` reference (which does not exist as an enum member) introduced by following the §4.1 sketch literally without verifying enum membership** — this is the v1 dispatch error Codex caught (see PR #74 review). The valid 4-variant enum convention is `(sales_order, purchase_order)` for the Order side and `(hedge, contract)` for the HedgeContract side; the §6.2 sweep enforces it.
+- **Expected Codex catches**: missed filter at one of the three methods (e.g. `_recompute_tons` skipped while `compute_deal_pnl` filtered); a helper inadvertently used elsewhere that bypasses the filter; a `session.get(Order, ...)` introduced later in the file that doesn't follow the new pattern; the un-archive regression test missing if an un-archive path exists; the exposure / deal-P&L convergence test missing or weak; **a `DealLinkedType.order` reference (which does not exist as an enum member) introduced by following the §4.1 sketch literally without verifying enum membership** — v1 catch class. The valid 4-variant enum convention is `(sales_order, purchase_order)` for the Order side and `(hedge, contract)` for the HedgeContract side; the §6.2 sweep enforces it. **`link_ids` rebuilt from the raw query result instead of the live subset, leaving archived UUIDs in the snapshot key and producing a fake-zero snapshot when every link is archived** — this is the v2 catch class Codex pointed out (PR #74 review). The fix in §4 is the explicit two-step rebuild + 409 hard-fail; the §6.1 acceptance criterion and §7 test 3 enforce it. Without that protection, the §2 "do not coerce to fake zero" rule would land violated even though every per-link `continue` is in place.
 - **The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies**: confirm §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow all enumerate the same three methods. The three method names (`compute_deal_pnl`, `compute_pnl_breakdown`, `_recompute_tons`) must appear in every list.
 - This wave is the simplest of the four Cluster 1 waves. Resist the temptation to bundle in any of PR-CL1-2 / PR-CL1-3 / PR-CL1-4 work even if it looks adjacent.
