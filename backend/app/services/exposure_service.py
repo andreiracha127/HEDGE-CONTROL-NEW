@@ -32,6 +32,11 @@ class _ExposureContractLike(Protocol):
 
 
 def _to_decimal(value: object) -> Decimal:
+    if value is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Quantity cannot be NULL",
+        )
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
@@ -279,27 +284,6 @@ class ExposureService:
         )
 
     @staticmethod
-    def _validate_residuals_non_negative(
-        session: Session,
-        residual_expr,
-        linked_subquery,
-        join_left,
-        join_right,
-        *filters,
-        error_detail: str = "Residual exposure cannot be negative",
-    ) -> None:
-        q = session.query(func.min(residual_expr)).outerjoin(
-            linked_subquery, join_left == join_right
-        )
-        for f in filters:
-            q = q.filter(f)
-        min_val = q.scalar()
-        if min_val is not None and quantize_mt(min_val) < Decimal("0"):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=error_detail,
-            )
-
     # ------------------------------------------------------------------
     # Commercial snapshot
     # ------------------------------------------------------------------

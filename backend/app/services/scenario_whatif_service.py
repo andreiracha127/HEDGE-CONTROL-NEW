@@ -46,6 +46,12 @@ from app.utils.market_calendar import _market_calendar_for_symbol, _prior_busine
 
 @dataclass(frozen=True)
 class VirtualHedgeContract:
+    """Scenario-only hedge shape.
+
+    Never persisted; intentionally smaller than HedgeContract and consumed only
+    by exposure/MTM projections.
+    """
+
     id: UUID
     commodity: str
     quantity_mt: Decimal
@@ -224,6 +230,8 @@ def _load_orders(
     )
     result: list[tuple[Order, Decimal]] = []
     for order in orders:
+        # Quantity overrides are caller-shaped here; exposure primitives own the
+        # MT quantization boundary.
         quantity = quantity_overrides.get(order.id, Decimal(str(order.quantity_mt)))
         result.append((order, quantity))
     return result
@@ -259,6 +267,7 @@ def _load_exposure_contracts(db: Session) -> list[HedgeContract]:
 def _load_linkages(db: Session) -> list[HedgeOrderLinkage]:
     # Mirrors ExposureService linkage extraction: join Order + HedgeContract,
     # then require live orders and live active/partially_settled hedge contracts.
+    # Row ordering is irrelevant because the shared primitive reduces by id.
     return (
         db.query(HedgeOrderLinkage)
         .join(Order, Order.id == HedgeOrderLinkage.order_id)
