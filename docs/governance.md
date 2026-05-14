@@ -393,13 +393,17 @@ scope — this list is the known set, not an exhaustive guarantee):
   `/baseline/snapshots`) formerly `require_role("trader")` →
   `require_role("risk_manager")`. These are valuation/snapshot writes,
   which the matrix assigns to risk_manager territory.
-- Cashflow ledger settlement write (`cashflow_ledger.py:44` POST
-  `/contracts/{contract_id}/settle`) formerly `require_role("trader")` →
-  `require_role("risk_manager")` for the HTTP route. Automated
-  cashflow/finance pipeline writes use `service:cashflow_pipeline` only
-  where no human request is involved. This route writes hedge-contract
-  settlement and ledger entries, which are outside trader territory and
-  must not remain trader-gated.
+- Cashflow projection read (`cashflow.py:70` GET `/projection`) formerly
+  admits `trader` → `require_any_role("risk_manager", "auditor")`.
+  Cashflow projection is cashflow/finance territory, not trader territory.
+- Cashflow ledger lifecycle and visibility (`cashflow_ledger.py`: reads at
+  `:68`, `:81`; settlement write at `:44`) formerly admit `trader` →
+  remove `trader` from every cashflow-ledger route. Ledger reads become
+  `require_any_role("risk_manager", "auditor")`; the settlement HTTP write
+  becomes `require_role("risk_manager")`. Automated cashflow/finance
+  pipeline writes use `service:cashflow_pipeline` only where no human
+  request is involved. Ledger rows expose hedge-contract settlement data
+  and must not remain trader-visible.
 - Exposure engine routes formerly bare `get_current_user`:
   read/visibility routes (`exposures.py:86` GET `/net`, `:97` GET `/tasks`,
   `:137` GET `/list`, `:218` GET `/{exposure_id}`) →
@@ -408,10 +412,11 @@ scope — this list is the known set, not an exhaustive guarantee):
   `/tasks/{task_id}/execute`) → `require_role("risk_manager")`.
   Exposure reads can expose hedge linkage and HedgeContract identifiers via
   enriched responses, so trader MUST NOT receive this surface indirectly.
-- Finance pipeline run (`finance_pipeline.py:38` POST
-  `/finance-pipeline/run`) formerly bare `get_current_user` →
-  `require_role("risk_manager")` for the manual HTTP trigger. Automated
-  non-human finance pipeline execution uses `service:cashflow_pipeline`.
+- Finance pipeline visibility and run (`finance_pipeline.py`: reads at
+  `:52`, `:62`; manual run at `:38`) formerly bare `get_current_user` →
+  reads use `require_any_role("risk_manager", "auditor")`; manual run uses
+  `require_role("risk_manager")`. Automated non-human finance pipeline
+  execution uses `service:cashflow_pipeline`.
 
 ────────────────────────────────────────
 EXECUTION DISCIPLINE
