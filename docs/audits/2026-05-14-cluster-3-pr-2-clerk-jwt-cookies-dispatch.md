@@ -24,6 +24,7 @@ Three coupled deliverables:
 - Do **not** edit `docs/governance.md`. Matrix landed in PR #79.
 - Do **not** change the role list, the per-route gate semantics, the Counterparty per-type authorization, or any anomaly retirement (those landed in PR-CL3-1). This wave is auth-mechanism only — JWT issuer + verification + cookie + service-account minting.
 - Do **not** introduce CSP changes, nginx edits, or frontend code changes (PR-CL3-3 + PR-CL3-4 own those; this wave's contract with the frontend is the cookie name/format and CSRF header name).
+- Minimal backend CORS adjustment is in scope for this wave: `allow_credentials=True` and `X-CSRF-Token` are required request-transport plumbing for httpOnly cookie + double-submit CSRF. This is not a per-route authorization gate change; all route dependencies and role predicates remain untouched.
 - Do **not** add the Clerk custom domain. The dispatch uses dev FAPI host `clerk.<random>.lcl.dev` per Andrei's authorization 2026-05-14. Add `# TODO(post-cluster-3): swap to clerk.<custom-domain>` markers at every config site.
 - Do **not** add a migration unless required by service-account key storage (and even then, prefer env-var secrets over DB-stored keys; see §4.4).
 - Do **not** delete the existing `_FAIL_CLOSED_ENVS` behavior or the `validate_auth_config` startup gate (Phase A5 J-A5-06 invariant stays).
@@ -58,14 +59,14 @@ Backend MUST validate `iss` matches the FAPI host and `aud` matches the configur
 ### Service-account minting requirements
 
 - 3 internal-issued identities per governance.md: westmetall_ingest, rfq_outbound, cashflow_pipeline.
-- Each needs short-lived (~5min) JWT issued by backend, signed with the same key the backend's self-JWKS exposes.
+- Each needs short-lived (~5min) JWT issued by backend, signed with `SERVICE_JWT_SIGNING_KEY` and verified by the matching `SERVICE_JWT_PUBLIC_KEY`.
 - The minting helpers are CLI-callable (for cron triggering westmetall_ingest, for worker startup of rfq_outbound + cashflow_pipeline).
 
 ## 4. Required Implementation Boundary
 
 ### 4.1 Clerk JWT validation swap
 
-Refactor `backend/app/core/auth.py`:
+Refactor `backend/app/core/auth.py`. The current `AuthSettings` dataclass has only `jwks_url`, `audience`, and `issuer`; this wave intentionally expands that schema with a new `fapi_host` field so cookie-domain and CSP/Clerk-origin coordination has one validated source of truth:
 
 ```python
 @dataclass
@@ -97,27 +98,27 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Replace `_extract_token` with a unified extractor that supports human cookies and service Bearer tokens:
+Replace `_extract_token` with a source-aware extractor that supports human cookies and service Bearer tokens without losing the transport source:
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 
-def _extract_token(request: Request) -> str:
+def _extract_token(request: Request) -> tuple[str, str]:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        return token
+        return token, "cookie"
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
-        return auth.removeprefix("Bearer ").strip()
+        return auth.removeprefix("Bearer ").strip(), "bearer"
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Session cookie missing",
     )
 ```
 
-The Bearer fallback is service-token transport only. `get_current_user` MUST reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer, so cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) do not need browser httpOnly cookies.
+The Bearer fallback is service-token transport only. `_extract_token` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
 
 Add `backend/app/api/routes/auth.py`:
 
@@ -345,12 +346,16 @@ OR (preferred): inspect the `iss` claim from the unverified header to route to t
 
 ```python
 def get_current_user(...) -> dict[str, Any]:
-    token = _extract_token(request)
+    token, source = _extract_token(request)
     unverified = jwt.decode(token, options={"verify_signature": False})
     issuer = unverified.get("iss", "")
 
     if issuer == os.environ["BACKEND_SERVICE_ISSUER"]:
+        if source != "bearer":
+            raise HTTPException(status_code=401, detail="Service token must use Bearer transport")
         return _validate_service_token(token)
+    if source == "bearer":
+        raise HTTPException(status_code=401, detail="Session cookie missing")
     return _validate_clerk_token(token)
 ```
 
@@ -425,8 +430,8 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] `backend/app/api/routes/auth.py` — `/auth/me` exists and returns `{actor_sub, roles}` for frontend hydration.
 - [ ] Cookie set with `httponly=True`, `secure=True` in fail-closed envs, `samesite="lax"`, `max_age=300`, `path="/"`.
 - [ ] CSRF cookie set with `httponly=False` (frontend reads it).
-- [ ] Human Clerk sessions read from cookie, NOT from Bearer header.
-- [ ] Backend service JWTs retain Bearer transport through a service-only extractor/validator; human Bearer fallback is removed.
+- [ ] Human Clerk sessions read from cookie, NOT from Bearer header; Clerk JWTs delivered by Bearer are rejected in `get_current_user` before `_validate_clerk_token`.
+- [ ] Backend service JWTs retain Bearer transport through the source-aware extractor and service issuer branch; service JWTs delivered by cookie are rejected.
 
 ### 6.3 CSRF middleware
 
