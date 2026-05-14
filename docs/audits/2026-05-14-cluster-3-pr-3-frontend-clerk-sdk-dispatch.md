@@ -225,7 +225,7 @@ function readCookie(name: string): string | null {
     ?.slice(prefix.length) ?? null;
 }
 
-function csrfFromStoreOrCookie(): string | null {
+export function csrfFromStoreOrCookie(): string | null {
   return authStore.state.csrf_token ?? readCookie("csrf_token");
 }
 
@@ -252,7 +252,7 @@ client.use({
 
 The existing `frontend-svelte/src/lib/api/fetch.ts` `apiFetch` helper MUST be updated with the same `credentials: "include"` and `X-CSRF-Token` logic, because route pages call `apiFetch(...)` directly for mutating operations. Do not wrap only the generated `openapi-fetch` client.
 
-For raw auth lifecycle calls outside the generated client (`/auth/session`, `/auth/logout`, `/auth/refresh`), use `${API_BASE}/auth/...` directly or route through the same shared `apiFetch` helper.
+For raw auth lifecycle calls outside the generated client (`/auth/session`, `/auth/logout`, `/auth/refresh`), use `${API_BASE}/auth/...` directly or route through the same shared `apiFetch` helper. Logout and refresh MUST source `X-CSRF-Token` through the same `csrfFromStoreOrCookie()` helper used by normal mutating requests, not only `authStore.state.csrf_token`.
 
 ### 4.5 Logout
 
@@ -262,13 +262,14 @@ For raw auth lifecycle calls outside the generated client (`/auth/session`, `/au
   import { authStore } from "$lib/stores/auth.svelte";
   import { goto } from "$app/navigation";
   import { API_BASE } from "$lib/api/fetch";
+  import { csrfFromStoreOrCookie } from "$lib/api/client";
 
   async function logout() {
     await clerk.signOut();  // Clerk-side cleanup
     await fetch(`${API_BASE}/auth/logout`, {
       method: "POST",
       credentials: "include",
-      headers: { "X-CSRF-Token": authStore.state.csrf_token ?? "" },
+      headers: { "X-CSRF-Token": csrfFromStoreOrCookie() ?? "" },
     });
     authStore.clear();
     goto("/login");
@@ -283,6 +284,7 @@ For raw auth lifecycle calls outside the generated client (`/auth/session`, `/au
 ```typescript
 // In a layout-level effect or root +layout.svelte
 import { API_BASE } from "$lib/api/fetch";
+import { csrfFromStoreOrCookie } from "$lib/api/client";
 import { clerk } from "$lib/clerk";
 
 $effect(() => {
@@ -299,7 +301,7 @@ $effect(() => {
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
-        "X-CSRF-Token": authStore.state.csrf_token ?? "",
+        "X-CSRF-Token": csrfFromStoreOrCookie() ?? "",
       },
       body: JSON.stringify({ session_token: token }),
     });

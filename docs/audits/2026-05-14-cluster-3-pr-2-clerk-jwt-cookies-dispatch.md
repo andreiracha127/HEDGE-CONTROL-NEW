@@ -207,8 +207,8 @@ def _set_auth_cookies(response: Response, session_token: str, csrf: str) -> None
 @router.post("/auth/session")
 async def create_session(
     request: Request,
-    session_token: str = Body(..., embed=True),  # Clerk session token from frontend SDK
     response: Response,
+    session_token: str = Body(..., embed=True),  # Clerk session token from frontend SDK
     settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, str]:
     """Exchange Clerk session token for httpOnly cookie.
@@ -231,8 +231,8 @@ async def create_session(
 @router.post("/auth/refresh")
 async def refresh_session(
     request: Request,
-    session_token: str = Body(..., embed=True),  # fresh Clerk session token from frontend SDK
     response: Response,
+    session_token: str = Body(..., embed=True),  # fresh Clerk session token from frontend SDK
     settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, str]:
     """Refresh httpOnly cookie + CSRF token using a fresh Clerk JWT."""
