@@ -55,7 +55,7 @@ PR-CL3-3 consumes (does NOT modify):
 
 Dependency gate: at the baseline cited by this dispatch (`main @ e3ad0dffb`), the PR-CL3-2 backend auth endpoints may not exist yet. That is expected sequencing, not evidence that PR-CL3-3 can run independently. Before implementing PR-CL3-3, rebase on live `main` after PR-CL3-2 merges and verify `/auth/session`, `/auth/refresh`, `/auth/logout`, `/auth/me`, and CSRF middleware exist. If they do not, stop and report that PR-CL3-2 is still blocking.
 
-Every frontend call to those backend auth endpoints MUST go through the configured backend origin (`VITE_API_BASE_URL`, currently exposed as `API_BASE` in `frontend-svelte/src/lib/api/fetch.ts`) or a shared API wrapper that prefixes it. Do not use relative `fetch("/auth/...")` from the static frontend; `frontend-svelte/nginx.conf` intentionally has no `/auth` or `/api` proxy in this wave.
+Every frontend call to those backend auth endpoints MUST go through the configured backend origin (`VITE_API_BASE_URL`, currently exposed as `API_BASE` in `frontend-svelte/src/lib/api/fetch.ts`) or a shared API wrapper that prefixes it. Do not use relative `/auth/...` fetch calls from the static frontend; `frontend-svelte/nginx.conf` intentionally has no `/auth` or `/api` proxy in this wave.
 
 Sweep for `GET /me` or `/auth/me` or `/users/me`:
 
@@ -318,9 +318,10 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `/login` page mounts Clerk sign-in via `clerk.mountSignIn`.
 - [ ] `/sign-up` page mounts Clerk sign-up via `clerk.mountSignUp`.
+- [ ] Backend auth response contracts verified before frontend wiring: `/auth/session` returns `{actor_sub, csrf_token}`; `/auth/refresh` returns `{csrf_token}`; `/auth/logout` returns empty success/204; `/auth/me` returns `{actor_sub, roles: string[]}`.
 - [ ] After Clerk sign-in, frontend calls `POST /auth/session`, fetches `GET /auth/me` for roles, then seeds auth store.
 - [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` with `X-CSRF-Token` + clears auth store.
-- [ ] Auth session, refresh, and logout calls are routed through `API_BASE` / shared API wrapper, not relative `fetch("/auth/...")`.
+- [ ] Auth session, refresh, and logout calls are routed through `API_BASE` / shared API wrapper, not relative `/auth/...` fetch calls.
 
 ### 6.3 Auth store
 
@@ -332,6 +333,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] All mutating fetches include `X-CSRF-Token` header sourced from auth store.
 - [ ] All authenticated fetches set `credentials: "include"`.
+- [ ] Every generated OpenAPI client method is verified to route through the CSRF/credentials wrapper; count the generated methods before and after wrapping and assert no orphaned unwrapped method remains.
 - [ ] Sweep `rg -nP "Authorization.*Bearer|sessionStorage|localStorage" frontend-svelte/src/lib/api/` returns zero token-storage leaks.
 
 ### 6.5 Refresh
@@ -361,10 +363,11 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 1. **`auth.svelte.test.ts`** — augment with: `isTraderOnly` returns true only when roles is exactly `["trader"]`, false for `["risk_manager", "trader"]` or `["auditor"]`.
 2. **`runtime.test.ts`** — verify `manualTokenLoginEnabled` flag no longer exists in runtime config schema.
+3. **`api-client-csrf.test.ts`** — generated-client method count invariant: scan generated OpenAPI methods before wrapping, scan wrapped/exported client surface after wrapping, and assert the counts match so no generated method bypasses the CSRF/credentials wrapper.
 
 ### 7.2 Playwright e2e
 
-3. **`e2e/auth.spec.ts`** (NEW or augment existing):
+4. **`e2e/auth.spec.ts`** (NEW or augment existing):
    - Test: visit `/`, redirected to `/login`.
    - Test: complete Clerk sign-in (use Clerk's testing mode or mock), assert redirect to `/`, assert auth store populated.
    - Test: logout, assert redirect to `/login`, assert auth store cleared.
@@ -374,7 +377,7 @@ Note: Clerk's e2e testing requires either Clerk's test mode (`pk_test_...` plus 
 
 ### 7.3 Visual regression on login page
 
-4. The new login page is visually different from the paste-token UI. Capture a screenshot baseline + assert against it in Playwright.
+5. The new login page is visually different from the paste-token UI. Capture a screenshot baseline + assert against it in Playwright.
 
 ## 8. Required Verification
 

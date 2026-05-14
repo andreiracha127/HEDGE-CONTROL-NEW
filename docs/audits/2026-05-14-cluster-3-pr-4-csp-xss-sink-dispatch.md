@@ -198,6 +198,8 @@ app.include_router(csp_report.router)
 
 CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/csp/report` to the exempt list as a required backend infrastructure change for the new unauthenticated reporting endpoint. Document that change in the PR body. Do not mount the FastAPI router at `/api/csp`: the app's `_StripApiPrefixMiddleware` strips `/api/*` before routing, and routers are registered without the `/api` prefix.
 
+Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`. If PR-CL3-2 introduced a centralized file such as `backend/app/core/csrf.py`, add `/csp/report` to the same exempt route collection as `/webhooks/*`. If PR-CL3-2 uses a decorator-based exemption, apply the equivalent `@csrf_exempt` (or local helper name) directly to `csp_report`. The implementation must cite the actual file/pattern in the PR body; do not invent a second CSRF exemption mechanism.
+
 Rate limit: use existing rate-limit decorator if available in backend; otherwise a simple in-memory token bucket per source IP (50/min). If no rate-limit infrastructure exists, document as a follow-up TODO and proceed without it (CSP reports are low-frequency in practice).
 
 ### 4.3 XSS-sink inventory doc
@@ -292,6 +294,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 - [ ] `backend/app/api/routes/csp_report.py` exists with the POST `/csp/report` endpoint per §4.2.
 - [ ] Router registered in `backend/app/main.py`.
 - [ ] CSRF middleware (PR-CL3-2) exempt list includes `/csp/report`.
+- [ ] PR body cites the actual CSRF middleware file/pattern updated for `/csp/report` (central exempt route collection or decorator-based exemption), discovered via `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`.
 - [ ] Endpoint logs structured `csp_violation` events with all 7 fields per §4.2.
 - [ ] Rate-limit applied (or follow-up TODO if no infra).
 - [ ] Returns 204 (no body) on success.
