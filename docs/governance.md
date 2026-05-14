@@ -215,6 +215,26 @@ Human roles (3, no admin/viewer):
   - Read-only on every endpoint
   - Audit log read (dedicated routes)
   - Cannot: any write
+  - **Cannot be combined with any other human role** — separation-of-duties
+    invariant (see Role combinability below)
+
+Role combinability (binding):
+
+- `auditor` is exclusive: an actor's effective human-role set MUST NOT
+  contain `auditor` together with any other role. Mixed sets like
+  `{trader, auditor}` or `{risk_manager, auditor}` violate
+  separation-of-duties (oversight cannot also operate). The JWT
+  validator MUST reject such mixed sets at validation time with
+  HTTP 401 (config error: invalid role combination), BEFORE any
+  route gate is evaluated. This closes the multi-role escape where
+  an `{trader, auditor}` actor would pass the mutation route gate
+  via trader and reach the handler.
+- `trader` and `risk_manager` MAY be combined in a single actor
+  (operational reality: risk_manager often performs trader work too).
+  An actor with `{trader, risk_manager}` has the union of both roles'
+  privileges. The "lacks risk_manager" check in mutation invariants
+  is therefore equivalent to "is trader-only", which is the intended
+  scope of trader-restriction rules.
 
 Service identities (4, JWT-authenticated, short-lived TTL ~5min):
 
