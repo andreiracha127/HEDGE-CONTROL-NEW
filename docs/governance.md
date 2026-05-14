@@ -392,8 +392,9 @@ scope — this list is the known set, not an exhaustive guarantee):
   from every Hedge-Order Linkage route. Linkage reads remain
   `require_any_role("risk_manager", "auditor")`; create becomes
   `require_role("risk_manager")`.
-- Scenario what-if execution (`scenario.py:26` POST `/what-if/run`) formerly
-  `require_any_role("risk_manager", "auditor")` → `require_role("risk_manager")`.
+- Scenario what-if execution (`scenario.py:18` POST `/what-if/run`, gate at
+  `:26`) formerly `require_any_role("risk_manager", "auditor")` →
+  `require_role("risk_manager")`.
   Scenario execution is a mutation/write-like analytical operation; auditor
   remains read-only and MUST NOT be admitted on POST.
 - MTM/P&L/Cashflow snapshot writes (`mtm.py:63` POST `/snapshots`,
