@@ -128,7 +128,7 @@ Behavior must be byte-equivalent to today on every existing fixture. The existin
 
   Instead, **split into two loaders**:
 
-  - Keep the existing `_load_contracts` unchanged: `session.query(HedgeContract).all()`. The MTM/P&L loop at `:541-592` and any delta-validation path continue to consume this unfiltered list.
+  - Keep the existing `_load_contracts` unchanged: `session.query(HedgeContract).all()`. The MTM/P&L loop at `:541-592`, **`_apply_deltas` (`scenario_whatif_service.py:155`)**, and any other delta-validation path continue to consume this unfiltered list. `_apply_deltas` builds the collision-check set for `AddUnlinkedHedgeContractDelta` from the contracts list — it must see the **full** contract universe (including archived and settled) so a virtual delta with an id matching an existing-but-inactive contract still triggers the 409 collision guard. Piping `_load_exposure_contracts` to `_apply_deltas` would silently bypass the 409 for collisions against archived/settled contracts.
   - Add a new helper `_load_exposure_contracts(db: Session) -> list[HedgeContract]` that applies the full exposure-aggregation filter: `session.query(HedgeContract).filter(HedgeContract.deleted_at.is_(None), HedgeContract.status.in_([HedgeContractStatus.active, HedgeContractStatus.partially_settled])).all()`. The status filter mirrors `exposure_service.py:351-378`. The exposure aggregation path (call to `compute_global_exposure_pure`) consumes this filtered helper instead of `_load_contracts`.
 
   This preserves J-CL1-04's "scenario exposure baseline matches live A1" guarantee for the exposure surface while leaving scenario P&L semantics untouched (settled hedges keep emitting their realized cashflow-ledger contributions through the unchanged P&L loop). The two loaders are independent — both queries run; the runtime cost is one extra `SELECT` per scenario request, which is acceptable given the institutional invariant the split protects.
@@ -168,9 +168,9 @@ Add `backend/tests/test_scenario_live_exposure_parity.py`:
 2. **`test_empty_delta_global_parity`**: same fixture; assert `GlobalExposureRead` rows are deeply equal.
 3. **`test_archived_order_excluded_from_scenario`**: archive one of the variable-price Orders, call scenario with empty deltas, assert the archived Order does not appear in either commercial or global exposure.
 4. **`test_settled_hedge_excluded_from_scenario_exposure`**: mark one HedgeContract as `settled`, call scenario with empty deltas, assert the settled hedge does not contribute to global **exposure** (mirrors live).
-4a. **`test_settled_hedge_preserved_in_scenario_pl`**: same fixture as test 4 — a settled HedgeContract with realized P&L from `CashFlowLedgerEntry` rows over the scenario period. Call scenario, assert the settled hedge **DOES** appear in `pl_snapshots` with `unrealized_mtm == 0` and `realized_pl == sum(ledger_entries)`. This is the regression guard for the Codex P2 catch on PR #74 v3 — the dispatch must not let the exposure-side filter silently drop settled hedges from the P&L surface.
 5. **`test_orphan_linkage_excluded_via_archived_order`**: archive the Order referenced by a HedgeOrderLinkage, call scenario, assert the orphan linkage is not consumed.
 6. **`test_orphan_linkage_excluded_via_settled_hedge`**: leave the Order live, mark the linked HedgeContract `settled` (or `cancelled`, in a parametrized variant), call scenario with empty deltas, assert the linkage's quantity is **not** subtracted from the Order's residual exposure. This is the parity case Codex caught on the v1 dispatch — without the hedge-side filter on `_load_linkages`, scenario would still consume the inactive-hedge linkage while live exposure (via `_linked_by_order_subquery`) would not. Run as a parametrized test across `{settled, cancelled}` HedgeContractStatus values; the archived-hedge case is also a candidate fixture, exercised here or in test 4 above.
+7. **`test_settled_hedge_preserved_in_scenario_pl`**: same fixture as test 4 — a settled HedgeContract with realized P&L from `CashFlowLedgerEntry` rows over the scenario period. Call scenario, assert the settled hedge **DOES** appear in `pl_snapshots` with `unrealized_mtm == 0` and `realized_pl == sum(ledger_entries)`. This is the regression guard for the Codex P2 catch on PR #74 v3 — the dispatch must not let the exposure-side filter silently drop settled hedges from the P&L surface. **This test is mandatory; counting parametrized variants of test 6 as one test, the total file has 7 distinct test functions.**
 
 The parity tests are the structural protection J-CL1-05 demands. They must call the **public** scenario / live endpoints (not the new primitives directly) so that the primitive is exercised through both callers.
 
@@ -207,15 +207,16 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 ### 6.3 Scenario input boundary
 
 - [ ] `_load_orders` filters `Order.deleted_at.is_(None)`.
-- [ ] **`_load_contracts` is UNCHANGED** — it continues to return all HedgeContract rows. A new helper `_load_exposure_contracts(db: Session) -> list[HedgeContract]` exists and applies the full exposure-aggregation filter (`HedgeContract.deleted_at.is_(None)` AND status in {`active`, `partially_settled`}). The exposure aggregation path consumes `_load_exposure_contracts`; the MTM/P&L loop at `:541-592` continues to consume `_load_contracts`. Settled hedges must still appear in `pl_snapshots` with `realized_pl` populated from `CashFlowLedgerEntry` rows.
+- [ ] **`_load_contracts` is UNCHANGED** — it continues to return all HedgeContract rows. A new helper `_load_exposure_contracts(db: Session) -> list[HedgeContract]` exists and applies the full exposure-aggregation filter (`HedgeContract.deleted_at.is_(None)` AND status in {`active`, `partially_settled`}). The exposure aggregation path consumes `_load_exposure_contracts`; the MTM/P&L loop at `:541-592` and `_apply_deltas` continue to consume `_load_contracts` (the unfiltered output). Settled hedges must still appear in `pl_snapshots` with `realized_pl` populated from `CashFlowLedgerEntry` rows.
+- [ ] `_apply_deltas` (`scenario_whatif_service.py:155`) receives `_load_contracts(db)` (unfiltered), NOT `_load_exposure_contracts(db)`. The collision-check set for `AddUnlinkedHedgeContractDelta` must cover archived and settled contracts so a virtual delta with a colliding id still hits the 409 guard.
 - [ ] `_load_linkages` mirrors `ExposureService._linked_by_order_subquery`'s lifecycle filtering: excludes linkages whose parent Order is archived (`Order.deleted_at IS NULL`) **and** linkages whose linked HedgeContract is archived or not in `{active, partially_settled}` status. The query joins both `Order` and `HedgeContract`. Filter symmetry with the live subquery is the structural guarantee against scenario/live drift on the linked-quantity reduction.
 - [ ] `_compute_commercial_exposure` and `_compute_global_exposure` no longer exist as separate aggregation implementations (or are reduced to thin delegations).
 - [ ] No `float(...)` cast remains inside scenario aggregation paths.
 
 ### 6.4 Tests
 
-- [ ] `backend/tests/test_scenario_live_exposure_parity.py` exists with the 6 tests in §4.4 (parametrized variants count as one test).
-- [ ] All parity tests pass, including the inactive-hedge linkage variants (test 6) which exercise the hedge-side filter symmetry with `_linked_by_order_subquery`.
+- [ ] `backend/tests/test_scenario_live_exposure_parity.py` exists with the **7 tests** in §4.4 (parametrized variants of test 6 count as one test; test 7 is the settled-hedge P&L preservation regression guard and is **mandatory**, not optional).
+- [ ] All parity tests pass, including the inactive-hedge linkage variants (test 6) which exercise the hedge-side filter symmetry with `_linked_by_order_subquery`, and test 7 which proves settled hedges still emit realized P&L through the unfiltered `_load_contracts` path.
 - [ ] `backend/tests/test_scenario_whatif_run.py` and `backend/tests/test_exposure*.py` continue to pass.
 
 ### 6.5 Sweeps
@@ -240,7 +241,7 @@ A merged PR closes J-CL1-04 + J-CL1-05 iff every item below is true.
 
 §4.4 + §6.4 enumerate the tests. Restated as a checklist:
 
-1. `backend/tests/test_scenario_live_exposure_parity.py` (new) — 6 tests, where test 6 (inactive-hedge linkage variants) is parametrized over `{settled, cancelled}` HedgeContractStatus values.
+1. `backend/tests/test_scenario_live_exposure_parity.py` (new) — **7 tests**, where test 6 (inactive-hedge linkage variants) is parametrized over `{settled, cancelled}` HedgeContractStatus values. Test 7 is the settled-hedge P&L preservation regression guard.
 2. `backend/tests/test_scenario_whatif_run.py` (existing) — passes unchanged or with trivial fixture updates if a previous test asserted that scenario reads archived entities.
 3. The four existing exposure test files — `backend/tests/test_exposures_commercial.py`, `backend/tests/test_exposures_global.py`, `backend/tests/test_exposure_engine.py`, `backend/tests/test_compute_net_exposure.py` — pass unchanged. Any test failure on `test_exposures_commercial.py` or `test_exposures_global.py` is a regression in the live-side refactor (§4.2) and must be fixed before opening the PR. The engine and net-exposure suites should pass unchanged because this wave does not touch them.
 

@@ -230,7 +230,7 @@ No changes to `docs/governance.md` are part of this wave.
 ### 7.3 Cross-cutting acceptance (both paths)
 
 - [ ] No edit to `backend/app/services/scenario_whatif_service.py`, `backend/app/services/exposure_service.py`, `backend/app/services/exposure_engine.py` (PR-CL1-3 territory).
-- [ ] No edit to the `_compute_inputs_hash` or `unprovable_errors` paths in `deal_engine.py` (PR-CL1-2 territory).
+- [ ] No edit to the `_compute_inputs_hash` or `unprovable_errors` paths in `deal_engine.py` (PR-CL1-2 territory). **Note:** `backend/app/api/routes/deals.py:_raise_price_unprovable` currently maps `PriceReferenceUnprovable` → HTTP 422; this is fixed to 424 by PR-CL1-2 per governance §152, **not** by this wave. Do not touch the helper here even if the executor notices the contradiction.
 - [ ] No edit to the archived-link traversal sites in `deal_engine.py` (PR-CL1-1 territory).
 - [ ] No edit to `docs/governance.md`.
 - [ ] Single alembic head preserved (no more than one new migration; if Path B chose a non-migration option, zero new migrations).
