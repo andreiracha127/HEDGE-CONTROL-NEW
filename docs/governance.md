@@ -229,10 +229,23 @@ service:westmetall_ingest cannot write orders, only its own ingest endpoint.
 
 Authorization invariants:
 
-- Counterparty CRUD by `trader` requires server-side two-layer validation:
-  route gate `require_any_role(trader, risk_manager)` + payload gate
-  `payload.type ∈ {customer, supplier}` when actor lacks risk_manager.
-  Same rule on PATCH (no type-mutation escape) and DELETE.
+- Counterparty mutations by `trader` require server-side authorization
+  per HTTP method (route gate `require_any_role(trader, risk_manager)`
+  is the first layer in all three; the second layer differs by method
+  because PATCH and DELETE cannot rely on a payload type field):
+  - POST: payload gate — assert `payload.type ∈ {customer, supplier}`
+    when actor lacks risk_manager. Source of authorization is the
+    incoming type.
+  - PATCH: stored-record gate — load the existing counterparty, assert
+    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager,
+    AND reject any payload field that would mutate `type` (current
+    `CounterpartyUpdate` schema does not expose `type`, but the
+    rejection guards future schema evolution). Source of authorization
+    is the stored type, not the payload (the payload has no type field).
+  - DELETE: stored-record gate — load the existing counterparty, assert
+    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager.
+    DELETE has no request body; the stored-type check is the only
+    authorization layer beyond the route gate.
 - Audit log writes are immutable. No role — including risk_manager — can
   delete audit events. The auditor role is the read-only oversight layer.
 - Service identities follow the same actor_sub JWT pattern as human auth
