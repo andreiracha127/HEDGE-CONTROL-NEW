@@ -1662,10 +1662,6 @@
             "title": "Id",
             "type": "string"
           },
-          "is_deleted": {
-            "title": "Is Deleted",
-            "type": "boolean"
-          },
           "latest_pnl": {
             "anyOf": [
               {
@@ -1727,8 +1723,7 @@
           "total_physical_tons",
           "total_hedge_tons",
           "hedge_ratio",
-          "created_at",
-          "is_deleted"
+          "created_at"
         ],
         "title": "DealDetailRead",
         "type": "object"
@@ -2015,10 +2010,6 @@
             "title": "Id",
             "type": "string"
           },
-          "is_deleted": {
-            "title": "Is Deleted",
-            "type": "boolean"
-          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -2062,8 +2053,7 @@
           "total_physical_tons",
           "total_hedge_tons",
           "hedge_ratio",
-          "created_at",
-          "is_deleted"
+          "created_at"
         ],
         "title": "DealRead",
         "type": "object"

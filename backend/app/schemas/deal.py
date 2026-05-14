@@ -94,7 +94,6 @@ class DealRead(BaseModel):
     hedge_ratio: Price
     created_at: datetime
     updated_at: Optional[datetime] = None
-    is_deleted: bool
 
 
 class DealDetailRead(DealRead):
