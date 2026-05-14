@@ -66,7 +66,7 @@ Backend MUST validate `iss` matches the FAPI host and `aud` matches the configur
 
 ### 4.1 Clerk JWT validation swap
 
-Refactor `backend/app/core/auth.py`. Current pre-state: `AuthSettings` has only `jwks_url`, `audience`, and `issuer`. Desired post-state: add a new `fapi_host` field so cookie-domain and CSP/Clerk-origin coordination has one validated source of truth:
+Refactor `backend/app/core/auth.py`. Keep the existing `AuthSettings` dataclass shape (`jwks_url`, `audience`, `issuer`) and derive the Clerk FAPI host locally from `CLERK_FAPI_HOST` when building those values. Do not add a fourth dataclass field in this wave.
 
 ```python
 @dataclass
@@ -74,8 +74,6 @@ class AuthSettings:
     jwks_url: str  # https://<clerk-fapi-host>/.well-known/jwks.json
     audience: str  # Clerk app instance ID (or empty string if Clerk omits aud)
     issuer: str    # https://<clerk-fapi-host>
-    # TODO(post-cluster-3): swap fapi_host from clerk.<random>.lcl.dev to clerk.<custom-domain>
-    fapi_host: str  # for cookie domain + connect-src CSP origin
 
 
 def get_auth_settings() -> AuthSettings | None:
@@ -86,26 +84,25 @@ def get_auth_settings() -> AuthSettings | None:
         jwks_url=f"https://{fapi_host}/.well-known/jwks.json",
         audience=os.environ.get("CLERK_AUDIENCE", ""),
         issuer=f"https://{fapi_host}",
-        fapi_host=fapi_host,
     )
 ```
 
 Env vars introduced:
 - `CLERK_FAPI_HOST` (mandatory) — e.g. `clerk.abcdef.lcl.dev` in dev. Production: swap to custom domain post-Cluster-3.
-- `CLERK_AUDIENCE` (optional, depending on Clerk app config).
+- `CLERK_AUDIENCE` (mandatory in fail-closed environments; may remain empty only when auth is disabled outside `_FAIL_CLOSED_ENVS`).
 
 Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSED_ENVS`.
 
 ### 4.2 Cookie-based session
 
-Replace the current `_extract_token(request) -> str` implementation at `backend/app/core/auth.py:147-161` with this source-aware extractor. The signature change to `tuple[str, str]` is intentional and all call sites in this file must be updated in the same PR:
+Keep `_extract_token(request) -> str` as a backward-compatible wrapper and add a new `_extract_token_with_source(request) -> tuple[str, str]` helper for `get_current_user`. This avoids breaking any incidental helper call sites while still giving `get_current_user` the transport source it needs:
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
 CSRF_COOKIE_NAME = "csrf_token"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 
-def _extract_token(request: Request) -> tuple[str, str]:
+def _extract_token_with_source(request: Request) -> tuple[str, str]:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
         return token, "cookie"
@@ -116,9 +113,14 @@ def _extract_token(request: Request) -> tuple[str, str]:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Session cookie missing",
     )
+
+
+def _extract_token(request: Request) -> str:
+    token, _source = _extract_token_with_source(request)
+    return token
 ```
 
-The Bearer fallback is service-token transport only. `_extract_token` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
+The Bearer fallback is service-token transport only. `_extract_token_with_source` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
 
 Add `backend/app/api/routes/auth.py`:
 
@@ -333,8 +335,14 @@ PR-CL3-1 added `require_service_identity(name)`. PR-CL3-2 adds the JWT verificat
 Implementation: inspect the `iss` claim from the unverified payload to route to the right validator before signature verification. This routing point is also where the cookie-only transport rule for Clerk human sessions is enforced.
 
 ```python
-def get_current_user(...) -> dict[str, Any]:
-    token, source = _extract_token(request)
+def get_current_user(
+    request: Request,
+    settings: AuthSettings | None = Depends(get_auth_settings),
+) -> dict[str, Any]:
+    if settings is None:
+        raise HTTPException(status_code=401, detail="Authentication disabled")
+
+    token, source = _extract_token_with_source(request)
     unverified = jwt.decode(token, options={"verify_signature": False})
     issuer = unverified.get("iss", "")
 
@@ -344,7 +352,18 @@ def get_current_user(...) -> dict[str, Any]:
         return _validate_service_token(token)
     if source == "bearer":
         raise HTTPException(status_code=401, detail="Session cookie missing")
-    return _validate_clerk_token(token)
+    payload = _validate_clerk_token(token, settings)
+
+    raw_roles = payload.get("roles") if isinstance(payload, dict) else None
+    if not isinstance(raw_roles, list) or any(not isinstance(r, str) for r in raw_roles):
+        raise HTTPException(status_code=401, detail="Invalid roles claim")
+    roles = {r for r in raw_roles if r in _VALID_HUMAN_ROLES}
+    if "auditor" in roles and len(roles) > 1:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid role combination: auditor must be exclusive",
+        )
+    return payload
 ```
 
 This is the only accepted validator routing strategy for this wave: single code path per token type, with transport-source enforcement before Clerk validation.
@@ -355,6 +374,7 @@ For PR-CL3-2 simplicity, load the backend service public key from `SERVICE_JWT_P
 
 `validate_auth_config` MUST verify in `_FAIL_CLOSED_ENVS`:
 - `CLERK_FAPI_HOST` is set
+- `CLERK_AUDIENCE` is set
 - `SERVICE_JWT_SIGNING_KEY` is set
 - `SERVICE_JWT_PUBLIC_KEY` is set
 - `BACKEND_SERVICE_ISSUER` is set
@@ -378,6 +398,7 @@ def validate_auth_config() -> None:
     if env in _FAIL_CLOSED_ENVS:
         for name in (
             "CLERK_FAPI_HOST",
+            "CLERK_AUDIENCE",
             "SERVICE_JWT_SIGNING_KEY",
             "SERVICE_JWT_PUBLIC_KEY",
             "BACKEND_SERVICE_ISSUER",
@@ -407,7 +428,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 
 ### 6.1 Clerk JWT validation
 
-- [ ] `backend/app/core/auth.py` — `AuthSettings` includes `fapi_host`; `get_auth_settings` reads `CLERK_FAPI_HOST`.
+- [ ] `backend/app/core/auth.py` — `AuthSettings` remains the existing 3-field dataclass; `get_auth_settings` reads `CLERK_FAPI_HOST` and derives `jwks_url` + `issuer` from it.
 - [ ] JWKS URL points at `https://<fapi_host>/.well-known/jwks.json`.
 - [ ] `iss` and `aud` match Clerk values.
 - [ ] `# TODO(post-cluster-3): swap to clerk.<custom-domain>` marker present at every site that hardcodes the dev FAPI host.
@@ -606,7 +627,7 @@ PR body must include:
   - **`# TODO(post-cluster-3)` markers** — every site that hardcodes dev FAPI host MUST have the marker; missing marker → Codex catches as "tech debt without trail".
   - **Production fail-closed env coverage** — every new env var MUST be in `validate_auth_config`'s required list. Codex will trace each.
   - **`SameSite=Lax` justification** — Lax allows top-level cross-site GETs. If frontend is cross-origin with backend, may need `Strict` or `None+Secure`. PR body should document the choice.
-  - **CLERK_AUDIENCE optional-vs-required** — Clerk session JWTs may or may not have `aud`; backend validator must handle both. Codex may flag inconsistency.
+  - **CLERK_AUDIENCE fail-closed requirement** — in fail-closed environments `CLERK_AUDIENCE` MUST be set and validated; outside fail-closed environments it may remain empty only when auth is disabled.
 - **Padrão PR #79:** governance docs receive intense scrutiny; the IMPLEMENTATION PR will be checked against governance text rigorously. The Service identities split (internal-issued vs external-ingress, per-method webhook auth) is now constitutional — Codex will verify the implementation matches.
 - **8-section sweep:** §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow MUST consistently enumerate the same 6 deliverables (Clerk JWKS, cookie endpoints, CSRF middleware, auditor-early-validation, service minting, fail-closed). Drift between sections is the canonical authoring failure mode.
 - **The largest implementation risk** is the Bearer→cookie fixture migration. ~All existing auth-required tests will need updates simultaneously. Mitigation: write the central conftest helper FIRST, then sweep `rg -nP 'Authorization.*Bearer' backend/tests/` and migrate every site through the helper before running the full suite.
