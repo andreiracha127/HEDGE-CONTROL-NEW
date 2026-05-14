@@ -49,6 +49,8 @@ Define the following NEW module-level constant in `backend/app/core/auth.py` bef
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
 ```
 
+Insertion point: place `_VALID_HUMAN_ROLES` at module scope immediately after `_ANONYMOUS_USER` and before the `get_current_user` definition in `backend/app/core/auth.py`. If a later rebase already contains the same constant, reuse it; otherwise this PR MUST add it.
+
 This constant is used by the auditor-exclusive JWT-time validation rule in §4.4. It is part of PR-CL3-2 scope because governance requires mixed auditor roles to be rejected by the JWT validator before any route gate dependency runs.
 
 ### Clerk session JWT shape (per Clerk docs)
@@ -466,6 +468,8 @@ For PR-CL3-2 simplicity, load the backend service public key from `SERVICE_JWT_P
 Missing any → fail-closed at startup (raise `RuntimeError`).
 
 Do not replace the existing `validate_auth_config()` wholesale. Preserve the current J-A5-06 docstring, behavior matrix, `_auth_explicitly_disabled()` / `AUTH_DISABLED` guard, and existing `JWT_ISSUER`/`JWT_AUDIENCE`/`JWKS_URL` startup checks. Add the Cluster 3 checks as an incremental block inside the existing function after the current fail-closed/auth-disabled checks:
+
+Auth precedence after PR-CL3-2: Clerk config is primary. In `_FAIL_CLOSED_ENVS`, `CLERK_FAPI_HOST` and `CLERK_AUDIENCE` are required regardless of legacy `JWT_ISSUER`; legacy `JWT_ISSUER`/`JWT_AUDIENCE`/`JWKS_URL` may coexist during migration but must not be required as a fallback when Clerk config is present. Outside `_FAIL_CLOSED_ENVS`, legacy JWT settings may continue to support local compatibility, and auth-disabled local/test may still use the existing anonymous fallback.
 
 ```python
 # inside existing validate_auth_config(), after the current J-A5-06 checks
