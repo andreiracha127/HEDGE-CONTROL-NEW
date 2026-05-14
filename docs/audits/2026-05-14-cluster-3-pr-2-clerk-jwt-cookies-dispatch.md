@@ -97,7 +97,7 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Replace `_extract_token` with cookie reader:
+Replace `_extract_token` with a unified extractor that supports human cookies and service Bearer tokens:
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
@@ -106,15 +106,18 @@ CSRF_HEADER_NAME = "X-CSRF-Token"
 
 def _extract_token(request: Request) -> str:
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session cookie missing",
-        )
-    return token
+    if token:
+        return token
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth.removeprefix("Bearer ").strip()
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Session cookie missing",
+    )
 ```
 
-The `_extract_token` Bearer-header path is removed for human Clerk sessions. Preserve a separate Bearer transport for backend-minted service JWTs because cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) cannot receive browser httpOnly cookies.
+The Bearer fallback is service-token transport only. `get_current_user` MUST reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer, so cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) do not need browser httpOnly cookies.
 
 Add `backend/app/api/routes/auth.py`:
 
@@ -283,8 +286,7 @@ def mint_service_token(identity: str) -> str:
     - Cashflow pipeline worker startup (mints `service:cashflow_pipeline`)
 
     Signing key: SERVICE_JWT_SIGNING_KEY env var (RSA private key PEM).
-    Verification: backend's own JWKS at /api/.well-known/service-jwks.json
-    (served by the JWKS endpoint added in §4.6).
+    Verification: SERVICE_JWT_PUBLIC_KEY env var (public key PEM).
     """
     expected = identity if identity.startswith("service:") else f"service:{identity}"
     if expected not in _INTERNAL_SERVICE_IDENTITIES:
@@ -354,7 +356,7 @@ def get_current_user(...) -> dict[str, Any]:
 
 The latter is cleaner — single code path per token type.
 
-Add `/api/.well-known/service-jwks.json` endpoint (or include service public key in existing `/healthz` extension) so the validator can fetch its own public key. For PR-CL3-2 simplicity, embed the public key path as env var `SERVICE_JWT_PUBLIC_KEY` and skip the JWKS endpoint until cluster 4 if needed.
+For PR-CL3-2 simplicity, load the backend service public key from `SERVICE_JWT_PUBLIC_KEY` (public key PEM) and skip a service JWKS endpoint until a later distributed-deploy hardening wave if needed.
 
 ### 4.7 Production fail-closed extensions
 

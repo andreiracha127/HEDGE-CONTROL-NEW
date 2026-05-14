@@ -143,11 +143,14 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, Response
 import structlog
 
+from app.core.rate_limit import limiter
+
 router = APIRouter(prefix="/csp", tags=["csp"])
 logger = structlog.get_logger(__name__)
 
 
 @router.post("/report", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("50/minute")
 async def csp_report(request: Request) -> Response:
     """Receive CSP violation reports from browser.
 
@@ -165,31 +168,40 @@ async def csp_report(request: Request) -> Response:
     except Exception:
         return JSONResponse(status_code=400, content={"detail": "invalid JSON"})
 
-    # The browser sends an array of reports; each report is a dict.
+    # The browser sends one report object or an array of report objects.
     reports = body if isinstance(body, list) else [body]
     for report in reports:
         # Reports have a "csp-report" subkey under the legacy spec or
-        # are direct under the modern Reporting API spec.
-        violation = report.get("csp-report", report)
+        # a "body" subkey under the modern Reporting API spec.
+        violation = report.get("csp-report") or report.get("body") or report
         if not isinstance(violation, dict):
             return JSONResponse(status_code=400, content={"detail": "invalid CSP report"})
-        directive = violation.get("violated-directive") or violation.get("effective-directive")
-        if not violation.get("document-uri") or not directive:
+        document_uri = (
+            violation.get("document-uri")
+            or violation.get("documentURL")
+            or report.get("url")
+        )
+        directive = (
+            violation.get("violated-directive")
+            or violation.get("effective-directive")
+            or violation.get("effectiveDirective")
+        )
+        if not document_uri or not directive:
             return JSONResponse(status_code=400, content={"detail": "missing required CSP report fields"})
         logger.warning(
             "csp_violation",
-            blocked_uri=violation.get("blocked-uri"),
+            blocked_uri=violation.get("blocked-uri") or violation.get("blockedURL"),
             violated_directive=directive,
-            document_uri=violation.get("document-uri"),
-            source_file=violation.get("source-file"),
-            line_number=violation.get("line-number"),
+            document_uri=document_uri,
+            source_file=violation.get("source-file") or violation.get("sourceFile"),
+            line_number=violation.get("line-number") or violation.get("lineNumber"),
             referrer=violation.get("referrer"),
         )
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 ```
 
-Field handling: `document-uri` and `violated-directive`/`effective-directive` are required for a useful report and missing/non-object reports return 400. `blocked-uri`, `source-file`, `line-number`, and `referrer` are optional per browser/reporting variation and may log as null. The structured log MUST include all seven keys above even when optional values are absent.
+Field handling: legacy `csp-report` bodies and modern Reporting API `body` wrappers are both accepted. `document-uri`/`documentURL`/outer `url` and `violated-directive`/`effective-directive`/`effectiveDirective` are required for a useful report and missing/non-object reports return 400. `blocked-uri`/`blockedURL`, `source-file`/`sourceFile`, `line-number`/`lineNumber`, and `referrer` are optional per browser/reporting variation and may log as null. The structured log MUST include all seven keys above even when optional values are absent.
 
 Register router in `backend/app/main.py`:
 
@@ -202,7 +214,7 @@ CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these wit
 
 Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`. If PR-CL3-2 introduced a centralized file such as `backend/app/core/csrf.py`, add `/csp/report` to the same exempt route collection as `/webhooks/*`. If PR-CL3-2 uses a decorator-based exemption, apply the equivalent `@csrf_exempt` (or local helper name) directly to `csp_report`. The implementation must cite the actual file/pattern in the PR body; do not invent a second CSRF exemption mechanism.
 
-Rate limit: use existing rate-limit decorator if available in backend; otherwise a simple in-memory token bucket per source IP (50/min). If no rate-limit infrastructure exists, document as a follow-up TODO and proceed without it (CSP reports are low-frequency in practice).
+Rate limit: use the existing `app.core.rate_limit.limiter` decorator shown above with a concrete `50/minute` per-IP limit. If local naming differs after rebasing, follow the same backend `@limiter.limit(...)` pattern already used by mutation routes; do not leave this endpoint unbounded.
 
 ### 4.3 XSS-sink inventory doc
 
@@ -322,11 +334,12 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 
 1. **`backend/tests/test_csp_report_endpoint.py`**:
    - `test_csp_report_post_valid_logs_violation` — POST a valid CSP report shape; assert structlog log emitted with `csp_violation` key.
+   - `test_csp_report_accepts_modern_reporting_api_body` — POST a modern Report-To payload with outer `url` and inner `body.documentURL`/`body.effectiveDirective`/`body.blockedURL`; assert 204 and normalized structured log fields.
    - `test_csp_report_logs_all_fields` — assert the structured `csp_violation` log includes `blocked_uri`, `violated_directive`, `document_uri`, `source_file`, `line_number`, `referrer`, and the event name.
    - `test_csp_report_post_returns_204` — assert response status_code == 204.
    - `test_csp_report_post_invalid_json_returns_400` — POST malformed body; assert 400.
    - `test_csp_report_csrf_exempt` — POST without CSRF token; assert 204 (NOT 403).
-   - `test_csp_report_rate_limit_kicks_in_at_50_per_min` — POST 51 reports rapidly; assert 51st returns 429 (only if rate-limit infra available; else skip).
+   - `test_csp_report_rate_limit_kicks_in_at_50_per_min` — POST 51 reports rapidly; assert 51st returns 429.
 
 ### 7.2 Frontend e2e (Playwright)
 
