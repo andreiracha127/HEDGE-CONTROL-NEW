@@ -145,11 +145,11 @@ import structlog
 
 from app.core.rate_limit import limiter
 
-router = APIRouter(prefix="/csp", tags=["csp"])
+router = APIRouter(tags=["csp"])
 logger = structlog.get_logger(__name__)
 
 
-@router.post("/report", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/report")
 @limiter.limit("50/minute")
 async def csp_report(request: Request) -> Response:
     """Receive CSP violation reports from browser.
@@ -207,12 +207,14 @@ Register router in `backend/app/main.py`:
 
 ```python
 from app.api.routes import csp_report
-app.include_router(csp_report.router)
+app.include_router(csp_report.router, prefix="/csp", tags=["CSP"])
 ```
 
 CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/csp/report` to the exempt list as a required backend infrastructure change for the new unauthenticated reporting endpoint. Document that change in the PR body. Do not mount the FastAPI router at `/api/csp`: the app's `_StripApiPrefixMiddleware` strips `/api/*` before routing, and routers are registered without the `/api` prefix.
 
-Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/`. If PR-CL3-2 introduced a centralized file such as `backend/app/core/csrf.py`, add `/csp/report` to the same exempt route collection as `/webhooks/*`. If PR-CL3-2 uses a decorator-based exemption, apply the equivalent `@csrf_exempt` (or local helper name) directly to `csp_report`. The implementation must cite the actual file/pattern in the PR body; do not invent a second CSRF exemption mechanism.
+Dependency gate: before implementing this PR, verify PR-CL3-2 has merged and introduced request-level CSRF middleware. Run `rg -nP "csrf|CSRF|exempt|/webhooks" backend/app/` and confirm the actual middleware/exempt-list file exists (expected shape from the dispatch is `backend/app/core/csrf.py`). If no request-level CSRF middleware exists, stop and report the PR-CL3-2 dependency blocker.
+
+Exempt-list pattern: after rebasing on PR-CL3-2, locate the CSRF middleware with the command above. If PR-CL3-2 introduced a centralized file such as `backend/app/core/csrf.py`, add `/csp/report` to the same exempt route collection as `/webhooks/*`. If PR-CL3-2 uses a decorator-based exemption, apply the equivalent `@csrf_exempt` (or local helper name) directly to `csp_report`. The implementation must cite the actual file/pattern in the PR body; do not invent a second CSRF exemption mechanism.
 
 Rate limit: use the existing `app.core.rate_limit.limiter` decorator shown above with a concrete `50/minute` per-IP limit. If local naming differs after rebasing, follow the same backend `@limiter.limit(...)` pattern already used by mutation routes; do not leave this endpoint unbounded.
 
