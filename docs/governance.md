@@ -248,14 +248,30 @@ Authorization invariants:
     authorization layer beyond the route gate.
 - Counterparty reads by `trader` are also type-restricted (the prohibition
   is read-and-write, not write-only — broker/bank rows must be invisible
-  to commercial actors):
-  - GET /counterparties (list): when actor lacks risk_manager, the list
-    query MUST filter `type IN (customer, supplier)` server-side. The
-    response never contains broker/bank rows, never even leaks counts.
-  - GET /counterparties/{id}: when actor lacks risk_manager, load the
-    existing counterparty + assert `existing.type ∈ {customer, supplier}`;
-    raise HTTP 404 (NOT 403) if the stored type is broker/bank, to avoid
-    leaking existence of the row.
+  to commercial actors). The condition is **trader-specific** (NOT
+  "lacks risk_manager") because the GET route gate is
+  `require_any_role(trader, risk_manager, auditor)` — auditor enters the
+  handler and is read-only on every endpoint by matrix definition,
+  including broker/bank rows for oversight purposes:
+  - GET /counterparties (list): when the actor's effective role set is
+    `{trader}` only (no risk_manager, no auditor), the list query MUST
+    filter `type IN (customer, supplier)` server-side. The response
+    never contains broker/bank rows, never even leaks counts. Auditors
+    and risk_managers receive the unfiltered list.
+  - GET /counterparties/{id}: when the actor's effective role set is
+    `{trader}` only, load the existing counterparty + assert
+    `existing.type ∈ {customer, supplier}`; raise HTTP 404 (NOT 403)
+    if the stored type is broker/bank, to avoid leaking existence of
+    the row. Auditors and risk_managers receive the row regardless of
+    type.
+
+  Note on the symmetric mutation invariants above (POST/PATCH/DELETE):
+  the "when actor lacks risk_manager" condition there is correct because
+  those route gates are `require_any_role(trader, risk_manager)` —
+  auditor is rejected at the route gate before the handler runs, so
+  "lacks risk_manager" is equivalent to "is trader" inside the handler.
+  The GET route gate includes auditor, which is why the GET invariants
+  must use the explicit trader-only condition instead.
 - Audit log writes are immutable. No role — including risk_manager — can
   delete audit events. The auditor role is the read-only oversight layer.
 - Service identities follow the same actor_sub JWT pattern as human auth
