@@ -927,7 +927,8 @@ class DealEngineService:
         If *deal_ids* is empty every active deal is included.
         Returns a dict ready to be serialised as ``PnlBreakdownResponse``.
         """
-        if deal_ids:
+        explicit_deal_filter = bool(deal_ids)
+        if explicit_deal_filter:
             deals = (
                 session.query(Deal)
                 .filter(Deal.id.in_(deal_ids), Deal.is_deleted == False)  # noqa: E712
@@ -967,6 +968,8 @@ class DealEngineService:
                 session, raw_links
             )
             if not links:
+                if not explicit_deal_filter:
+                    continue
                 raise _no_live_linked_entities_exception(deal.id)
 
             commodities_needing_price: set[str] = set()

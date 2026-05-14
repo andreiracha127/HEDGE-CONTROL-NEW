@@ -250,6 +250,29 @@ def test_compute_pnl_breakdown_raises_409_when_all_links_archived(
     assert "no live linked entities" in str(exc.value.detail)
 
 
+def test_compute_pnl_breakdown_all_deals_skips_empty_live_link_deals(
+    session: Session,
+) -> None:
+    empty_deal = _create_deal(session, name="EmptyDraft")
+    archived_deal = _create_deal(session, name="ArchivedOnly")
+    archived_order = _create_order(
+        session, OrderType.sales, qty=Decimal("7"), archived=True
+    )
+    _link(session, archived_deal, DealLinkedType.sales_order, archived_order.id)
+    live_deal = _create_deal(session, name="LiveDeal")
+    live_order = _create_order(
+        session, OrderType.sales, qty=Decimal("10"), price=Decimal("2500")
+    )
+    _link(session, live_deal, DealLinkedType.sales_order, live_order.id)
+
+    result = DealEngineService.compute_pnl_breakdown(session, [], SNAPSHOT_DATE)
+
+    assert [row["deal_id"] for row in result["deals"]] == [live_deal.id]
+    assert result["totals"]["physical_revenue"] == Decimal("25000.000000")
+    assert empty_deal.id not in {row["deal_id"] for row in result["deals"]}
+    assert archived_deal.id not in {row["deal_id"] for row in result["deals"]}
+
+
 def test_compute_pnl_breakdown_excludes_archived_order(session: Session) -> None:
     deal = _create_deal(session)
     live_order = _create_order(
