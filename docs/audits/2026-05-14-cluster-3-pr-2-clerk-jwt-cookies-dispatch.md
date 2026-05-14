@@ -95,6 +95,21 @@ def get_auth_settings() -> AuthSettings | None:
         audience=os.environ.get("CLERK_AUDIENCE", ""),
         issuer=f"https://{fapi_host}",
     )
+
+
+def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:
+    header = jwt.get_unverified_header(token)
+    jwk = jwks_cache.get_key(settings.jwks_url, header["kid"])
+    decode_kwargs: dict[str, Any] = {
+        "key": jwk,
+        "algorithms": ["RS256"],
+        "issuer": settings.issuer,
+    }
+    if settings.audience:
+        decode_kwargs["audience"] = settings.audience
+    else:
+        decode_kwargs["options"] = {"verify_aud": False}
+    return jwt.decode(token, **decode_kwargs)
 ```
 
 Env vars introduced:
@@ -231,9 +246,17 @@ app.include_router(auth.router)
 
 ### 4.3 CSRF middleware
 
-Create new file `backend/app/core/csrf.py` with the following function:
+Create new file `backend/app/core/csrf.py` with the following complete module template:
 
 ```python
+import secrets
+
+from fastapi import Request, status
+from fastapi.responses import JSONResponse
+
+from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+
+
 async def csrf_middleware(request: Request, call_next):
     """Double-submit CSRF token check on mutating methods.
 
@@ -364,9 +387,9 @@ target process's environment (e.g. WESTMETALL_INGEST_TOKEN env var).
 """
 ```
 
-### 4.6 Service-account verification (consume side already in PR-CL3-1)
+### 4.6 Service-account verification for service-identity gates
 
-PR-CL3-1 added `require_service_identity(name)`. PR-CL3-2 adds the JWT verification flow that backs it: when `get_current_user` validates a token whose `iss` matches the backend's own service issuer (not Clerk), it MUST validate against backend's own public key (different JWKS), not Clerk's.
+PR-CL3-1 owns the route-gate helper shape for service identities. PR-CL3-2 does not add or modify route-gate helpers; it adds the JWT verification flow those gates consume. When `get_current_user` validates a token whose `iss` matches the backend's own service issuer (not Clerk), it MUST validate against the backend service public key, not Clerk's JWKS, and return a payload with `sub="service:<identity>"`.
 
 Implementation: inspect the `iss` claim from the unverified payload to route to the right validator before signature verification. This routing point is also where the cookie-only transport rule for Clerk human sessions is enforced.
 
