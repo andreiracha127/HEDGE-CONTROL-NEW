@@ -379,6 +379,22 @@ not an exhaustive guarantee):
   `require_role("trader")` → `require_role("risk_manager")`. Linkages
   affect commercial+global exposure reduction (governance §"Linkage")
   and are risk_manager territory.
+- Scenario what-if execution (`scenario.py:26` POST `/what-if/run`) formerly
+  `require_any_role("risk_manager", "auditor")` → `require_role("risk_manager")`.
+  Scenario execution is a mutation/write-like analytical operation; auditor
+  remains read-only and MUST NOT be admitted on POST.
+- MTM/P&L/Cashflow snapshot writes (`mtm.py:63` POST `/snapshots`,
+  `pl.py:47` POST `/snapshots`, `cashflow.py:53` POST
+  `/baseline/snapshots`) formerly `require_role("trader")` →
+  `require_role("risk_manager")`. These are valuation/snapshot writes,
+  which the matrix assigns to risk_manager territory.
+- Cashflow ledger settlement write (`cashflow_ledger.py:44` POST
+  `/contracts/{contract_id}/settle`) formerly `require_role("trader")` →
+  `require_role("risk_manager")` for the HTTP route. Automated
+  cashflow/finance pipeline writes use `service:cashflow_pipeline` only
+  where no human request is involved. This route writes hedge-contract
+  settlement and ledger entries, which are outside trader territory and
+  must not remain trader-gated.
 
 ────────────────────────────────────────
 EXECUTION DISCIPLINE
