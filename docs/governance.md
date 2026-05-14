@@ -189,8 +189,9 @@ No mutation without evidence
 AUTHORIZATION MATRIX
 ────────────────────────────────────────
 
-The RBAC contract for the platform. Per-route gates MUST conform to this
-matrix; deviation requires constitutional amendment, not silent override.
+The RBAC target contract for the platform. Per-route gates MUST conform to
+this matrix by Cluster 3 implementation closure; after that closure, any
+deviation requires constitutional amendment, not silent override.
 
 Human roles (3, no admin/viewer):
 
@@ -343,10 +344,10 @@ Authorization invariants:
   amendment requiring this section's update, not a silent override in code.
 
 Anomalies to be retired upon Cluster 3 implementation closure
-(documented examples below; PR-CL3-1 dispatch §3 MUST sweep every
-backend route against this matrix and add any newly-discovered
-anomaly to the implementation scope — this list is the known set,
-not an exhaustive guarantee):
+(current pre-CL3 route gates that violate the target matrix above;
+PR-CL3-1 dispatch §3 MUST sweep every backend route against this
+matrix and add any newly-discovered anomaly to the implementation
+scope — this list is the known set, not an exhaustive guarantee):
 
 - Westmetall ingest routes (`westmetall.py:135`, `:184`) formerly
   `trader`-gated → `service:westmetall_ingest`
