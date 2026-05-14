@@ -16,7 +16,7 @@ Three coupled deliverables:
 
 1. **`get_current_actor_roles()` helper** — extract role list from JWT payload, enforce auditor-exclusive role combinability (catch #4 of PR #79: `{trader, auditor}` mixed sets MUST raise HTTP 401 at JWT validation time, BEFORE route gates evaluate).
 2. **Per-type Counterparty authorization** — implement the per-HTTP-method gates documented in governance §"Authorization invariants" (POST payload-gate / PATCH stored-record-gate + payload-type-mutation-rejection / DELETE stored-record-gate / GET trader-only filter).
-3. **Anomaly retirement (7 categories)** — swap per-route role gates to match the matrix, formalize 3 internal-issued service identities (westmetall_ingest, rfq_outbound, cashflow_pipeline) with backend-signed JWT minting + verification, formalize webhook_inbound as audit-trail attribution context (request stays HMAC, NOT swapped to JWT).
+3. **Anomaly retirement (8 categories)** — swap per-route role gates to match the matrix, formalize 3 internal-issued service identities (westmetall_ingest, rfq_outbound, cashflow_pipeline) with backend-signed JWT minting + verification, formalize webhook_inbound as audit-trail attribution context (request stays HMAC, NOT swapped to JWT).
 
 The RBAC matrix is canonical (`docs/governance.md` "The RBAC matrix is canonical. A per-route deviation is a constitutional amendment requiring this section's update, not a silent override in code."). Code MUST conform to it.
 
@@ -47,7 +47,7 @@ Verified at HEAD `e3ad0dffb`.
 
 ### Anomaly inventory (per governance.md, with line citations)
 
-7 documented anomalies. Each MUST be retired in this wave per governance "Anomalies to be retired upon Cluster 3 implementation closure" preamble; PR-CL3-1 dispatch §3 ALSO requires a sweep of every backend route against the matrix and inclusion of any newly-discovered anomaly in the implementation scope:
+8 documented anomalies. Each MUST be retired in this wave per governance "Anomalies to be retired upon Cluster 3 implementation closure" preamble; PR-CL3-1 dispatch §3 ALSO requires a sweep of every backend route against the matrix and inclusion of any newly-discovered anomaly in the implementation scope:
 
 1. **Westmetall ingest** (`backend/app/api/routes/westmetall.py:135`, `:184`) — currently `require_role("trader")`. Swap to `require_service_identity("westmetall_ingest")`. Also covers the scheduler/task that triggers ingest (per governance update).
 2. **WhatsApp webhook** (`backend/app/api/routes/webhooks.py:309-335` GET, `:339+` POST) — ingress stays as today (Meta `hub.verify_token` for GET, HMAC `X-Hub-Signature-256` / `X-Twilio-Signature` for POST). Internal processing context attributed to `service:webhook_inbound` for audit trail (NOT a route auth swap).
@@ -56,8 +56,9 @@ Verified at HEAD `e3ad0dffb`.
 5. **HedgeContract lifecycle** (`backend/app/api/routes/contracts.py:41` POST hedge create, `:100` PATCH archive, `:121` PATCH update, `:144` PATCH status, `:164` DELETE) — swap from `require_role("trader")` to `require_role("risk_manager")`.
 6. **Deal lifecycle** (`backend/app/api/routes/deals.py:104` POST deal create, `:186` POST add link, `:208` DELETE link, `:235` POST snapshot) — swap from `require_any_role("trader", "risk_manager")` to `require_role("risk_manager")` (drop trader from gate).
 7. **Hedge-Order Linkage create** (`backend/app/api/routes/linkages.py:56` POST) — swap from `require_role("trader")` to `require_role("risk_manager")`.
+8. **RFQ WebSocket topic subscription** (`backend/app/api/routes/ws.py:7`, `:112`, `:217`) — currently any authenticated JWT can subscribe to `topic == "rfq"` because `ConnectionManager.subscribe(...)` stores the topic with no role gate. Add an explicit `risk_manager` check for `topic == "rfq"` before subscription is recorded. Non-risk-manager actors receive `subscription_error` / forbidden and the subscription MUST NOT be added.
 
-The dispatch executor MUST also sweep `rg -nP "@router\\.(post|patch|put|delete)" backend/app/api/routes/` and check every mutation route against the matrix; any additional anomaly found beyond the 7 above MUST be added to the implementation scope of this PR with an inline note in the PR body and reply to whichever Codex catch surfaces it.
+Evidence sweep already performed for the RFQ WebSocket surface: `rg -nP 'topic.*rfq|websocket.*rfq|def subscribe' backend/app/api/routes/ws.py` finds the subscription path above, so it is part of this dispatch rather than a conditional follow-up. The dispatch executor MUST also sweep `rg -nP "@router\\.(post|patch|put|delete)" backend/app/api/routes/` and check every mutation route against the matrix; any additional anomaly found beyond the 8 above MUST be added to the implementation scope of this PR with an inline note in the PR body and reply to whichever Codex catch surfaces it.
 
 ### Service identity gaps
 
@@ -294,7 +295,14 @@ The HMAC validation logic in the POST handler stays unchanged.
 
 ### 4.6 RFQ WebSocket topic
 
-Per governance update (PR #79 catch absorption), the RFQ WebSocket topic `"rfq"` is part of RFQ surface. If a WebSocket route exists in `backend/app/api/routes/` that subscribes to topic `"rfq"`, swap its role gate from any `trader` reference to `risk_manager`. Sweep `rg -nP 'topic.*rfq|websocket.*rfq' backend/app/api/routes/`. If found, add to acceptance §6 + verification §8.
+Per governance update (PR #79 catch absorption), the RFQ WebSocket topic `"rfq"` is part of RFQ surface. The route exists in `backend/app/api/routes/ws.py`; implement the gate directly, do not leave it as sweep-only discovery.
+
+Required implementation:
+
+- Add a pure helper in `backend/app/core/auth.py` that validates/extracts human roles from a JWT payload dict without `Depends`, and have `get_current_actor_roles(...)` call that helper. The WebSocket path can then reuse exactly the same filtering + auditor-exclusive logic as HTTP routes.
+- In `backend/app/api/routes/ws.py`, before `await manager.subscribe(ws, topic, topic_id)`, if `topic == "rfq"` then read `manager.get_user(ws)`, extract roles with the shared helper, and require `"risk_manager" in roles`.
+- If the RFQ-topic role check fails, return a `subscription_error` with reason `"forbidden"` (or equivalent stable code), and do not add `(topic, topic_id)` to `state.subscriptions`.
+- Non-RFQ topics remain unchanged unless the governance matrix explicitly classifies them.
 
 ## 5. Constitutional Rules
 
@@ -325,7 +333,7 @@ A merged PR closes D-3.1 (RBAC enforcement portion) iff every item below is true
 - [ ] `backend/app/api/routes/counterparties.py` GET list (`:46`) — server-side type filter for trader-only-effective role per §4.2.
 - [ ] `backend/app/api/routes/counterparties.py` GET by-id (`:75`) — stored-type assert + 404 (NOT 403) for trader-only on broker/bank per §4.2.
 
-### 6.3 Anomaly retirement (7 categories)
+### 6.3 Anomaly retirement (8 categories)
 
 - [ ] `westmetall.py:135`, `:184` swapped to `require_service_identity("westmetall_ingest")`.
 - [ ] `webhooks.py:309-335` GET + `:339+` POST: route gate UNCHANGED; downstream `actor_sub="service:webhook_inbound"` plumbed to audit-event metadata.
@@ -333,11 +341,12 @@ A merged PR closes D-3.1 (RBAC enforcement portion) iff every item below is true
 - [ ] `contracts.py` 5 sites swapped to `require_role("risk_manager")`. Sweep `rg -nP 'require_role\\("trader"\\)' backend/app/api/routes/contracts.py` → zero matches.
 - [ ] `deals.py` 4 mutation sites swapped to `require_role("risk_manager")` (drop trader). Sweep `rg -nP 'require_any_role\\("trader", "risk_manager"\\)' backend/app/api/routes/deals.py` → matches only on read sites (not on mutation).
 - [ ] `linkages.py:56` swapped to `require_role("risk_manager")`.
-- [ ] If RFQ WebSocket topic `"rfq"` route exists, gate swapped to `risk_manager`.
+- [ ] RFQ WebSocket topic `"rfq"` subscription in `ws.py` requires `risk_manager` before subscription state is written.
 
 ### 6.4 Sweep for newly-discovered anomalies
 
 - [ ] `rg -nP "@router\\.(post|patch|put|delete)" backend/app/api/routes/` cross-checked against the matrix. Any route currently `trader`-gated but classified as risk_manager-only by the matrix is added to the implementation scope. Findings documented in PR body.
+- [ ] `rg -nP 'topic.*rfq|websocket.*rfq|def subscribe' backend/app/api/routes/ws.py` confirms the RFQ WebSocket path covered by §3.8 is implemented, not left as conditional discovery.
 - [ ] `rg -nP 'require_role|require_any_role' backend/app/api/routes/` — every mutation gate matches the matrix. Read gates may include all 3 human roles where appropriate.
 
 ### 6.5 Cross-cutting
@@ -390,7 +399,12 @@ For each retired anomaly site, ONE test per (role, expected status):
 
 27. **`test_webhook_post_attributes_to_service_webhook_inbound`** — POST `/webhooks/whatsapp` with valid HMAC + Meta-shaped payload. Assert audit event row written for any downstream mutation has `metadata["actor_sub"] == "service:webhook_inbound"`.
 
-### 7.4 Existing tests must continue to pass
+### 7.4 RFQ WebSocket topic gate
+
+28. **`test_ws_rfq_subscription_requires_risk_manager`** — authenticate with JWT roles `["trader"]`, send `{"action":"subscribe","topic":"rfq","id":"<uuid>"}`, assert `subscription_error` / forbidden and no subscription is recorded.
+29. **`test_ws_rfq_subscription_accepts_risk_manager`** — authenticate with JWT roles `["risk_manager"]`, send the same RFQ subscription, assert `subscription_ack`.
+
+### 7.5 Existing tests must continue to pass
 
 - `backend/tests/test_audit_economic_mutations.py` and any other test that mocks JWT payloads MUST be updated to provide `roles=["risk_manager"]` (or appropriate) on mutation route fixtures since trader is no longer accepted on most mutation routes.
 - `backend/tests/test_*.py` sweep: any existing test that sent `roles=["trader"]` to a now-risk_manager-only route MUST be updated.
@@ -418,6 +432,10 @@ rg -nP 'service:webhook_inbound' backend/app/api/routes/webhooks.py backend/app/
 
 # Counterparty per-type assertions present in routes
 rg -nP 'CounterpartyType\.customer|CounterpartyType\.supplier' backend/app/api/routes/counterparties.py
+
+# RFQ WebSocket topic gate
+rg -nP 'topic.*rfq|websocket.*rfq|def subscribe' backend/app/api/routes/ws.py
+rg -nP 'risk_manager|subscription_error' backend/app/api/routes/ws.py
 
 # Cross-wave isolation
 git diff main -- frontend-svelte/
@@ -471,7 +489,7 @@ The PR body must include:
 4. Apply §4.3 (anomaly retirement) — swap each gate per the table. Sweep §8 between steps to confirm zero leftovers.
 5. Apply §4.4 (service identity helpers).
 6. Apply §4.5 (webhook attribution) — verify `mark_audit_success` calls receive the right actor_sub.
-7. Apply §4.6 (RFQ WebSocket if found by sweep).
+7. Apply §4.6 (RFQ WebSocket topic gate).
 8. Update existing tests that broke (§7.4 sweep).
 9. Run §8 verification locally; fix every hook v2 P1/P2 in place.
 10. Push branch and open PR per §10.
@@ -488,5 +506,5 @@ The PR body must include:
   - `webhook_inbound` actor_sub plumbing missing in any downstream sink (RFQ correlation, message persistence). Sweep both `webhooks.py` and `whatsapp_*` services.
   - `audit_events` table query MUST find rows with `metadata["actor_sub"] == "service:webhook_inbound"` after webhook POST — if Codex inspects test #27 and the fixture doesn't actually trigger an audit_event, the test is a regression-guard for nothing.
 - **Padrão estabelecido por PR #79 (16 catches absorbed):** governance docs receive intense Codex scrutiny. The IMPLEMENTATION PR will be checked against the governance text rigorously. Every layer of the matrix WILL be cross-referenced. Be precise.
-- **8-section sweep checklist from `feedback_dispatch_self_consistency`:** §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow MUST consistently enumerate the same 7 anomaly categories + Counterparty per-type subsections + helpers. Drift between sections is the canonical authoring failure mode.
-- **The largest authoring risk** is missing newly-discovered anomalies. The dispatch §3 inventory is the documented set; the §6.4 sweep is the institutional protection. If the executor skips the sweep, Codex WILL find anomalies the dispatch didn't enumerate (governance.md preamble explicitly mandates the sweep — "list is documented set, not exhaustive guarantee").
+- **8-section sweep checklist from `feedback_dispatch_self_consistency`:** §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow MUST consistently enumerate the same 8 anomaly categories + Counterparty per-type subsections + helpers. Drift between sections is the canonical authoring failure mode.
+- **The largest authoring risk** is missing newly-discovered anomalies. The dispatch §3 inventory is the documented set, including the RFQ WebSocket topic gate discovered by sweep; the §6.4 sweep is the institutional protection for any additional route drift. If the executor skips the sweep, Codex WILL find anomalies the dispatch didn't enumerate (governance.md preamble explicitly mandates the sweep — "list is documented set, not exhaustive guarantee").

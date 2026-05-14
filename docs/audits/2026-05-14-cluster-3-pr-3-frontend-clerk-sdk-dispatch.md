@@ -185,34 +185,44 @@ The `isTraderOnly()` helper supports frontend conditional UI per matrix (e.g. hi
 
 ### 4.4 API client CSRF echo
 
-In `frontend-svelte/src/lib/api/` (generated client wrapper):
+In `frontend-svelte/src/lib/api/` (generated client wrapper), use the current `openapi-fetch` middleware surface in `frontend-svelte/src/lib/api/client.ts` and the shared base URL from `frontend-svelte/src/lib/api/fetch.ts`:
 
 - Read `csrf_token` cookie via `document.cookie` parsing OR keep store value from `/auth/session` response.
 - On every fetch with method in `{"POST", "PATCH", "PUT", "DELETE"}`, add header `X-CSRF-Token: <token>`.
 - All fetches MUST set `credentials: "include"` so the httpOnly cookie is sent.
+- `client.use({ onRequest })` MUST return a new `Request` with the rewritten headers and `credentials: "include"`; mutating headers alone is not sufficient if credentials remain at the browser default.
+- If the installed `openapi-fetch` version rejects returning `Request` from `onRequest`, implement the same logic with the `fetch` option passed to `createClient({ baseUrl: API_BASE, fetch: apiFetch })`. Do not wrap only selected call sites; §8 requires every generated-client request to traverse the same CSRF/credentials path.
 
 Pattern:
 
 ```typescript
+import createClient from "openapi-fetch";
+import type { paths } from "./schema";
 import { API_BASE } from "$lib/api/fetch";
+import { authStore } from "$lib/stores/auth.svelte";
 
-function authedFetch(url: string, options: RequestInit = {}) {
-  const headers = new Headers(options.headers || {});
-  headers.set("Content-Type", "application/json");
-  if (["POST", "PATCH", "PUT", "DELETE"].includes((options.method || "GET").toUpperCase())) {
+function csrfHeaders(method: string, headers: HeadersInit | undefined): Headers {
+  const result = new Headers(headers);
+  if (["POST", "PATCH", "PUT", "DELETE"].includes(method.toUpperCase())) {
     const csrf = authStore.state.csrf_token;
-    if (csrf) headers.set("X-CSRF-Token", csrf);
+    if (csrf) result.set("X-CSRF-Token", csrf);
   }
-  const absoluteUrl = url.startsWith("http") ? url : `${API_BASE}${url}`;
-  return fetch(absoluteUrl, {
-    ...options,
-    headers,
-    credentials: "include",
-  });
+  return result;
 }
+
+export const client = createClient<paths>({ baseUrl: API_BASE });
+
+client.use({
+  async onRequest({ request }) {
+    return new Request(request, {
+      headers: csrfHeaders(request.method, request.headers),
+      credentials: "include",
+    });
+  },
+});
 ```
 
-The generated OpenAPI client may have a `fetch` injection point; use that. If not, wrap the generated client.
+For raw auth lifecycle calls outside the generated client (`/auth/session`, `/auth/logout`, `/auth/refresh`), use `${API_BASE}/auth/...` directly or route through the same shared `apiFetch` helper.
 
 ### 4.5 Logout
 
@@ -369,6 +379,9 @@ rg -nP "manualTokenLoginEnabled" .env.example
 # CSRF echo
 rg -nP "X-CSRF-Token" frontend-svelte/src/lib/api/
 rg -nP "credentials.*include" frontend-svelte/src/lib/api/
+rg -nP "new Request\\(|fetch:" frontend-svelte/src/lib/api/client.ts frontend-svelte/src/lib/api/fetch.ts
+rg -nP 'fetch\\("/auth/(session|logout|refresh)' frontend-svelte/src/
+# final command MUST return zero; auth lifecycle calls must use API_BASE/shared wrapper
 
 # No token storage leaks
 rg -nP "sessionStorage\\.setItem.*token|localStorage\\.setItem.*token" frontend-svelte/src/
