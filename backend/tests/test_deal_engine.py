@@ -312,9 +312,14 @@ class TestPNLSnapshot:
         assert body["physical_cost"] == "240000.000000"
         assert body["total_pnl"] == "20000.000000"
 
-    def test_pnl_snapshot_idempotent(self, client):
+    def test_pnl_snapshot_idempotent(self, client, session):
         r = client.post(ENDPOINT, json={"name": "D1", "commodity": "ALUMINUM"})
         deal_id = r.json()["id"]
+        so_id = _create_order(session, OrderType.sales, 100.0, 2600.0)
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
         r2 = client.post(
             f"{ENDPOINT}/{deal_id}/pnl-snapshot", params={"snapshot_date": "2025-07-01"}
         )
@@ -325,9 +330,14 @@ class TestPNLSnapshot:
         snap_id_2 = r3.json()["id"]
         assert snap_id_1 == snap_id_2  # same snapshot returned
 
-    def test_pnl_history(self, client):
+    def test_pnl_history(self, client, session):
         r = client.post(ENDPOINT, json={"name": "D1", "commodity": "ALUMINUM"})
         deal_id = r.json()["id"]
+        so_id = _create_order(session, OrderType.sales, 100.0, 2600.0)
+        client.post(
+            f"{ENDPOINT}/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(so_id)},
+        )
         client.post(
             f"{ENDPOINT}/{deal_id}/pnl-snapshot", params={"snapshot_date": "2025-07-01"}
         )
