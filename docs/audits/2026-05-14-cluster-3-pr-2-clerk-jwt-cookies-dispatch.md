@@ -78,7 +78,7 @@ Backend MUST validate `iss` matches the FAPI host and `aud` matches the configur
 
 ### 4.1 Clerk JWT validation swap
 
-Refactor `backend/app/core/auth.py`. Keep the existing `AuthSettings` dataclass shape (`jwks_url`, `audience`, `issuer`) and derive the Clerk FAPI host locally from `CLERK_FAPI_HOST` when building those values. Do not add a fourth dataclass field in this wave.
+Refactor `backend/app/core/auth.py`. Keep the existing `AuthSettings` dataclass shape (`jwks_url`, `audience`, `issuer`) and derive the Clerk FAPI host locally from `CLERK_FAPI_HOST` when building those values. Do not add a fourth `AuthSettings` field in this wave. Do not change the `Settings` dataclass for Clerk in this dispatch; `CLERK_FAPI_HOST`/`CLERK_AUDIENCE` are read via `os.getenv(...)`, while legacy `get_settings().jwt_*` fields remain as a fallback when Clerk env vars are absent.
 
 ```python
 @dataclass
@@ -179,7 +179,7 @@ from app.core.auth import (
     _validate_clerk_token,
 )
 
-router = APIRouter(tags=["auth"])
+router = APIRouter(tags=["auth"])  # required before the @router.* decorators below
 
 
 def _set_auth_cookies(response: Response, session_token: str, csrf: str) -> None:
@@ -316,9 +316,9 @@ Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_
 
 - `allow_credentials=True`
 - allowed headers include `X-CSRF-Token`
-- allowed origins include the deployed frontend origin(s); do not use `allow_origins=["*"]` with credentials.
+- allowed origins are the explicit deployed frontend origin(s); do not use `allow_origins=["*"]` with credentials.
 
-This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Token` cross-origin from the static frontend.
+This backend CORS change is in PR-CL3-2 scope because the backend auth endpoints and CSRF middleware land here; it is only valid with explicit frontend origins and preserved existing headers. PR-CL3-3 consumes this contract from the static frontend by sending `credentials: "include"` and `X-CSRF-Token`.
 
 ### 4.4 Auditor-exclusive validation duplicated at JWT-validation time
 
@@ -451,7 +451,7 @@ def get_current_user(
         if source != "bearer":
             raise HTTPException(status_code=401, detail="Service token must use Bearer transport")
         return _validate_service_token(token)
-    if source == "bearer":
+    if issuer == settings.issuer and source == "bearer":
         raise HTTPException(status_code=401, detail="Session cookie missing")
     payload = _validate_clerk_token(token, settings)
 
