@@ -4,7 +4,7 @@
 **Wave:** PR-CL3-2 (2 of 4)
 **Authoring date:** 2026-05-14
 **Repository:** `D:/Projetos/Hedge-Control-New`
-**Base branch:** `main` (HEAD `e3ad0dffb` post-PR #79; assume PR-CL3-1 has merged before this wave starts — see §11)
+**Base branch:** `main` (HEAD `e3ad0dffb` post-PR #79; this dispatch is self-contained for JWT/cookie/service-token primitives and does not require route-gate changes from PR-CL3-1)
 **Required branch:** `audit-followup/cluster-3-clerk-jwt-cookies`
 **Source-of-truth:** `docs/governance.md` AUTHORIZATION MATRIX (post-PR #79); Cluster 3 platform decisions (Clerk + httpOnly + dev FAPI provisional)
 
@@ -16,7 +16,7 @@ Three coupled deliverables:
 
 1. **Clerk JWKS validator** — point JWKS fetch at Clerk's FAPI host (`clerk.<random>.lcl.dev` provisional per Andrei's authorization, with `# TODO(post-cluster-3)` marker for custom domain swap). Validate Clerk-issued session JWTs server-side. Extract roles from Clerk org metadata claim.
 2. **httpOnly session cookie management** — replace Bearer token from header with httpOnly + Secure + SameSite=Lax cookie. Cookie set after Clerk session-token exchange at `/auth/session` endpoint, refreshed on each authenticated request, cleared at `/auth/logout`. CSRF token rotation alongside.
-3. **Auditor-exclusive validation duplicated at JWT-validation time** — per governance.md "Role combinability" subsection ("JWT validator MUST reject mixed sets at validation time, BEFORE any route gate is evaluated"). PR-CL3-1 keeps the defensive check inside `get_current_actor_roles`; this wave adds the same check earlier inside `get_current_user` for strict compliance with the constitutional wording.
+3. **Auditor-exclusive validation at JWT-validation time** — per governance.md "Role combinability" subsection ("JWT validator MUST reject mixed sets at validation time, BEFORE any route gate is evaluated"). This wave adds the check inside `get_current_user` for strict compliance with the constitutional wording.
 4. **Service-account JWT issuance** — backend mints short-lived (~5min) JWT for the 3 internal-issued identities (westmetall_ingest, rfq_outbound, cashflow_pipeline). Issuer = backend, audience = backend, sub = `service:<name>`. Same signing key as the JWKS that backend serves to itself.
 
 ## 2. Non-Negotiable Constraints
@@ -32,13 +32,13 @@ Three coupled deliverables:
 
 ## 3. Findings and Evidence
 
-Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 is self-contained for JWT-validation concerns: if PR-CL3-1 has already introduced `_VALID_HUMAN_ROLES`, reuse it; otherwise define it in this PR before `get_current_user`. If PR-CL3-1 later introduces the same constant, deduplicate during rebase rather than keeping two definitions.
+Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 is self-contained for JWT-validation concerns: define `_VALID_HUMAN_ROLES` in `backend/app/core/auth.py` before `get_current_user`. If a later rebase already contains the same constant, reuse it rather than keeping two definitions.
 
 ### Existing JWT validator (to be swapped)
 
 - `backend/app/core/auth.py:27-31` — `AuthSettings` dataclass: `jwks_url`, `audience`, `issuer`. Generic IdP-agnostic. Will be parameterized with Clerk values.
 - `backend/app/core/auth.py:115-145` — `JWKSCache` with TTL refresh. Reusable as-is for Clerk JWKS endpoint.
-- `backend/app/core/auth.py:147-161` — `_extract_token` reads `Authorization: Bearer <token>`. Will be REPLACED with cookie reader (PR-CL3-2 owns the swap).
+- `backend/app/core/auth.py:147-161` — current `_extract_token(request) -> str` reads `Authorization: Bearer <token>`. PR-CL3-2 REPLACES that current signature with a source-aware cookie/service-token extractor.
 - `backend/app/core/auth.py:185-224` — `get_current_user` JWKS validation. Issuer + audience must point at Clerk values; everything else stays.
 
 ### Clerk session JWT shape (per Clerk docs)
@@ -66,7 +66,7 @@ Backend MUST validate `iss` matches the FAPI host and `aud` matches the configur
 
 ### 4.1 Clerk JWT validation swap
 
-Refactor `backend/app/core/auth.py`. The current `AuthSettings` dataclass has only `jwks_url`, `audience`, and `issuer`; this wave intentionally expands that schema with a new `fapi_host` field so cookie-domain and CSP/Clerk-origin coordination has one validated source of truth:
+Refactor `backend/app/core/auth.py`. Current pre-state: `AuthSettings` has only `jwks_url`, `audience`, and `issuer`. Desired post-state: add a new `fapi_host` field so cookie-domain and CSP/Clerk-origin coordination has one validated source of truth:
 
 ```python
 @dataclass
@@ -98,7 +98,7 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Replace `_extract_token` with a source-aware extractor that supports human cookies and service Bearer tokens without losing the transport source:
+Replace the current `_extract_token(request) -> str` implementation at `backend/app/core/auth.py:147-161` with this source-aware extractor. The signature change to `tuple[str, str]` is intentional and all call sites in this file must be updated in the same PR:
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
@@ -237,9 +237,9 @@ This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Tok
 
 ### 4.4 Auditor-exclusive validation duplicated at JWT-validation time
 
-Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. PR-CL3-1 keeps a redundant defensive check inside `get_current_actor_roles`. For strict constitutional compliance, add the same check inside `get_current_user`; do not remove the PR-CL3-1 helper check.
+Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. For strict constitutional compliance, add the check inside `get_current_user`.
 
-Do not assume PR-CL3-1 has already landed. Always define `_VALID_HUMAN_ROLES` in this PR and add the auditor-exclusive check to `get_current_user` unconditionally. If `get_current_actor_roles` from PR-CL3-1 is present, it keeps its redundant check. If it is absent, this JWT-time check is the sole enforcement until PR-CL3-1 lands; do not add route-gate helpers in this wave.
+Always define `_VALID_HUMAN_ROLES` in this PR and add the auditor-exclusive check to `get_current_user` unconditionally. Do not add route-gate helpers in this wave.
 
 ```python
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
@@ -267,7 +267,7 @@ def get_current_user(...) -> dict[str, Any]:
     return payload
 ```
 
-If `get_current_actor_roles` from PR-CL3-1 is already present, it keeps its own redundant check — defense in depth, no harm if the JWT-time check fires first. If it is not present, PR-CL3-2 does not create it.
+This JWT-time check is the sole required enforcement in PR-CL3-2; route-gate helper changes remain outside this wave.
 
 Malformed human role claims fail closed before any role set construction: missing, scalar, object, null, or list-with-non-string `roles` values MUST raise `HTTPException(401, detail="Invalid roles claim")`. Service tokens are validated on the service branch and do not use Clerk human role claims.
 
@@ -432,7 +432,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 6.4 Auditor-exclusive at JWT-validation time
 
 - [ ] `get_current_user` raises HTTP 401 with `detail="Invalid role combination: auditor must be exclusive"` when JWT payload has both auditor and another role.
-- [ ] `_VALID_HUMAN_ROLES` exists for JWT-time validation. If `get_current_actor_roles` from PR-CL3-1 is present, it retains its own check (defense in depth).
+- [ ] `_VALID_HUMAN_ROLES` exists for JWT-time validation in `backend/app/core/auth.py`.
 
 ### 6.5 Service-account minting
 
@@ -579,7 +579,7 @@ PR body must include:
 
 ## 11. Workflow
 
-1. **Pre-step:** check whether PR-CL3-1 has merged (`git log --oneline main | head -5`). In all cases, ensure `_VALID_HUMAN_ROLES` exists in `backend/app/core/auth.py` and add the JWT-time auditor-exclusive check to `get_current_user`. If PR-CL3-1 is present, its `get_current_actor_roles` check remains redundant defense-in-depth; if absent, this PR's JWT-time check is the sole enforcement until PR-CL3-1 lands.
+1. **Pre-step:** confirm the base branch and ensure `_VALID_HUMAN_ROLES` exists in `backend/app/core/auth.py`; add the JWT-time auditor-exclusive check to `get_current_user` in this PR regardless of route-gate state.
 2. `git checkout -b audit-followup/cluster-3-clerk-jwt-cookies`.
 3. Provision dev Clerk project: get `CLERK_FAPI_HOST` value (e.g. `clerk.abcdef12.lcl.dev`), set in `.env.example` and local dev.
 4. Apply §4.1 (Clerk JWKS swap). Run `pytest -q backend/tests/test_clerk_jwt_validation.py` (write tests first).
@@ -601,7 +601,7 @@ PR body must include:
   - **CSRF middleware exempt list completeness** — `/auth/session`, `/webhooks/`, `/healthz` MUST all be exempt. Missing `/healthz` → frontend can't probe liveness without CSRF.
   - **Bearer→cookie test fixture migration** — every test that hardcoded `headers={"Authorization": "Bearer ..."}` MUST be migrated. Codex will inspect test files and flag any survivor.
   - **Service-token issuer routing** — if `get_current_user` doesn't inspect `iss` to route to right validator, both Clerk and service tokens may collide / mis-validate. Codex will trace the validator routing.
-  - **Auditor-exclusive double-check** — PR-CL3-1 puts the check in `get_current_actor_roles`; PR-CL3-2 adds the same check to `get_current_user`. Codex may flag the redundancy as unnecessary; respond that it's defense-in-depth + governance compliance (matrix says "BEFORE any route gate").
+  - **Auditor-exclusive JWT-time check** — PR-CL3-2 adds the check to `get_current_user` because governance says the validator must reject mixed auditor roles "BEFORE any route gate".
   - **`secrets.compare_digest`** — CSRF cookie/header comparison MUST use constant-time comparison. Codex will flag a `==` fallback as a timing oracle.
   - **`# TODO(post-cluster-3)` markers** — every site that hardcodes dev FAPI host MUST have the marker; missing marker → Codex catches as "tech debt without trail".
   - **Production fail-closed env coverage** — every new env var MUST be in `validate_auth_config`'s required list. Codex will trace each.
