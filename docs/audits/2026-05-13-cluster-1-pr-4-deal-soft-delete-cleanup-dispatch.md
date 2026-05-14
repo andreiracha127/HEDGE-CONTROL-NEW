@@ -78,7 +78,7 @@ Only execute this section if the §3 pre-step produced zero rows.
 
 ### 4.2 Schema (DealRead) — required, not optional
 
-`backend/app/schemas/deal.py:83-96` defines `DealRead` with `is_deleted: bool` as a required field at line 97. After Path A drops the model column, every Deal response (`GET /deals`, `POST /deals`, `GET /deals/by-linked-entity`, `GET /deals/{id}`, plus any consumer of `DealDetailRead` which inherits from `DealRead`) would fail Pydantic validation in `from_attributes` mode because the ORM object no longer carries the field. Path A must therefore:
+`backend/app/schemas/deal.py:84-96` defines `DealRead` with `is_deleted: bool` as a required field at line 96. After Path A drops the model column, every Deal response (`GET /deals`, `POST /deals`, `GET /deals/by-linked-entity`, `GET /deals/{id}`, plus any consumer of `DealDetailRead` which inherits from `DealRead`) would fail Pydantic validation in `from_attributes` mode because the ORM object no longer carries the field. Path A must therefore:
 
 - Remove the `is_deleted: bool` line from `DealRead` in `backend/app/schemas/deal.py`.
 - Verify `DealDetailRead` (and any other subclass of `DealRead`) inherits the cleanup automatically; remove any local override of `is_deleted` if present.
@@ -126,7 +126,7 @@ Only execute this section if the §3 pre-step produced at least one row, or if A
 
 ### 5.0 Schema (DealRead)
 
-Path B preserves `Deal.is_deleted` and `Deal.deleted_at` on the model. The current `DealRead` schema (`backend/app/schemas/deal.py:83-96`) already exposes `is_deleted: bool` (line 97) but **does not** expose `deleted_at`. The archive route added in §5.1 sets `Deal.deleted_at = now_utc()`; without a corresponding read field, the operator-visible response cannot show when the archive happened. Path B must:
+Path B preserves `Deal.is_deleted` and `Deal.deleted_at` on the model. The current `DealRead` schema (`backend/app/schemas/deal.py:84-96`) already exposes `is_deleted: bool` (line 96) but **does not** expose `deleted_at`. The archive route added in §5.1 sets `Deal.deleted_at = now_utc()`; without a corresponding read field, the operator-visible response cannot show when the archive happened. Path B must:
 
 - Add `deleted_at: Optional[datetime] = None` to `DealRead` immediately after `is_deleted: bool`. Use `Optional[datetime]` with default `None` so existing pre-archive rows continue to validate (their `deleted_at` is `NULL`).
 - Inherited subclasses (`DealDetailRead`) pick up the new field automatically.
@@ -298,7 +298,7 @@ No changes to `docs/governance.md` are part of this wave.
 
 - [ ] §3 pre-step recorded both counts as zero. Counts cited in the PR body.
 - [ ] `backend/app/models/deal.py` — `is_deleted` and `deleted_at` columns removed.
-- [ ] `backend/app/schemas/deal.py` — `DealRead.is_deleted: bool` field removed (line 97). `DealDetailRead` and any other subclass cleaned automatically via inheritance; verify no local override remains.
+- [ ] `backend/app/schemas/deal.py` — `DealRead.is_deleted: bool` field removed (line 96). `DealDetailRead` and any other subclass cleaned automatically via inheritance; verify no local override remains.
 - [ ] `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` regenerated; diff is bounded to dropping `is_deleted` from Deal-related response components.
 - [ ] One new migration `044_drop_deal_lifecycle_fields` (or equivalent) with `down_revision = "043_a5_audit_payload_input"`. `python -m alembic heads` prints the new single head.
 - [ ] `backend/app/services/deal_engine.py` — all `Deal.is_deleted` filter clauses removed (sweep returns zero matches in this file).
