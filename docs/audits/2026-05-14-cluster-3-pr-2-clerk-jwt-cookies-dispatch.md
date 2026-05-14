@@ -114,7 +114,7 @@ def _extract_token(request: Request) -> str:
     return token
 ```
 
-The `_extract_token` Bearer-header path is removed (cookie is the only ingress).
+The `_extract_token` Bearer-header path is removed for human Clerk sessions. Preserve a separate Bearer transport for backend-minted service JWTs because cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) cannot receive browser httpOnly cookies.
 
 Add `backend/app/api/routes/auth.py`:
 
@@ -161,15 +161,16 @@ async def create_session(
 @router.post("/auth/refresh")
 async def refresh_session(
     request: Request,
+    session_token: str = Body(..., embed=True),  # fresh Clerk session token from frontend SDK
     response: Response,
-    actor_sub: str = Depends(get_current_actor_sub),  # validates current cookie
 ) -> dict[str, str]:
-    """Refresh httpOnly cookie + CSRF token. Called by frontend on TTL approach."""
+    """Refresh httpOnly cookie + CSRF token using a fresh Clerk JWT."""
+    payload = _validate_clerk_token(session_token)
     # Mint fresh CSRF
     csrf = secrets.token_urlsafe(32)
     # Re-set cookies with fresh max_age
     # ... (same Set-Cookie logic as create_session)
-    return {"csrf_token": csrf}
+    return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 
 @router.post("/auth/logout")
@@ -177,6 +178,13 @@ async def logout(response: Response) -> dict[str, str]:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     return {"status": "logged_out"}
+
+
+@router.get("/auth/me")
+async def read_current_identity(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    return {"actor_sub": user["sub"], "roles": user.get("roles", [])}
 ```
 
 ### 4.3 CSRF middleware
@@ -214,6 +222,14 @@ Register in `backend/app/main.py`:
 ```python
 app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
 ```
+
+Update `CORSMiddleware` for the split frontend/backend deployment used by `VITE_API_BASE_URL`:
+
+- `allow_credentials=True`
+- allowed headers include `X-CSRF-Token`
+- allowed origins include the deployed frontend origin(s); do not use `allow_origins=["*"]` with credentials.
+
+This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Token` cross-origin from the static frontend.
 
 ### 4.4 Auditor-exclusive validation moved earlier
 
@@ -362,10 +378,11 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 6.2 httpOnly cookie
 
 - [ ] `backend/app/api/routes/auth.py` — `/auth/session`, `/auth/refresh`, `/auth/logout` exist with the signatures in §4.2.
+- [ ] `backend/app/api/routes/auth.py` — `/auth/me` exists and returns `{actor_sub, roles}` for frontend hydration.
 - [ ] Cookie set with `httponly=True`, `secure=True` in fail-closed envs, `samesite="lax"`, `max_age=300`, `path="/"`.
 - [ ] CSRF cookie set with `httponly=False` (frontend reads it).
-- [ ] `_extract_token` reads from cookie, NOT from Bearer header.
-- [ ] Bearer header path removed (sweep `rg -nP 'Authorization.*Bearer' backend/app/core/auth.py` returns zero).
+- [ ] Human Clerk sessions read from cookie, NOT from Bearer header.
+- [ ] Backend service JWTs retain Bearer transport through a service-only extractor/validator; human Bearer fallback is removed.
 
 ### 6.3 CSRF middleware
 
@@ -373,6 +390,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] Middleware registered in `backend/app/main.py`.
 - [ ] Exempt paths: `/auth/session`, `/webhooks/`, `/healthz`.
 - [ ] CSRF mismatch returns 403 with `detail="CSRF token missing or mismatch"`.
+- [ ] `CORSMiddleware` allows credentialed frontend requests (`allow_credentials=True`) and includes `X-CSRF-Token` in allowed headers.
 
 ### 6.4 Auditor-exclusive at JWT-validation time
 
@@ -417,29 +435,31 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 9. **`test_session_endpoint_sets_httponly_cookie`** — POST `/auth/session` with valid Clerk session token. Assert `Set-Cookie` header includes `__Session=...` with `HttpOnly`, `Secure` (in prod env), `SameSite=Lax`, `Path=/`, `Max-Age=300`.
 10. **`test_session_endpoint_returns_csrf_token_in_body_and_cookie`** — same. Assert response body has `csrf_token`, and Set-Cookie has `csrf_token=...` with `HttpOnly` NOT set.
 11. **`test_authenticated_request_uses_cookie_not_bearer`** — call any auth-required endpoint with cookie, no Authorization header. Returns 200.
-12. **`test_authenticated_request_bearer_only_401`** — call any auth-required endpoint with Bearer header but no cookie. Returns 401 with `detail="Session cookie missing"`.
+12. **`test_authenticated_human_bearer_only_401`** — call any human auth-required endpoint with Clerk Bearer header but no cookie. Returns 401 with `detail="Session cookie missing"`.
 13. **`test_logout_clears_cookies`** — POST `/auth/logout`. Assert Set-Cookie header sets both cookies to expired (Max-Age=0 or similar).
-14. **`test_refresh_rotates_csrf`** — POST `/auth/refresh`. Assert new `csrf_token` differs from prior.
+14. **`test_refresh_reexchanges_fresh_clerk_token_and_rotates_csrf`** — POST `/auth/refresh` with a fresh Clerk session token. Assert session cookie is reset and new `csrf_token` differs from prior.
+15. **`test_auth_me_returns_actor_and_roles`** — GET `/auth/me` with valid session cookie. Assert response has `actor_sub` and `roles`.
 
 ### 7.3 New file `backend/tests/test_csrf_middleware.py`
 
-15. **`test_csrf_middleware_get_passes_without_token`** — GET endpoint, no CSRF token. Returns 200.
-16. **`test_csrf_middleware_post_missing_token_403`** — POST endpoint, no CSRF cookie. Returns 403 with `detail="CSRF token missing or mismatch"`.
-17. **`test_csrf_middleware_post_mismatch_403`** — POST endpoint, cookie value ≠ header value. Returns 403.
-18. **`test_csrf_middleware_post_match_passes`** — POST endpoint, cookie value == header value. Returns 200.
-19. **`test_csrf_middleware_session_endpoint_exempt`** — POST `/auth/session` without CSRF token. Returns 200 (exempt).
-20. **`test_csrf_middleware_webhook_exempt`** — POST `/webhooks/whatsapp` with HMAC but no CSRF. Returns 200 (exempt).
+16. **`test_csrf_middleware_get_passes_without_token`** — GET endpoint, no CSRF token. Returns 200.
+17. **`test_csrf_middleware_post_missing_token_403`** — POST endpoint, no CSRF cookie. Returns 403 with `detail="CSRF token missing or mismatch"`.
+18. **`test_csrf_middleware_post_mismatch_403`** — POST endpoint, cookie value ≠ header value. Returns 403.
+19. **`test_csrf_middleware_post_match_passes`** — POST endpoint, cookie value == header value. Returns 200.
+20. **`test_csrf_middleware_session_endpoint_exempt`** — POST `/auth/session` without CSRF token. Returns 200 (exempt).
+21. **`test_csrf_middleware_webhook_exempt`** — POST `/webhooks/whatsapp` with HMAC but no CSRF. Returns 200 (exempt).
+22. **`test_cors_allows_credentials_and_csrf_header`** — OPTIONS preflight from allowed frontend origin with `X-CSRF-Token`; assert credentialed CORS response permits it.
 
 ### 7.4 New file `backend/tests/test_service_token_minting.py`
 
-21. **`test_mint_service_token_westmetall`** — `mint_service_token("westmetall_ingest")` returns RS256 JWT. Decode and assert `sub == "service:westmetall_ingest"`, `exp == now+300`.
-22. **`test_mint_service_token_unknown_raises`** — `mint_service_token("not_a_real_identity")` raises ValueError.
-23. **`test_get_current_user_routes_service_token_to_service_validator`** — fixture: service-minted JWT. `get_current_user` returns payload with `sub="service:westmetall_ingest"`.
-24. **`test_service_token_with_clerk_issuer_401`** — fixture: JWT signed with service key but `iss=clerk-fapi`. Returns 401.
+23. **`test_mint_service_token_westmetall`** — `mint_service_token("westmetall_ingest")` returns RS256 JWT. Decode and assert `sub == "service:westmetall_ingest"`, `exp == now+300`.
+24. **`test_mint_service_token_unknown_raises`** — `mint_service_token("not_a_real_identity")` raises ValueError.
+25. **`test_get_current_user_routes_service_token_to_service_validator`** — fixture: service-minted Bearer JWT. `get_current_user` returns payload with `sub="service:westmetall_ingest"`.
+26. **`test_service_token_with_clerk_issuer_401`** — fixture: JWT signed with service key but `iss=clerk-fapi`. Returns 401.
 
 ### 7.5 Existing test fixture migration
 
-- All test fixtures that mock `Authorization: Bearer ...` headers MUST be updated to set the `__Session` cookie instead. This is a sweeping change; central test helper at `backend/tests/conftest.py` (or wherever the auth fixture lives) MUST be updated and all per-test usage flows through it.
+- Human-user test fixtures that mock `Authorization: Bearer ...` headers MUST be updated to set the `__Session` cookie instead. Service-token fixtures remain Bearer JWTs and must use the service-token helper, not cookies.
 
 ### 7.6 Production fail-closed
 
@@ -453,9 +473,10 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 rg -nP "def mint_service_token|def _validate_clerk_token|def _validate_service_token" backend/app/core/auth.py
 rg -nP "SESSION_COOKIE_NAME|CSRF_COOKIE_NAME|CSRF_HEADER_NAME" backend/app/core/auth.py backend/app/core/csrf.py
 
-# Bearer header removal
-rg -nP "Authorization.*Bearer" backend/app/core/auth.py    # MUST be zero
-rg -nP "request\\.headers\\.get\\(['\"]authorization" backend/app/core/auth.py    # MUST be zero
+# Bearer transport split
+rg -nP "SESSION_COOKIE_NAME|request\\.cookies" backend/app/core/auth.py
+rg -nP "Authorization.*Bearer|request\\.headers\\.get\\(['\"]authorization" backend/app/core/auth.py
+# verify matches are service-token-only; no human Clerk Bearer fallback remains
 
 # Clerk env vars
 rg -nP "CLERK_FAPI_HOST|CLERK_AUDIENCE|SERVICE_JWT_SIGNING_KEY|BACKEND_SERVICE_ISSUER" backend/app/core/auth.py
@@ -465,6 +486,9 @@ rg -nP "TODO\\(post-cluster-3\\)" backend/app/core/auth.py
 
 # CSRF middleware registered
 rg -nP "csrf_middleware|BaseHTTPMiddleware" backend/app/main.py
+
+# Credentialed CORS for static frontend origin
+rg -nP "allow_credentials=True|X-CSRF-Token" backend/app/main.py
 
 # Per-route gates UNCHANGED (PR-CL3-1 territory)
 git diff main -- backend/app/api/routes/counterparties.py backend/app/api/routes/rfqs.py backend/app/api/routes/contracts.py backend/app/api/routes/deals.py backend/app/api/routes/linkages.py

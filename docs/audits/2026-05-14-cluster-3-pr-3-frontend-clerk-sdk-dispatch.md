@@ -264,18 +264,29 @@ For raw auth lifecycle calls outside the generated client (`/auth/session`, `/au
 ```typescript
 // In a layout-level effect or root +layout.svelte
 import { API_BASE } from "$lib/api/fetch";
+import { clerk } from "$lib/clerk";
 
 $effect(() => {
   if (!authStore.state.authenticated) return;
   const refreshInterval = setInterval(async () => {
+    const token = await clerk.session?.getToken({ skipCache: true });
+    if (!token) {
+      authStore.clear();
+      goto("/login");
+      return;
+    }
     const response = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
       credentials: "include",
-      headers: { "X-CSRF-Token": authStore.state.csrf_token ?? "" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": authStore.state.csrf_token ?? "",
+      },
+      body: JSON.stringify({ session_token: token }),
     });
     if (response.ok) {
-      const { csrf_token } = await response.json();
-      authStore.set({ ...authStore.state, csrf_token });
+      const { actor_sub, csrf_token } = await response.json();
+      authStore.set({ ...authStore.state, actor_sub, csrf_token, authenticated: true });
     } else if (response.status === 401) {
       authStore.clear();
       goto("/login");
@@ -295,7 +306,7 @@ $effect(() => {
 
 ### 4.8 Route guard updates
 
-Layout in `frontend-svelte/src/routes/(protected)/+layout.svelte` should redirect to `/login` if `!authStore.state.authenticated`. Ensure it calls `initClerk()` to attempt session restoration on cold load (Clerk SDK reads its own cookies + restores session state if user is still signed in).
+Layout in `frontend-svelte/src/routes/(protected)/+layout.svelte` must hydrate before redirecting. On cold load, call `initClerk()`, then call `${API_BASE}/auth/me` with `credentials: "include"` to restore `actor_sub` + `roles` from the httpOnly backend cookie before deciding that the user is unauthenticated. Only redirect to `/login` after the hydration attempt returns 401/403 or Clerk has no recoverable session. Do not immediately redirect on the initial `authenticated === false` default state.
 
 ## 5. Constitutional Rules
 
@@ -318,7 +329,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `/login` page mounts Clerk sign-in via `clerk.mountSignIn`.
 - [ ] `/sign-up` page mounts Clerk sign-up via `clerk.mountSignUp`.
-- [ ] Backend auth response contracts verified before frontend wiring: `/auth/session` returns `{actor_sub, csrf_token}`; `/auth/refresh` returns `{csrf_token}`; `/auth/logout` returns empty success/204; `/auth/me` returns `{actor_sub, roles: string[]}`.
+- [ ] Backend auth response contracts verified before frontend wiring: `/auth/session` returns `{actor_sub, csrf_token}`; `/auth/refresh` returns `{actor_sub, csrf_token}`; `/auth/logout` returns empty success/204; `/auth/me` returns `{actor_sub, roles: string[]}`.
 - [ ] After Clerk sign-in, frontend calls `POST /auth/session`, fetches `GET /auth/me` for roles, then seeds auth store.
 - [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` with `X-CSRF-Token` + clears auth store.
 - [ ] Auth session, refresh, and logout calls are routed through `API_BASE` / shared API wrapper, not relative `/auth/...` fetch calls.
@@ -339,6 +350,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 ### 6.5 Refresh
 
 - [ ] Layout effect schedules refresh every 240s (4min) per §4.6.
+- [ ] Refresh obtains a fresh Clerk session token from the SDK and sends it to `/auth/refresh`; it does not only extend cookies around an old JWT.
 - [ ] On 401 from refresh, store cleared + redirect to login.
 
 ### 6.6 manualTokenLoginEnabled killed
@@ -348,6 +360,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 - [ ] `rg -nP "manualTokenLoginEnabled" .env.example` returns zero matches.
 - [ ] Login page no longer contains paste-token form.
 - [ ] Reason-code constants from Phase A6 PR #67 (associated with the flag) removed.
+- [ ] Protected layout hydrates `/auth/me` before redirecting on cold load.
 
 ### 6.7 Cross-cutting
 
@@ -372,6 +385,8 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
    - Test: complete Clerk sign-in (use Clerk's testing mode or mock), assert redirect to `/`, assert auth store populated.
    - Test: logout, assert redirect to `/login`, assert auth store cleared.
    - Test: protected route accessible after auth, blocked before.
+   - Test: hard reload on a protected route with a valid backend cookie hydrates via `/auth/me` before redirect logic runs.
+   - Test: refresh interval requests a fresh Clerk token and posts it to `/auth/refresh`.
 
 Note: Clerk's e2e testing requires either Clerk's test mode (`pk_test_...` plus test instance config) or mocking the Clerk SDK. Pick the path Andrei prefers; document in PR body.
 
@@ -451,7 +466,7 @@ PR body:
 
 ## 11. Workflow
 
-1. **Pre-step:** verify PR-CL3-2 has merged. Frontend depends on `/auth/session`, `/auth/refresh`, `/auth/logout`. If PR-CL3-2 not merged, PR-CL3-3 cannot be tested end-to-end.
+1. **Pre-step:** verify PR-CL3-2 has merged. Frontend depends on `/auth/session`, `/auth/refresh`, `/auth/logout`, `/auth/me`, credentialed CORS, and CSRF middleware. If PR-CL3-2 not merged, PR-CL3-3 cannot be tested end-to-end.
 2. `git checkout -b audit-followup/cluster-3-frontend-clerk-sdk`.
 3. `cd frontend-svelte && npm install @clerk/clerk-js`.
 4. Create `.env` entry `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...` (dev value from Clerk dashboard).

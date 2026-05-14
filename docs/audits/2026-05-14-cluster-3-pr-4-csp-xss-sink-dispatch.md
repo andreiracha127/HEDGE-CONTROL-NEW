@@ -14,7 +14,7 @@ Replace the current baseline CSP at `frontend-svelte/nginx.conf` with the strict
 
 Three coupled deliverables:
 
-1. **nginx CSP swap** — replace current generic CSP with the strict Clerk-aware baseline per `project_cluster_3_platform_decisions` exact text. Header name `Content-Security-Policy-Report-Only` (not enforce). Includes `frame-ancestors 'none'`, `worker-src 'self' blob:`, Clerk origins (`<fapi-host>` + `https://challenges.cloudflare.com`), Clerk telemetry connect-src, Clerk img.clerk.com, `report-to csp-endpoint`, `upgrade-insecure-requests`. NO `'unsafe-eval'`. NO permissive `https:` wildcards.
+1. **nginx CSP swap** — replace current generic CSP with the strict Clerk-aware baseline per `project_cluster_3_platform_decisions` exact text plus the configured backend HTTP/WebSocket origins required by this split-origin deployment. Header name `Content-Security-Policy-Report-Only` (not enforce). Includes `frame-ancestors 'none'`, `worker-src 'self' blob:`, backend API/WS origins, Clerk origins (`<fapi-host>` + `https://challenges.cloudflare.com`), Clerk telemetry connect-src, Clerk img.clerk.com, `report-to csp-endpoint`, `upgrade-insecure-requests`. NO `'unsafe-eval'`. NO permissive `https:` wildcards.
 2. **Backend `/csp/report` endpoint** — receive violation reports from browser-side CSP enforcement. Persist (or log) for analysis. Must be CSRF-exempt (browser-initiated, no human session) and rate-limited to prevent abuse.
 3. **XSS-sink inventory doc** — per D-3.3 explicit requirement: document every `innerHTML`, `eval`, `setAttribute('href'|'src')`, dynamic-import call in the SPA. Separate doc at `docs/security/xss-sink-inventory.md`.
 
@@ -47,7 +47,7 @@ object-src 'none'; frame-ancestors 'self';
 
 Gaps relative to bindado strict baseline:
 - `script-src` lacks Clerk FAPI host + `https://challenges.cloudflare.com`
-- `connect-src` is too permissive (`https:`) — should be Clerk FAPI + telemetry only
+- `connect-src` is too permissive (`https:`) — should be explicit backend HTTP origin, backend WebSocket origin, Clerk FAPI, and telemetry only
 - `frame-src` not present — needs `https://challenges.cloudflare.com` for Turnstile
 - `worker-src` not present — needs `'self' blob:` for Clerk web workers
 - `frame-ancestors` is `'self'` — bindado is `'none'`
@@ -66,6 +66,8 @@ Content-Security-Policy-Report-Only:
     https://<fapi-host>
     https://challenges.cloudflare.com;
   connect-src 'self'
+    https://<backend-api-origin>
+    wss://<backend-api-origin>
     https://<fapi-host>
     https://clerk-telemetry.com;
   img-src 'self' data: https://img.clerk.com;
@@ -106,7 +108,7 @@ Replace the current `add_header Content-Security-Policy ... always;` line (~line
 add_header Content-Security-Policy-Report-Only "
   default-src 'self';
   script-src 'self' 'unsafe-inline' https://${CLERK_FAPI_HOST} https://challenges.cloudflare.com;
-  connect-src 'self' https://${CLERK_FAPI_HOST} https://clerk-telemetry.com;
+  connect-src 'self' ${VITE_API_BASE_URL} ${VITE_WS_BASE_URL} https://${CLERK_FAPI_HOST} https://clerk-telemetry.com;
   img-src 'self' data: https://img.clerk.com;
   frame-src https://challenges.cloudflare.com;
   worker-src 'self' blob:;
@@ -128,7 +130,7 @@ add_header Report-To '{"group":"csp-endpoint","max_age":10886400,"endpoints":[{"
 add_header X-Frame-Options "DENY" always;  # was SAMEORIGIN; tighten to DENY
 ```
 
-Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}` and `${VITE_API_BASE_URL}` in `nginx.conf` from env vars at container start.
+Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}`, `${VITE_API_BASE_URL}`, and `${VITE_WS_BASE_URL}` in `nginx.conf` from env vars at container start. `VITE_WS_BASE_URL` must be the backend WebSocket origin derived from `VITE_API_BASE_URL` (`https://api.example.com` → `wss://api.example.com`, `http://localhost:8000` → `ws://localhost:8000`).
 
 Verify by deploying the container and inspecting response headers in the browser.
 
@@ -283,8 +285,8 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 - [ ] All 13 directives present per §3 bindado list (default-src, script-src, connect-src, img-src, frame-src, worker-src, style-src, form-action, frame-ancestors, base-uri, object-src, upgrade-insecure-requests, report-to).
 - [ ] `frame-ancestors 'none'` (NOT 'self').
 - [ ] No `'unsafe-eval'` anywhere.
-- [ ] No permissive `https:` wildcard in `connect-src` (only `'self'` + Clerk FAPI host + clerk-telemetry.com).
-- [ ] `${CLERK_FAPI_HOST}` template substitution works at container start (verify via `docker-compose up` + browser inspection).
+- [ ] No permissive `https:` wildcard in `connect-src` (only `'self'` + backend HTTP origin + backend WebSocket origin + Clerk FAPI host + clerk-telemetry.com).
+- [ ] `${CLERK_FAPI_HOST}`, `${VITE_API_BASE_URL}`, and `${VITE_WS_BASE_URL}` template substitution works at container start (verify via `docker-compose up` + browser inspection).
 - [ ] `# TODO(post-cluster-3): swap ${CLERK_FAPI_HOST} ...` marker present.
 - [ ] `Report-To` header points at `${VITE_API_BASE_URL}/csp/report`.
 - [ ] `X-Frame-Options: DENY` (tightened from SAMEORIGIN).
@@ -348,6 +350,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 # nginx CSP shape
 rg -nP "Content-Security-Policy-Report-Only" frontend-svelte/nginx.conf
 rg -nP "frame-ancestors 'none'|frame-src.*challenges.cloudflare.com|worker-src 'self' blob:|report-to csp-endpoint" frontend-svelte/nginx.conf
+rg -nP "connect-src.*VITE_API_BASE_URL.*VITE_WS_BASE_URL" frontend-svelte/nginx.conf
 rg -nP "form-action 'self'" frontend-svelte/nginx.conf
 rg -nP "'unsafe-eval'" frontend-svelte/nginx.conf    # MUST be zero
 rg -nP "connect-src.*https:" frontend-svelte/nginx.conf    # MUST be zero (no permissive wildcard)
