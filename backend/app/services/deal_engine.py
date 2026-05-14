@@ -86,7 +86,7 @@ def _get_market_quote(session: Session, commodity: str, as_of_date: date):
     Hard-fail behavior (PR-8 J-A1-01): on no-data the
     ``PriceReferenceUnprovable`` exception propagates — callers must
     NOT swallow it. Infrastructure errors (DB / network) likewise
-    propagate as 5xx; only the domain "not provable" case maps to 422
+    propagate as 5xx; only the domain "not provable" case maps to 424
     at the route layer.
 
     Symbol resolution failures (unmapped commodity) raise
@@ -652,19 +652,16 @@ class DealEngineService:
           missing, the candidate's stored ALU price is now stale);
           building a fresh snapshot is impossible because the
           unprovable commodity has no value. Both options are unsafe,
-          so we propagate the first ``PriceReferenceUnprovable`` (→
-          422). This is the strict interpretation: even when the
+          so we propagate the first ``PriceReferenceUnprovable`` (->
+          424). This is the strict interpretation: even when the
           fresh value happens to equal the candidate's stored value,
           we fail closed because we cannot prove the unprovable
           commodity is consistent without a live quote.
         * **Total unavailability** (no commodity could be priced
-          fresh) → repair scenario (e.g. upstream price feed wiped).
-          Probe existing snapshots: each candidate's hash is recomputed
-          from the current link set + its persisted
-          ``price_references``, and the first match is returned. If
-          none matches, the original ``PriceReferenceUnprovable``
-          propagates (→ 422). The candidate fallback is honest here
-          because we have ZERO fresh evidence to be stale relative to.
+          fresh) -> fail closed. A historical snapshot can be read
+          through the history endpoint, but this compute endpoint must
+          not silently substitute stale persisted evidence when live
+          price evidence is unavailable.
 
         Earlier variants of this algorithm broke the loop on the first
         failure and fell through to the candidate probe; that path
@@ -778,60 +775,18 @@ class DealEngineService:
             # value, we still fail closed — we cannot prove the
             # unprovable commodity is consistent without a live quote.
             # Propagate the first PriceReferenceUnprovable (preserves
-            # original error context); the route maps it to 422.
+            # original error context); the route maps it to 424.
             raise unprovable_errors[0][1]
 
         if unprovable_errors:
-            # Total unavailability → repair scenario. ZERO fresh
-            # quotes obtained, so probing existing snapshots is
-            # honest: there is no fresh evidence to be stale relative
-            # to. This branch is reachable only when at least one
-            # commodity needed a live price and failed lookup; if no
-            # commodity needed pricing, ``unprovable_errors`` would be
-            # empty and the function would build a fixed-price snapshot
-            # with ``price_references = None`` instead of probing. Each
-            # candidate's hash is recomputed from the current
-            # link set + its persisted price_references; the first
-            # match is returned. Legacy (pre-PR-8) rows have their
-            # hash computed in the old format (no price_references
-            # key) so candidate_hash will not equal their stored
-            # inputs_hash — intentionally not reusable per §3.4.3
-            # (legacy rows are sealed). If no candidate matches, the
-            # original PriceReferenceUnprovable propagates (→ 422).
-            #
-            # Codex P2 (PR #22 follow-up, 2026-05-06): order by the
-            # monotonic ``sequence`` column. ``created_at`` is
-            # second-precision on SQLite and arbitrary-precision but
-            # still subject to NTP slew / collisions on Postgres; ``id``
-            # is a random UUID so it is not a creation-order tiebreaker.
-            # The previous (created_at DESC, id DESC) pair could pick
-            # the stale ``snap_old`` row when two post-PR-8 snapshots
-            # tied on ``created_at`` (Codex reproduced this on SQLite at
-            # second precision). ``sequence`` is a server-side SEQUENCE
-            # on Postgres and a process-local Python counter on SQLite
-            # — strictly monotonic by construction in both dialects —
-            # so a single ORDER BY is sufficient and no tiebreaker is
-            # needed. The DB performs the sort and the loop returns the
-            # first hash match, which is now guaranteed to be the
-            # newest reusable snapshot.
-            candidate_snapshots = (
-                session.query(DealPNLSnapshot)
-                .filter(
-                    DealPNLSnapshot.deal_id == deal_id,
-                    DealPNLSnapshot.snapshot_date == snapshot_date,
-                )
-                .order_by(DealPNLSnapshot.sequence.desc())
-                .all()
-            )
-            for candidate in candidate_snapshots:
-                candidate_hash = _compute_inputs_hash(
-                    deal_id,
-                    snapshot_date,
-                    link_ids,
-                    candidate.price_references,
-                )
-                if candidate_hash == candidate.inputs_hash:
-                    return candidate
+            # D-1.3 closure (Cluster 1 verdict): no snapshot reuse on total
+            # price unavailability. The hash check binds link ids and persisted
+            # price_references, not underlying entity content; a content-mutated
+            # link with a stale persisted reference can hash-match a sealed
+            # historical snapshot and produce wrong P&L. Per governance §2.6
+            # ("no silent fallback") and "evidence missing is hard-fail",
+            # propagate the first unprovable error. Historical retrieval lives
+            # in `GET /deals/{id}/pnl-history`, not in this compute endpoint.
             raise unprovable_errors[0][1]
 
         # ── Step 5: build the canonical price_references dict with
@@ -1056,7 +1011,7 @@ class DealEngineService:
             # market lookup, then resolve one quote per commodity. Any
             # missing price hard-fails the whole breakdown (consistent
             # with §3.3 of the dispatch — no partial-success path; the
-            # endpoint maps PriceReferenceUnprovable to 422).
+            # endpoint maps PriceReferenceUnprovable to 424).
             raw_links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
             links, resolved_orders, resolved_contracts = _resolve_live_linked_entities(
                 session, raw_links
@@ -1100,7 +1055,7 @@ class DealEngineService:
                         commodities_needing_price.add(contract.commodity)
 
             # One lookup per unique commodity; PriceReferenceUnprovable
-            # propagates from any missing commodity → 422 at the route.
+            # propagates from any missing commodity -> 424 at the route.
             quotes_by_commodity: dict[str, PriceQuote] = {}
             for commodity in sorted(commodities_needing_price):
                 quotes_by_commodity[commodity] = _get_market_quote(

@@ -31,21 +31,25 @@ from app.services.price_lookup_service import PriceReferenceUnprovable
 router = APIRouter()
 
 
-# ── PriceReferenceUnprovable → 422 mapping ────────────────────────────
-# PR-8 (J-A1-01): the deal_engine raises PriceReferenceUnprovable when a
-# variable-price physical leg or active hedge cannot be MTM-valued
-# because no D-1 cash settlement price exists within the 5-day lookback.
-# This is a domain hard-fail — the operator must publish a settlement
-# price (or correct the leg) before retrying. 422 (Unprocessable
-# Entity) is the canonical mapping for "request was well-formed but
-# semantically invalid given current data". The route uses an explicit
-# try/except so the service stays HTTP-agnostic and so tests can assert
-# both HTTP status (route) and exception type (service) independently.
+# ── PriceReferenceUnprovable → 424 mapping ────────────────────────────
+# Governance "Projection invariants" (docs/governance.md:152) binds:
+# "Hard-fail propagation: price reference unprovable -> HTTP 424".
+# 422 is reserved by governance for distinct cases (missing zero-default
+# economics, missing settlement_date; governance lines 155-157).
+# cashflow.py and scenario.py already map this exception to 424; this
+# helper brings deals.py into alignment.
 def _raise_price_unprovable(exc: PriceReferenceUnprovable) -> None:
     raise HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        status_code=status.HTTP_424_FAILED_DEPENDENCY,
         detail=str(exc),
     )
+
+
+_PRICE_UNPROVABLE_RESPONSES = {
+    status.HTTP_424_FAILED_DEPENDENCY: {
+        "description": "Price reference unprovable",
+    },
+}
 
 
 # ------------------------------------------------------------------
@@ -132,7 +136,11 @@ def list_deals(
     return {"items": items, "next_cursor": next_cursor}
 
 
-@router.post("/pnl-breakdown", response_model=PnlBreakdownResponse)
+@router.post(
+    "/pnl-breakdown",
+    response_model=PnlBreakdownResponse,
+    responses=_PRICE_UNPROVABLE_RESPONSES,
+)
 def pnl_breakdown(
     body: PnlBreakdownRequest,
     _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
@@ -212,6 +220,7 @@ def remove_link(
     "/{deal_id}/pnl-snapshot",
     response_model=DealPNLSnapshotRead,
     status_code=status.HTTP_201_CREATED,
+    responses=_PRICE_UNPROVABLE_RESPONSES,
 )
 def trigger_pnl_snapshot(
     deal_id: UUID,

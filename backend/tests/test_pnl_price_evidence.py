@@ -3,7 +3,7 @@
 Covers acceptance criteria §6.1 of the dispatch
 (``docs/audits/2026-05-06-phase-a1-pr-8-pnl-price-evidence-dispatch.md``):
 no silent fallbacks in ``_get_market_quote``, ``_order_value``, or
-``compute_deal_pnl``; the route returns 422 with no snapshot persisted.
+``compute_deal_pnl``; the route returns 424 with no snapshot persisted.
 """
 
 from __future__ import annotations
@@ -131,8 +131,8 @@ def _insert_price(
 
 
 class TestHardFailVariablePricePhysical:
-    def test_variable_price_so_missing_market_returns_422(self, client, session):
-        """variable-price SO + no D-1 price → 422, no snapshot persisted."""
+    def test_variable_price_so_missing_market_returns_424(self, client, session):
+        """variable-price SO + no D-1 price -> 424, no snapshot persisted."""
         r = client.post(ENDPOINT, json={"name": "VarSO", "commodity": "ALUMINUM"})
         deal_id = r.json()["id"]
 
@@ -152,13 +152,13 @@ class TestHardFailVariablePricePhysical:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422
+        assert r2.status_code == 424
         # No snapshot must have been persisted.
         with SessionLocal() as s:
             snaps = s.query(DealPNLSnapshot).all()
             assert snaps == []
 
-    def test_variable_price_po_missing_market_returns_422(self, client, session):
+    def test_variable_price_po_missing_market_returns_424(self, client, session):
         r = client.post(ENDPOINT, json={"name": "VarPO", "commodity": "COPPER"})
         deal_id = r.json()["id"]
 
@@ -179,7 +179,7 @@ class TestHardFailVariablePricePhysical:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422
+        assert r2.status_code == 424
         with SessionLocal() as s:
             assert s.query(DealPNLSnapshot).count() == 0
 
@@ -190,7 +190,7 @@ class TestHardFailVariablePricePhysical:
 
 
 class TestHardFailActiveHedge:
-    def test_active_hedge_missing_market_returns_422(self, client, session):
+    def test_active_hedge_missing_market_returns_424(self, client, session):
         cp_id = _create_counterparty(session)
         r = client.post(ENDPOINT, json={"name": "Hedged", "commodity": "ALUMINUM"})
         deal_id = r.json()["id"]
@@ -222,7 +222,7 @@ class TestHardFailActiveHedge:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422
+        assert r2.status_code == 424
         with SessionLocal() as s:
             assert s.query(DealPNLSnapshot).count() == 0
 
@@ -280,7 +280,7 @@ class TestFixedPriceOnlyAllowed:
 
 
 class TestMixedDealHardFails:
-    def test_mixed_fixed_and_variable_missing_market_returns_422(
+    def test_mixed_fixed_and_variable_missing_market_returns_424(
         self, client, session
     ):
         r = client.post(ENDPOINT, json={"name": "Mixed", "commodity": "ALUMINUM"})
@@ -294,7 +294,7 @@ class TestMixedDealHardFails:
             price=Decimal("2400"),
             price_type=PriceType.fixed,
         )
-        # Variable-price SO (needs market evidence — none in DB → 422).
+        # Variable-price SO (needs market evidence; none in DB -> 424).
         so_id = _create_order(
             session,
             OrderType.sales,
@@ -314,7 +314,7 @@ class TestMixedDealHardFails:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422
+        assert r2.status_code == 424
         with SessionLocal() as s:
             assert s.query(DealPNLSnapshot).count() == 0
 
@@ -543,7 +543,7 @@ class TestBreakdownPerCommodityPricing:
     ):
         # ALUMINUM price published; COPPER price NOT published → the
         # COPPER hedge cannot be MTM-valued. The whole breakdown must
-        # 422 — no partial-success path (consistent with §3.3).
+        # 424; no partial-success path (consistent with §3.3).
         _insert_price(
             session,
             symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
@@ -582,7 +582,7 @@ class TestBreakdownPerCommodityPricing:
             f"{ENDPOINT}/pnl-breakdown",
             json={"deal_ids": [deal_id], "snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422
+        assert r2.status_code == 424
         # No partial result returned — error envelope only.
         body = r2.json()
         assert "deals" not in body
@@ -650,7 +650,7 @@ class TestSettledHedgeSkipsMarketLookup:
     Codex P2 finding (PR #22): when a deal has only fixed-price
     physical legs plus a fully settled hedge, the prior PR-22 code
     still added the hedge commodity to ``commodities_needing_price``
-    and called the price service, returning 422 on missing quotes.
+    and called the price service, returning 424 on missing quotes.
     That contradicted both PR-8's stated contract for fixed-price-
     only deals and the repo's ``compute_pl`` rule (non-active hedge
     → zero unrealized MTM). This test pins the corrected behavior:
@@ -735,7 +735,7 @@ class TestSettledHedgeSkipsMarketLookup:
         assert snap.total_pnl == Decimal("-240000.000000")
 
     def test_compute_deal_pnl_active_hedge_still_requires_quote(self, session):
-        """Regression guard: same scenario but with an ACTIVE hedge → 422.
+        """Regression guard: same scenario but with an ACTIVE hedge raises.
 
         The settled-hedge price-skip must NOT relax the active-hedge
         contract; missing market price for an active hedge is still
@@ -869,7 +869,7 @@ class TestSettledHedgeSkipsMarketLookup:
     def test_compute_deal_pnl_partially_settled_hedge_requires_market_quote(
         self, session
     ):
-        """A partially_settled hedge has remaining open qty → 422 if no quote.
+        """A partially_settled hedge has remaining open qty and raises if no quote.
 
         Mirrors the active-hedge contract: an open hedge whose
         commodity has no D-1 price MUST raise PriceReferenceUnprovable;

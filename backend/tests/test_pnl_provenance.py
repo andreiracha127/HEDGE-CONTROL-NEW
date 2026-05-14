@@ -29,7 +29,7 @@ from app.models.contracts import (
     HedgeLegSide,
 )
 from app.models.counterparty import Counterparty
-from app.models.deal import DealLink, DealPNLSnapshot
+from app.models.deal import DealLink, DealLinkedType, DealPNLSnapshot
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
 from app.services.deal_engine import DealEngineService, _compute_inputs_hash
@@ -1117,15 +1117,13 @@ class TestPriceReferencesCheckOnPostgres:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Codex P2 (2026-05-06) — idempotency under price-source repair.
+# Cluster 1 PR-CL1-2 — hard-fail on total price unavailability.
 #
 # When a post-PR-8 snapshot already exists but the underlying
 # CashSettlementPrice row is later removed or unavailable during a
-# repair, ``compute_deal_pnl`` MUST still return the existing snapshot
-# rather than raise ``PriceReferenceUnprovable``. The fix probes
-# existing snapshots for this (deal, date) BEFORE the market lookup
-# loop and reuses any whose persisted ``price_references`` still
-# reproduce the current ``inputs_hash``.
+# recompute, ``compute_deal_pnl`` MUST raise
+# ``PriceReferenceUnprovable``. Historical snapshot retrieval belongs
+# to the history endpoint, not this compute endpoint.
 #
 # These tests exercise the service directly (DealEngineService) rather
 # than the HTTP route so we can both:
@@ -1135,7 +1133,7 @@ class TestPriceReferencesCheckOnPostgres:
 # ──────────────────────────────────────────────────────────────────────
 
 
-class TestSnapshotReuseUnderPriceSourceRepair:
+class TestTotalPriceUnavailabilityHardFails:
     def _create_variable_price_deal_with_snapshot(
         self, client, session, *, snapshot_date_str: str = "2026-02-01"
     ):
@@ -1167,12 +1165,14 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         assert r1.status_code == 201, r1.text
         return deal_id, r1.json()
 
-    def test_compute_deal_pnl_reuses_snapshot_when_market_price_unavailable(
+    def test_compute_deal_pnl_hard_fails_when_market_price_unavailable(
         self, client, session, monkeypatch
     ):
-        """Codex P2 — repair: ``CashSettlementPrice`` row deleted after
-        snapshot creation. A repeated call MUST return the persisted
-        snapshot, not raise ``PriceReferenceUnprovable`` (→ 422).
+        """Cluster 1 PR-CL1-2: total quote unavailability hard-fails.
+
+        A repeated compute after the source row disappears must not
+        return a persisted snapshot. The existing row stays unchanged
+        and no new row is written.
         """
         from app.services import deal_engine as deal_engine_mod
         from app.services.price_lookup_service import PriceReferenceUnprovable
@@ -1181,10 +1181,14 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             client, session
         )
         snapshot_date_obj = date(2026, 2, 1)
+        with SessionLocal() as s:
+            before = s.get(DealPNLSnapshot, uuid.UUID(snap1["id"]))
+            before_created_at = before.created_at
+            before_hash = before.inputs_hash
+            before_refs = before.price_references
 
         # Simulate the price-source row vanishing post-snapshot. Any
-        # call into the lookup helper now hard-fails. The probe must
-        # short-circuit BEFORE this is reached.
+        # call into the lookup helper now hard-fails.
         def _raise_unprovable(*args, **kwargs):
             raise PriceReferenceUnprovable(
                 "simulated repair: source row deleted",
@@ -1198,35 +1202,31 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         )
 
         with SessionLocal() as s:
-            snap2 = DealEngineService.compute_deal_pnl(
-                s, uuid.UUID(deal_id), snapshot_date_obj
-            )
-            s.commit()
-            # Capture attributes WHILE the session is still open —
-            # accessing them after the ``with`` block exits would
-            # raise ``DetachedInstanceError`` because SQLAlchemy
-            # cannot refresh from a closed session.
-            snap2_id = str(snap2.id)
-            snap2_hash = snap2.inputs_hash
+            with pytest.raises(PriceReferenceUnprovable):
+                DealEngineService.compute_deal_pnl(
+                    s, uuid.UUID(deal_id), snapshot_date_obj
+                )
+            s.rollback()
 
-        assert snap2_id == snap1["id"]
-        assert snap2_hash == snap1["inputs_hash"]
-        # Exactly one row — no duplicate persisted by the second call.
         with SessionLocal() as s:
+            row = s.get(DealPNLSnapshot, uuid.UUID(snap1["id"]))
             assert (
                 s.query(DealPNLSnapshot)
                 .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
                 .count()
                 == 1
             )
+            assert row.created_at == before_created_at
+            assert row.inputs_hash == before_hash
+            assert row.price_references == before_refs
 
-    def test_compute_deal_pnl_reuses_snapshot_for_fixed_price_only_deal_unchanged(
+    def test_compute_deal_pnl_hash_matches_fixed_price_only_deal_unchanged(
         self, client, session
     ):
         """Regression: fixed-price-only deal already had
         ``price_references = NULL`` and reused via the existing
-        post-build hash-match. The new probe must still locate it
-        when the market-lookup stage would not run anyway.
+        post-build hash-match. That happy-path idempotency remains
+        unchanged because the market-lookup stage does not run.
         """
         r = client.post(
             ENDPOINT, json={"name": "Fixed", "commodity": "ALUMINUM"}
@@ -1269,9 +1269,9 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         self, client, session
     ):
         """Forensic correctness: when the price IS available but
-        differs from what produced the existing snapshot, the probe
-        must miss (different recomputed hash) and a new row persists
-        alongside the old. Two rows = old + new.
+        differs from what produced the existing snapshot, the standard
+        hash-match misses and a new row persists alongside the old.
+        Two rows = old + new.
         """
         deal_id, snap1 = self._create_variable_price_deal_with_snapshot(
             client, session
@@ -1314,9 +1314,9 @@ class TestSnapshotReuseUnderPriceSourceRepair:
     def test_compute_deal_pnl_creates_new_row_when_link_set_changes(
         self, client, session
     ):
-        """Different link set → different ``link_ids`` → different
-        recomputed hash for the existing snapshot's ``price_references``,
-        so the probe correctly misses and a fresh snapshot is created.
+        """Different link set -> different ``link_ids`` -> different
+        canonical inputs, so the standard hash-match misses and a fresh
+        snapshot is created.
         """
         deal_id, snap1 = self._create_variable_price_deal_with_snapshot(
             client, session
@@ -1356,9 +1356,8 @@ class TestSnapshotReuseUnderPriceSourceRepair:
     ):
         """Legacy (pre-PR-8) rows have an ``inputs_hash`` computed in
         the OLD format (no ``price_references`` key) and stored
-        ``price_references = NULL``. Recomputing the hash with the new
-        format produces a different value → the probe must NOT reuse
-        the legacy row → a fresh post-PR-8 row is inserted alongside.
+        ``price_references = NULL``. The new format produces a
+        different value -> a fresh post-PR-8 row is inserted alongside.
         Mirrors §3.4.3: legacy rows are sealed, never bound to current
         link sets retroactively.
         """
@@ -1444,39 +1443,26 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             assert str(legacy_id) in ids
             assert new["id"] in ids
 
-    def test_outage_fallback_returns_newest_matching_snapshot(
+    def test_total_unavailability_raises_even_with_multiple_matching_snapshots(
         self, client, session, monkeypatch
     ):
-        """Codex P2 (PR #22 follow-up) — when the total-unavailability
-        fallback finds multiple post-PR-8 snapshots whose stored
-        ``price_references`` each still hash-match the current link
-        set (e.g. price correction created ``snap_new`` after
-        ``snap_old``, then the price feed was wiped), the fallback
-        MUST return the NEWEST matching snapshot (``snap_new``), not
-        an arbitrary unordered DB row that could regress P&L to the
-        pre-correction value.
+        """Cluster 1 PR-CL1-2: total unavailability never reuses.
 
         Scenario:
-          1. Insert ALU price P1=2700 → first snapshot ``snap_old`` (P1).
-          2. Correct the price to P2=2750 → second snapshot ``snap_new``
+          1. Insert ALU price P1=2700 -> first snapshot ``snap_old`` (P1).
+          2. Correct the price to P2=2750 -> second snapshot ``snap_new``
              with a different ``inputs_hash`` (different
              ``price_references["value"]``).
           3. Delete the ``CashSettlementPrice`` row entirely (price-feed
-             wipe) and force the lookup helper to raise
-             ``PriceReferenceUnprovable`` so the outage fallback fires.
-          4. Re-request the snapshot. Both ``snap_old`` and ``snap_new``
-             still hash-match the current link set against their own
-             stored ``price_references``, so without a strictly
-             monotonic ORDER BY the DB could return either row first.
-             The fix orders by the monotonic ``sequence DESC`` column
-             so the newest reusable snapshot wins regardless of
-             ``created_at`` precision.
+             wipe) and force the lookup helper to raise.
+          4. Re-request the snapshot. Even if historical rows would
+             hash-match, compute must raise instead of serving stale
+             P&L through the write endpoint.
 
         Asserts:
-          * Returned snapshot id == ``snap_new.id`` (NOT ``snap_old.id``).
-          * ``sequence(snap_new) > sequence(snap_old)`` so the ordering
-            semantics are observable in the persisted data.
-          * No new row is created (count remains 2).
+          * ``PriceReferenceUnprovable`` is raised.
+          * Existing rows are not mutated.
+          * No new row is created.
         """
         from app.services import deal_engine as deal_engine_mod
         from app.services.price_lookup_service import PriceReferenceUnprovable
@@ -1531,8 +1517,7 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             assert str(rows[1].id) == snap_new["id"]
             assert rows[1].sequence > rows[0].sequence
 
-        # Step 3: wipe the price-feed row and force any lookup to
-        # raise so the total-unavailability outage fallback fires.
+        # Step 3: wipe the price-feed row and force any lookup to raise.
         with SessionLocal() as s:
             s.query(CashSettlementPrice).filter(
                 CashSettlementPrice.symbol
@@ -1552,50 +1537,46 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             _raise_unprovable,
         )
 
-        # Step 4: outage fallback fires. Both snapshots still
-        # hash-match against their own stored ``price_references``;
-        # the ORDER BY ``created_at DESC`` clause guarantees we
-        # return the newest one (``snap_new``).
         with SessionLocal() as s:
-            reused = DealEngineService.compute_deal_pnl(
-                s, uuid.UUID(deal_id), snapshot_date_obj
-            )
-            s.commit()
-            reused_id = str(reused.id)
-            reused_hash = reused.inputs_hash
+            before = {
+                str(row.id): (row.inputs_hash, row.price_references)
+                for row in s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .all()
+            }
 
-        assert reused_id == snap_new["id"], (
-            "outage fallback returned the wrong snapshot — expected "
-            "the newest reusable row (snap_new) but got snap_old; the "
-            "ORDER BY ``sequence DESC`` clause is missing or "
-            "ineffective."
-        )
-        assert reused_id != snap_old["id"]
-        assert reused_hash == snap_new["inputs_hash"]
-
-        # No new row was persisted by the fallback.
         with SessionLocal() as s:
-            assert (
+            with pytest.raises(PriceReferenceUnprovable):
+                DealEngineService.compute_deal_pnl(
+                    s, uuid.UUID(deal_id), snapshot_date_obj
+                )
+            s.rollback()
+
+        with SessionLocal() as s:
+            rows = (
                 s.query(DealPNLSnapshot)
                 .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
-                .count()
-                == 2
+                .all()
             )
+            assert (
+                {str(row.id): (row.inputs_hash, row.price_references) for row in rows}
+                == before
+            )
+            assert len(rows) == 2
 
     def test_sequence_is_monotonic_across_inserts(
         self, client, session
     ):
         """Codex P2 (PR #22 follow-up) — verify the new ``sequence``
         column is strictly monotonic across consecutive inserts on the
-        SQLite test path. This pins the contract that powers the
-        outage-fallback ORDER BY: every newly persisted snapshot has a
+        SQLite test path. Every newly persisted snapshot has a
         ``sequence`` value strictly greater than every prior snapshot
         in the table, regardless of ``created_at`` precision or UUID
         ordering.
 
         Three snapshots are created via the same producer that the
-        outage fallback consults (price corrections that change the
-        ``inputs_hash``), then read back ordered by ``sequence`` ASC.
+        producer (price corrections that change the ``inputs_hash``),
+        then read back ordered by ``sequence`` ASC.
         The column values must form a strictly increasing sequence.
         """
         deal_id, snap_a = self._create_variable_price_deal_with_snapshot(
@@ -1641,21 +1622,14 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             # And every row got a non-NULL value.
             assert all(s_val is not None for s_val in sequences)
 
-    def test_outage_fallback_uses_sequence_not_created_at(
+    def test_total_unavailability_hard_fails_regardless_of_sequence_order(
         self, client, session, monkeypatch
     ):
-        """Codex P2 (PR #22 follow-up) — prove the outage-fallback
-        ORDER BY operates on the monotonic ``sequence`` column rather
-        than ``created_at``. We deliberately make ``snap_new`` carry an
-        EARLIER ``created_at`` than ``snap_old`` (simulating the
-        SQLite second-precision tie / clock skew Codex reproduced) and
-        assert that the fallback STILL returns ``snap_new`` because
-        its ``sequence`` is higher.
+        """Cluster 1 PR-CL1-2 removes sequence-ordered outage reuse.
 
-        This test would FAIL on the previous ``ORDER BY created_at
-        DESC, id DESC`` implementation (which would prefer ``snap_old``
-        because its ``created_at`` is later) and PASSES on the new
-        ``ORDER BY sequence DESC`` implementation.
+        Even when historical rows have an unambiguous newest sequence,
+        a compute during total quote unavailability must raise instead
+        of returning any candidate snapshot.
         """
         from app.services import deal_engine as deal_engine_mod
         from app.services.price_lookup_service import PriceReferenceUnprovable
@@ -1702,8 +1676,7 @@ class TestSnapshotReuseUnderPriceSourceRepair:
             assert snap_new_obj.created_at < snap_old_obj.created_at
             assert snap_new_obj.sequence > snap_old_obj.sequence
 
-        # Wipe the price feed and force the lookup to raise so the
-        # outage fallback fires.
+        # Wipe the price feed and force the lookup to raise.
         with SessionLocal() as s:
             s.query(CashSettlementPrice).filter(
                 CashSettlementPrice.symbol
@@ -1724,21 +1697,19 @@ class TestSnapshotReuseUnderPriceSourceRepair:
         )
 
         with SessionLocal() as s:
-            reused = DealEngineService.compute_deal_pnl(
-                s, uuid.UUID(deal_id), snapshot_date_obj
-            )
-            s.commit()
-            reused_id = str(reused.id)
+            with pytest.raises(PriceReferenceUnprovable):
+                DealEngineService.compute_deal_pnl(
+                    s, uuid.UUID(deal_id), snapshot_date_obj
+                )
+            s.rollback()
 
-        # The fix is at the column level (sequence), not the timestamp
-        # level (created_at) — even with snap_new's created_at rewound
-        # behind snap_old's, the monotonic sequence still wins.
-        assert reused_id == snap_new["id"], (
-            "outage fallback ordered by created_at instead of "
-            "sequence — snap_new (newer sequence, older created_at) "
-            "should have won but snap_old was returned. The ORDER BY "
-            "must be on ``sequence DESC``."
-        )
+        with SessionLocal() as s:
+            assert (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .count()
+                == 2
+            )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2014,9 +1985,8 @@ class TestPostgresServerSideSequence:
 # fail closed. The collect-then-decide algorithm in compute_deal_pnl
 # distinguishes three cases:
 #   * all commodities priced fresh → standard hash-match path
-#   * partial success (≥1 fresh + ≥1 unprovable) → propagate 422
-#   * total unavailability (0 fresh) → probe candidates (repair
-#     scenario)
+#   * partial success (>=1 fresh + >=1 unprovable) → propagate 424
+#   * total unavailability (0 fresh) → propagate 424
 # These tests pin the partial-success and total-unavailability
 # behavior for multi-commodity deals.
 # ──────────────────────────────────────────────────────────────────────
@@ -2032,7 +2002,7 @@ class TestPartialQuoteSuccessFailsClosed:
     corrected ALU value and silently return stale P&L. The fix is
     the collect-then-decide structure in ``compute_deal_pnl``: any
     partial success propagates the first
-    ``PriceReferenceUnprovable`` (→ 422) and persists no new row.
+    ``PriceReferenceUnprovable`` (-> 424) and persists no new row.
     """
 
     def _build_multi_commodity_deal_with_snapshot(
@@ -2099,7 +2069,7 @@ class TestPartialQuoteSuccessFailsClosed:
         probe candidates, and match the existing snapshot via its
         old (uncorrected) stored ALU value — silently serving stale
         ALU P&L. The fix propagates the first
-        ``PriceReferenceUnprovable`` (→ 422); no new snapshot is
+        ``PriceReferenceUnprovable`` (-> 424); no new snapshot is
         persisted; the existing baseline row is unchanged.
         """
         from app.services import deal_engine as deal_engine_mod
@@ -2132,8 +2102,8 @@ class TestPartialQuoteSuccessFailsClosed:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        # Route must map PriceReferenceUnprovable to 422 (4xx contract).
-        assert r2.status_code == 422, r2.text
+        # Governance §152 maps PriceReferenceUnprovable to 424.
+        assert r2.status_code == 424, r2.text
         # The baseline snapshot is NOT returned and no new row is
         # persisted — exactly one row exists, and it is snap1.
         with SessionLocal() as s:
@@ -2188,7 +2158,7 @@ class TestPartialQuoteSuccessFailsClosed:
             f"{ENDPOINT}/{deal_id}/pnl-snapshot",
             params={"snapshot_date": "2026-02-01"},
         )
-        assert r2.status_code == 422, r2.text
+        assert r2.status_code == 424, r2.text
         with SessionLocal() as s:
             rows = (
                 s.query(DealPNLSnapshot)
@@ -2199,14 +2169,14 @@ class TestPartialQuoteSuccessFailsClosed:
             assert str(rows[0].id) == snap1["id"]
             assert rows[0].inputs_hash == snap1["inputs_hash"]
 
-    def test_compute_deal_pnl_total_unavailability_reuses_candidate(
+    def test_compute_deal_pnl_total_unavailability_hard_fails(
         self, client, session, monkeypatch
     ):
-        """Total unavailability (multi-commodity) → repair scenario
-        reuses the candidate. ZERO fresh quotes obtained, so the
-        candidate fallback is honest (no fresh evidence to be stale
-        relative to). Mirrors the single-commodity reuse test but
-        confirms multi-commodity coverage.
+        """Total unavailability (multi-commodity) hard-fails.
+
+        ZERO fresh quotes obtained is not a license to reuse a
+        historical candidate. Existing snapshots stay unchanged and no
+        new row is written.
         """
         from app.services import deal_engine as deal_engine_mod
         from app.services.price_lookup_service import PriceReferenceUnprovable
@@ -2215,6 +2185,11 @@ class TestPartialQuoteSuccessFailsClosed:
             client, session
         )
         snapshot_date_obj = date(2026, 2, 1)
+        with SessionLocal() as s:
+            before = s.get(DealPNLSnapshot, uuid.UUID(snap1["id"]))
+            before_created_at = before.created_at
+            before_hash = before.inputs_hash
+            before_refs = before.price_references
 
         def _all_unprovable(_session, commodity, _as_of_date):
             raise PriceReferenceUnprovable(
@@ -2227,22 +2202,81 @@ class TestPartialQuoteSuccessFailsClosed:
         )
 
         with SessionLocal() as s:
-            snap2 = DealEngineService.compute_deal_pnl(
-                s, uuid.UUID(deal_id), snapshot_date_obj
-            )
-            s.commit()
-            snap2_id = str(snap2.id)
-            snap2_hash = snap2.inputs_hash
+            with pytest.raises(PriceReferenceUnprovable):
+                DealEngineService.compute_deal_pnl(
+                    s, uuid.UUID(deal_id), snapshot_date_obj
+                )
+            s.rollback()
 
-        assert snap2_id == snap1["id"]
-        assert snap2_hash == snap1["inputs_hash"]
         with SessionLocal() as s:
+            row = s.get(DealPNLSnapshot, uuid.UUID(snap1["id"]))
             assert (
                 s.query(DealPNLSnapshot)
                 .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
                 .count()
                 == 1
             )
+            assert row.created_at == before_created_at
+            assert row.inputs_hash == before_hash
+            assert row.price_references == before_refs
+
+    def test_compute_deal_pnl_total_unavailability_does_not_reuse_after_link_mutation(
+        self, client, session, monkeypatch
+    ):
+        """A content-mutated link must not make stale snapshot reuse possible.
+
+        The current inputs hash binds link ids and persisted
+        price_references, not mutable linked-entity content. During
+        total price unavailability, compute therefore raises instead of
+        returning a stale snapshot whose hash still matches.
+        """
+        from app.services import deal_engine as deal_engine_mod
+        from app.services.price_lookup_service import PriceReferenceUnprovable
+
+        deal_id, snap1 = self._build_multi_commodity_deal_with_snapshot(
+            client, session
+        )
+        snapshot_date_obj = date(2026, 2, 1)
+
+        with SessionLocal() as s:
+            link = (
+                s.query(DealLink)
+                .filter(
+                    DealLink.deal_id == uuid.UUID(deal_id),
+                    DealLink.linked_type == DealLinkedType.sales_order,
+                )
+                .one()
+            )
+            order = s.get(Order, link.linked_id)
+            order.quantity_mt = Decimal("125")
+            s.commit()
+
+        def _all_unprovable(_session, commodity, _as_of_date):
+            raise PriceReferenceUnprovable(
+                f"simulated repair: {commodity} source row deleted",
+                commodity=commodity,
+            )
+
+        monkeypatch.setattr(
+            deal_engine_mod, "_get_market_quote", _all_unprovable
+        )
+
+        with SessionLocal() as s:
+            with pytest.raises(PriceReferenceUnprovable):
+                DealEngineService.compute_deal_pnl(
+                    s, uuid.UUID(deal_id), snapshot_date_obj
+                )
+            s.rollback()
+
+        with SessionLocal() as s:
+            rows = (
+                s.query(DealPNLSnapshot)
+                .filter(DealPNLSnapshot.deal_id == uuid.UUID(deal_id))
+                .all()
+            )
+            assert len(rows) == 1
+            assert str(rows[0].id) == snap1["id"]
+            assert rows[0].inputs_hash == snap1["inputs_hash"]
 
 
 # ──────────────────────────────────────────────────────────────────────
