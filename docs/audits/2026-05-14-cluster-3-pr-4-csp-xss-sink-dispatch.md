@@ -12,6 +12,8 @@
 
 Replace the current baseline CSP at `frontend-svelte/nginx.conf` with the strict Clerk-aware CSP per Andrei's bindado decision (`project_cluster_3_platform_decisions`) — deployed as **`Content-Security-Policy-Report-Only`** first (1-2 sprints of violation collection + tuning), then flipped to `Content-Security-Policy` enforce mode in a subsequent flag-flip PR.
 
+Hard dependency: PR-CL3-4 MUST NOT start until PR-CL3-2 and PR-CL3-3 have merged into live `main`. If `/auth/*`, credentialed CSRF middleware, the CSRF exempt-list mechanism, or the frontend Clerk integration are absent, stop and report the dependency blocker rather than creating fallback infrastructure in this PR.
+
 Three coupled deliverables:
 
 1. **nginx CSP swap** — replace current generic CSP with the strict Clerk-aware baseline per `project_cluster_3_platform_decisions` exact text plus the configured backend HTTP/WebSocket origins required by this split-origin deployment. Header name `Content-Security-Policy-Report-Only` (not enforce). Includes `frame-ancestors 'none'`, `worker-src 'self' blob:`, backend API/WS origins, Clerk origins (`<fapi-host>` + `https://challenges.cloudflare.com`), Clerk telemetry connect-src, Clerk img.clerk.com, `report-to csp-endpoint`, `upgrade-insecure-requests`. NO `'unsafe-eval'`. NO permissive `https:` wildcards.
@@ -130,7 +132,24 @@ add_header Report-To '{"group":"csp-endpoint","max_age":10886400,"endpoints":[{"
 add_header X-Frame-Options "DENY" always;  # was SAMEORIGIN; tighten to DENY
 ```
 
-Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}`, `${VITE_API_BASE_URL}`, and `${VITE_WS_BASE_URL}` in `nginx.conf` from env vars at container start. `VITE_WS_BASE_URL` must be the backend WebSocket origin derived from `VITE_API_BASE_URL` (`https://api.example.com` → `wss://api.example.com`, `http://localhost:8000` → `ws://localhost:8000`).
+Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}`, `${VITE_API_BASE_URL}`, and `${VITE_WS_BASE_URL}` in `nginx.conf` from env vars at container start. `VITE_WS_BASE_URL` must be the backend WebSocket origin derived from `VITE_API_BASE_URL` (`https://api.example.com` -> `wss://api.example.com`, `http://localhost:8000` -> `ws://localhost:8000`).
+
+Concrete substitution shape:
+
+```sh
+#!/bin/sh
+set -eu
+
+export VITE_WS_BASE_URL="${VITE_WS_BASE_URL:-$(printf '%s' "$VITE_API_BASE_URL" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#')}"
+
+envsubst '${CLERK_FAPI_HOST} ${VITE_API_BASE_URL} ${VITE_WS_BASE_URL}' \
+  < /etc/nginx/templates/default.conf.template \
+  > /etc/nginx/conf.d/default.conf
+
+exec nginx -g 'daemon off;'
+```
+
+If the existing Dockerfile uses a different template path, keep that local path but preserve the `envsubst` variable list and verify the entrypoint is the container command.
 
 Verify by deploying the container and inspecting response headers in the browser.
 
@@ -367,6 +386,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 rg -nP "Content-Security-Policy-Report-Only" frontend-svelte/nginx.conf
 rg -nP "frame-ancestors 'none'|frame-src.*challenges.cloudflare.com|worker-src 'self' blob:|report-to csp-endpoint" frontend-svelte/nginx.conf
 rg -nP "connect-src.*VITE_API_BASE_URL.*VITE_WS_BASE_URL" frontend-svelte/nginx.conf
+rg -nP "envsubst.*CLERK_FAPI_HOST.*VITE_API_BASE_URL.*VITE_WS_BASE_URL|VITE_WS_BASE_URL=.*sed" frontend-svelte/docker-entrypoint.sh
 rg -nP "form-action 'self'" frontend-svelte/nginx.conf
 rg -nP "'unsafe-eval'" frontend-svelte/nginx.conf    # MUST be zero
 rg -nP "connect-src[^;]*(^|\\s)https:(\\s|;)" frontend-svelte/nginx.conf    # MUST be zero (no bare permissive https: source)
