@@ -271,7 +271,14 @@ class DealEngineService:
             expected_type = (
                 DealLinkedType.purchase_order if is_buy else DealLinkedType.sales_order
             )
-            matching = [ol for ol in order_links if ol.linked_type == expected_type]
+            matching: list[tuple[DealLink, Order]] = []
+            for ol in order_links:
+                if ol.linked_type != expected_type:
+                    continue
+                order = session.get(Order, ol.linked_id)
+                if not order or order.deleted_at is not None:
+                    continue
+                matching.append((ol, order))
 
             if not matching:
                 side_label = "PO (purchase)" if is_buy else "SO (sales)"
@@ -283,10 +290,7 @@ class DealEngineService:
                     ),
                 )
 
-            for mol in matching:
-                order = session.get(Order, mol.linked_id)
-                if not order or order.deleted_at is not None:
-                    continue
+            for _mol, order in matching:
                 # Fixed-price orders have no price exposure — hedging is unnecessary
                 if order.price_type == PriceType.fixed:
                     raise HTTPException(
@@ -394,9 +398,14 @@ class DealEngineService:
                         if is_buy
                         else DealLinkedType.sales_order
                     )
-                    matching_orders = [
-                        ol for ol in order_links if ol.linked_type == expected_type
-                    ]
+                    matching_orders: list[tuple[DealLink, Order]] = []
+                    for ol in order_links:
+                        if ol.linked_type != expected_type:
+                            continue
+                        order = session.get(Order, ol.linked_id)
+                        if not order or order.deleted_at is not None:
+                            continue
+                        matching_orders.append((ol, order))
                     if not matching_orders:
                         side_label = "PO (purchase)" if is_buy else "SO (sales)"
                         raise HTTPException(
@@ -408,10 +417,7 @@ class DealEngineService:
                         )
 
                     # Validate price-type and quantity constraints
-                    for mol in matching_orders:
-                        order = session.get(Order, mol.linked_id)
-                        if not order or order.deleted_at is not None:
-                            continue
+                    for _mol, order in matching_orders:
                         # Fixed-price orders have no price exposure
                         if order.price_type == PriceType.fixed:
                             raise HTTPException(

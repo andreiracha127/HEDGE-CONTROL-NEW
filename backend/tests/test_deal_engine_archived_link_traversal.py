@@ -299,6 +299,43 @@ def test_recompute_tons_excludes_archived_order_via_public_add_link(
     assert deal.total_hedge_tons == Decimal("0.000")
 
 
+def test_add_link_requires_live_order_for_hedge_direction_validation(
+    session: Session,
+) -> None:
+    deal = _create_deal(session)
+    archived_order = _create_order(
+        session,
+        OrderType.sales,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+        archived=True,
+    )
+    live_hedge = _create_hedge(
+        session,
+        qty=Decimal("5"),
+        classification=HedgeClassification.short,
+    )
+    _link(session, deal, DealLinkedType.sales_order, archived_order.id)
+
+    with pytest.raises(HTTPException) as exc:
+        DealEngineService.add_link(
+            session, deal.id, DealLinkedType.hedge.value, live_hedge.id
+        )
+
+    assert exc.value.status_code == 422
+    assert "requires a SO" in str(exc.value.detail)
+    hedge_link = (
+        session.query(DealLink)
+        .filter(
+            DealLink.deal_id == deal.id,
+            DealLink.linked_type == DealLinkedType.hedge,
+            DealLink.linked_id == live_hedge.id,
+        )
+        .first()
+    )
+    assert hedge_link is None
+
+
 def test_exposure_and_deal_pnl_converge_after_order_archive(
     session: Session,
 ) -> None:
