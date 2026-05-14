@@ -267,7 +267,8 @@ def _load_exposure_contracts(db: Session) -> list[HedgeContract]:
 def _load_linkages(db: Session) -> list[HedgeOrderLinkage]:
     # Mirrors ExposureService linkage extraction: join Order + HedgeContract,
     # then require live orders and live active/partially_settled hedge contracts.
-    # Row ordering is irrelevant because the shared primitive reduces by id.
+    # Subquery aliases are ExposureService-local; scenario callers consume raw
+    # linkage rows and derive linked-by-id maps inside the shared primitive.
     return (
         db.query(HedgeOrderLinkage)
         .join(Order, Order.id == HedgeOrderLinkage.order_id)
