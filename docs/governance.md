@@ -279,7 +279,7 @@ Authorization invariants:
 - The RBAC matrix is canonical. A per-route deviation is a constitutional
   amendment requiring this section's update, not a silent override in code.
 
-Anomalies retired by Cluster 3 closure:
+Anomalies to be retired upon Cluster 3 implementation closure:
 
 - Westmetall ingest routes (formerly `trader`-gated → `service:westmetall_ingest`)
 - WhatsApp webhook (formerly unauthed → `service:webhook_inbound` formalized)
