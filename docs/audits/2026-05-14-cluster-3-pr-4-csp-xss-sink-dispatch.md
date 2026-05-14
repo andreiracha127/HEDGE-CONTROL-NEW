@@ -366,7 +366,7 @@ rg -nP "frame-ancestors 'none'|frame-src.*challenges.cloudflare.com|worker-src '
 rg -nP "connect-src.*VITE_API_BASE_URL.*VITE_WS_BASE_URL" frontend-svelte/nginx.conf
 rg -nP "form-action 'self'" frontend-svelte/nginx.conf
 rg -nP "'unsafe-eval'" frontend-svelte/nginx.conf    # MUST be zero
-rg -nP "connect-src.*https:" frontend-svelte/nginx.conf    # MUST be zero (no permissive wildcard)
+rg -nP "connect-src[^;]*(^|\\s)https:(\\s|;)" frontend-svelte/nginx.conf    # MUST be zero (no bare permissive https: source)
 
 # TODO marker
 rg -nP "TODO\\(post-cluster-3\\)" frontend-svelte/nginx.conf

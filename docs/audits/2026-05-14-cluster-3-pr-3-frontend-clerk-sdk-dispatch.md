@@ -92,6 +92,8 @@ export async function initClerk(): Promise<void> {
   await clerk.load({
     // SvelteKit-friendly options — disable Clerk's own routing,
     // hand session-token exchange to our backend.
+    signInUrl: "/login",
+    signUpUrl: "/sign-up",
   });
 }
 ```
@@ -116,6 +118,8 @@ Replace `frontend-svelte/src/routes/(public)/login/+page.svelte` body:
     await initClerk();
     clerk.mountSignIn(mountEl, {
       // Clerk's hosted sign-in modal renders here
+      path: "/login",
+      routing: "path",
       afterSignInUrl: "/",
       afterSignUpUrl: "/",
     });
@@ -155,7 +159,7 @@ Replace `frontend-svelte/src/routes/(public)/login/+page.svelte` body:
 <div bind:this={mountEl}></div>
 ```
 
-Add `frontend-svelte/src/routes/(public)/sign-up/+page.svelte` mirroring the structure with `clerk.mountSignUp(...)`.
+Add `frontend-svelte/src/routes/(public)/sign-up/+page.svelte` mirroring the structure with `clerk.mountSignUp(...)`, using `path: "/sign-up"` and `routing: "path"` so Clerk Core 2 mounted pages do not throw on SvelteKit route pages.
 
 ### 4.3 Auth store wiring
 
@@ -198,7 +202,7 @@ The `isTraderOnly()` helper supports frontend conditional UI per matrix (e.g. hi
 
 In `frontend-svelte/src/lib/api/` (generated client wrapper), use the current `openapi-fetch` middleware surface in `frontend-svelte/src/lib/api/client.ts` and the shared base URL from `frontend-svelte/src/lib/api/fetch.ts`:
 
-- Read `csrf_token` cookie via `document.cookie` parsing OR keep store value from `/auth/session` response.
+- Read `csrf_token` via a helper that first checks `authStore.state.csrf_token` and then falls back to parsing the readable `csrf_token` cookie from `document.cookie`. This cold-load cookie fallback is required before the store is rehydrated.
 - On every fetch with method in `{"POST", "PATCH", "PUT", "DELETE"}`, add header `X-CSRF-Token: <token>`.
 - All fetches MUST set `credentials: "include"` so the httpOnly cookie is sent.
 - `client.use({ onRequest })` MUST return a new `Request` with the rewritten headers and `credentials: "include"`; mutating headers alone is not sufficient if credentials remain at the browser default.
@@ -212,10 +216,23 @@ import type { paths } from "./schema";
 import { API_BASE } from "$lib/api/fetch";
 import { authStore } from "$lib/stores/auth.svelte";
 
+function readCookie(name: string): string | null {
+  const prefix = `${name}=`;
+  return document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix))
+    ?.slice(prefix.length) ?? null;
+}
+
+function csrfFromStoreOrCookie(): string | null {
+  return authStore.state.csrf_token ?? readCookie("csrf_token");
+}
+
 function csrfHeaders(method: string, headers: HeadersInit | undefined): Headers {
   const result = new Headers(headers);
   if (["POST", "PATCH", "PUT", "DELETE"].includes(method.toUpperCase())) {
-    const csrf = authStore.state.csrf_token;
+    const csrf = csrfFromStoreOrCookie();
     if (csrf) result.set("X-CSRF-Token", csrf);
   }
   return result;
@@ -232,6 +249,8 @@ client.use({
   },
 });
 ```
+
+The existing `frontend-svelte/src/lib/api/fetch.ts` `apiFetch` helper MUST be updated with the same `credentials: "include"` and `X-CSRF-Token` logic, because route pages call `apiFetch(...)` directly for mutating operations. Do not wrap only the generated `openapi-fetch` client.
 
 For raw auth lifecycle calls outside the generated client (`/auth/session`, `/auth/logout`, `/auth/refresh`), use `${API_BASE}/auth/...` directly or route through the same shared `apiFetch` helper.
 
@@ -308,6 +327,8 @@ $effect(() => {
 
 Layout in `frontend-svelte/src/routes/(protected)/+layout.svelte` must hydrate before redirecting. On cold load, call `initClerk()`, then call `${API_BASE}/auth/me` with `credentials: "include"` to restore `actor_sub` + `roles` from the httpOnly backend cookie before deciding that the user is unauthenticated. Only redirect to `/login` after the hydration attempt returns 401/403 or Clerk has no recoverable session. Do not immediately redirect on the initial `authenticated === false` default state.
 
+WebSocket auth after token-storage removal: do not read JWTs from local storage or `authStore`. When opening authenticated WebSocket connections, obtain a fresh Clerk token at connect time with `await clerk.session?.getToken({ skipCache: true })` and send it via the existing first-message auth protocol, or rework the backend WebSocket handshake to accept the httpOnly cookie. The dispatch implementation must choose one path and update tests; leaving WebSocket auth dependent on removed token storage is not allowed.
+
 ## 5. Constitutional Rules
 
 - `docs/governance.md` AUTHORIZATION MATRIX — frontend MUST conform to the role-driven UI semantics. Frontend SHOULD hide CRUD UI for type combinations the user can't write (defense in depth; backend enforces).
@@ -329,6 +350,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `/login` page mounts Clerk sign-in via `clerk.mountSignIn`.
 - [ ] `/sign-up` page mounts Clerk sign-up via `clerk.mountSignUp`.
+- [ ] Mounted Clerk SignIn/SignUp pass Core 2 routing options (`path` + `routing`) matching the SvelteKit routes.
 - [ ] Backend auth response contracts verified before frontend wiring: `/auth/session` returns `{actor_sub, csrf_token}`; `/auth/refresh` returns `{actor_sub, csrf_token}`; `/auth/logout` returns empty success/204; `/auth/me` returns `{actor_sub, roles: string[]}`.
 - [ ] After Clerk sign-in, frontend calls `POST /auth/session`, fetches `GET /auth/me` for roles, then seeds auth store.
 - [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` with `X-CSRF-Token` + clears auth store.
@@ -344,6 +366,8 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] All mutating fetches include `X-CSRF-Token` header sourced from auth store.
 - [ ] All authenticated fetches set `credentials: "include"`.
+- [ ] The shared `apiFetch` helper sets the same credentials and CSRF header behavior; wrapping only the generated OpenAPI client is not sufficient.
+- [ ] CSRF header helper falls back to the readable `csrf_token` cookie on cold reload when the auth store is not hydrated yet.
 - [ ] Every generated OpenAPI client method is verified to route through the CSRF/credentials wrapper; count the generated methods before and after wrapping and assert no orphaned unwrapped method remains.
 - [ ] Sweep `rg -nP "Authorization.*Bearer|sessionStorage|localStorage" frontend-svelte/src/lib/api/` returns zero token-storage leaks.
 
@@ -361,6 +385,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 - [ ] Login page no longer contains paste-token form.
 - [ ] Reason-code constants from Phase A6 PR #67 (associated with the flag) removed.
 - [ ] Protected layout hydrates `/auth/me` before redirecting on cold load.
+- [ ] Authenticated WebSocket connections still work after token-storage removal by using a fresh Clerk SDK token at connect time or backend cookie-based WebSocket auth.
 
 ### 6.7 Cross-cutting
 

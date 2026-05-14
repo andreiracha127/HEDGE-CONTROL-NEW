@@ -16,7 +16,7 @@ Three coupled deliverables:
 
 1. **`get_current_actor_roles()` helper** — extract role list from JWT payload, enforce auditor-exclusive role combinability (catch #4 of PR #79: `{trader, auditor}` mixed sets MUST raise HTTP 401 at JWT validation time, BEFORE route gates evaluate).
 2. **Per-type Counterparty authorization** — implement the per-HTTP-method gates documented in governance §"Authorization invariants" (POST payload-gate / PATCH stored-record-gate + payload-type-mutation-rejection / DELETE stored-record-gate / GET trader-only filter).
-3. **Anomaly retirement (8 categories)** — swap per-route role gates to match the matrix, formalize 3 internal-issued service identities (westmetall_ingest, rfq_outbound, cashflow_pipeline) with backend-signed JWT minting + verification, formalize webhook_inbound as audit-trail attribution context (request stays HMAC, NOT swapped to JWT).
+3. **Anomaly retirement (documented inventory + route sweep)** — swap per-route role gates to match the matrix, formalize 3 internal-issued service identities (westmetall_ingest, rfq_outbound, cashflow_pipeline) with backend-signed JWT minting + verification, formalize webhook_inbound as audit-trail attribution context (request stays HMAC, NOT swapped to JWT).
 
 The RBAC matrix is canonical (`docs/governance.md` "The RBAC matrix is canonical. A per-route deviation is a constitutional amendment requiring this section's update, not a silent override in code."). Code MUST conform to it.
 
@@ -47,16 +47,20 @@ Verified at HEAD `e3ad0dffb`.
 
 ### Anomaly inventory (per governance.md, with line citations)
 
-8 documented anomalies. Each MUST be retired in this wave per governance "Anomalies to be retired upon Cluster 3 implementation closure" preamble; PR-CL3-1 dispatch §3 ALSO requires a sweep of every backend route against the matrix and inclusion of any newly-discovered anomaly in the implementation scope:
+Documented anomalies plus the full governance route sweep MUST be retired in this wave per governance "Anomalies to be retired upon Cluster 3 implementation closure" preamble; PR-CL3-1 dispatch §3 ALSO requires a sweep of every backend route against the matrix and inclusion of any newly-discovered anomaly in the implementation scope:
 
 1. **Westmetall ingest** (`backend/app/api/routes/westmetall.py:135`, `:184`) — currently `require_role("trader")`. Swap to `require_service_identity("westmetall_ingest")`. Also covers the scheduler/task that triggers ingest (per governance update).
 2. **WhatsApp webhook** (`backend/app/api/routes/webhooks.py:309-335` GET, `:339+` POST) — ingress stays as today (Meta `hub.verify_token` for GET, HMAC `X-Hub-Signature-256` / `X-Twilio-Signature` for POST). Internal processing context attributed to `service:webhook_inbound` for audit trail (NOT a route auth swap).
 3. **Counterparty CRUD** (`backend/app/api/routes/counterparties.py:23` POST, `:46` GET list, `:75` GET by-id, `:89` PATCH, `:120` DELETE) — apply per-method authorization per governance §"Authorization invariants" + read filter for trader-only effective role.
-4. **RFQ workflow** (`backend/app/api/routes/rfqs.py` 10 sites: `:102` POST /rfqs, `:134` POST /preview-text, `:266` POST submit-quote, `:318` reject, `:340` cancel, `:372` reject-quote, `:407` refresh-counterparty, `:441` refresh, `:473` award, `:495` PATCH archive) — swap from `require_role("trader")` to `require_role("risk_manager")`.
-5. **HedgeContract lifecycle** (`backend/app/api/routes/contracts.py:41` POST hedge create, `:100` PATCH archive, `:121` PATCH update, `:144` PATCH status, `:164` DELETE) — swap from `require_role("trader")` to `require_role("risk_manager")`.
-6. **Deal lifecycle** (`backend/app/api/routes/deals.py:104` POST deal create, `:186` POST add link, `:208` DELETE link, `:235` POST snapshot) — swap from `require_any_role("trader", "risk_manager")` to `require_role("risk_manager")` (drop trader from gate).
-7. **Hedge-Order Linkage create** (`backend/app/api/routes/linkages.py:56` POST) — swap from `require_role("trader")` to `require_role("risk_manager")`.
-8. **RFQ WebSocket topic subscription** (`backend/app/api/routes/ws.py:7`, `:112`, `:217`) — currently any authenticated JWT can subscribe to `topic == "rfq"` because `ConnectionManager.subscribe(...)` stores the topic with no role gate. Add an explicit `risk_manager` check for `topic == "rfq"` before subscription is recorded. Non-risk-manager actors receive `subscription_error` / forbidden and the subscription MUST NOT be added.
+4. **RFQ workflow** (`backend/app/api/routes/rfqs.py`) — mutation/action routes swap from `require_role("trader")` to `require_role("risk_manager")`; read/visibility routes follow RFQ visibility and must allow `risk_manager` + `auditor`, rejecting trader-only tokens.
+5. **HedgeContract lifecycle** (`backend/app/api/routes/contracts.py`) — mutation/action routes swap from `require_role("trader")` to `require_role("risk_manager")`; read/visibility routes allow `risk_manager` + `auditor`, rejecting trader-only tokens.
+6. **Deal lifecycle** (`backend/app/api/routes/deals.py`) — mutation/action routes swap from `require_any_role("trader", "risk_manager")` to `require_role("risk_manager")`; read/visibility routes allow `risk_manager` + `auditor`, rejecting trader-only tokens.
+7. **Hedge-Order Linkage create/read** (`backend/app/api/routes/linkages.py`) — create mutates under `risk_manager`; read/visibility routes allow `risk_manager` + `auditor`, rejecting trader-only tokens.
+8. **RFQ WebSocket topic subscription** (`backend/app/api/routes/ws.py:7`, `:112`, `:217`) — currently any authenticated JWT can subscribe to `topic == "rfq"` because `ConnectionManager.subscribe(...)` stores the topic with no role gate. Add an explicit `risk_manager` OR `auditor` check for `topic == "rfq"` before subscription is recorded. Trader-only actors receive `subscription_error` / forbidden and the subscription MUST NOT be added.
+9. **Scenario/MTM/P&L/Cashflow snapshot mutations** — include scenario POST, MTM snapshot writes, P&L snapshot writes, and cashflow snapshot writes in the route sweep; mutation gates must follow governance and must not leave bare `get_current_user` or trader-visible mutation access.
+10. **Cashflow ledger reads/writes** — align read/write gates with governance, including auditor read visibility where the matrix permits it and risk-manager-only mutations where required.
+11. **Exposure Engine routes** — replace bare `get_current_user` authorization with explicit governance gates on exposure routes.
+12. **Finance Pipeline routes** — replace bare `get_current_user` authorization with explicit governance gates on finance-pipeline routes.
 
 Evidence sweep already performed for the RFQ WebSocket surface: `rg -nP 'topic.*rfq|websocket.*rfq|def subscribe' backend/app/api/routes/ws.py` finds the subscription path above, so it is part of this dispatch rather than a conditional follow-up. The dispatch executor MUST also sweep `rg -nP "@router\\.(post|patch|put|delete)" backend/app/api/routes/` and check every mutation route against the matrix; any additional anomaly found beyond the 8 above MUST be added to the implementation scope of this PR with an inline note in the PR body and reply to whichever Codex catch surfaces it.
 
@@ -212,8 +216,11 @@ def list_counterparties(
             # Trader explicitly asked for broker/bank — return empty list (don't
             # leak existence). MUST NOT raise; pagination contract stays.
             return CounterpartyListResponse(items=[], total=0, ...)
-        # Force the filter to trader-allowed types regardless of query param.
-        effective_types = (CounterpartyType.customer, CounterpartyType.supplier)
+        # Intersect the requested type with trader-allowed types.
+        effective_types = (type,) if type is not None else (
+            CounterpartyType.customer,
+            CounterpartyType.supplier,
+        )
         # ... apply effective_types in the SQLAlchemy query
     # ... rest unchanged
 ```
@@ -244,10 +251,15 @@ def get_counterparty(
 |---|---|---|
 | `westmetall.py:135` | `require_role("trader")` | `require_service_identity("westmetall_ingest")` |
 | `westmetall.py:184` | `require_role("trader")` | `require_service_identity("westmetall_ingest")` |
-| `rfqs.py:113`, `:137`, `:280`, `:330`, `:352`, `:385`, `:419`, `:453`, `:485`, `:507` (10 sites) | `require_role("trader")` | `require_role("risk_manager")` |
-| `contracts.py:41`, `:100`, `:121`, `:144`, `:164` (5 sites) | `require_role("trader")` | `require_role("risk_manager")` |
-| `deals.py:104`, `:186`, `:208`, `:235` (4 sites) | `require_any_role("trader", "risk_manager")` | `require_role("risk_manager")` (drop trader) |
-| `linkages.py:56` | `require_role("trader")` | `require_role("risk_manager")` |
+| RFQ mutation/action routes | `require_role("trader")` | `require_role("risk_manager")` |
+| RFQ read/visibility routes | trader-readable or bare auth | `require_any_role("risk_manager", "auditor")` |
+| HedgeContract mutation/action routes | `require_role("trader")` | `require_role("risk_manager")` |
+| HedgeContract read/visibility routes | trader-readable or bare auth | `require_any_role("risk_manager", "auditor")` |
+| Deal mutation/action routes | `require_any_role("trader", "risk_manager")` | `require_role("risk_manager")` (drop trader) |
+| Deal read/visibility routes | trader-readable or bare auth | `require_any_role("risk_manager", "auditor")` |
+| Linkage mutation routes | `require_role("trader")` | `require_role("risk_manager")` |
+| Linkage read/visibility routes | trader-readable or bare auth | `require_any_role("risk_manager", "auditor")` |
+| Scenario/MTM/P&L/Cashflow/Cashflow-ledger/Exposure/Finance-pipeline routes | bare `get_current_user` or stale trader gate | explicit governance gate per matrix; no bare auth as authorization |
 | `webhooks.py:309-335` GET, `:339+` POST | unauthed / HMAC-only | unchanged at route gate; downstream operations attribute `actor_sub="service:webhook_inbound"` to audit events |
 
 For every site swapped, also verify the `actor_sub: str = Depends(get_current_actor_sub)` parameter exists (Cluster 2 pattern). If absent on a mutation route, ADD it; the actor_sub is part of the audit-event metadata recipe.
@@ -285,6 +297,8 @@ def require_service_identity(name: str):
 
 Service-identity JWT minting is OUT of scope here (will land in PR-CL3-2 alongside the Clerk integration, since both use the same JWKS infrastructure). For PR-CL3-1, the service-identity routes use the existing `get_current_actor_sub` and the new `require_service_identity` helper; the JWT issuance lives in a TODO until PR-CL3-2.
 
+Scheduled Westmetall ingest is not protected by a FastAPI route dependency. Update the scheduler/service audit path so the scheduled `run_westmetall_ingestion` execution records `actor_sub="service:westmetall_ingest"` and cannot commit market-data/audit rows without that service actor. Add a scheduler-path test that invokes the ingest task/service directly and asserts persisted audit/event metadata uses `service:westmetall_ingest`.
+
 For the `westmetall.py:135`/`:184` swap to land cleanly without minting being available yet, add a temporary fixture: when `_canonical_env() not in _FAIL_CLOSED_ENVS` (i.e. dev/test), accept actor_sub `service:westmetall_ingest` from a dev-only env var `DEV_SERVICE_ACTOR_SUB` for local cron testing. Production (and tests via override) must use real JWT issued by PR-CL3-2.
 
 ### 4.5 webhook_inbound audit attribution
@@ -304,7 +318,7 @@ Per governance update (PR #79 catch absorption), the RFQ WebSocket topic `"rfq"`
 Required implementation:
 
 - Add a pure helper in `backend/app/core/auth.py` that validates/extracts human roles from a JWT payload dict without `Depends`, and have `get_current_actor_roles(...)` call that helper. The WebSocket path can then reuse exactly the same filtering + auditor-exclusive logic as HTTP routes.
-- In `backend/app/api/routes/ws.py`, before `await manager.subscribe(ws, topic, topic_id)`, if `topic == "rfq"` then read `manager.get_user(ws)`, extract roles with the shared helper, and require `"risk_manager" in roles`.
+- In `backend/app/api/routes/ws.py`, before `await manager.subscribe(ws, topic, topic_id)`, if `topic == "rfq"` then read `manager.get_user(ws)`, extract roles with the shared helper, and require `"risk_manager" in roles or "auditor" in roles`.
 - If the RFQ-topic role check fails, return a `subscription_error` with reason `"forbidden"` (or equivalent stable code), and do not add `(topic, topic_id)` to `state.subscriptions`.
 - Non-RFQ topics remain unchanged unless the governance matrix explicitly classifies them.
 
@@ -326,6 +340,7 @@ A merged PR closes D-3.1 (RBAC enforcement portion) iff every item below is true
 
 - [ ] `backend/app/core/auth.py` — `get_current_actor_roles` exists with the signature and auditor-exclusive validation in §4.1.
 - [ ] `backend/app/core/auth.py` — `require_role` and `require_any_role` consume `get_current_actor_roles` (verify via grep that they no longer read `user.roles` directly).
+- [ ] Auth-disabled local/test anonymous fallback (`sub == "anonymous"` with broad dev roles) bypasses auditor exclusivity; production/fail-closed JWTs still reject auditor mixed with any other human role.
 - [ ] `backend/app/core/auth.py` — `require_service_identity(name)` factory exists per §4.4.
 - [ ] `backend/app/core/auth.py` — `_VALID_HUMAN_ROLES` and `_INTERNAL_SERVICE_IDENTITIES` frozensets exist.
 
@@ -345,7 +360,7 @@ A merged PR closes D-3.1 (RBAC enforcement portion) iff every item below is true
 - [ ] `contracts.py` 5 sites swapped to `require_role("risk_manager")`. Sweep `rg -nP 'require_role\\("trader"\\)' backend/app/api/routes/contracts.py` → zero matches.
 - [ ] `deals.py` 4 mutation sites swapped to `require_role("risk_manager")` (drop trader). Sweep `rg -nP 'require_any_role\\("trader", "risk_manager"\\)' backend/app/api/routes/deals.py` → matches only on read sites (not on mutation).
 - [ ] `linkages.py:56` swapped to `require_role("risk_manager")`.
-- [ ] RFQ WebSocket topic `"rfq"` subscription in `ws.py` requires `risk_manager` before subscription state is written.
+- [ ] RFQ WebSocket topic `"rfq"` subscription in `ws.py` requires `risk_manager` OR `auditor` before subscription state is written; trader-only tokens are rejected.
 
 ### 6.4 Sweep for newly-discovered anomalies
 
@@ -370,6 +385,7 @@ Per-route role acceptance/rejection matrix. ONE test per (route, role, expected 
 1. **`test_get_current_actor_roles_filters_unknown_values`** — JWT payload with `roles=["trader", "garbage", "admin"]` → returns `["trader"]`.
 2. **`test_get_current_actor_roles_rejects_auditor_with_trader`** — JWT payload with `roles=["auditor", "trader"]` → raises HTTP 401 with detail "Invalid role combination".
 3. **`test_get_current_actor_roles_rejects_auditor_with_risk_manager`** — same but `["auditor", "risk_manager"]` → raises HTTP 401.
+4. **`test_get_current_actor_roles_allows_dev_anonymous_broad_roles`** — user payload `{"sub": "anonymous", "roles": ["trader", "risk_manager", "auditor"]}` returns roles unchanged in non-fail-closed local/test fallback.
 4. **`test_get_current_actor_roles_accepts_trader_plus_risk_manager`** — JWT payload with `roles=["trader", "risk_manager"]` → returns `["risk_manager", "trader"]` (sorted).
 5. **`test_counterparty_post_trader_rejects_broker`** — trader-only JWT POSTs counterparty with `type=broker` → 403.
 6. **`test_counterparty_post_trader_accepts_customer`** — trader-only JWT POSTs counterparty with `type=customer` → 201.
@@ -407,6 +423,8 @@ For each retired anomaly site, ONE test per (role, expected status):
 
 28. **`test_ws_rfq_subscription_requires_risk_manager`** — authenticate with JWT roles `["trader"]`, send `{"action":"subscribe","topic":"rfq","id":"<uuid>"}`, assert `subscription_error` / forbidden and no subscription is recorded.
 29. **`test_ws_rfq_subscription_accepts_risk_manager`** — authenticate with JWT roles `["risk_manager"]`, send the same RFQ subscription, assert `subscription_ack`.
+30. **`test_ws_rfq_subscription_accepts_auditor`** — authenticate with JWT roles `["auditor"]`, send the same RFQ subscription, assert `subscription_ack`.
+31. **`test_westmetall_scheduler_attributes_service_actor`** — invoke the scheduled ingest service/task directly and assert persisted audit/event metadata has `actor_sub == "service:westmetall_ingest"`.
 
 ### 7.5 Existing tests must continue to pass
 

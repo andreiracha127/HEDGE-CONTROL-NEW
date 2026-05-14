@@ -86,6 +86,12 @@ class AuthSettings:
     issuer: str    # https://<clerk-fapi-host>
 
 
+def _auth_enabled() -> bool:
+    # Clerk config is now the primary auth signal; keep legacy JWT_ISSUER
+    # compatibility during the migration.
+    return bool(os.getenv("CLERK_FAPI_HOST") or get_settings().jwt_issuer)
+
+
 def get_auth_settings() -> AuthSettings | None:
     if not _auth_enabled():
         return None
@@ -411,13 +417,19 @@ def get_current_user(
     settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, Any]:
     if settings is None:
-        raise HTTPException(status_code=401, detail="Authentication disabled")
+        if _canonical_env() in _FAIL_CLOSED_ENVS:
+            raise HTTPException(status_code=401, detail="Authentication disabled")
+        return _ANONYMOUS_USER
 
     token, source = _extract_token_with_source(request)
-    unverified = jwt.decode(token, options={"verify_signature": False})
+    try:
+        unverified = jwt.decode(token, options={"verify_signature": False})
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid token")
     issuer = unverified.get("iss", "")
 
-    if issuer == os.environ["BACKEND_SERVICE_ISSUER"]:
+    service_issuer = os.getenv("BACKEND_SERVICE_ISSUER")
+    if service_issuer and issuer == service_issuer:
         if source != "bearer":
             raise HTTPException(status_code=401, detail="Service token must use Bearer transport")
         return _validate_service_token(token)
@@ -494,6 +506,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 6.1 Clerk JWT validation
 
 - [ ] `backend/app/core/auth.py` — `AuthSettings` remains the existing 3-field dataclass; `get_auth_settings` reads `CLERK_FAPI_HOST` and derives `jwks_url` + `issuer` from it.
+- [ ] `_auth_enabled()` treats `CLERK_FAPI_HOST` as the primary auth-enabled signal while preserving legacy `JWT_ISSUER` compatibility during migration.
 - [ ] JWKS URL points at `https://<fapi_host>/.well-known/jwks.json`.
 - [ ] `iss` and `aud` match Clerk values.
 - [ ] `# TODO(post-cluster-3): swap to clerk.<custom-domain>` marker present at every site that hardcodes the dev FAPI host.
@@ -532,6 +545,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 
 - [ ] `validate_auth_config` raises if any of `CLERK_FAPI_HOST`, `SERVICE_JWT_SIGNING_KEY`, `SERVICE_JWT_PUBLIC_KEY`, `BACKEND_SERVICE_ISSUER`, `BACKEND_SERVICE_AUDIENCE` missing in `_FAIL_CLOSED_ENVS`.
 - [ ] Phase A5 J-A5-06 invariant preserved: anonymous access rejected in production at request-time too.
+- [ ] Non-fail-closed local/test auth-disabled flows still return the existing `_ANONYMOUS_USER`; only `_FAIL_CLOSED_ENVS` reject anonymous access.
 
 ### 6.7 Cross-cutting
 
