@@ -364,7 +364,7 @@ scope — this list is the known set, not an exhaustive guarantee):
   with read filter)
 - RFQ workflow (`rfqs.py` 10 sites: POST /rfqs, /preview-text, actions
   reject/cancel/reject-quote/refresh-counterparty/refresh/award/archive)
-  formerly `trader`-gated → `risk_manager`-gated (RFQs cotam derivativos
+  formerly `trader`-gated → `risk_manager`-gated (RFQs price derivatives
   = risk_manager territory by matrix definition)
 - HedgeContract lifecycle (`contracts.py` 5 sites: `:41` POST hedge create,
   `:100` PATCH archive, `:121` PATCH update, `:144` PATCH status, `:164`
