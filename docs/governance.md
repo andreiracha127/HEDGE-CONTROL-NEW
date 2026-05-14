@@ -350,12 +350,14 @@ PR-CL3-1 dispatch §3 MUST sweep every backend route against this
 matrix and add any newly-discovered anomaly to the implementation
 scope — this list is the known set, not an exhaustive guarantee):
 
-- Westmetall ingest routes (`westmetall.py:135`, `:184`) formerly
-  `trader`-gated → `service:westmetall_ingest`. The same service identity
-  also covers scheduled production ingestion (`scheduler.py:38-43` registers
-  `run_westmetall_ingestion`; `westmetall_task.py:38-44` persists fetched
-  settlement prices), so the cron path has authorized audit attribution
-  without widening `service:westmetall_ingest` beyond Westmetall market data.
+- Westmetall ingest routes (`westmetall.py`: POST decorators at `:120`,
+  `:169`; current gates at `:135`, `:184`) formerly `trader`-gated →
+  `service:westmetall_ingest`. The same service identity also covers
+  scheduled production ingestion (`scheduler.py:39` registers
+  `run_westmetall_ingestion`; `westmetall_task.py:28` defines the task and
+  `:40` calls the bulk ingest service), so the cron path has authorized audit
+  attribution without widening `service:westmetall_ingest` beyond Westmetall
+  market data.
 - WhatsApp webhook (`webhooks.py:309` GET challenge, `:339` POST inbound):
   ingress preserves provider's documented authentication protocol per
   HTTP method — POST stays HMAC-authed (Meta `X-Hub-Signature-256` /
@@ -367,13 +369,15 @@ scope — this list is the known set, not an exhaustive guarantee):
   identities above for full per-method protocol)
 - Counterparty CRUD (formerly all-roles open → per-type for trader,
   with read filter)
-- RFQ workflow and visibility (`rfqs.py`: reads at `:69`, `:218`, `:227`,
-  `:248`, `:292`, `:311`; mutating/POST gates at `:113`, `:137`, `:280`,
-  `:330`, `:352`, `:385`, `:419`, `:453`, `:485`, `:507`) formerly admit
-  `trader` → remove `trader` from every RFQ route. RFQ reads remain
-  `require_any_role("risk_manager", "auditor")`; RFQ writes/actions become
-  `require_role("risk_manager")`. RFQs price derivatives = risk_manager
-  territory by matrix definition.
+- RFQ workflow and visibility (`rfqs.py`: read decorators at `:56`, `:215`,
+  `:224`, `:245`, `:289`, `:308` with current gates at `:69`, `:218`,
+  `:227`, `:248`, `:292`, `:311`; write/action decorators at `:102`, `:134`,
+  `:266`, `:318`, `:340`, `:372`, `:407`, `:441`, `:473`, `:495` with current
+  gates at `:113`, `:137`, `:280`, `:330`, `:352`, `:385`, `:419`, `:453`,
+  `:485`, `:507`) formerly admit `trader` → remove `trader` from every RFQ
+  route. RFQ reads remain `require_any_role("risk_manager", "auditor")`; RFQ
+  writes/actions become `require_role("risk_manager")`. RFQs price derivatives
+  = risk_manager territory by matrix definition.
 - RFQ WebSocket visibility (`ws.py:112` topic subscription storage, `:226`
   subscribe action; current regression coverage uses `test_ws.py:17` trader
   claims and `:183` `topic="rfq"` broadcast receipt) formerly lets any
@@ -382,11 +386,13 @@ scope — this list is the known set, not an exhaustive guarantee):
   `require_any_role("risk_manager", "auditor")`; trader tokens must be
   rejected for RFQ-topic subscriptions. Non-RFQ WebSocket topics are unchanged
   unless the route sweep finds an equivalent target-matrix conflict.
-- HedgeContract lifecycle and visibility (`contracts.py`: reads at `:65`,
-  `:82`, `:181`; writes at `:41`, `:100`, `:121`, `:144`, `:164`) formerly
-  admit `trader` → remove `trader` from every HedgeContract route.
-  HedgeContract reads remain `require_any_role("risk_manager", "auditor")`;
-  HedgeContract writes become `require_role("risk_manager")`.
+- HedgeContract lifecycle and visibility (`contracts.py`: read decorators at
+  `:51`, `:79`, `:178` with current gates at `:65`, `:82`, `:181`; write
+  decorators at `:28`, `:89`, `:114`, `:135`, `:158` with current gates at
+  `:41`, `:100`, `:121`, `:144`, `:164`) are a pre-CL3 anomaly: they formerly
+  admit `trader`, and Cluster 3 must remove `trader` from every HedgeContract
+  route. HedgeContract reads remain `require_any_role("risk_manager",
+  "auditor")`; HedgeContract writes become `require_role("risk_manager")`.
 - Deal lifecycle and visibility (`deals.py`: reads/analytics at `:64`,
   `:125`, `:146`, `:167`, `:254`; writes at `:104`, `:186`, `:208`, `:235`)
   formerly admit `trader` → remove `trader` from every Deal route.
