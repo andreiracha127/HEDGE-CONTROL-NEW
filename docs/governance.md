@@ -400,11 +400,14 @@ scope — this list is the known set, not an exhaustive guarantee):
   where no human request is involved. This route writes hedge-contract
   settlement and ledger entries, which are outside trader territory and
   must not remain trader-gated.
-- Exposure engine write routes (`exposures.py:65` POST `/reconcile`,
-  `exposures.py:116` POST `/tasks/{task_id}/execute`) formerly bare
-  `get_current_user` → `require_role("risk_manager")`. Exposure recompute
-  and hedge-task execution are risk_manager territory; auditor remains
-  read-only and trader MUST NOT reach these mutation routes.
+- Exposure engine routes formerly bare `get_current_user`:
+  read/visibility routes (`exposures.py:86` GET `/net`, `:97` GET `/tasks`,
+  `:137` GET `/list`, `:218` GET `/{exposure_id}`) →
+  `require_any_role("risk_manager", "auditor")`; write routes
+  (`exposures.py:65` POST `/reconcile`, `:116` POST
+  `/tasks/{task_id}/execute`) → `require_role("risk_manager")`.
+  Exposure reads can expose hedge linkage and HedgeContract identifiers via
+  enriched responses, so trader MUST NOT receive this surface indirectly.
 - Finance pipeline run (`finance_pipeline.py:38` POST
   `/finance-pipeline/run`) formerly bare `get_current_user` →
   `require_role("risk_manager")` for the manual HTTP trigger. Automated
