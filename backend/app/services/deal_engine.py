@@ -917,8 +917,8 @@ class DealEngineService:
                     )
 
                 if contract.status == HedgeContractStatus.cancelled:
-                    continue
-                if contract.status == HedgeContractStatus.settled:
+                    pass
+                elif contract.status == HedgeContractStatus.settled:
                     hedge_pnl_realized += mtm
                 else:
                     hedge_pnl_mtm += mtm

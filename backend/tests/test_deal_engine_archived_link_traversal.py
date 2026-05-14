@@ -214,6 +214,7 @@ def test_compute_deal_pnl_excludes_archived_hedge_contract(session: Session) -> 
     assert snap.hedge_pnl_realized == Decimal("0")
     assert snap.hedge_pnl_mtm == Decimal("0")
     assert snap.total_pnl == Decimal("250000.000000")
+    assert snap.price_references is None
 
 
 def test_compute_deal_pnl_raises_409_when_all_links_archived(
