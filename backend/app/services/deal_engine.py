@@ -292,6 +292,9 @@ class DealEngineService:
             in (DealLinkedType.sales_order, DealLinkedType.purchase_order)
         ]
 
+        # Fast-path only for deals with no link rows in either category.
+        # Archived targets are intentionally filtered per-link below so a
+        # deal with archived order rows and a live hedge still raises.
         if not hedge_links or not order_links:
             return  # nothing to validate
 

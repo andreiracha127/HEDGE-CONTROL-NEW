@@ -276,6 +276,7 @@ def test_compute_pnl_breakdown_all_deals_skips_empty_live_link_deals(
     )
     _link(session, live_deal, DealLinkedType.sales_order, live_order.id)
 
+    # Empty list means "all deals"; non-empty list is an explicit filter.
     result = DealEngineService.compute_pnl_breakdown(session, [], SNAPSHOT_DATE)
 
     assert [row["deal_id"] for row in result["deals"]] == [live_deal.id]
