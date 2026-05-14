@@ -758,7 +758,12 @@ class DealEngineService:
             # Total unavailability → repair scenario. ZERO fresh
             # quotes obtained, so probing existing snapshots is
             # honest: there is no fresh evidence to be stale relative
-            # to. Each candidate's hash is recomputed from the current
+            # to. This branch is reachable only when at least one
+            # commodity needed a live price and failed lookup; if no
+            # commodity needed pricing, ``unprovable_errors`` would be
+            # empty and the function would build a fixed-price snapshot
+            # with ``price_references = None`` instead of probing. Each
+            # candidate's hash is recomputed from the current
             # link set + its persisted price_references; the first
             # match is returned. Legacy (pre-PR-8) rows have their
             # hash computed in the old format (no price_references
@@ -842,6 +847,9 @@ class DealEngineService:
         # ── Step 6: compute MTMs using the per-commodity dict.
         physical_revenue = Decimal("0")
         physical_cost = Decimal("0")
+        # Intentionally zero in this snapshot path: settled hedge realized P&L
+        # is sourced from the cashflow ledger via compute_pl, not recomputed
+        # from current MTM inputs here.
         hedge_pnl_realized = Decimal("0")
         hedge_pnl_mtm = Decimal("0")
 
@@ -1074,6 +1082,9 @@ class DealEngineService:
 
             physical_revenue = Decimal("0")
             physical_cost = Decimal("0")
+            # Intentionally zero in this breakdown path for the same reason as
+            # snapshots: settled hedge realized P&L belongs to compute_pl /
+            # cashflow-ledger attribution, not MTM recomputation here.
             hedge_pnl_realized = Decimal("0")
             hedge_pnl_mtm = Decimal("0")
             physical_items: list[dict] = []
