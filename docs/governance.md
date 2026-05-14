@@ -186,6 +186,67 @@ No mixed regimes
 No mutation without evidence
 
 ────────────────────────────────────────
+AUTHORIZATION MATRIX
+────────────────────────────────────────
+
+The RBAC contract for the platform. Per-route gates MUST conform to this
+matrix; deviation requires constitutional amendment, not silent override.
+
+Human roles (3, no admin/viewer):
+
+- `trader` (commercial team)
+  - Counterparty CRUD limited to type ∈ {customer, supplier}
+  - Order CRUD (Sales Orders + Purchase Orders)
+  - Read of operational primitives (orders, counterparties)
+  - Cannot: HedgeContracts, RFQs, Deals, Links, Scenario, MTM/P&L writes,
+    Counterparty {broker, bank_br}, audit log
+
+- `risk_manager` (system owner)
+  - Counterparty CRUD all 4 types
+  - HedgeContract full lifecycle
+  - RFQ all operations
+  - Deal lifecycle (create, links, snapshots)
+  - Scenario / MTM / P&L / Exposure recompute and snapshots
+  - Cashflow + finance pipeline
+  - All sensitive reads
+  - Cannot: audit log delete (immutable invariant)
+
+- `auditor` (oversight)
+  - Read-only on every endpoint
+  - Audit log read (dedicated routes)
+  - Cannot: any write
+
+Service identities (4, JWT-authenticated, short-lived TTL ~5min):
+
+- `service:westmetall_ingest` — cron-driven market-data ingest
+- `service:webhook_inbound` — WhatsApp inbound (HMAC + identity formalization)
+- `service:rfq_outbound` — outbound RFQ delivery worker
+- `service:cashflow_pipeline` — cashflow_ledger + finance_pipeline writes
+
+All service identities use JWT signed by backend (same actor_sub pattern
+as human authentication). Service-account scope is per-identity-confined;
+service:westmetall_ingest cannot write orders, only its own ingest endpoint.
+
+Authorization invariants:
+
+- Counterparty CRUD by `trader` requires server-side two-layer validation:
+  route gate `require_any_role(trader, risk_manager)` + payload gate
+  `payload.type ∈ {customer, supplier}` when actor lacks risk_manager.
+  Same rule on PATCH (no type-mutation escape) and DELETE.
+- Audit log writes are immutable. No role — including risk_manager — can
+  delete audit events. The auditor role is the read-only oversight layer.
+- Service identities follow the same actor_sub JWT pattern as human auth
+  (uniformity established by Cluster 2 backend hardening).
+- The RBAC matrix is canonical. A per-route deviation is a constitutional
+  amendment requiring this section's update, not a silent override in code.
+
+Anomalies retired by Cluster 3 closure:
+
+- Westmetall ingest routes (formerly `trader`-gated → `service:westmetall_ingest`)
+- WhatsApp webhook (formerly unauthed → `service:webhook_inbound` formalized)
+- Counterparty CRUD (formerly all-roles open → per-type for trader)
+
+────────────────────────────────────────
 EXECUTION DISCIPLINE
 ────────────────────────────────────────
 
