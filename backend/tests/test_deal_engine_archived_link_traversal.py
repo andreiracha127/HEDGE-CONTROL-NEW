@@ -318,9 +318,12 @@ def test_recompute_tons_excludes_archived_order_via_public_add_link(
     deal = _create_deal(session)
     live_order = _create_order(session, OrderType.sales, qty=Decimal("10"))
     archived_order = _create_order(session, OrderType.sales, qty=Decimal("7"))
-    _link(session, deal, DealLinkedType.sales_order, live_order.id)
-    _link(session, deal, DealLinkedType.sales_order, archived_order.id)
-    DealEngineService._recompute_tons(session, deal)
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, live_order.id
+    )
+    DealEngineService.add_link(
+        session, deal.id, DealLinkedType.sales_order.value, archived_order.id
+    )
     assert deal.total_physical_tons == Decimal("17.000")
 
     archived_order.deleted_at = datetime.now(timezone.utc)
