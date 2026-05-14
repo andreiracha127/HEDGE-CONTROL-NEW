@@ -159,7 +159,28 @@ Add one alembic revision `044_dealink_lifecycle_columns.py` (or equivalent name)
 
 1. `op.add_column("deal_links", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))` — add the lifecycle column. (Optionally also `is_deleted` for symmetry with `Order` / `HedgeContract` / `Exposure`, but `deleted_at IS NULL` alone is sufficient as the live predicate.)
 2. `op.drop_constraint("uq_deal_link", "deal_links", type_="unique")` and `op.drop_constraint("uq_deal_link_entity", "deal_links", type_="unique")` — drop the existing unconditional unique constraints (verified at HEAD `ea08d9868`, `backend/app/models/deal.py:171-194`).
-3. `op.create_index("uq_deal_link_live", "deal_links", ["deal_id", "linked_type", "linked_id"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))` and `op.create_index("uq_deal_link_entity_live", "deal_links", ["linked_type", "linked_id"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))` — create partial unique indexes scoped to live rows. PostgreSQL native syntax. SQLite supports the same `WHERE` clause on `CREATE UNIQUE INDEX` (alembic generates it via the `sqlite_where` keyword if the target dialect is SQLite — verify the project's alembic config).
+3. Create two partial unique indexes scoped to live rows. **Both `postgresql_where` AND `sqlite_where` keywords are mandatory** in each call so the migration produces a partial index on both production (PostgreSQL) and the test dialect (SQLite). Codex catch on PR #74 v4: omitting `sqlite_where` would silently produce an unconditional unique index on SQLite, the test #3 "Relink a freed entity" would fail with `IntegrityError` on the test dialect even though the migration is correct on PostgreSQL.
+
+   ```python
+   op.create_index(
+       "uq_deal_link_live",
+       "deal_links",
+       ["deal_id", "linked_type", "linked_id"],
+       unique=True,
+       postgresql_where=sa.text("deleted_at IS NULL"),
+       sqlite_where=sa.text("deleted_at IS NULL"),
+   )
+   op.create_index(
+       "uq_deal_link_entity_live",
+       "deal_links",
+       ["linked_type", "linked_id"],
+       unique=True,
+       postgresql_where=sa.text("deleted_at IS NULL"),
+       sqlite_where=sa.text("deleted_at IS NULL"),
+   )
+   ```
+
+   Verify the project's alembic config supports both dialect keywords (it does as of HEAD — alembic ≥1.x handles both). If a third dialect is added to CI in the future, this code block must be revisited.
 
 Update `backend/app/models/deal.py` `__table_args__` to remove the two `UniqueConstraint`s and add `Index(..., unique=True, postgresql_where=text("deleted_at IS NULL"))` declarations matching the new partial indexes.
 
