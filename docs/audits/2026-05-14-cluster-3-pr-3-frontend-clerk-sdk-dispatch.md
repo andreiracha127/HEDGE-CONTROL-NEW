@@ -14,7 +14,7 @@ Integrate `@clerk/clerk-js` into the SvelteKit frontend; replace the dev paste-t
 
 Three coupled deliverables:
 
-1. **`@clerk/clerk-js` integration** — install SDK, configure with `CLERK_PUBLISHABLE_KEY` env var (dev provisional, with TODO post-cluster-3 swap to production key if different). SignIn/SignUp via Clerk's hosted modal or redirect.
+1. **`@clerk/clerk-js` integration** — install SDK, configure with `VITE_CLERK_PUBLISHABLE_KEY` env var (dev provisional, with TODO post-cluster-3 swap to production key if different). SignIn/SignUp via Clerk's hosted modal or redirect.
 2. **Session lifecycle wiring** — after Clerk authentication, exchange Clerk session token for httpOnly cookie via PR-CL3-2's `/auth/session`. Refresh on TTL approach. Clear on logout via `/auth/logout`.
 3. **CSRF token echo** — read `csrf_token` cookie (non-httpOnly), echo in `X-CSRF-Token` header on every mutating request via the API client.
 4. **Kill `manualTokenLoginEnabled`** — Phase A6 PR #67 (memory `project_phase_a6_pr4_landed`) gated dev paste-token login behind `runtimeFlags.manualTokenLoginEnabled` with three reason codes; production builds hard-failed config error. With Clerk handling login, the flag + paste-token UI become dead code. Remove both.
@@ -61,7 +61,7 @@ Sweep for `GET /me` or `/auth/me` or `/users/me`:
 rg -nP '"/me"|"/auth/me"|"/users/me"' backend/app/api/routes/
 ```
 
-If no current endpoint, the executor MUST decide: (a) add `GET /auth/me` as part of this PR (minimal backend addition acceptable since it's session-introspection, not RBAC); (b) seed store entirely from `/auth/session` response (returns actor_sub + csrf_token already; would need to add roles to the response).
+If no current endpoint, the executor MUST add `GET /auth/me` as part of this PR (minimal backend addition acceptable since it is session-introspection, not RBAC). Do not seed `authStore.roles` from `/auth/session` unless PR-CL3-2 has explicitly expanded that response contract to include `roles: string[]`.
 
 ## 4. Required Implementation Boundary
 
@@ -78,10 +78,10 @@ Config in `frontend-svelte/src/lib/clerk.ts` (NEW):
 import Clerk from "@clerk/clerk-js";
 
 // TODO(post-cluster-3): swap from pk_test_... (dev) to pk_live_... (custom-domain)
-const PUBLISHABLE_KEY = import.meta.env.PUBLIC_CLERK_PUBLISHABLE_KEY;
+const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
 if (!PUBLISHABLE_KEY) {
-  throw new Error("PUBLIC_CLERK_PUBLISHABLE_KEY missing — auth disabled");
+  throw new Error("VITE_CLERK_PUBLISHABLE_KEY missing — auth disabled");
 }
 
 export const clerk = new Clerk(PUBLISHABLE_KEY);
@@ -94,7 +94,7 @@ export async function initClerk(): Promise<void> {
 }
 ```
 
-Env var: `PUBLIC_CLERK_PUBLISHABLE_KEY` (Vite-prefixed `PUBLIC_` for client-side exposure). Set in `.env.example` with placeholder + TODO marker.
+Env var: `VITE_CLERK_PUBLISHABLE_KEY` (Vite client-side exposure prefix used by this repo). Set in `.env.example` with placeholder + TODO marker.
 
 ### 4.2 SignIn/SignUp pages
 
@@ -133,7 +133,16 @@ Replace `frontend-svelte/src/routes/(public)/login/+page.svelte` body:
           console.error("Session exchange failed", response.status);
           return;
         }
-        const { actor_sub, csrf_token, roles } = await response.json();
+        const { actor_sub, csrf_token } = await response.json();
+        const meResponse = await fetch(`${API_BASE}/auth/me`, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (!meResponse.ok) {
+          console.error("Identity lookup failed", meResponse.status);
+          return;
+        }
+        const { roles } = await meResponse.json();
         authStore.set({ actor_sub, csrf_token, roles, authenticated: true });
         goto("/");
       }
@@ -235,7 +244,11 @@ For raw auth lifecycle calls outside the generated client (`/auth/session`, `/au
 
   async function logout() {
     await clerk.signOut();  // Clerk-side cleanup
-    await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "X-CSRF-Token": authStore.state.csrf_token ?? "" },
+    });
     authStore.clear();
     goto("/login");
   }
@@ -297,14 +310,14 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `@clerk/clerk-js` listed in `frontend-svelte/package.json` dependencies.
 - [ ] `frontend-svelte/src/lib/clerk.ts` exists with the Clerk init pattern from §4.1.
-- [ ] `PUBLIC_CLERK_PUBLISHABLE_KEY` documented in `.env.example` with `# TODO(post-cluster-3): swap to pk_live_...` marker.
+- [ ] `VITE_CLERK_PUBLISHABLE_KEY` documented in `.env.example` with `# TODO(post-cluster-3): swap to pk_live_...` marker.
 
 ### 6.2 Login + sign-up + logout
 
 - [ ] `/login` page mounts Clerk sign-in via `clerk.mountSignIn`.
 - [ ] `/sign-up` page mounts Clerk sign-up via `clerk.mountSignUp`.
-- [ ] After Clerk sign-in, frontend calls `POST /auth/session` and seeds auth store.
-- [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` + clears auth store.
+- [ ] After Clerk sign-in, frontend calls `POST /auth/session`, fetches `GET /auth/me` for roles, then seeds auth store.
+- [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` with `X-CSRF-Token` + clears auth store.
 - [ ] Auth session, refresh, and logout calls are routed through `API_BASE` / shared API wrapper, not relative `fetch("/auth/...")`.
 
 ### 6.3 Auth store
@@ -336,7 +349,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 
 - [ ] `docs/governance.md` diff is empty.
 - [ ] `nginx.conf` diff is empty.
-- [ ] No backend code change beyond optional `GET /auth/me` (if needed per §3 evaluation; otherwise zero backend diff).
+- [ ] No backend code change beyond `GET /auth/me` if it is not already provided by PR-CL3-2; otherwise zero backend diff.
 - [ ] Frontend tests pass (`npm test` in `frontend-svelte/`).
 - [ ] No new alembic migration.
 
@@ -424,10 +437,10 @@ fix(audit-followup): close Cluster 3 PR-CL3-3 (Frontend Clerk SDK + httpOnly ses
 PR body:
 - **Findings closed:** D-3.2 (frontend portion).
 - **Files changed:** inventory grouped by Clerk integration / login pages / auth store / API client / killed legacy.
-- **Env vars added:** `PUBLIC_CLERK_PUBLISHABLE_KEY`.
+- **Env vars added:** `VITE_CLERK_PUBLISHABLE_KEY`.
 - **TODO markers:** every `TODO(post-cluster-3)` site cited.
 - **Killed legacy:** explicit statement that `manualTokenLoginEnabled` (and Phase A6 PR #67's three reason codes) removed.
-- **`/auth/me` decision:** if endpoint added in this PR, document why; else document the seed-from-session-response approach.
+- **`/auth/me` decision:** document that roles are loaded from `GET /auth/me` before seeding the store; do not assume `/auth/session` returns roles unless PR-CL3-2 explicitly changes that contract.
 - **Hook artifact paths:** `.cache/dispatch_review/audit-followup-cluster-3-frontend-clerk-sdk-{sha}.json` per push.
 - **Governance + alembic + nginx statements:** diffs empty.
 
@@ -436,7 +449,7 @@ PR body:
 1. **Pre-step:** verify PR-CL3-2 has merged. Frontend depends on `/auth/session`, `/auth/refresh`, `/auth/logout`. If PR-CL3-2 not merged, PR-CL3-3 cannot be tested end-to-end.
 2. `git checkout -b audit-followup/cluster-3-frontend-clerk-sdk`.
 3. `cd frontend-svelte && npm install @clerk/clerk-js`.
-4. Create `.env` entry `PUBLIC_CLERK_PUBLISHABLE_KEY=pk_test_...` (dev value from Clerk dashboard).
+4. Create `.env` entry `VITE_CLERK_PUBLISHABLE_KEY=pk_test_...` (dev value from Clerk dashboard).
 5. Apply §4.1 (Clerk init module).
 6. Apply §4.2 (SignIn/SignUp pages).
 7. Apply §4.3 (auth store refactor).
@@ -461,7 +474,7 @@ PR body:
   - **Refresh interval (240s) vs TTL (300s)** — must refresh BEFORE expiry; 240s is correct margin. Codex may flag if interval > TTL or no margin.
   - **Logout incomplete** — backend logout MUST clear cookies; frontend MUST clear store; Clerk-side MUST sign out. All three required.
   - **Clerk `addListener` cleanup** — not removing the listener on component unmount may leak callbacks across navigations. Codex may flag.
-  - **`PUBLIC_CLERK_PUBLISHABLE_KEY` missing from `.env.example`** — without it, fresh clones fail at boot.
+  - **`VITE_CLERK_PUBLISHABLE_KEY` missing from `.env.example`** — without it, fresh clones fail at boot.
 - **Padrão PR #79:** governance + dispatch precision matters. The matrix doesn't mention a viewer role; frontend MUST not introduce one accidentally via UI affordances.
 - **8-section sweep:** §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow MUST consistently enumerate the same deliverables (Clerk init, login pages, auth store, API client CSRF, refresh, logout, killed legacy). Drift is the canonical authoring failure mode.
 - **The largest implementation risk** is the API client CSRF wrapping. The generated client may have inconsistent fetch injection across modules; missing one method = silent CSRF bypass test passes locally but mutating routes 403 in prod. Mitigation: sweep `rg -nP "fetch\\(" frontend-svelte/src/lib/api/` and confirm every match goes through the wrapper.

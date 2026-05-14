@@ -15,7 +15,7 @@ Replace the current baseline CSP at `frontend-svelte/nginx.conf` with the strict
 Three coupled deliverables:
 
 1. **nginx CSP swap** — replace current generic CSP with the strict Clerk-aware baseline per `project_cluster_3_platform_decisions` exact text. Header name `Content-Security-Policy-Report-Only` (not enforce). Includes `frame-ancestors 'none'`, `worker-src 'self' blob:`, Clerk origins (`<fapi-host>` + `https://challenges.cloudflare.com`), Clerk telemetry connect-src, Clerk img.clerk.com, `report-to csp-endpoint`, `upgrade-insecure-requests`. NO `'unsafe-eval'`. NO permissive `https:` wildcards.
-2. **Backend `/api/csp/report` endpoint** — receive violation reports from browser-side CSP enforcement. Persist (or log) for analysis. Must be CSRF-exempt (browser-initiated, no human session) and rate-limited to prevent abuse.
+2. **Backend `/csp/report` endpoint** — receive violation reports from browser-side CSP enforcement. Persist (or log) for analysis. Must be CSRF-exempt (browser-initiated, no human session) and rate-limited to prevent abuse.
 3. **XSS-sink inventory doc** — per D-3.3 explicit requirement: document every `innerHTML`, `eval`, `setAttribute('href'|'src')`, dynamic-import call in the SPA. Separate doc at `docs/security/xss-sink-inventory.md`.
 
 This wave closes the last Cluster 3 finding (D-3.3 token storage hardening — CSP portion). After PR-CL3-4 merges, all 3 Cluster 3 jury findings (D-3.1 + D-3.2 + D-3.3) are retired.
@@ -23,7 +23,7 @@ This wave closes the last Cluster 3 finding (D-3.3 token storage hardening — C
 ## 2. Non-Negotiable Constraints
 
 - Do **not** edit `docs/governance.md`.
-- Do **not** edit backend route gates, auth.py, or any Cluster 3 PR-CL3-1/2/3 territory beyond adding the `/api/csp/report` endpoint.
+- Do **not** edit backend route gates, auth.py, or any Cluster 3 PR-CL3-1/2/3 territory beyond adding the `/csp/report` endpoint.
 - Do **not** edit frontend code beyond what's strictly needed for CSP compatibility (e.g. removing inline scripts that violate the new CSP). PR-CL3-3 owns the SDK integration.
 - Do **not** flip CSP to enforce mode in this PR. Report-only ramp is a sustained period (1-2 sprints) before enforce flip; the flip is a separate follow-up wave.
 - Do **not** add `'unsafe-eval'` to `script-src`. Production explicitly excludes it per Clerk docs.
@@ -117,19 +117,20 @@ add_header Content-Security-Policy-Report-Only "
   report-to csp-endpoint;
 " always;
 
-# Report-To header for the CSP report endpoint (separate from CSP header)
-add_header Report-To '{"group":"csp-endpoint","max_age":10886400,"endpoints":[{"url":"/api/csp/report"}]}' always;
+# Report-To header for the CSP report endpoint (separate from CSP header).
+# It must target the backend origin directly; nginx has no /api or /csp proxy.
+add_header Report-To '{"group":"csp-endpoint","max_age":10886400,"endpoints":[{"url":"${VITE_API_BASE_URL}/csp/report"}]}' always;
 
 # X-Frame-Options is now redundant with frame-ancestors 'none' but kept
 # for legacy browser support.
 add_header X-Frame-Options "DENY" always;  # was SAMEORIGIN; tighten to DENY
 ```
 
-Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}` in `nginx.conf` from the env var at container start.
+Update `docker-entrypoint.sh` (or equivalent) to substitute `${CLERK_FAPI_HOST}` and `${VITE_API_BASE_URL}` in `nginx.conf` from env vars at container start.
 
 Verify by deploying the container and inspecting response headers in the browser.
 
-### 4.2 Backend `/api/csp/report` endpoint
+### 4.2 Backend `/csp/report` endpoint
 
 Add `backend/app/api/routes/csp_report.py`:
 
@@ -138,7 +139,7 @@ from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse
 import structlog
 
-router = APIRouter(prefix="/api/csp", tags=["csp"])
+router = APIRouter(prefix="/csp", tags=["csp"])
 logger = structlog.get_logger(__name__)
 
 
@@ -186,7 +187,7 @@ from app.api.routes import csp_report
 app.include_router(csp_report.router)
 ```
 
-CSRF middleware (PR-CL3-2) MUST exempt `/api/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/api/csp/report` to the exempt list (small backend addendum; document as such in the PR body).
+CSRF middleware (PR-CL3-2) MUST exempt `/csp/report` — browsers send these without CSRF tokens. PR-CL3-2's exempt list already covers `/webhooks/*`; this PR adds `/csp/report` to the exempt list (small backend addendum; document as such in the PR body). Do not mount the FastAPI router at `/api/csp`: the app's `_StripApiPrefixMiddleware` strips `/api/*` before routing, and routers are registered without the `/api` prefix.
 
 Rate limit: use existing rate-limit decorator if available in backend; otherwise a simple in-memory token bucket per source IP (50/min). If no rate-limit infrastructure exists, document as a follow-up TODO and proceed without it (CSP reports are low-frequency in practice).
 
@@ -274,14 +275,14 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 - [ ] No permissive `https:` wildcard in `connect-src` (only `'self'` + Clerk FAPI host + clerk-telemetry.com).
 - [ ] `${CLERK_FAPI_HOST}` template substitution works at container start (verify via `docker-compose up` + browser inspection).
 - [ ] `# TODO(post-cluster-3): swap ${CLERK_FAPI_HOST} ...` marker present.
-- [ ] `Report-To` header points at `/api/csp/report`.
+- [ ] `Report-To` header points at `${VITE_API_BASE_URL}/csp/report`.
 - [ ] `X-Frame-Options: DENY` (tightened from SAMEORIGIN).
 
-### 6.2 Backend `/api/csp/report`
+### 6.2 Backend `/csp/report`
 
-- [ ] `backend/app/api/routes/csp_report.py` exists with the POST `/api/csp/report` endpoint per §4.2.
+- [ ] `backend/app/api/routes/csp_report.py` exists with the POST `/csp/report` endpoint per §4.2.
 - [ ] Router registered in `backend/app/main.py`.
-- [ ] CSRF middleware (PR-CL3-2) exempt list includes `/api/csp/report`.
+- [ ] CSRF middleware (PR-CL3-2) exempt list includes `/csp/report`.
 - [ ] Endpoint logs structured `csp_violation` events with all 7 fields per §4.2.
 - [ ] Rate-limit applied (or follow-up TODO if no infra).
 - [ ] Returns 204 (no body) on success.
@@ -317,7 +318,7 @@ A merged PR closes D-3.3 (CSP + XSS-sink portion) iff every item below is true.
 2. **`frontend-svelte/tests/e2e/csp.spec.ts`** (NEW):
    - `test_csp_report_only_header_present` — load any page, assert response includes `Content-Security-Policy-Report-Only` header with the bindado directives.
    - `test_csp_enforce_header_NOT_present` — assert no `Content-Security-Policy` (enforce) header (only the -Report-Only variant).
-   - `test_report_to_header_present` — assert `Report-To` header pointed at `/api/csp/report`.
+   - `test_report_to_header_present` — assert `Report-To` header points at the backend-origin `${VITE_API_BASE_URL}/csp/report`.
    - `test_no_console_csp_blocks_on_login_page` — load `/login` (Clerk SDK page), assert no CSP violations in browser console.
 
 ### 7.3 nginx config validation
@@ -341,11 +342,11 @@ rg -nP "connect-src.*https:" frontend-svelte/nginx.conf    # MUST be zero (no pe
 rg -nP "TODO\\(post-cluster-3\\)" frontend-svelte/nginx.conf
 
 # Backend endpoint
-rg -nP "/api/csp/report" backend/app/api/routes/csp_report.py backend/app/main.py
+rg -nP "/csp/report" backend/app/api/routes/csp_report.py backend/app/main.py
 rg -nP "csp_violation" backend/app/api/routes/csp_report.py
 
 # CSRF exempt list updated
-rg -nP "/api/csp/report" backend/app/core/csrf.py
+rg -nP "/csp/report" backend/app/core/csrf.py
 
 # XSS-sink inventory exists + sweeps documented
 ls docs/security/xss-sink-inventory.md
@@ -376,7 +377,7 @@ cd frontend-svelte ; npm run test:e2e -- csp.spec.ts ; cd ..
 - Custom domain Clerk swap (TODO post-cluster-3).
 - Frontend security tooling beyond CSP (e.g. Trusted Types, Subresource Integrity hashes for CDN-loaded scripts) — defer to future hardening.
 - Backend security headers beyond CSP (e.g. Cache-Control: no-store on sensitive endpoints) — defer; out of scope of this wave.
-- Rate-limit infrastructure for `/api/csp/report` if no existing infra. Document as TODO and proceed.
+- Rate-limit infrastructure for `/csp/report` if no existing infra. Document as TODO and proceed.
 
 ## 10. PR Requirements
 
@@ -400,7 +401,7 @@ PR body:
 1. **Pre-step:** verify PR-CL3-3 has merged. Frontend Clerk integration must be live so CSP can validate against actual Clerk requests.
 2. `git checkout -b audit-followup/cluster-3-csp-xss-sink`.
 3. Apply §4.1 (nginx CSP swap) + verify env-var substitution at container start.
-4. Apply §4.2 (backend `/api/csp/report` endpoint + CSRF exempt list update).
+4. Apply §4.2 (backend `/csp/report` endpoint + CSRF exempt list update).
 5. Apply §4.3 (XSS-sink inventory): run sweeps, populate table, classify findings.
 6. Apply §4.4 ONLY IF local CSP testing reveals a blocker (rare; report-only mode shouldn't block).
 7. Run §8 verification + nginx syntax check + tests.
@@ -409,14 +410,14 @@ PR body:
 
 ## 12. Hook v2 + Codex calibration notes
 
-- **Expected hook v2 surface area:** small-medium (nginx config swap + small backend endpoint + new doc). Hook may flag prescription-vs-evidence on the `/api/csp/report` endpoint before it exists.
+- **Expected hook v2 surface area:** small-medium (nginx config swap + small backend endpoint + new doc). Hook may flag prescription-vs-evidence on the `/csp/report` endpoint before it exists.
 - **Expected Codex catches:**
   - **CSP directive completeness** — missing any of the 13 directives. Codex will compare against governance text.
   - **`'unsafe-eval'` survival** — Codex will sweep nginx.conf for it; any match = catch.
   - **`connect-src https:` permissive wildcard survival** — should be only `'self'` + Clerk FAPI + telemetry.
   - **Header name** — `Content-Security-Policy-Report-Only` (NOT `Content-Security-Policy`). If executor accidentally enforces, catch.
   - **`Report-To` header missing** — without it, browser doesn't know where to send reports.
-  - **CSRF middleware exempt list missing `/api/csp/report`** — endpoint will 403 silently from browser violations.
+  - **CSRF middleware exempt list missing `/csp/report`** — endpoint will 403 silently from browser violations.
   - **XSS-sink inventory empty/incomplete** — Codex may verify by running the same sweeps and comparing.
   - **`${CLERK_FAPI_HOST}` substitution at container start** — if `docker-entrypoint.sh` doesn't templating, header lands with literal `${CLERK_FAPI_HOST}` string.
   - **Rate-limit on report endpoint** — without it, abuse vector.
