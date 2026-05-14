@@ -369,6 +369,14 @@ scope — this list is the known set, not an exhaustive guarantee):
   `require_any_role("risk_manager", "auditor")`; RFQ writes/actions become
   `require_role("risk_manager")`. RFQs price derivatives = risk_manager
   territory by matrix definition.
+- RFQ WebSocket visibility (`ws.py:112` topic subscription storage, `:226`
+  subscribe action; current regression coverage uses `test_ws.py:17` trader
+  claims and `:183` `topic="rfq"` broadcast receipt) formerly lets any
+  authenticated role subscribe to RFQ updates → apply the same RFQ visibility
+  rule as HTTP reads. `topic="rfq"` subscriptions require
+  `require_any_role("risk_manager", "auditor")`; trader tokens must be
+  rejected for RFQ-topic subscriptions. Non-RFQ WebSocket topics are unchanged
+  unless the route sweep finds an equivalent target-matrix conflict.
 - HedgeContract lifecycle and visibility (`contracts.py`: reads at `:65`,
   `:82`, `:181`; writes at `:41`, `:100`, `:121`, `:144`, `:164`) formerly
   admit `trader` → remove `trader` from every HedgeContract route.
