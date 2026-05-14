@@ -868,7 +868,8 @@ class DealEngineService:
                     physical_cost += value
 
             # ── Financial side (hedges / contracts) ──
-            # Single MTM formula; settled → realized, active → MTM.
+            # Open hedge exposure is MTM-valued here; realized cashflow P&L
+            # for settled hedges is sourced from the ledger/compute_pl path.
             elif link.linked_type in (
                 DealLinkedType.hedge,
                 DealLinkedType.contract,
@@ -1130,7 +1131,8 @@ class DealEngineService:
                         )
 
                 # ── Financial side ──
-                # Single MTM formula; settled → realized, active → MTM.
+                # Open hedge exposure is MTM-valued here; realized cashflow P&L
+                # for settled hedges is sourced from the ledger/compute_pl path.
                 elif link.linked_type in (
                     DealLinkedType.hedge,
                     DealLinkedType.contract,

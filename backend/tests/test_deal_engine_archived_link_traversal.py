@@ -164,11 +164,17 @@ def test_compute_deal_pnl_excludes_archived_variable_order(session: Session) -> 
     # Guard row: if the archived COPPER order leaks into price collection,
     # the snapshot will expose COPPER in price_references and overstate revenue.
     _insert_price(
+        session, symbol="LME_ALU_CASH_SETTLEMENT_DAILY", price_usd=Decimal("2700")
+    )
+    _insert_price(
         session, symbol="LME_CU_CASH_SETTLEMENT_DAILY", price_usd=Decimal("9100")
     )
     deal = _create_deal(session)
     live_order = _create_order(
-        session, OrderType.sales, qty=Decimal("10"), price=Decimal("2500")
+        session,
+        OrderType.sales,
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
     )
     archived_order = _create_order(
         session,
@@ -183,8 +189,9 @@ def test_compute_deal_pnl_excludes_archived_variable_order(session: Session) -> 
 
     snap = DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
 
-    assert snap.physical_revenue == Decimal("25000.000000")
-    assert snap.price_references is None
+    assert snap.physical_revenue == Decimal("27000.000000")
+    assert snap.price_references is not None
+    assert set(snap.price_references) == {"ALUMINUM"}
     assert "COPPER" not in (snap.price_references or {})
 
 
