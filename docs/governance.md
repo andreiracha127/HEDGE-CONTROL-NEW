@@ -236,16 +236,33 @@ Role combinability (binding):
   is therefore equivalent to "is trader-only", which is the intended
   scope of trader-restriction rules.
 
-Service identities (4, JWT-authenticated, short-lived TTL ~5min):
+Service identities (4) — split by authentication source:
+
+Internal-issued (3, JWT signed by backend, short-lived TTL ~5min, same
+actor_sub pattern as human authentication):
 
 - `service:westmetall_ingest` — cron-driven market-data ingest
-- `service:webhook_inbound` — WhatsApp inbound (HMAC + identity formalization)
 - `service:rfq_outbound` — outbound RFQ delivery worker
 - `service:cashflow_pipeline` — cashflow_ledger + finance_pipeline writes
 
-All service identities use JWT signed by backend (same actor_sub pattern
-as human authentication). Service-account scope is per-identity-confined;
-service:westmetall_ingest cannot write orders, only its own ingest endpoint.
+External-ingress (1, request authenticated by external provider; the
+service identity is the INTERNAL processing context for audit-trail
+attribution, NOT the request authentication mechanism):
+
+- `service:webhook_inbound` — WhatsApp inbound. Public ingress at
+  `POST /webhooks/whatsapp` (and `GET` challenge) MUST stay
+  provider-authenticated via Meta/Twilio HMAC signature — Meta/Twilio
+  cannot present an internal backend-signed JWT. After the HMAC is
+  validated, the request handler attributes downstream operations
+  (audit events, message persistence, rfq correlation) to
+  `service:webhook_inbound` so the audit trail records a stable
+  service identity instead of "unauthed". The HMAC signature remains
+  the request gate; the JWT pattern does NOT apply at this ingress.
+
+Service-account scope is per-identity-confined: `service:westmetall_ingest`
+cannot write orders (only its own ingest endpoint), `service:webhook_inbound`
+cannot write outside webhook-processor sinks (no direct Order/RFQ writes
+from the webhook entrypoint), etc.
 
 Authorization invariants:
 
@@ -299,18 +316,38 @@ Authorization invariants:
 - The RBAC matrix is canonical. A per-route deviation is a constitutional
   amendment requiring this section's update, not a silent override in code.
 
-Anomalies to be retired upon Cluster 3 implementation closure:
+Anomalies to be retired upon Cluster 3 implementation closure
+(documented examples below; PR-CL3-1 dispatch §3 MUST sweep every
+backend route against this matrix and add any newly-discovered
+anomaly to the implementation scope — this list is the known set,
+not an exhaustive guarantee):
 
-- Westmetall ingest routes (formerly `trader`-gated → `service:westmetall_ingest`)
-- WhatsApp webhook (formerly unauthed → `service:webhook_inbound` formalized)
-- Counterparty CRUD (formerly all-roles open → per-type for trader, with read filter)
-- RFQ workflow (formerly `trader`-gated across 10 sites in
-  `backend/app/api/routes/rfqs.py` — POST /rfqs, /preview-text, action
-  endpoints reject/cancel/reject-quote/refresh-counterparty/refresh/award/
-  archive — now `risk_manager`-gated, since RFQs cotam derivativos which
-  are risk_manager territory by matrix definition; the `trader`-gating
-  was inherited from an earlier prototype where commercial actors drove
-  RFQ entry, before the risk_manager-as-system-owner model was set)
+- Westmetall ingest routes (`westmetall.py:135`, `:184`) formerly
+  `trader`-gated → `service:westmetall_ingest`
+- WhatsApp webhook (`webhooks.py:309` GET challenge, `:339` POST inbound):
+  ingress stays Meta/Twilio HMAC-authed; only the audit-trail attribution
+  changes — internal processing context = `service:webhook_inbound`
+  (NOT a JWT swap on the route; see Service identities above)
+- Counterparty CRUD (formerly all-roles open → per-type for trader,
+  with read filter)
+- RFQ workflow (`rfqs.py` 10 sites: POST /rfqs, /preview-text, actions
+  reject/cancel/reject-quote/refresh-counterparty/refresh/award/archive)
+  formerly `trader`-gated → `risk_manager`-gated (RFQs cotam derivativos
+  = risk_manager territory by matrix definition)
+- HedgeContract lifecycle (`contracts.py` 5 sites: `:41` POST hedge create,
+  `:100` PATCH archive, `:121` PATCH update, `:144` PATCH status, `:164`
+  DELETE) formerly `require_role("trader")` → `require_role("risk_manager")`.
+  HedgeContracts are risk_manager territory (matrix line "Cannot:
+  HedgeContracts" for trader)
+- Deal lifecycle (`deals.py` 4 sites: `:104` POST deal create, `:186` POST
+  deal links, `:208` DELETE deal link, `:235` POST deal action) formerly
+  `require_any_role("trader", "risk_manager")` → `require_role("risk_manager")`
+  (drop trader from the gate). Deals/Links are risk_manager territory
+  (matrix line "Cannot: Deals, Links" for trader)
+- Hedge-Order Linkage create (`linkages.py:56` POST) formerly
+  `require_role("trader")` → `require_role("risk_manager")`. Linkages
+  affect commercial+global exposure reduction (governance §"Linkage")
+  and are risk_manager territory.
 
 ────────────────────────────────────────
 EXECUTION DISCIPLINE
