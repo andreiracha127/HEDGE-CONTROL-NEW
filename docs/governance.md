@@ -208,8 +208,8 @@ Human roles (3, no admin/viewer):
   - Deal lifecycle (create, links, snapshots)
   - Scenario / MTM / P&L / Exposure recompute and snapshots
   - Cashflow + finance pipeline
-  - All sensitive reads
-  - Cannot: audit log delete (immutable invariant)
+  - All sensitive reads except audit log routes
+  - Cannot: audit log read or delete (auditor-only immutable log)
 
 - `auditor` (oversight)
   - Read-only on every endpoint
@@ -327,8 +327,10 @@ Authorization invariants:
   "lacks risk_manager" is equivalent to "is trader" inside the handler.
   The GET route gate includes auditor, which is why the GET invariants
   must use the explicit trader-only condition instead.
-- Audit log writes are immutable. No role — including risk_manager — can
-  delete audit events. The auditor role is the read-only oversight layer.
+- Audit log routes are auditor-only dedicated reads. No operational role
+  (`trader` or `risk_manager`) can read audit events, and no role —
+  including auditor or risk_manager — can delete audit events. The auditor
+  role is the read-only oversight layer.
 - Internal-issued service identities (`service:westmetall_ingest`,
   `service:rfq_outbound`, `service:cashflow_pipeline`) follow the same
   `actor_sub` JWT pattern as human auth (uniformity established by
