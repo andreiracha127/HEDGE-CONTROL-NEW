@@ -59,21 +59,25 @@ Both are live in production; the failure mode of J-CL1-01 is reachable today, no
 
 In each of the three methods, every `session.get(Order, link.linked_id)` and `session.get(HedgeContract, link.linked_id)` site must skip the link when the resolved row has `deleted_at is not None`. The skip is a `continue` in the iteration; it must not abort the whole computation.
 
+**`DealLinkedType` has four variants, not two** (verified at `backend/app/models/deal.py:119-123`): `sales_order`, `purchase_order`, `hedge`, `contract`. The Order side is the **tuple** `(DealLinkedType.sales_order, DealLinkedType.purchase_order)`; the HedgeContract side is the **tuple** `(DealLinkedType.hedge, DealLinkedType.contract)`. Every existing site in `deal_engine.py` that branches on `link.linked_type` uses these two tuples (verified across `:213`, `:219`, `:332`, `:580-581`, `:590-591`, `:751-752`, `:773-774`, `:925-926`, `:935-936`, `:1033-1034`). Following this dispatch must preserve that convention; using a fictional `DealLinkedType.order` would `AttributeError` and using `DealLinkedType.hedge` alone would silently skip every `contract`-aliased link.
+
 The canonical shape (sketch):
 
 ```python
 for link in deal.links:
-    if link.linked_type == DealLinkedType.order:
+    if link.linked_type in (DealLinkedType.sales_order, DealLinkedType.purchase_order):
         entity = session.get(Order, link.linked_id)
         if entity is None or entity.deleted_at is not None:
             continue
         # ... use entity.price_type, entity.quantity_mt, etc.
-    elif link.linked_type == DealLinkedType.hedge:
+    elif link.linked_type in (DealLinkedType.hedge, DealLinkedType.contract):
         entity = session.get(HedgeContract, link.linked_id)
         if entity is None or entity.deleted_at is not None:
             continue
         # ... use entity.quantity_mt, entity.fixed_price_value, etc.
 ```
+
+If the existing call site already classifies the link via a helper (e.g. `_order_value`, `_recompute_tons` may not need an explicit `linked_type` check because they iterate a typed sub-list), preserve that helper and add only the `entity.deleted_at is not None` predicate at the resolved-entity boundary. Do **not** introduce a new `linked_type` switch where one does not already exist.
 
 The existing `if entity is None: ...` handler (where present) stays; the only addition is the `or entity.deleted_at is not None` predicate.
 
@@ -118,6 +122,7 @@ A merged PR closes J-CL1-01 iff every item below is true.
 
 - [ ] `rg -nP "session\\.get\\((Order|HedgeContract)" backend/app/services/deal_engine.py` — every match is followed by a `deleted_at is not None` predicate (either inline or in a helper) before the entity is read.
 - [ ] `rg -nP "deleted_at" backend/app/services/deal_engine.py` — at least three new sites compared to HEAD `ea08d9868`.
+- [ ] `rg -nP "DealLinkedType\\.order\\b|DealLinkedType\\.hedge_contract\\b" backend/app/services/deal_engine.py backend/tests/` — returns zero matches. The enum has no `.order` or `.hedge_contract` variant; valid values are exactly `sales_order`, `purchase_order`, `hedge`, `contract` (verified at `backend/app/models/deal.py:119-123`). Any new code site that introduces a singular `.order` reference is a bug that would `AttributeError` at runtime.
 
 ## 7. Required Tests
 
@@ -205,6 +210,6 @@ The PR body must include:
 ## 12. Hook v2 + Codex calibration notes
 
 - **Expected hook v2 surface area**: the diff is single-file backend with three filter sites. Hook may surface false positives around "Tipo-I fact mismatch" for the new helper / inline predicate (prescription-vs-evidence class — see `feedback_codex_companion_doc_not_yet_merged` for the FP class precedent on dispatch authoring; this is the implementation-side equivalent). Hook may also flag partial-diff blindness on test-only follow-up pushes.
-- **Expected Codex catches**: missed filter at one of the three methods (e.g. `_recompute_tons` skipped while `compute_deal_pnl` filtered); a helper inadvertently used elsewhere that bypasses the filter; a `session.get(Order, ...)` introduced later in the file that doesn't follow the new pattern; the un-archive regression test missing if an un-archive path exists; the exposure / deal-P&L convergence test missing or weak.
+- **Expected Codex catches**: missed filter at one of the three methods (e.g. `_recompute_tons` skipped while `compute_deal_pnl` filtered); a helper inadvertently used elsewhere that bypasses the filter; a `session.get(Order, ...)` introduced later in the file that doesn't follow the new pattern; the un-archive regression test missing if an un-archive path exists; the exposure / deal-P&L convergence test missing or weak; **a `DealLinkedType.order` reference (which does not exist as an enum member) introduced by following the §4.1 sketch literally without verifying enum membership** — this is the v1 dispatch error Codex caught (see PR #74 review). The valid 4-variant enum convention is `(sales_order, purchase_order)` for the Order side and `(hedge, contract)` for the HedgeContract side; the §6.2 sweep enforces it.
 - **The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies**: confirm §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow all enumerate the same three methods. The three method names (`compute_deal_pnl`, `compute_pnl_breakdown`, `_recompute_tons`) must appear in every list.
 - This wave is the simplest of the four Cluster 1 waves. Resist the temptation to bundle in any of PR-CL1-2 / PR-CL1-3 / PR-CL1-4 work even if it looks adjacent.
