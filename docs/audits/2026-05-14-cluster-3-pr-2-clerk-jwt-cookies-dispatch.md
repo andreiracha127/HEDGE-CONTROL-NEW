@@ -31,7 +31,7 @@ Three coupled deliverables:
 
 ## 3. Findings and Evidence
 
-Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 MUST be executed after PR-CL3-1 has merged; otherwise `get_current_actor_roles`, `_VALID_HUMAN_ROLES`, and `require_service_identity` are not valid assumptions. If those identifiers are absent on live `main`, stop and report PR-CL3-1 as a blocking dependency rather than improvising a second helper surface.
+Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 is self-contained for JWT-validation concerns: if PR-CL3-1 has already introduced `_VALID_HUMAN_ROLES`, reuse it; otherwise define it in this PR before `get_current_user`. If PR-CL3-1 later introduces the same constant, deduplicate during rebase rather than keeping two definitions.
 
 ### Existing JWT validator (to be swapped)
 
@@ -235,9 +235,12 @@ This is required because PR-CL3-3 sends `credentials: "include"` and `X-CSRF-Tok
 
 Per governance "Role combinability": validation MUST happen at JWT-validation time, before any route-gate dependency evaluates. PR-CL3-1 keeps a redundant defensive check inside `get_current_actor_roles`. For strict constitutional compliance, add the same check inside `get_current_user`; do not remove the PR-CL3-1 helper check.
 
-Dependency assertion before editing: `rg -nP "def get_current_actor_roles|_VALID_HUMAN_ROLES|def require_service_identity" backend/app/core/auth.py` MUST find the PR-CL3-1 helper surface. If it does not, PR-CL3-2 is running on the wrong base.
+Do not assume PR-CL3-1 has already landed. This PR may define `_VALID_HUMAN_ROLES` itself for the JWT-time check; if `get_current_actor_roles` from PR-CL3-1 is present, it keeps its redundant check. If it is absent, do not add route-gate helpers in this wave.
 
 ```python
+_VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+
+
 def get_current_user(...) -> dict[str, Any]:
     # ... existing JWT validation ...
 
@@ -256,7 +259,7 @@ def get_current_user(...) -> dict[str, Any]:
     return payload
 ```
 
-`get_current_actor_roles` (from PR-CL3-1) keeps its own redundant check — defense in depth, no harm if the JWT-time check fires first.
+If `get_current_actor_roles` from PR-CL3-1 is already present, it keeps its own redundant check — defense in depth, no harm if the JWT-time check fires first. If it is not present, PR-CL3-2 does not create it.
 
 ### 4.5 Service-account JWT minting
 
@@ -423,7 +426,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 6.4 Auditor-exclusive at JWT-validation time
 
 - [ ] `get_current_user` raises HTTP 401 with `detail="Invalid role combination: auditor must be exclusive"` when JWT payload has both auditor and another role.
-- [ ] `get_current_actor_roles` (from PR-CL3-1) retains its own check (defense in depth).
+- [ ] `_VALID_HUMAN_ROLES` exists for JWT-time validation. If `get_current_actor_roles` from PR-CL3-1 is present, it retains its own check (defense in depth).
 
 ### 6.5 Service-account minting
 
@@ -569,7 +572,7 @@ PR body must include:
 
 ## 11. Workflow
 
-1. **Pre-step:** verify PR-CL3-1 has merged (`git log --oneline main | head -5` should show "Cluster 3 PR-CL3-1"). If not merged, base off pre-PR-CL3-1 main and adapt the helper-surface assumptions accordingly.
+1. **Pre-step:** check whether PR-CL3-1 has merged (`git log --oneline main | head -5`). If merged, reuse its `_VALID_HUMAN_ROLES` constant and keep helper checks. If not merged, define `_VALID_HUMAN_ROLES` in this PR and do not add PR-CL3-1 route-gate helpers.
 2. `git checkout -b audit-followup/cluster-3-clerk-jwt-cookies`.
 3. Provision dev Clerk project: get `CLERK_FAPI_HOST` value (e.g. `clerk.abcdef12.lcl.dev`), set in `.env.example` and local dev.
 4. Apply §4.1 (Clerk JWKS swap). Run `pytest -q backend/tests/test_clerk_jwt_validation.py` (write tests first).
