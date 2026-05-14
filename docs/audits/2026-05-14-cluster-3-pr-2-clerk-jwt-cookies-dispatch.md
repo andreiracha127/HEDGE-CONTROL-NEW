@@ -95,7 +95,7 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Keep `_extract_token(request) -> str` as a backward-compatible wrapper and add a new `_extract_token_with_source(request) -> tuple[str, str]` helper for `get_current_user`. This avoids breaking any incidental helper call sites while still giving `get_current_user` the transport source it needs:
+Add the following NEW module constants to `backend/app/core/auth.py`, then replace the current `_extract_token(request) -> str` helper with the NEW `_extract_token_with_source(request) -> tuple[str, str]` helper. After this change, `get_current_user` must be the only token-extraction call site and must use `_extract_token_with_source`; delete the old `_extract_token` helper rather than keeping a backward-compatible Bearer-only path.
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
@@ -113,16 +113,11 @@ def _extract_token_with_source(request: Request) -> tuple[str, str]:
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Session cookie missing",
     )
-
-
-def _extract_token(request: Request) -> str:
-    token, _source = _extract_token_with_source(request)
-    return token
 ```
 
 The Bearer fallback is service-token transport only. `_extract_token_with_source` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
 
-Add `backend/app/api/routes/auth.py`:
+Create new file `backend/app/api/routes/auth.py` with these routes: `POST /auth/session`, `POST /auth/refresh`, `POST /auth/logout`, and `GET /auth/me`:
 
 ```python
 @router.post("/auth/session")
@@ -195,7 +190,7 @@ async def read_current_identity(
 
 ### 4.3 CSRF middleware
 
-Add `backend/app/core/csrf.py`:
+Create new file `backend/app/core/csrf.py` with the following function:
 
 ```python
 async def csrf_middleware(request: Request, call_next):
@@ -223,7 +218,7 @@ async def csrf_middleware(request: Request, call_next):
     return await call_next(request)
 ```
 
-Register in `backend/app/main.py`:
+In `backend/app/main.py`, import `BaseHTTPMiddleware` and `csrf_middleware`, then register the CSRF middleware after existing middleware setup and before route handling:
 
 ```python
 app.add_middleware(BaseHTTPMiddleware, dispatch=csrf_middleware)
@@ -275,7 +270,7 @@ Malformed human role claims fail closed before any role set construction: missin
 
 ### 4.5 Service-account JWT minting
 
-Add to `backend/app/core/auth.py`:
+Add the following NEW service-token constants and minting function to `backend/app/core/auth.py`:
 
 ```python
 SERVICE_TOKEN_TTL_SECONDS = 300  # 5 min per governance "TTL ~5min"
@@ -314,7 +309,7 @@ def mint_service_token(identity: str) -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 ```
 
-CLI entrypoint at `backend/scripts/mint_service_token.py`:
+Create new file `backend/scripts/mint_service_token.py` as the CLI entrypoint:
 
 ```python
 #!/usr/bin/env python3
@@ -335,6 +330,17 @@ PR-CL3-1 added `require_service_identity(name)`. PR-CL3-2 adds the JWT verificat
 Implementation: inspect the `iss` claim from the unverified payload to route to the right validator before signature verification. This routing point is also where the cookie-only transport rule for Clerk human sessions is enforced.
 
 ```python
+def _validate_service_token(token: str) -> dict[str, Any]:
+    public_key = os.environ["SERVICE_JWT_PUBLIC_KEY"]
+    return jwt.decode(
+        token,
+        public_key,
+        algorithms=["RS256"],
+        audience=os.environ["BACKEND_SERVICE_AUDIENCE"],
+        issuer=os.environ["BACKEND_SERVICE_ISSUER"],
+    )
+
+
 def get_current_user(
     request: Request,
     settings: AuthSettings | None = Depends(get_auth_settings),
@@ -441,6 +447,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - [ ] CSRF cookie set with `httponly=False` (frontend reads it).
 - [ ] Human Clerk sessions read from cookie, NOT from Bearer header; Clerk JWTs delivered by Bearer are rejected in `get_current_user` before `_validate_clerk_token`.
 - [ ] Backend service JWTs retain Bearer transport through the source-aware extractor and service issuer branch; service JWTs delivered by cookie are rejected.
+- [ ] Old `_extract_token(request) -> str` helper is deleted or has zero call sites; human paths use `_extract_token_with_source` only.
 
 ### 6.3 CSRF middleware
 
@@ -495,6 +502,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 - **`test_session_endpoint_returns_csrf_token_in_body_and_cookie`** — same. Assert response body has `csrf_token`, and Set-Cookie has `csrf_token=...` with `HttpOnly` NOT set.
 - **`test_authenticated_request_uses_cookie_not_bearer`** — call any auth-required endpoint with cookie, no Authorization header. Returns 200.
 - **`test_authenticated_human_bearer_only_401`** — call any human auth-required endpoint with Clerk Bearer header but no cookie. Returns 401 with `detail="Session cookie missing"`.
+- **`test_get_current_user_uses_source_aware_extractor`** — assert the old `_extract_token` helper is not called by human auth paths and `get_current_user` destructures `(token, source)` from `_extract_token_with_source`.
 - **`test_logout_clears_cookies`** — POST `/auth/logout`. Assert Set-Cookie header sets both cookies to expired (Max-Age=0 or similar).
 - **`test_refresh_reexchanges_fresh_clerk_token_and_rotates_csrf`** — POST `/auth/refresh` with a fresh Clerk session token. Assert session cookie is reset and new `csrf_token` differs from prior.
 - **`test_auth_me_returns_actor_and_roles`** — GET `/auth/me` with valid session cookie. Assert response has `actor_sub` and `roles`.
@@ -519,6 +527,7 @@ A merged PR closes D-3.2 + D-3.3 (token storage portion) iff every item below is
 ### 7.5 Existing test fixture migration
 
 - Human-user test fixtures that mock `Authorization: Bearer ...` headers MUST be updated to set the `__Session` cookie instead. Service-token fixtures remain Bearer JWTs and must use the service-token helper, not cookies.
+- Add a targeted grep assertion in the PR notes: `rg -nP "def _extract_token\\(" backend/app/core/auth.py` returns no matches after migration.
 
 ### 7.6 Production fail-closed
 
@@ -535,6 +544,7 @@ rg -nP "SESSION_COOKIE_NAME|CSRF_COOKIE_NAME|CSRF_HEADER_NAME" backend/app/core/
 # Bearer transport split
 rg -nP "SESSION_COOKIE_NAME|request\\.cookies" backend/app/core/auth.py
 rg -nP "Authorization.*Bearer|request\\.headers\\.get\\(['\"]authorization" backend/app/core/auth.py
+rg -nP "def _extract_token\\(" backend/app/core/auth.py  # expect no matches; source-aware helper replaced it
 # verify matches are service-token-only; no human Clerk Bearer fallback remains
 
 # Clerk env vars
