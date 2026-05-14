@@ -367,6 +367,149 @@ the lookup chain end-to-end via cited excerpts (caller → producer →
 consumer) — not just one endpoint. Caller may produce key in one form;
 consumer may expect another. Skipping the middle is a P1.
 
+### Rule 31 — Mirror-completeness for cited primitives
+
+When a dispatch prescribes a filter or transformation that mirrors an
+existing primitive, every join, filter clause, status set, ordering, and
+null predicate from the original must be reproduced or explicitly
+excluded with rationale.
+
+When to apply: "mirror", "align with", "same as", "parity with",
+"shared primitive", or reference to an existing helper / subquery /
+route contract.
+
+How to verify: use `find_symbol`, then `read_file` the full body and
+compare clause-by-clause: `join`, `filter`, `in_`, `is_(None)`,
+`order_by`, and every lifecycle/status predicate.
+
+Failure mode if missed: a partial mirror keeps live/scenario or
+route/helper behavior divergent on the wave's target boundary.
+
+Example from session calibration: PR #74 commit `8f56405eb436`,
+Codex P1 on PR-CL1-3: `_load_linkages` mirrored only `Order`, while
+`_linked_by_order_subquery` also joined and filtered `HedgeContract`.
+
+### Rule 32 — Schema-layer reachability for model field changes
+
+When a dispatch adds, removes, renames, or writes a model column, the
+same field must be traced through backend read schemas and frontend
+consumers before the prescription is accepted as complete.
+
+When to apply: prescriptions touching `backend/app/models/`, response
+models, archive/delete/status/provenance fields, or ORM-backed schemas.
+
+How to verify: grep the field in `backend/app/schemas/`, then
+`frontend-svelte/src/routes/` and `frontend-svelte/src/lib/`. Search
+dotted and bare forms: `Deal.is_deleted` misses `is_deleted: bool`.
+
+Failure mode if missed: Pydantic responses 500, or a written field is
+absent from API responses / generated frontend types.
+
+Example from session calibration: PR #74 commit `fb99dbf67d34`,
+Codex P2 on PR-CL1-4: Path A left `DealRead.is_deleted`; Path B wrote
+`Deal.deleted_at` without exposing it on `DealRead`.
+
+### Rule 33 — Cited filepath existence
+
+Every file path cited by a dispatch must exist at review time unless
+the dispatch explicitly says the implementing PR creates it.
+
+When to apply: inline paths, evidence citations, test commands, config
+paths, scripts, generated artifacts, and verification globs.
+
+How to verify: collect paths from prose/code/commands; use `Glob`,
+`rg --files`, or directory listing. For pytest, verify concrete targets
+exist and globs expand to intended suites.
+
+Failure mode if missed: verification points at a phantom file, or a glob
+skips the real regression suite.
+
+Example from session calibration: PR #74 commit `c6a21ac0982a`: Codex
+P2 on PR-CL1-3 caught nonexistent `test_exposure_service.py`.
+
+### Rule 34 — Enum membership verification
+
+Every `EnumName.variant` reference in concrete-code blocks, sweeps, or
+tests must be verified against the enum class definition.
+
+When to apply: dotted enum references, status sets, type
+discriminators, and tuple/list enum prescriptions.
+
+How to verify: use `find_symbol`; if ambiguous, grep `class EnumName`,
+then `read_file` the enum body. Compare variants literally and grep
+call sites for tuple conventions. Zero matches does not prove existence.
+
+Failure mode if missed: fictional enum members raise `AttributeError`,
+or a single alias skips rows in a paired enum convention.
+
+Example from session calibration: PR #74 commit `31b06080498e`,
+Codex P2 on PR-CL1-1: `DealLinkedType.order` did not exist; valid
+tuples were `(sales_order, purchase_order)` and `(hedge, contract)`.
+
+### Rule 35 — Downstream data-flow after in-function filters
+
+When a dispatch prescribes filtering inside a long function, variables
+initialized before the filter that later feed hashes, persistence,
+audit keys, or downstream contracts must be rebuilt from the filtered
+subset or explicitly justified.
+
+When to apply: function body over 100 lines; per-item filters; nearby
+variables named `*_ids`, `inputs_hash`, `snapshot_key`,
+`idempotency_key`, `payload`, or `audit_*`.
+
+How to verify: `read_file` from variable initialization through the
+hash/persist call; classify every later use after the filter point as
+harmless, rebuilt, or out of scope.
+
+Failure mode if missed: the loop skips bad rows, but hashes, snapshots,
+audit payloads, or responses still bind raw identifiers.
+
+Example from session calibration: PR #74 commit `fb99dbf67d34`,
+Codex P2 on PR-CL1-1: raw `link_ids` fed `_compute_inputs_hash`,
+preserving archived UUIDs and fake-zero snapshot risk.
+
+### Rule 36 — Generated artifact regeneration for API surface changes
+
+When a dispatch changes schemas, route decorators, response models, or
+HTTP response metadata, it must require regeneration of backend OpenAPI
+and frontend generated API types.
+
+When to apply: `backend/app/schemas/`, `backend/app/api/routes/`,
+`response_model=...`, `responses={...}`, route status codes, or API
+response fields.
+
+How to verify: workflow / verification must name
+`docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts`,
+plus assert the generated delta is bounded.
+
+Failure mode if missed: runtime behavior is fixed but CI fails schema
+drift, or frontend types hide the contract change.
+
+Example from session calibration: PR #74 commit `fb99dbf67d34`,
+Codex P2 on PR-CL1-4 found Deal schema changes without complete regen;
+PR-CL1-2 had the same class for `424` response metadata.
+
+### Rule 37 — Cross-route consistency for exception status contracts
+
+When a dispatch changes the HTTP status for an exception type, every
+route mapping that same exception must align or be explicitly excluded
+with rationale.
+
+When to apply: prescriptions changing `HTTPException(status_code=...)`,
+domain exception mapping, `_raise_*` helpers, or route OpenAPI response
+metadata for shared exception types.
+
+How to verify: grep `backend/app/api/routes/` for the exception/helper.
+For each route, verify runtime status, `responses={...}`, tests, and
+generated artifacts agree. FastAPI does not infer arbitrary
+`HTTPException` codes into OpenAPI.
+
+Failure mode if missed: same-failure endpoints diverge in runtime status
+or OpenAPI shape.
+
+Example from session calibration: PR #74 commit `fb99dbf67d34`: Codex P2
+pointed `PriceReferenceUnprovable -> 424` at the real routes; PR #68 had inverse `422` vs governance `424`.
+
 ---
 
 ## Review protocol
