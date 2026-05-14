@@ -25,6 +25,7 @@ from app.models.contracts import (
     HedgeLegSide,
     VALID_STATUS_TRANSITIONS,
 )
+from app.models.deal import DealLinkedType
 from app.models.linkages import HedgeOrderLinkage
 from app.models.orders import Order
 from app.schemas.contracts import (
@@ -36,6 +37,7 @@ from app.schemas.contracts import (
     HedgeLegPriceType,
     HedgeLegSide as HedgeLegSideSchema,
 )
+from app.services.deal_engine import DealEngineService
 
 
 GENERIC_STATUS_TRANSITIONS: dict[HedgeContractStatus, set[HedgeContractStatus]] = {
@@ -179,6 +181,12 @@ class ContractService:
             )
         contract.deleted_at = datetime.now(timezone.utc)
         session.flush()
+        DealEngineService.recompute_deals_for_linked_entity(
+            session,
+            (DealLinkedType.hedge, DealLinkedType.contract),
+            contract.id,
+        )
+        session.flush()
         session.refresh(contract)
         return contract
 
@@ -317,6 +325,12 @@ class ContractService:
             )
         contract.status = HedgeContractStatus.cancelled
         contract.deleted_at = datetime.now(timezone.utc)
+        session.flush()
+        DealEngineService.recompute_deals_for_linked_entity(
+            session,
+            (DealLinkedType.hedge, DealLinkedType.contract),
+            contract.id,
+        )
         session.flush()
         session.refresh(contract)
         return contract

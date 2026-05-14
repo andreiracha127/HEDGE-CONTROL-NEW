@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.core.pagination import paginate
 from app.core.precision import quantize_price
+from app.models.deal import DealLinkedType
 from app.models.orders import (
     Order,
     OrderPricingConvention,
@@ -20,6 +21,7 @@ from app.models.orders import (
     PriceType,
     SoPoLink,
 )
+from app.services.deal_engine import DealEngineService
 from app.schemas.orders import (
     OrderListResponse,
     OrderRead,
@@ -117,12 +119,30 @@ class OrderService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Order already archived",
             )
-        order.deleted_at = datetime.now(timezone.utc)
+        with session.no_autoflush:
+            order.deleted_at = datetime.now(timezone.utc)
+            # Validate before the first flush so a rejected archive does not
+            # leak a soft-delete before the audit unit-of-work can roll back.
+            # The identity map still exposes this order as archived to the
+            # hedge-direction validator, matching the intended post-archive
+            # state for live SO/PO checks.
+            DealEngineService.validate_deals_for_linked_entity(
+                session,
+                (DealLinkedType.sales_order, DealLinkedType.purchase_order),
+                order.id,
+            )
+        session.flush()
+        DealEngineService.recompute_deals_for_linked_entity(
+            session,
+            (DealLinkedType.sales_order, DealLinkedType.purchase_order),
+            order.id,
+        )
+        # ``commit=False`` callers still need recomputed Deal columns flushed
+        # before they refresh/read the affected deal in the same transaction.
+        session.flush()
         if commit:
             session.commit()
             session.refresh(order)
-        else:
-            session.flush()
         return order
 
     # ------------------------------------------------------------------

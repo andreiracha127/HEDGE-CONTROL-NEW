@@ -31,6 +31,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.precision import quantize_money, quantize_mt, quantize_price, quantize_ratio
@@ -128,6 +129,77 @@ def _hedge_is_open_for_mtm(contract: HedgeContract) -> bool:
     )
 
 
+def _no_live_linked_entities_exception(deal_id: _uuid.UUID) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            f"Deal {deal_id} has no live linked entities; un-archive at least one "
+            "Order/HedgeContract or remove the deal."
+        ),
+    )
+
+
+def _resolve_live_linked_entities(
+    session: Session, links: list[DealLink]
+) -> tuple[list[DealLink], dict[_uuid.UUID, Order], dict[_uuid.UUID, HedgeContract]]:
+    live_links: list[DealLink] = []
+    resolved_orders: dict[_uuid.UUID, Order] = {}
+    resolved_contracts: dict[_uuid.UUID, HedgeContract] = {}
+
+    for link in links:
+        if link.linked_type in (
+            DealLinkedType.sales_order,
+            DealLinkedType.purchase_order,
+        ):
+            order = session.get(Order, link.linked_id)
+            if order is None or order.deleted_at is not None:
+                continue
+            resolved_orders[link.id] = order
+            live_links.append(link)
+        elif link.linked_type in (
+            DealLinkedType.hedge,
+            DealLinkedType.contract,
+        ):
+            contract = session.get(HedgeContract, link.linked_id)
+            if contract is None or contract.deleted_at is not None:
+                continue
+            resolved_contracts[link.id] = contract
+            live_links.append(link)
+
+    return live_links, resolved_orders, resolved_contracts
+
+
+def _reject_archived_link_target(
+    session: Session, linked_type: DealLinkedType, linked_id: _uuid.UUID
+) -> None:
+    if linked_type in (
+        DealLinkedType.sales_order,
+        DealLinkedType.purchase_order,
+    ):
+        order = session.get(Order, linked_id)
+        if order is not None and order.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Cannot link archived {linked_type.value} {linked_id}; "
+                    "un-archive it before linking to a deal."
+                ),
+            )
+    elif linked_type in (
+        DealLinkedType.hedge,
+        DealLinkedType.contract,
+    ):
+        contract = session.get(HedgeContract, linked_id)
+        if contract is not None and contract.deleted_at is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Cannot link archived {linked_type.value} {linked_id}; "
+                    "un-archive it before linking to a deal."
+                ),
+            )
+
+
 class DealEngineService:
     """Stateless service for Deal operations."""
 
@@ -153,6 +225,7 @@ class DealEngineService:
         for link_data in links_data:
             resolved_type = DealLinkedType(link_data["linked_type"])
             linked_id = link_data["linked_id"]
+            _reject_archived_link_target(session, resolved_type, linked_id)
 
             # Cross-deal uniqueness: entity must not be in another deal
             cross_deal = (
@@ -219,19 +292,29 @@ class DealEngineService:
             in (DealLinkedType.sales_order, DealLinkedType.purchase_order)
         ]
 
+        # Fast-path only for deals with no link rows in either category.
+        # Archived targets are intentionally filtered per-link below so a
+        # deal with archived order rows and a live hedge still raises.
         if not hedge_links or not order_links:
             return  # nothing to validate
 
         for hl in hedge_links:
             contract = session.get(HedgeContract, hl.linked_id)
-            if not contract:
+            if not contract or contract.deleted_at is not None:
                 continue
 
             is_buy = contract.classification == HedgeClassification.long
             expected_type = (
                 DealLinkedType.purchase_order if is_buy else DealLinkedType.sales_order
             )
-            matching = [ol for ol in order_links if ol.linked_type == expected_type]
+            matching: list[tuple[DealLink, Order]] = []
+            for ol in order_links:
+                if ol.linked_type != expected_type:
+                    continue
+                order = session.get(Order, ol.linked_id)
+                if not order or order.deleted_at is not None:
+                    continue
+                matching.append((ol, order))
 
             if not matching:
                 side_label = "PO (purchase)" if is_buy else "SO (sales)"
@@ -243,10 +326,7 @@ class DealEngineService:
                     ),
                 )
 
-            for mol in matching:
-                order = session.get(Order, mol.linked_id)
-                if not order:
-                    continue
+            for _mol, order in matching:
                 # Fixed-price orders have no price exposure — hedging is unnecessary
                 if order.price_type == PriceType.fixed:
                     raise HTTPException(
@@ -290,6 +370,7 @@ class DealEngineService:
             )
 
         resolved_type = DealLinkedType(linked_type)
+        _reject_archived_link_target(session, resolved_type, linked_id)
 
         # ── Duplicate within same deal ──
         existing = (
@@ -331,7 +412,7 @@ class DealEngineService:
         # ── Hedge-direction validation ──
         if resolved_type in (DealLinkedType.hedge, DealLinkedType.contract):
             contract = session.get(HedgeContract, linked_id)
-            if contract:
+            if contract and contract.deleted_at is None:
                 # Collect existing order links in this deal
                 order_links = (
                     session.query(DealLink)
@@ -354,9 +435,14 @@ class DealEngineService:
                         if is_buy
                         else DealLinkedType.sales_order
                     )
-                    matching_orders = [
-                        ol for ol in order_links if ol.linked_type == expected_type
-                    ]
+                    matching_orders: list[tuple[DealLink, Order]] = []
+                    for ol in order_links:
+                        if ol.linked_type != expected_type:
+                            continue
+                        order = session.get(Order, ol.linked_id)
+                        if not order or order.deleted_at is not None:
+                            continue
+                        matching_orders.append((ol, order))
                     if not matching_orders:
                         side_label = "PO (purchase)" if is_buy else "SO (sales)"
                         raise HTTPException(
@@ -368,10 +454,7 @@ class DealEngineService:
                         )
 
                     # Validate price-type and quantity constraints
-                    for mol in matching_orders:
-                        order = session.get(Order, mol.linked_id)
-                        if not order:
-                            continue
+                    for _mol, order in matching_orders:
                         # Fixed-price orders have no price exposure
                         if order.price_type == PriceType.fixed:
                             raise HTTPException(
@@ -432,6 +515,52 @@ class DealEngineService:
 
         DealEngineService._recompute_tons(session, deal)
         session.flush()
+
+    @staticmethod
+    def recompute_deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> None:
+        """Refresh persisted deal aggregates for deals linked to one entity."""
+        deals = DealEngineService._deals_for_linked_entity(
+            session, linked_types, linked_id
+        )
+        for deal in deals:
+            DealEngineService._recompute_tons(session, deal)
+
+    @staticmethod
+    def validate_deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> None:
+        """Re-run hedge-direction validation for deals linked to one entity."""
+        deals = DealEngineService._deals_for_linked_entity(
+            session, linked_types, linked_id
+        )
+        for deal in deals:
+            DealEngineService._validate_hedge_direction(session, deal)
+
+    @staticmethod
+    def _deals_for_linked_entity(
+        session: Session,
+        linked_types: tuple[DealLinkedType, ...],
+        linked_id: _uuid.UUID,
+    ) -> list[Deal]:
+        """Return deals that have a link row for one entity."""
+        type_filter = or_(
+            *(DealLink.linked_type == linked_type for linked_type in linked_types)
+        )
+        return (
+            session.query(Deal)
+            .join(DealLink, DealLink.deal_id == Deal.id)
+            .filter(
+                type_filter,
+                DealLink.linked_id == linked_id,
+            )
+            .all()
+        )
 
     # ------------------------------------------------------------------
     # P&L SNAPSHOT
@@ -556,47 +685,45 @@ class DealEngineService:
                 status_code=status.HTTP_404_NOT_FOUND, detail="Deal not found"
             )
 
-        links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
+        raw_links = session.query(DealLink).filter(DealLink.deal_id == deal_id).all()
+        links, resolved_orders, resolved_contracts = _resolve_live_linked_entities(
+            session, raw_links
+        )
+        if not links:
+            raise _no_live_linked_entities_exception(deal_id)
         link_ids = [lk.id for lk in links]
 
         # ── Step 1-2: walk links once to determine which commodities
         #             actually require a market lookup (variable-price
-        #             physical legs + ACTIVE hedges only). Fixed-price
-        #             legs, orphan-link rows, and non-active hedges
-        #             (settled / partially_settled / cancelled) do not
+        #             physical legs + open hedge exposure). Fixed-price
+        #             legs, orphan-link rows, and closed hedges
+        #             (settled / cancelled) do not
         #             — settled hedges contribute realized P&L locked
         #             in at settlement, not unrealized MTM, so a
         #             missing current quote MUST NOT block snapshot
         #             creation (Codex P2 PR #22; mirrors compute_pl's
         #             "non-active hedge → zero unrealized MTM" rule).
         commodities_needing_price: set[str] = set()
-        # We also pre-resolve order/contract objects to avoid double
-        # session.get() calls below.
-        resolved_orders: dict[_uuid.UUID, Order] = {}
-        resolved_contracts: dict[_uuid.UUID, HedgeContract] = {}
-
         for link in links:
             if link.linked_type in (
                 DealLinkedType.sales_order,
                 DealLinkedType.purchase_order,
             ):
-                order = session.get(Order, link.linked_id)
+                order = resolved_orders.get(link.id)
                 if order is None:
                     continue
-                resolved_orders[link.id] = order
                 if order.price_type == PriceType.variable:
                     commodities_needing_price.add(order.commodity)
             elif link.linked_type in (
                 DealLinkedType.hedge,
                 DealLinkedType.contract,
             ):
-                contract = session.get(HedgeContract, link.linked_id)
+                contract = resolved_contracts.get(link.id)
                 if contract is None:
                     continue
                 # Cancelled hedges contribute 0 P&L and need no price.
                 if contract.status == HedgeContractStatus.cancelled:
                     continue
-                resolved_contracts[link.id] = contract
                 # Only OPEN hedges (active OR partially_settled)
                 # require a current market quote — both have remaining
                 # open quantity contributing unrealized MTM. Fully
@@ -658,7 +785,12 @@ class DealEngineService:
             # Total unavailability → repair scenario. ZERO fresh
             # quotes obtained, so probing existing snapshots is
             # honest: there is no fresh evidence to be stale relative
-            # to. Each candidate's hash is recomputed from the current
+            # to. This branch is reachable only when at least one
+            # commodity needed a live price and failed lookup; if no
+            # commodity needed pricing, ``unprovable_errors`` would be
+            # empty and the function would build a fixed-price snapshot
+            # with ``price_references = None`` instead of probing. Each
+            # candidate's hash is recomputed from the current
             # link set + its persisted price_references; the first
             # match is returned. Legacy (pre-PR-8) rows have their
             # hash computed in the old format (no price_references
@@ -742,6 +874,9 @@ class DealEngineService:
         # ── Step 6: compute MTMs using the per-commodity dict.
         physical_revenue = Decimal("0")
         physical_cost = Decimal("0")
+        # Intentionally zero in this snapshot path: settled hedge realized P&L
+        # is sourced from the cashflow ledger via compute_pl, not recomputed
+        # from current MTM inputs here.
         hedge_pnl_realized = Decimal("0")
         hedge_pnl_mtm = Decimal("0")
 
@@ -768,7 +903,8 @@ class DealEngineService:
                     physical_cost += value
 
             # ── Financial side (hedges / contracts) ──
-            # Single MTM formula; settled → realized, active → MTM.
+            # Open hedge exposure is MTM-valued here; realized cashflow P&L
+            # for settled hedges is sourced from the ledger/compute_pl path.
             elif link.linked_type in (
                 DealLinkedType.hedge,
                 DealLinkedType.contract,
@@ -797,9 +933,10 @@ class DealEngineService:
                 else:
                     quote = quotes_by_commodity.get(contract.commodity)
                     if quote is None:
-                        # Defensive: step 3 should have raised. Re-raise
-                        # here rather than fall back to Decimal("0") —
-                        # never silently zero an ACTIVE hedge MTM.
+                        # Defensive: the collect loop above should have
+                        # populated unprovable_errors and raised before
+                        # reaching this point. Re-raise rather than
+                        # silently zero an ACTIVE hedge MTM.
                         raise PriceReferenceUnprovable(
                             f"hedge contract {contract.id} cannot be MTM-valued: "
                             f"no market price for {contract.commodity} on "
@@ -814,8 +951,12 @@ class DealEngineService:
                         else tons * (market_price - price)
                     )
 
-                if contract.status == HedgeContractStatus.settled:
-                    hedge_pnl_realized += mtm
+                if contract.status == HedgeContractStatus.cancelled:
+                    pass
+                elif contract.status == HedgeContractStatus.settled:
+                    # Settled realized P&L is sourced from the cashflow
+                    # ledger/compute_pl path, not recomputed from MTM here.
+                    pass
                 else:
                     hedge_pnl_mtm += mtm
 
@@ -880,7 +1021,8 @@ class DealEngineService:
         If *deal_ids* is empty every active deal is included.
         Returns a dict ready to be serialised as ``PnlBreakdownResponse``.
         """
-        if deal_ids:
+        explicit_deal_filter = bool(deal_ids)
+        if explicit_deal_filter:
             deals = (
                 session.query(Deal)
                 .filter(Deal.id.in_(deal_ids), Deal.is_deleted == False)  # noqa: E712
@@ -915,35 +1057,36 @@ class DealEngineService:
             # missing price hard-fails the whole breakdown (consistent
             # with §3.3 of the dispatch — no partial-success path; the
             # endpoint maps PriceReferenceUnprovable to 422).
-            links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
+            raw_links = session.query(DealLink).filter(DealLink.deal_id == deal.id).all()
+            links, resolved_orders, resolved_contracts = _resolve_live_linked_entities(
+                session, raw_links
+            )
+            if not links:
+                if not explicit_deal_filter:
+                    continue
+                raise _no_live_linked_entities_exception(deal.id)
 
             commodities_needing_price: set[str] = set()
-            resolved_orders: dict[_uuid.UUID, Order] = {}
-            resolved_contracts: dict[_uuid.UUID, HedgeContract] = {}
             for link in links:
                 if link.linked_type in (
                     DealLinkedType.sales_order,
                     DealLinkedType.purchase_order,
                 ):
-                    order = session.get(Order, link.linked_id)
+                    order = resolved_orders.get(link.id)
                     if order is None:
                         continue
-                    resolved_orders[link.id] = order
                     if order.price_type == PriceType.variable:
                         commodities_needing_price.add(order.commodity)
                 elif link.linked_type in (
                     DealLinkedType.hedge,
                     DealLinkedType.contract,
                 ):
-                    contract = session.get(HedgeContract, link.linked_id)
+                    contract = resolved_contracts.get(link.id)
                     if contract is None:
                         continue
+                    # Cancelled hedges contribute 0 P&L and need no price.
                     if contract.status == HedgeContractStatus.cancelled:
-                        # Cancelled hedges contribute 0 P&L; excluded
-                        # from resolved_contracts so the valuation pass
-                        # below short-circuits to pnl=0.
                         continue
-                    resolved_contracts[link.id] = contract
                     # Only OPEN hedges (active OR partially_settled)
                     # require a current market quote — both have
                     # remaining open quantity contributing unrealized
@@ -966,6 +1109,9 @@ class DealEngineService:
 
             physical_revenue = Decimal("0")
             physical_cost = Decimal("0")
+            # Intentionally zero in this breakdown path for the same reason as
+            # snapshots: settled hedge realized P&L belongs to compute_pl /
+            # cashflow-ledger attribution, not MTM recomputation here.
             hedge_pnl_realized = Decimal("0")
             hedge_pnl_mtm = Decimal("0")
             physical_items: list[dict] = []
@@ -1028,12 +1174,13 @@ class DealEngineService:
                         )
 
                 # ── Financial side ──
-                # Single MTM formula; settled → realized, active → MTM.
+                # Open hedge exposure is MTM-valued here; realized cashflow P&L
+                # for settled hedges is sourced from the ledger/compute_pl path.
                 elif link.linked_type in (
                     DealLinkedType.hedge,
                     DealLinkedType.contract,
                 ):
-                    contract = session.get(HedgeContract, link.linked_id)
+                    contract = resolved_contracts.get(link.id)
                     if not contract:
                         continue
 
@@ -1041,6 +1188,7 @@ class DealEngineService:
                     price = quantize_price(contract.fixed_price_value)
                     is_sell = contract.classification == HedgeClassification.short
 
+                    hedge_market_price: Decimal | None = None
                     # Closed hedges contribute zero unrealized MTM
                     # and require no current quote (Codex P1 PR #22 —
                     # narrowed from the prior overbroad "non-active"
@@ -1056,7 +1204,6 @@ class DealEngineService:
                     # ``exposure_engine``.
                     if not _hedge_is_open_for_mtm(contract):
                         pnl = Decimal("0")
-                        hedge_market_price: Decimal | None = None
                     else:
                         quote = quotes_by_commodity.get(contract.commodity)
                         if quote is None:
@@ -1080,8 +1227,12 @@ class DealEngineService:
                             else tons * (hedge_market_price - price)
                         )
 
-                    if contract.status == HedgeContractStatus.settled:
-                        hedge_pnl_realized += pnl
+                    if contract.status == HedgeContractStatus.cancelled:
+                        pass
+                    elif contract.status == HedgeContractStatus.settled:
+                        # Settled realized P&L is sourced from the cashflow
+                        # ledger/compute_pl path, not recomputed from MTM here.
+                        pass
                     else:
                         hedge_pnl_mtm += pnl
 
@@ -1252,7 +1403,14 @@ class DealEngineService:
                 DealLinkedType.sales_order,
                 DealLinkedType.purchase_order,
             ):
-                order = session.query(Order).filter(Order.id == link.linked_id).first()
+                order = (
+                    session.query(Order)
+                    .filter(
+                        Order.id == link.linked_id,
+                        Order.deleted_at.is_(None),
+                    )
+                    .first()
+                )
                 if order:
                     physical_tons = quantize_mt(
                         physical_tons + quantize_mt(order.quantity_mt)
@@ -1260,7 +1418,10 @@ class DealEngineService:
             elif link.linked_type in (DealLinkedType.hedge, DealLinkedType.contract):
                 contract = (
                     session.query(HedgeContract)
-                    .filter(HedgeContract.id == link.linked_id)
+                    .filter(
+                        HedgeContract.id == link.linked_id,
+                        HedgeContract.deleted_at.is_(None),
+                    )
                     .first()
                 )
                 if contract:

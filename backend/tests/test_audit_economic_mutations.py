@@ -229,6 +229,12 @@ class TestPNLSnapshotAudit:
             "/deals", json={"name": "PnL Audit", "commodity": "ALUMINUM"}
         )
         deal_id = UUID(resp.json()["id"])
+        order_id = _create_order_via_orm(session, OrderType.sales)
+        link_resp = client.post(
+            f"/deals/{deal_id}/links",
+            json={"linked_type": "sales_order", "linked_id": str(order_id)},
+        )
+        assert link_resp.status_code == 201
 
         snap = client.post(f"/deals/{deal_id}/pnl-snapshot")
         assert snap.status_code == 201
