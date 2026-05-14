@@ -140,7 +140,7 @@ Add `backend/app/api/routes/csp_report.py`:
 
 ```python
 from fastapi import APIRouter, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 import structlog
 
 router = APIRouter(prefix="/csp", tags=["csp"])
@@ -148,7 +148,7 @@ logger = structlog.get_logger(__name__)
 
 
 @router.post("/report", status_code=status.HTTP_204_NO_CONTENT)
-async def csp_report(request: Request) -> JSONResponse:
+async def csp_report(request: Request) -> Response:
     """Receive CSP violation reports from browser.
 
     Per W3C CSP Reporting spec, browser POSTs JSON-formatted reports
@@ -186,7 +186,7 @@ async def csp_report(request: Request) -> JSONResponse:
             referrer=violation.get("referrer"),
         )
 
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 ```
 
 Field handling: `document-uri` and `violated-directive`/`effective-directive` are required for a useful report and missing/non-object reports return 400. `blocked-uri`, `source-file`, `line-number`, and `referrer` are optional per browser/reporting variation and may log as null. The structured log MUST include all seven keys above even when optional values are absent.

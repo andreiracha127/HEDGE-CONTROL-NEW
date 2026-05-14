@@ -372,19 +372,24 @@ Concrete shape:
 ```python
 def validate_auth_config() -> None:
     env = _canonical_env()
-    if env not in _FAIL_CLOSED_ENVS:
-        return
+    if _auth_enabled():
+        s = get_settings()
+        if not (s.jwt_audience and s.jwks_url):
+            raise RuntimeError("JWT auth enabled but JWT_AUDIENCE/JWKS_URL missing")
+        if not os.getenv("CLERK_FAPI_HOST"):
+            raise RuntimeError("JWT auth enabled but CLERK_FAPI_HOST missing")
 
     missing: list[str] = []
-    for name in (
-        "CLERK_FAPI_HOST",
-        "SERVICE_JWT_SIGNING_KEY",
-        "SERVICE_JWT_PUBLIC_KEY",
-        "BACKEND_SERVICE_ISSUER",
-        "BACKEND_SERVICE_AUDIENCE",
-    ):
-        if not os.getenv(name):
-            missing.append(name)
+    if env in _FAIL_CLOSED_ENVS:
+        for name in (
+            "CLERK_FAPI_HOST",
+            "SERVICE_JWT_SIGNING_KEY",
+            "SERVICE_JWT_PUBLIC_KEY",
+            "BACKEND_SERVICE_ISSUER",
+            "BACKEND_SERVICE_AUDIENCE",
+        ):
+            if not os.getenv(name):
+                missing.append(name)
 
     if missing:
         raise RuntimeError(
