@@ -249,15 +249,33 @@ External-ingress (1, request authenticated by external provider; the
 service identity is the INTERNAL processing context for audit-trail
 attribution, NOT the request authentication mechanism):
 
-- `service:webhook_inbound` — WhatsApp inbound. Public ingress at
-  `POST /webhooks/whatsapp` (and `GET` challenge) MUST stay
-  provider-authenticated via Meta/Twilio HMAC signature — Meta/Twilio
-  cannot present an internal backend-signed JWT. After the HMAC is
-  validated, the request handler attributes downstream operations
-  (audit events, message persistence, rfq correlation) to
-  `service:webhook_inbound` so the audit trail records a stable
-  service identity instead of "unauthed". The HMAC signature remains
-  the request gate; the JWT pattern does NOT apply at this ingress.
+- `service:webhook_inbound` — WhatsApp inbound. Provider-defined
+  authentication mechanism MUST be preserved at ingress (Meta/Twilio
+  cannot present an internal backend-signed JWT); the JWT pattern does
+  NOT apply at this route. Authentication varies by HTTP method per
+  the providers' own protocols:
+  - **POST `/webhooks/whatsapp`** (inbound message): provider HMAC
+    signature validated server-side. Meta uses `X-Hub-Signature-256`
+    (HMAC-SHA256); Twilio uses `X-Twilio-Signature` (Twilio standard
+    HMAC). Reject with 401/403 on signature mismatch.
+  - **GET `/webhooks/whatsapp`** (verification challenge): NOT HMAC.
+    Meta sends `hub.mode=subscribe` + `hub.verify_token` (shared
+    secret query parameter, matched against `WHATSAPP_VERIFY_TOKEN`
+    env) and expects the handler to echo `hub.challenge` as the
+    response body. Twilio's GET verification design has no
+    authentication at all — handler returns 200 OK with empty body.
+    A literal "GET MUST be HMAC-validated" rule would reject the
+    legitimate provider verification callback and break webhook
+    setup; the constitutional contract is that GET preserves the
+    provider's documented verification protocol, NOT that GET is
+    HMAC-authed.
+
+  After the per-method authentication succeeds, the request handler
+  attributes downstream operations (audit events, message persistence,
+  RFQ correlation) to `service:webhook_inbound` so the audit trail
+  records a stable service identity instead of "unauthed". The
+  provider authentication remains the request gate; the JWT pattern
+  applies ONLY to internal-issued service identities.
 
 Service-account scope is per-identity-confined: `service:westmetall_ingest`
 cannot write orders (only its own ingest endpoint), `service:webhook_inbound`
@@ -325,9 +343,14 @@ not an exhaustive guarantee):
 - Westmetall ingest routes (`westmetall.py:135`, `:184`) formerly
   `trader`-gated → `service:westmetall_ingest`
 - WhatsApp webhook (`webhooks.py:309` GET challenge, `:339` POST inbound):
-  ingress stays Meta/Twilio HMAC-authed; only the audit-trail attribution
-  changes — internal processing context = `service:webhook_inbound`
-  (NOT a JWT swap on the route; see Service identities above)
+  ingress preserves provider's documented authentication protocol per
+  HTTP method — POST stays HMAC-authed (Meta `X-Hub-Signature-256` /
+  Twilio `X-Twilio-Signature`), GET stays per-provider verification
+  (Meta `hub.verify_token` shared-secret query param + echo
+  `hub.challenge`; Twilio plain 200 OK). Only the audit-trail
+  attribution changes — internal processing context after auth success
+  = `service:webhook_inbound` (NOT a JWT swap on the route; see Service
+  identities above for full per-method protocol)
 - Counterparty CRUD (formerly all-roles open → per-type for trader,
   with read filter)
 - RFQ workflow (`rfqs.py` 10 sites: POST /rfqs, /preview-text, actions
