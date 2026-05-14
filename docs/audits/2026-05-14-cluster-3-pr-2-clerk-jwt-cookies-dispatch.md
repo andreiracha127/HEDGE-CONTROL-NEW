@@ -126,7 +126,7 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Add the following NEW module constants to `backend/app/core/auth.py`, then replace the current `_extract_token(request) -> str` helper with the NEW `_extract_token_with_source(request) -> tuple[str, str]` helper. After this change, `get_current_user` must be the only token-extraction call site and must use `_extract_token_with_source`; delete the old `_extract_token` helper.
+BREAKING CHANGE: replace `_extract_token(request: Request) -> str` in `backend/app/core/auth.py` with the source-aware `_extract_token_with_source(request: Request) -> tuple[str, str]` helper below. Delete the old helper only after updating its `get_current_user` call site to destructure `token, source = _extract_token_with_source(request)` as shown in §4.6. Add these NEW module constants at the same time.
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
