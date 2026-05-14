@@ -49,7 +49,7 @@ Verified at HEAD `e3ad0dffb`.
 
 7 documented anomalies. Each MUST be retired in this wave per governance "Anomalies to be retired upon Cluster 3 implementation closure" preamble; PR-CL3-1 dispatch §3 ALSO requires a sweep of every backend route against the matrix and inclusion of any newly-discovered anomaly in the implementation scope:
 
-1. **Westmetall ingest** (`backend/app/api/routes/westmetall.py:135`, `:184`) — currently `require_role("trader")`. Swap to `require_role("service:westmetall_ingest")`. Also covers the scheduler/task that triggers ingest (per governance update).
+1. **Westmetall ingest** (`backend/app/api/routes/westmetall.py:135`, `:184`) — currently `require_role("trader")`. Swap to `require_service_identity("westmetall_ingest")`. Also covers the scheduler/task that triggers ingest (per governance update).
 2. **WhatsApp webhook** (`backend/app/api/routes/webhooks.py:309-335` GET, `:339+` POST) — ingress stays as today (Meta `hub.verify_token` for GET, HMAC `X-Hub-Signature-256` / `X-Twilio-Signature` for POST). Internal processing context attributed to `service:webhook_inbound` for audit trail (NOT a route auth swap).
 3. **Counterparty CRUD** (`backend/app/api/routes/counterparties.py:23` POST, `:46` GET list, `:75` GET by-id, `:89` PATCH, `:120` DELETE) — apply per-method authorization per governance §"Authorization invariants" + read filter for trader-only effective role.
 4. **RFQ workflow** (`backend/app/api/routes/rfqs.py` 10 sites: `:102` POST /rfqs, `:134` POST /preview-text, `:266` POST submit-quote, `:318` reject, `:340` cancel, `:372` reject-quote, `:407` refresh-counterparty, `:441` refresh, `:473` award, `:495` PATCH archive) — swap from `require_role("trader")` to `require_role("risk_manager")`.
@@ -237,8 +237,8 @@ def get_counterparty(
 
 | Site | Before | After |
 |---|---|---|
-| `westmetall.py:135` | `require_role("trader")` | `require_role("service:westmetall_ingest")` |
-| `westmetall.py:184` | `require_role("trader")` | `require_role("service:westmetall_ingest")` |
+| `westmetall.py:135` | `require_role("trader")` | `require_service_identity("westmetall_ingest")` |
+| `westmetall.py:184` | `require_role("trader")` | `require_service_identity("westmetall_ingest")` |
 | `rfqs.py:113`, `:137`, `:280`, `:330`, `:352`, `:385`, `:419`, `:453`, `:485`, `:507` (10 sites) | `require_role("trader")` | `require_role("risk_manager")` |
 | `contracts.py:41`, `:100`, `:121`, `:144`, `:164` (5 sites) | `require_role("trader")` | `require_role("risk_manager")` |
 | `deals.py:104`, `:186`, `:208`, `:235` (4 sites) | `require_any_role("trader", "risk_manager")` | `require_role("risk_manager")` (drop trader) |
@@ -327,7 +327,7 @@ A merged PR closes D-3.1 (RBAC enforcement portion) iff every item below is true
 
 ### 6.3 Anomaly retirement (7 categories)
 
-- [ ] `westmetall.py:135`, `:184` swapped to `require_role("service:westmetall_ingest")`.
+- [ ] `westmetall.py:135`, `:184` swapped to `require_service_identity("westmetall_ingest")`.
 - [ ] `webhooks.py:309-335` GET + `:339+` POST: route gate UNCHANGED; downstream `actor_sub="service:webhook_inbound"` plumbed to audit-event metadata.
 - [ ] `rfqs.py` 10 sites swapped to `require_role("risk_manager")`. Sweep `rg -nP 'require_role\\("trader"\\)' backend/app/api/routes/rfqs.py` → zero matches.
 - [ ] `contracts.py` 5 sites swapped to `require_role("risk_manager")`. Sweep `rg -nP 'require_role\\("trader"\\)' backend/app/api/routes/contracts.py` → zero matches.

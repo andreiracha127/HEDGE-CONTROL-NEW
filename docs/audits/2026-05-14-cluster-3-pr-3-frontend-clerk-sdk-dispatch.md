@@ -53,6 +53,8 @@ PR-CL3-3 consumes (does NOT modify):
 - `POST /auth/logout` (PR-CL3-2) — clear cookies.
 - `GET /me` or equivalent — returns actor identity (sub, roles) for the auth store. If endpoint doesn't exist, PR-CL3-3 may need to add it (small backend addendum) OR rely on the response of `/auth/session` to seed the store.
 
+Every frontend call to those backend auth endpoints MUST go through the configured backend origin (`VITE_API_BASE_URL`, currently exposed as `API_BASE` in `frontend-svelte/src/lib/api/fetch.ts`) or a shared API wrapper that prefixes it. Do not use relative `fetch("/auth/...")` from the static frontend; `frontend-svelte/nginx.conf` intentionally has no `/auth` or `/api` proxy in this wave.
+
 Sweep for `GET /me` or `/auth/me` or `/users/me`:
 
 ```powershell
@@ -103,6 +105,7 @@ Replace `frontend-svelte/src/routes/(public)/login/+page.svelte` body:
   import { onMount } from "svelte";
   import { clerk, initClerk } from "$lib/clerk";
   import { goto } from "$app/navigation";
+  import { API_BASE } from "$lib/api/fetch";
   import { authStore } from "$lib/stores/auth.svelte";
 
   let mountEl: HTMLDivElement;
@@ -120,7 +123,7 @@ Replace `frontend-svelte/src/routes/(public)/login/+page.svelte` body:
       if (session) {
         const token = await session.getToken();
         if (!token) return;
-        const response = await fetch("/auth/session", {
+        const response = await fetch(`${API_BASE}/auth/session`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
@@ -191,6 +194,8 @@ In `frontend-svelte/src/lib/api/` (generated client wrapper):
 Pattern:
 
 ```typescript
+import { API_BASE } from "$lib/api/fetch";
+
 function authedFetch(url: string, options: RequestInit = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("Content-Type", "application/json");
@@ -198,7 +203,8 @@ function authedFetch(url: string, options: RequestInit = {}) {
     const csrf = authStore.state.csrf_token;
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
-  return fetch(url, {
+  const absoluteUrl = url.startsWith("http") ? url : `${API_BASE}${url}`;
+  return fetch(absoluteUrl, {
     ...options,
     headers,
     credentials: "include",
@@ -215,10 +221,11 @@ The generated OpenAPI client may have a `fetch` injection point; use that. If no
   import { clerk } from "$lib/clerk";
   import { authStore } from "$lib/stores/auth.svelte";
   import { goto } from "$app/navigation";
+  import { API_BASE } from "$lib/api/fetch";
 
   async function logout() {
     await clerk.signOut();  // Clerk-side cleanup
-    await fetch("/auth/logout", { method: "POST", credentials: "include" });
+    await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
     authStore.clear();
     goto("/login");
   }
@@ -231,10 +238,12 @@ The generated OpenAPI client may have a `fetch` injection point; use that. If no
 
 ```typescript
 // In a layout-level effect or root +layout.svelte
+import { API_BASE } from "$lib/api/fetch";
+
 $effect(() => {
   if (!authStore.state.authenticated) return;
   const refreshInterval = setInterval(async () => {
-    const response = await fetch("/auth/refresh", {
+    const response = await fetch(`${API_BASE}/auth/refresh`, {
       method: "POST",
       credentials: "include",
       headers: { "X-CSRF-Token": authStore.state.csrf_token ?? "" },
@@ -286,6 +295,7 @@ A merged PR closes D-3.2 (frontend half) iff every item below is true.
 - [ ] `/sign-up` page mounts Clerk sign-up via `clerk.mountSignUp`.
 - [ ] After Clerk sign-in, frontend calls `POST /auth/session` and seeds auth store.
 - [ ] Logout button calls `clerk.signOut()` + `POST /auth/logout` + clears auth store.
+- [ ] Auth session, refresh, and logout calls are routed through `API_BASE` / shared API wrapper, not relative `fetch("/auth/...")`.
 
 ### 6.3 Auth store
 
