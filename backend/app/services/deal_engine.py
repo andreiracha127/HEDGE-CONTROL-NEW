@@ -835,9 +835,10 @@ class DealEngineService:
                 else:
                     quote = quotes_by_commodity.get(contract.commodity)
                     if quote is None:
-                        # Defensive: step 3 should have raised. Re-raise
-                        # here rather than fall back to Decimal("0") —
-                        # never silently zero an ACTIVE hedge MTM.
+                        # Defensive: the collect loop above should have
+                        # populated unprovable_errors and raised before
+                        # reaching this point. Re-raise rather than
+                        # silently zero an ACTIVE hedge MTM.
                         raise PriceReferenceUnprovable(
                             f"hedge contract {contract.id} cannot be MTM-valued: "
                             f"no market price for {contract.commodity} on "
@@ -978,10 +979,13 @@ class DealEngineService:
                     contract = resolved_contracts.get(link.id)
                     if contract is None:
                         continue
-                    if contract.status == HedgeContractStatus.cancelled:
-                        # Cancelled hedges contribute 0 P&L; excluded
-                        # from price lookup so the valuation pass below
-                        # short-circuits to pnl=0.
+                    if contract.status in (
+                        HedgeContractStatus.settled,
+                        HedgeContractStatus.cancelled,
+                    ):
+                        # Closed/cancelled hedges contribute no current
+                        # MTM; exclude them from price lookup so the
+                        # valuation pass below short-circuits to pnl=0.
                         continue
                     # Only OPEN hedges (active OR partially_settled)
                     # require a current market quote — both have

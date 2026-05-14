@@ -22,6 +22,7 @@ from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
 from app.services.deal_engine import DealEngineService
 from app.services.exposure_engine import ExposureEngineService
+from app.services.price_lookup_service import PriceReferenceUnprovable
 
 
 SNAPSHOT_DATE = date(2026, 2, 2)
@@ -158,6 +159,8 @@ def _insert_price(
 
 
 def test_compute_deal_pnl_excludes_archived_variable_order(session: Session) -> None:
+    # Guard row: if the archived COPPER order leaks into price collection,
+    # the snapshot will expose COPPER in price_references and overstate revenue.
     _insert_price(
         session, symbol="LME_CU_CASH_SETTLEMENT_DAILY", price_usd=Decimal("9100")
     )
@@ -329,6 +332,37 @@ def test_exposure_and_deal_pnl_converge_after_order_archive(
     assert snap.physical_revenue == Decimal("27000.000000")
     assert "ALUMINUM" in (snap.price_references or {})
     assert "COPPER" not in (snap.price_references or {})
+
+
+def test_compute_deal_pnl_partial_price_failure_raises_unprovable(
+    session: Session,
+) -> None:
+    _insert_price(
+        session, symbol="LME_ALU_CASH_SETTLEMENT_DAILY", price_usd=Decimal("2700")
+    )
+    deal = _create_deal(session)
+    live_order = _create_order(
+        session,
+        OrderType.sales,
+        commodity="ALUMINUM",
+        qty=Decimal("10"),
+        price_type=PriceType.variable,
+    )
+    live_hedge_without_quote = _create_hedge(
+        session,
+        commodity="COPPER",
+        qty=Decimal("5"),
+        fixed_price=Decimal("9000"),
+    )
+    _link(session, deal, DealLinkedType.sales_order, live_order.id)
+    _link(session, deal, DealLinkedType.hedge, live_hedge_without_quote.id)
+    before_count = session.query(DealPNLSnapshot).filter_by(deal_id=deal.id).count()
+
+    with pytest.raises(PriceReferenceUnprovable):
+        DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
+
+    after_count = session.query(DealPNLSnapshot).filter_by(deal_id=deal.id).count()
+    assert after_count == before_count
 
 
 def test_unarchived_order_returns_to_deal_pnl(session: Session) -> None:
