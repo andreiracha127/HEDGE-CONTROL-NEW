@@ -668,9 +668,9 @@ class DealEngineService:
 
         # ── Step 1-2: walk links once to determine which commodities
         #             actually require a market lookup (variable-price
-        #             physical legs + ACTIVE hedges only). Fixed-price
-        #             legs, orphan-link rows, and non-active hedges
-        #             (settled / partially_settled / cancelled) do not
+        #             physical legs + open hedge exposure). Fixed-price
+        #             legs, orphan-link rows, and closed hedges
+        #             (settled / cancelled) do not
         #             — settled hedges contribute realized P&L locked
         #             in at settlement, not unrealized MTM, so a
         #             missing current quote MUST NOT block snapshot
@@ -1048,6 +1048,9 @@ class DealEngineService:
                 ):
                     contract = resolved_contracts.get(link.id)
                     if contract is None:
+                        continue
+                    # Cancelled hedges contribute 0 P&L and need no price.
+                    if contract.status == HedgeContractStatus.cancelled:
                         continue
                     # Only OPEN hedges (active OR partially_settled)
                     # require a current market quote — both have
