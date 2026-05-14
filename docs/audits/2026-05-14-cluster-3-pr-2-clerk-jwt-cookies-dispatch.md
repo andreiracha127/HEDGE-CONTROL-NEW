@@ -41,6 +41,16 @@ Verified at HEAD `e3ad0dffb` for the pre-wave baseline. PR-CL3-2 is self-contain
 - `backend/app/core/auth.py:147-161` — current `_extract_token(request) -> str` reads `Authorization: Bearer <token>`. PR-CL3-2 REPLACES that current signature with a source-aware cookie/service-token extractor.
 - `backend/app/core/auth.py:185-224` — `get_current_user` JWKS validation. Issuer + audience must point at Clerk values; everything else stays.
 
+### Auditor-exclusive role validation deliverable
+
+Define the following NEW module-level constant in `backend/app/core/auth.py` before `get_current_user`:
+
+```python
+_VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+```
+
+This constant is used by the auditor-exclusive JWT-time validation rule in §4.4. It is part of PR-CL3-2 scope because governance requires mixed auditor roles to be rejected by the JWT validator before any route gate dependency runs.
+
 ### Clerk session JWT shape (per Clerk docs)
 
 Clerk session JWTs have the following claims of interest:
@@ -95,7 +105,7 @@ Update `validate_auth_config` to verify `CLERK_FAPI_HOST` is set in `_FAIL_CLOSE
 
 ### 4.2 Cookie-based session
 
-Add the following NEW module constants to `backend/app/core/auth.py`, then replace the current `_extract_token(request) -> str` helper with the NEW `_extract_token_with_source(request) -> tuple[str, str]` helper. After this change, `get_current_user` must be the only token-extraction call site and must use `_extract_token_with_source`; delete the old `_extract_token` helper rather than keeping a backward-compatible Bearer-only path.
+Add the following NEW module constants to `backend/app/core/auth.py`, then replace the current `_extract_token(request) -> str` helper with the NEW `_extract_token_with_source(request) -> tuple[str, str]` helper. After this change, `get_current_user` must be the only token-extraction call site and must use `_extract_token_with_source`; delete the old `_extract_token` helper.
 
 ```python
 SESSION_COOKIE_NAME = "__Session"  # Clerk-style; opaque to frontend
@@ -117,9 +127,50 @@ def _extract_token_with_source(request: Request) -> tuple[str, str]:
 
 The Bearer fallback is service-token transport only. `_extract_token_with_source` accepts Bearer syntactically, but `get_current_user` MUST use the returned source to reject Clerk-issued human tokens delivered by Bearer and accept backend-issued service tokens delivered by Bearer. This keeps cron/worker callers (Westmetall, RFQ outbound, cashflow pipeline) on Bearer transport without reopening human Clerk Bearer auth.
 
-Create new file `backend/app/api/routes/auth.py` with these routes: `POST /auth/session`, `POST /auth/refresh`, `POST /auth/logout`, and `GET /auth/me`:
+Create new file `backend/app/api/routes/auth.py` as a new route module with these routes: `POST /auth/session`, `POST /auth/refresh`, `POST /auth/logout`, and `GET /auth/me`.
+
+Complete file template:
 
 ```python
+import secrets
+from typing import Any
+
+from fastapi import APIRouter, Body, Depends, Request, Response
+
+from app.core.auth import (
+    CSRF_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    _FAIL_CLOSED_ENVS,
+    get_current_user,
+    _canonical_env,
+    _validate_clerk_token,
+)
+
+router = APIRouter(tags=["auth"])
+
+
+def _set_auth_cookies(response: Response, session_token: str, csrf: str) -> None:
+    secure = _canonical_env() in _FAIL_CLOSED_ENVS
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        session_token,
+        httponly=True,
+        secure=secure,  # always True in prod
+        samesite="lax",
+        max_age=300,  # match Clerk session TTL
+        path="/",
+    )
+    response.set_cookie(
+        CSRF_COOKIE_NAME,
+        csrf,
+        httponly=False,  # frontend reads this to echo back in X-CSRF-Token header
+        secure=secure,
+        samesite="lax",
+        max_age=300,
+        path="/",
+    )
+
+
 @router.post("/auth/session")
 async def create_session(
     request: Request,
@@ -137,25 +188,7 @@ async def create_session(
 
     # Mint a CSRF token (cryptographically random, returned in body + cookie)
     csrf = secrets.token_urlsafe(32)
-
-    response.set_cookie(
-        SESSION_COOKIE_NAME,
-        session_token,
-        httponly=True,
-        secure=_canonical_env() in _FAIL_CLOSED_ENVS,  # always True in prod
-        samesite="lax",
-        max_age=300,  # match Clerk session TTL
-        path="/",
-    )
-    response.set_cookie(
-        CSRF_COOKIE_NAME,
-        csrf,
-        httponly=False,  # frontend reads this to echo back in X-CSRF-Token header
-        secure=_canonical_env() in _FAIL_CLOSED_ENVS,
-        samesite="lax",
-        max_age=300,
-        path="/",
-    )
+    _set_auth_cookies(response, session_token, csrf)
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 
@@ -167,10 +200,8 @@ async def refresh_session(
 ) -> dict[str, str]:
     """Refresh httpOnly cookie + CSRF token using a fresh Clerk JWT."""
     payload = _validate_clerk_token(session_token)
-    # Mint fresh CSRF
     csrf = secrets.token_urlsafe(32)
-    # Re-set cookies with fresh max_age
-    # ... (same Set-Cookie logic as create_session)
+    _set_auth_cookies(response, session_token, csrf)
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 
