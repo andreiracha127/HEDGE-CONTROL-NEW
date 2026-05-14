@@ -135,13 +135,79 @@ Path B preserves `Deal.is_deleted` and `Deal.deleted_at` on the model. The curre
 
 ### 5.1 Route
 
-Add `PATCH /deals/{id}/archive` to `backend/app/api/routes/deals.py`:
+Add `PATCH /deals/{id}/archive` to `backend/app/api/routes/deals.py`. Critical: the `audit_event` dependency only records the request payload by default — and a `PATCH /archive` request typically has no body. Without explicit `metadata=...` on `mark_audit_success`, the persisted `AuditEvent` row would lose actor identity AND link inventory snapshot, making the §5.5 test #7 impossible to satisfy (Codex P2 catch on PR #74 v5).
 
-- Path: `PATCH /deals/{deal_id}/archive`
-- Response: `DealRead` (the archived deal)
-- RBAC: `require_role("risk_manager")` (or `require_any_role("risk_manager", "trader")` if product confirms trader-level archive is acceptable; default to risk_manager only).
-- Audit event: `audit_event(entity_type="deal", event_type="archived")` decorator following the pattern from `archive_order` / `archive_hedge_contract`.
-- Behavior: set `Deal.is_deleted = True` and `Deal.deleted_at = now_utc()` inside `unit_of_work` + `mark_audit_success`.
+**Required signature** (verified against existing patterns at `archive_order` / `archive_hedge_contract` and the Cluster 2 `actor_sub` pattern in PR #71):
+
+```python
+@router.patch("/{deal_id}/archive", response_model=DealRead)
+def archive_deal(
+    deal_id: UUID,
+    request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),  # mandatory; Cluster 2 pattern
+    _: None = Depends(audit_event(entity_type="deal", event_type="archived")),
+    __: None = Depends(require_role("risk_manager")),
+    session: Session = Depends(get_session),
+) -> DealRead:
+    with unit_of_work(session, request=request):
+        deal = session.get(Deal, deal_id)
+        if not deal or deal.is_deleted:
+            raise HTTPException(status_code=404, detail="Deal not found or already archived")
+
+        # Snapshot link inventory BEFORE any cascade/delete mutates it.
+        # The snapshot becomes the audit metadata; without it the persisted
+        # AuditEvent row cannot reconstruct what was archived.
+        live_links = (
+            session.query(DealLink)
+            .filter(DealLink.deal_id == deal_id)
+            .all()
+        )
+        link_inventory_snapshot = [
+            {
+                "id": str(link.id),
+                "linked_type": link.linked_type.value,
+                "linked_id": str(link.linked_id),
+            }
+            for link in live_links
+        ]
+
+        # Apply cascade per §5.2 chosen variant. The chosen branch
+        # decides what happens to live_links (soft-delete, hard-delete,
+        # or block-on-active-links).
+        cascade_strategy = "<chosen-variant>"  # see §5.2
+        # ... cascade execution per the chosen variant ...
+
+        # Mark Deal archived.
+        deal.is_deleted = True
+        deal.deleted_at = now_utc()
+
+        # Mark audit success WITH metadata so the AuditEvent row
+        # captures actor + link inventory + cascade decision.
+        mark_audit_success(
+            request,
+            deal.id,
+            metadata={
+                "actor_sub": actor_sub,
+                "link_inventory_snapshot": link_inventory_snapshot,
+                "cascade_strategy": cascade_strategy,
+            },
+        )
+
+    session.refresh(deal)
+    return DealRead.model_validate(deal)
+```
+
+**Mandatory invariants**:
+
+- `actor_sub: str = Depends(get_current_actor_sub)` is **mandatory**, not optional. Cluster 2 (PR #71) added the helper to `backend/app/core/auth.py:226-242`. Without it, the JWT sub cannot reach the audit metadata and the §5.5 test #7 RBAC-actor assertion is unsatisfiable.
+- The `link_inventory_snapshot` capture **must happen before** the cascade/delete mutates `live_links`. Snapshotting after would lose the inventory (especially under cascade-with-hard-delete, where the rows are gone by then).
+- `mark_audit_success(request, deal.id, metadata={...})` is **mandatory** — the bare `mark_audit_success(request, deal.id)` form would record only `null` payload and lose all reconstructability evidence.
+- The metadata dict keys are stable: `actor_sub`, `link_inventory_snapshot`, `cascade_strategy`. The §5.5 test #7 asserts these specific keys.
+- `cascade_strategy` value is one of the three §5.2 options: `"cascade_soft_delete"`, `"cascade_hard_delete"`, `"block_on_active_links"`. Chosen at PR-authoring time per §5.2 and pinned in the route body.
+
+**RBAC**: `require_role("risk_manager")` by default. If product confirms trader-level archive is acceptable, use `require_any_role("risk_manager", "trader")` and document the choice in the PR body.
+
+**Response**: `DealRead` (the archived deal — includes the new `deleted_at` field per §5.0).
 
 ### 5.2 DealLink cascade decision
 
@@ -209,7 +275,16 @@ Add `backend/tests/test_deal_archive.py` covering:
 4. **`find_deal_by_linked_entity` excludes archived Deals** — archive Deal X, query `find_deal_by_linked_entity` with one of X's link IDs, assert 404.
 5. **Reader endpoints exclude archived Deals** — `GET /deals` and `GET /deals/{id}` filter archived rows.
 6. **RBAC** — non-risk_manager user receives 403 on archive.
-7. **Audit row content** — signed audit event includes Deal id, link inventory snapshot, and RBAC actor JWT sub (from Cluster 2 `get_current_actor_sub`).
+7. **Audit row content** — query the persisted `AuditEvent` row for the just-archived Deal. Assert:
+   - `event.entity_type == "deal"` and `event.event_type == "archived"`
+   - `event.entity_id == deal.id`
+   - The persisted payload (canonicalized JSON via `event.payload_canonical` or the parsed `event.payload`) includes a `metadata` key with **all three** sub-keys:
+     - `metadata["actor_sub"]` equals the JWT sub of the test fixture's authenticated user (e.g. `"sub-abc"`).
+     - `metadata["link_inventory_snapshot"]` is a list with one entry per pre-archive `DealLink`, each entry having `id`, `linked_type`, and `linked_id` keys with stringified values.
+     - `metadata["cascade_strategy"]` matches the chosen §5.2 variant value (`"cascade_soft_delete"`, `"cascade_hard_delete"`, or `"block_on_active_links"`).
+   - The signed checksum on the event row verifies (re-canonicalize payload and compare to `event.checksum`).
+
+   This test is the structural regression guard for the route recipe in §5.1. Without the explicit `mark_audit_success(..., metadata=...)` call, the persisted payload would contain only the (likely empty) request body and zero metadata — which would fail the three sub-key assertions and prove the recipe was not followed.
 
 ## 6. Constitutional Rules
 
@@ -361,6 +436,7 @@ The PR body must include:
   - Path B: missing RBAC on the archive route; missing audit event on the cascade column writes; reader inconsistency (`find_deal_by_linked_entity` filter applied but another reader missed); missing `actor_sub` in the audit payload (Cluster 2 established the JWT-sub pattern; archive must use it).
   - Path B: **schema field missing** — if the archive route writes `Deal.deleted_at = now_utc()` but `DealRead` doesn't expose `deleted_at`, the operator-visible response cannot show when the archive happened. The §5.0 schema subsection adds the field; the §7.2 + §9 sweeps verify it landed.
   - Path B cascade-with-soft-delete: **DB-level unique constraint blocks relink even with app-level filter (v3 catch)**. The unconditional `UniqueConstraint("linked_type", "linked_id", name="uq_deal_link_entity")` at `backend/app/models/deal.py:171-194` is the cross-deal block; soft-deleting a `DealLink` (`deleted_at = now()`) does not remove the row from the constraint's view, so a brand-new `INSERT` for the same `(linked_type, linked_id)` fails with `IntegrityError` at the DB level **before** the app-level `add_link` filter has a chance to run. The fix is the partial-unique-index replacement prescribed in §5.2 + §5.3: drop both unconditional `UniqueConstraint`s and create partial unique indexes scoped to `WHERE deleted_at IS NULL`. Three operations in one alembic revision. Without this, the §5.5 test #3 "Relink a freed entity" lands as `IntegrityError`, not as the prescribed pass — and the cascade-with-soft-delete option is structurally broken. The §7.2 + §9 sweeps verify the constraint→partial-index migration is in place.
+  - Path B archive route: **`audit_event` decorator only records the request payload — `PATCH /archive` typically has no body, so without explicit `mark_audit_success(..., metadata=...)` the persisted audit row loses BOTH the actor JWT sub AND the link inventory snapshot** (v5 catch). The §5.5 test #7 would be impossible to satisfy without the metadata recipe. Fix: §5.1 now mandates `actor_sub: str = Depends(get_current_actor_sub)` parameter, pre-cascade link inventory snapshot, and `mark_audit_success(request, deal.id, metadata={"actor_sub": ..., "link_inventory_snapshot": [...], "cascade_strategy": ...})`. The three metadata keys are stable and asserted by test #7. Codex re-discovered this same shape multiple times across waves (PR-CL1-2 had a related `actor_sub` wiring requirement); rule 32 (schema reachability) + an audit-metadata-shape sub-rule would close this catch class hook-side in the next tuning round.
   - Either path: a migration that fails `python -m alembic heads` because the `down_revision` is wrong; this would surface in CI on the openapi_diff job and in the §9 sweep.
   - Either path: OpenAPI / `schema.d.ts` regeneration skipped — would surface in CI's `openapi_diff` job. Mandatory regen step is §12 step 5.
 - The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies, but with a twist: this wave has **two non-overlapping implementation sections** (§4 Path A, §5 Path B). The implementer chooses one; the dispatch reviewer (jury / Codex) should treat the chosen path's section as binding and the unchosen section as out-of-scope text. Do not authorize both.
