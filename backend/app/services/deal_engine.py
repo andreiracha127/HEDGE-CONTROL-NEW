@@ -919,7 +919,9 @@ class DealEngineService:
                 if contract.status == HedgeContractStatus.cancelled:
                     pass
                 elif contract.status == HedgeContractStatus.settled:
-                    hedge_pnl_realized += mtm
+                    # Settled realized P&L is sourced from the cashflow
+                    # ledger/compute_pl path, not recomputed from MTM here.
+                    pass
                 else:
                     hedge_pnl_mtm += mtm
 
@@ -1187,7 +1189,9 @@ class DealEngineService:
                     if contract.status == HedgeContractStatus.cancelled:
                         pass
                     elif contract.status == HedgeContractStatus.settled:
-                        hedge_pnl_realized += pnl
+                        # Settled realized P&L is sourced from the cashflow
+                        # ledger/compute_pl path, not recomputed from MTM here.
+                        pass
                     else:
                         hedge_pnl_mtm += pnl
 

@@ -209,6 +209,7 @@ def test_compute_deal_pnl_excludes_archived_hedge_contract(session: Session) -> 
 
     snap = DealEngineService.compute_deal_pnl(session, deal.id, SNAPSHOT_DATE)
 
+    # 100 MT * USD 2500/MT = USD 250,000 (fixed-price SO, no market lookup).
     assert snap.physical_revenue == Decimal("250000.000000")
     assert snap.physical_cost == Decimal("0")
     assert snap.hedge_pnl_realized == Decimal("0")
