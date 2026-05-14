@@ -147,7 +147,7 @@ Add `PATCH /deals/{id}/archive` to `backend/app/api/routes/deals.py`:
 
 The verdict mandates that Path B resolves DealLink semantics. Choose **exactly one**:
 
-- **Cascade-with-soft-delete**: add `DealLink.deleted_at: Mapped[datetime | None]` column via migration; archive route marks each linked DealLink with `deleted_at = now_utc()`; cross-deal uniqueness query in `add_link` filters live links only (`DealLink.deleted_at.is_(None)`).
+- **Cascade-with-soft-delete**: add `DealLink.deleted_at: Mapped[datetime | None]` column via migration; archive route marks each linked DealLink with `deleted_at = now_utc()`; cross-deal uniqueness query in `add_link` filters live links only (`DealLink.deleted_at.is_(None)`). **Critical (Codex P2 catch on PR #74 v3)**: this option also requires **replacing the existing unconditional unique constraints** on `DealLink` with **partial unique indexes** scoped to live rows. Verified at HEAD `ea08d9868` that `backend/app/models/deal.py:171-194` declares two unconditional `UniqueConstraint`s — `("deal_id", "linked_type", "linked_id", name="uq_deal_link")` and `("linked_type", "linked_id", name="uq_deal_link_entity")`. The cross-deal `uq_deal_link_entity` is the killer: even after Deal X archives and the DealLink soft-deletes (`deleted_at = now()`), inserting a new DealLink for Deal Y with the same `(linked_type, linked_id)` would fail at the **DB level** with `IntegrityError` **before** the app-level filter helps. The §5.5 test #3 ("Relink a freed entity") would fail. The migration must therefore: (a) add `DealLink.deleted_at` column, (b) drop both existing `UniqueConstraint`s, and (c) create two partial unique indexes scoped to `WHERE deleted_at IS NULL` (PostgreSQL syntax: `CREATE UNIQUE INDEX uq_deal_link_live ON deal_links (deal_id, linked_type, linked_id) WHERE deleted_at IS NULL` and similarly `uq_deal_link_entity_live`). All three operations live in **one** alembic revision (multiple `op.*` calls in one file is single-head-compliant). If the implementer determines that splitting into multiple revisions is necessary (e.g. for backfill or data correction), per §2.1 this option becomes deferral-eligible and the implementer must escalate to Andrei before proceeding.
 - **Cascade-with-hard-delete**: archive route issues `session.delete(link)` for every DealLink belonging to the archived Deal. No new column. Cross-deal uniqueness query unchanged. Trade-off: link history is lost; signed audit event must capture the snapshot before deletion.
 - **Block-on-active-links**: archive route raises 409 if the Deal has any DealLink rows; operator must `remove_link` each link first. No new column.
 
@@ -155,7 +155,19 @@ The chosen path is final; do not implement two and let the caller choose.
 
 ### 5.3 Migration (only if cascade-with-soft-delete chosen)
 
-Add one alembic revision `044_dealink_lifecycle_columns.py` adding `deleted_at` (and optionally `is_deleted` for symmetry with `Order` / `HedgeContract` / `Exposure`). Single-head property must be preserved.
+Add one alembic revision `044_dealink_lifecycle_columns.py` (or equivalent name) that performs **three** operations in a single revision:
+
+1. `op.add_column("deal_links", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))` — add the lifecycle column. (Optionally also `is_deleted` for symmetry with `Order` / `HedgeContract` / `Exposure`, but `deleted_at IS NULL` alone is sufficient as the live predicate.)
+2. `op.drop_constraint("uq_deal_link", "deal_links", type_="unique")` and `op.drop_constraint("uq_deal_link_entity", "deal_links", type_="unique")` — drop the existing unconditional unique constraints (verified at HEAD `ea08d9868`, `backend/app/models/deal.py:171-194`).
+3. `op.create_index("uq_deal_link_live", "deal_links", ["deal_id", "linked_type", "linked_id"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))` and `op.create_index("uq_deal_link_entity_live", "deal_links", ["linked_type", "linked_id"], unique=True, postgresql_where=sa.text("deleted_at IS NULL"))` — create partial unique indexes scoped to live rows. PostgreSQL native syntax. SQLite supports the same `WHERE` clause on `CREATE UNIQUE INDEX` (alembic generates it via the `sqlite_where` keyword if the target dialect is SQLite — verify the project's alembic config).
+
+Update `backend/app/models/deal.py` `__table_args__` to remove the two `UniqueConstraint`s and add `Index(..., unique=True, postgresql_where=text("deleted_at IS NULL"))` declarations matching the new partial indexes.
+
+`down_revision` must be the current single head (`043_a5_audit_payload_input`). New head becomes `044_dealink_lifecycle_columns` (or your chosen name). `python -m alembic heads` must print exactly one head after the revision.
+
+The three operations together close the §5.5 test #3 ("Relink a freed entity") — without the partial-index replacement, the relink would fail at the DB level with `IntegrityError` even after the soft-delete sets `deleted_at`. The unconditional `uq_deal_link_entity` is the cross-deal block that prevents reuse; only the partial-index variant correctly scopes uniqueness to live rows.
+
+If the implementer determines that the three operations cannot fit in a single alembic revision (e.g. backfill requirements, dialect-specific incompatibility), per §2.1 this entire option becomes deferral-eligible — escalate to Andrei before proceeding. Do not split into multiple revisions silently.
 
 If the cascade decision chosen is **not** cascade-with-soft-delete, no migration is needed.
 
@@ -209,7 +221,7 @@ No changes to `docs/governance.md` are part of this wave.
 - [ ] `backend/app/schemas/deal.py` — `DealRead.deleted_at: Optional[datetime] = None` field added immediately after `is_deleted: bool`. `DealDetailRead` inherits.
 - [ ] `docs/api/openapi_v1.json` and `frontend-svelte/src/lib/api/schema.d.ts` regenerated; diff is bounded to adding the optional `deleted_at` field on Deal-related response components.
 - [ ] DealLink cascade semantics chosen and implemented (exactly one of the three options in §5.2; documented in the PR body).
-- [ ] If cascade-with-soft-delete chosen: one new migration adding `DealLink.deleted_at`. Single-head preserved.
+- [ ] If cascade-with-soft-delete chosen: one new migration performing all **three** operations per §5.3 (add `DealLink.deleted_at`; drop both unconditional `UniqueConstraint`s; create partial unique indexes `WHERE deleted_at IS NULL` for both `(deal_id, linked_type, linked_id)` and `(linked_type, linked_id)` shapes). `__table_args__` in `backend/app/models/deal.py` updated to mirror. Single-head preserved (`python -m alembic heads` prints exactly one head). The §5.5 test #3 "Relink a freed entity" passes — without the partial-index replacement, this test would fail at the DB level with `IntegrityError` even though the app-level filter is in place.
 - [ ] If cascade-with-hard-delete or block-on-active-links: no migration.
 - [ ] `find_deal_by_linked_entity` filters archived Deals.
 - [ ] `backend/tests/test_deal_archive.py` exists with the 7 tests in §5.5.
@@ -246,6 +258,11 @@ rg -nP "deal.*is_deleted|\\.is_deleted" frontend-svelte/src/routes/    # must re
 rg -nP "/deals/\\{.+\\}/archive|PATCH.*deals.*archive" backend/app/api/routes/deals.py
 rg -nP "entity_type=\"deal\".*event_type=\"archived\"" backend/app/api/routes/deals.py
 rg -nP "deleted_at.*Optional\\[datetime\\]|deleted_at: datetime \\| None" backend/app/schemas/deal.py    # must return at least one (the new DealRead.deleted_at field)
+
+# Path B cascade-with-soft-delete sweeps (only if that cascade option chosen)
+rg -nP "UniqueConstraint.*uq_deal_link" backend/app/models/deal.py    # must return ZERO matches (the unconditional constraints were dropped)
+rg -nP "uq_deal_link_live|uq_deal_link_entity_live" backend/app/models/deal.py backend/alembic/versions/    # must return at least two matches (the partial unique indexes)
+rg -nP "deleted_at IS NULL" backend/alembic/versions/    # must return at least two matches in the new revision (one per partial unique index)
 
 # Alembic invariant (both paths)
 cd backend ; python -m alembic heads ; cd ..
@@ -322,6 +339,7 @@ The PR body must include:
   - Path A: **schema cleanup missed** — if the model column drops but `DealRead.is_deleted: bool` stays, every Deal response fails Pydantic `from_attributes` validation. This is the v1 dispatch gap Codex caught (PR #74 review). The §4.2 schema subsection plus the §7.1 `is_deleted: bool` sweep are the structural protection; cross-section sweep must verify both before pushing.
   - Path B: missing RBAC on the archive route; missing audit event on the cascade column writes; reader inconsistency (`find_deal_by_linked_entity` filter applied but another reader missed); missing `actor_sub` in the audit payload (Cluster 2 established the JWT-sub pattern; archive must use it).
   - Path B: **schema field missing** — if the archive route writes `Deal.deleted_at = now_utc()` but `DealRead` doesn't expose `deleted_at`, the operator-visible response cannot show when the archive happened. The §5.0 schema subsection adds the field; the §7.2 + §9 sweeps verify it landed.
+  - Path B cascade-with-soft-delete: **DB-level unique constraint blocks relink even with app-level filter (v3 catch)**. The unconditional `UniqueConstraint("linked_type", "linked_id", name="uq_deal_link_entity")` at `backend/app/models/deal.py:171-194` is the cross-deal block; soft-deleting a `DealLink` (`deleted_at = now()`) does not remove the row from the constraint's view, so a brand-new `INSERT` for the same `(linked_type, linked_id)` fails with `IntegrityError` at the DB level **before** the app-level `add_link` filter has a chance to run. The fix is the partial-unique-index replacement prescribed in §5.2 + §5.3: drop both unconditional `UniqueConstraint`s and create partial unique indexes scoped to `WHERE deleted_at IS NULL`. Three operations in one alembic revision. Without this, the §5.5 test #3 "Relink a freed entity" lands as `IntegrityError`, not as the prescribed pass — and the cascade-with-soft-delete option is structurally broken. The §7.2 + §9 sweeps verify the constraint→partial-index migration is in place.
   - Either path: a migration that fails `python -m alembic heads` because the `down_revision` is wrong; this would surface in CI on the openapi_diff job and in the §9 sweep.
   - Either path: OpenAPI / `schema.d.ts` regeneration skipped — would surface in CI's `openapi_diff` job. Mandatory regen step is §12 step 5.
 - The 8-section sweep checklist from `feedback_dispatch_self_consistency` applies, but with a twist: this wave has **two non-overlapping implementation sections** (§4 Path A, §5 Path B). The implementer chooses one; the dispatch reviewer (jury / Codex) should treat the chosen path's section as binding and the unchosen section as out-of-scope text. Do not authorize both.
