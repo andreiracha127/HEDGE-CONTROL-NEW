@@ -395,6 +395,15 @@ not an exhaustive guarantee):
   where no human request is involved. This route writes hedge-contract
   settlement and ledger entries, which are outside trader territory and
   must not remain trader-gated.
+- Exposure engine write routes (`exposures.py:65` POST `/reconcile`,
+  `exposures.py:116` POST `/tasks/{task_id}/execute`) formerly bare
+  `get_current_user` → `require_role("risk_manager")`. Exposure recompute
+  and hedge-task execution are risk_manager territory; auditor remains
+  read-only and trader MUST NOT reach these mutation routes.
+- Finance pipeline run (`finance_pipeline.py:38` POST
+  `/finance-pipeline/run`) formerly bare `get_current_user` →
+  `require_role("risk_manager")` for the manual HTTP trigger. Automated
+  non-human finance pipeline execution uses `service:cashflow_pipeline`.
 
 ────────────────────────────────────────
 EXECUTION DISCIPLINE
