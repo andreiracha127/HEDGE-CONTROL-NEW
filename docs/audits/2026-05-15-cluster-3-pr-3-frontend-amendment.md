@@ -28,7 +28,7 @@ Original dispatch §4.3 prescribed an interface-based auth store. PR-CL3-2 shipp
 - `authStore.hasRole(role: UserRole)` — checks `roles` array (line 127); `UserRole` type union `'trader' | 'risk_manager' | 'auditor'` defined at line 3
 - `authStore.getCsrfToken()` — cookie-first fallback per orchestrator-absorbed Codex catch "Prefer the current CSRF cookie over cached state" (line 123)
 - `authStore.logout()` — clears claims + invokes `#clearBackendSession(csrf)` background POST to `/auth/logout` with `keepalive: true` (lines 100-101)
-- `#setupSessionRefresh` — schedules `#refreshBackendSession` at `MAX_AGE_MS - REFRESH_LEAD_MS = 300s - 60s = 240s` (line 164)
+- `#setupSessionRefresh` — schedules `#refreshBackendSession` at `MAX_AGE_MS - REFRESH_LEAD_MS = 300s - 60s = 240s` (method signature line 164; `refreshDelay` computation line 166)
 - `#refreshBackendSession` — POSTs `/auth/refresh`; body shape `{session_token: token}` when a token is cached, else `{}` (lines 268-285) ⚠️ see §3.1 below — this contract IS amended for PR-CL3-3
 - `#restoreSession` — cold-load hydration via `/auth/me` then immediate `#refreshBackendSession` to reset 5-min lease (lines 183-263)
 - `SESSION_COOKIE_MAX_AGE_MS` (line 16), `SESSION_COOKIE_REFRESH_LEAD_MS` (line 17), `CSRF_COOKIE_NAME` (line 14), `API_BASE` (line 15) — constants
@@ -71,7 +71,7 @@ In [`frontend-svelte/src/lib/stores/ws.svelte.ts`](../../frontend-svelte/src/lib
 - **§4.7 Kill `manualTokenLoginEnabled`** — UNCHANGED. Sweep `rg -nP "manualTokenLoginEnabled" frontend-svelte/src/ backend/app/` MUST return zero. Current survivors verified by orchestrator 2026-05-15:
   - `frontend-svelte/src/lib/config/runtime.ts` (flag definition)
   - `frontend-svelte/src/lib/config/runtime.test.ts` (8 references — all to be deleted along with the flag's test coverage)
-  - `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` (the J-A6-10 reconstructability test — to be removed since the gate is gone, or rewritten to verify the gate's absence)
+  - `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` (the J-A6-10 reconstructability test — **delete entirely**: with the `manualTokenLoginEnabled` gate removed, there is no reconstructability invariant left to verify, since the test asserted the login page imports `runtimeFlags` and gates the paste form on the flag — both the import and the gate are gone)
   - `.env.example` entries (if any)
   - Phase A6 PR #67 three reason-code constants — to be removed entirely
 - **§4.8 Route guard updates** — partially delivered (cold-load hydration gate, see §1 above). Remaining: ensure `initClerk()` boot runs alongside (or before) `authStore.#restoreSession()` so the SignIn page can mount Clerk's modal once Clerk is loaded. The hydration order should be: route enters → `initClerk()` AND `authStore.#restoreSession()` both fire → `isAuthenticated` resolves → redirect decision.
@@ -104,7 +104,7 @@ isTraderOnly(): boolean {
 }
 ```
 
-(Assuming `userRoles` is the `$derived` reactive roles array; verify at rebase.)
+(Confirmed: `userRoles` is defined at `auth.svelte.ts:38` as `readonly userRoles = $derived<UserRole[]>(this.#claims?.roles ?? [])` — verified at baseline `f5320c006`; verify still present at rebase HEAD.)
 
 #### §3.3 Refresh fallback to login on 401 — DELIVERED, not remaining work
 
@@ -162,7 +162,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 - [ ] `rg -nP "manualTokenLoginEnabled" .env.example` returns zero
 - [ ] `frontend-svelte/src/lib/config/runtime.ts` flag definition removed
 - [ ] `frontend-svelte/src/lib/config/runtime.test.ts` flag-related tests deleted (8 references current)
-- [ ] `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` updated (either removed alongside the flag's purpose OR rewritten to verify the gate's absence)
+- [ ] `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` **deleted** (no reconstructability invariant remains once gate is removed; rewriting to assert flag absence is not in scope of J-A6-10 reconstructability semantics)
 - [ ] Phase A6 PR #67 three reason-code constants removed
 - [ ] Login page no longer contains paste-token form
 - [ ] Protected layout hydrates `/auth/me` before redirecting on cold load (DELIVERED §1 above)
