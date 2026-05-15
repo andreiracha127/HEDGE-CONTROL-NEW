@@ -405,6 +405,34 @@ describe('AuthStore', () => {
 			expect(refreshSignal?.aborted).toBe(true);
 		});
 
+		it('aborts an in-flight backend session establishment before logout can be undone', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			let sessionSignal: AbortSignal | undefined;
+			const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+				if (url.endsWith('/auth/session')) {
+					sessionSignal = init?.signal ?? undefined;
+					return new Promise<Response>(() => undefined);
+				}
+				if (url.endsWith('/auth/logout')) {
+					return Promise.resolve(new Response(JSON.stringify({ status: 'logged_out' }), { status: 200 }));
+				}
+				return Promise.resolve(new Response(null, { status: 404 }));
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			void authStore.establishSession(token);
+			await Promise.resolve();
+
+			expect(sessionSignal?.aborted).toBe(false);
+			authStore.logout();
+			expect(sessionSignal?.aborted).toBe(true);
+		});
+
 		it('refreshes restored cookie sessions with the Clerk provider token instead of early-returning', async () => {
 			const freshToken = fakeJwt({
 				sub: 'user-1',

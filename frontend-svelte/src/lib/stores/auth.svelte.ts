@@ -50,6 +50,7 @@ class AuthStore {
 	#expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	#sessionAbortController: AbortController | null = null;
 	#refreshAbortController: AbortController | null = null;
 	#redirecting = false;
 	#isRestoring = $state(false);
@@ -80,6 +81,7 @@ class AuthStore {
 		try {
 			const claims = decodeJwtPayload(token);
 			if (hasInvalidRoleCombination(claims.roles)) throw new Error('Invalid role combination');
+			this.#abortInFlightSession();
 			this.#abortInFlightRefresh();
 			this.#applySession(null, claims, this.#csrfToken, null);
 		} catch {
@@ -98,13 +100,31 @@ class AuthStore {
 			throw new Error('Invalid token');
 		}
 
+		this.#generation++;
+		const generation = this.#generation;
+		this.#abortInFlightSession();
 		this.#abortInFlightRefresh();
-		const response = await fetch(`${API_BASE}/auth/session`, {
-			method: 'POST',
-			credentials: 'include',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ session_token: sessionToken }),
-		});
+		const abortController = new AbortController();
+		this.#sessionAbortController = abortController;
+		let response: Response;
+		try {
+			response = await fetch(`${API_BASE}/auth/session`, {
+				method: 'POST',
+				credentials: 'include',
+				signal: abortController.signal,
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ session_token: sessionToken }),
+			});
+		} catch {
+			if (abortController.signal.aborted) return;
+			this.logout();
+			throw new Error('Invalid token');
+		} finally {
+			if (this.#sessionAbortController === abortController) {
+				this.#sessionAbortController = null;
+			}
+		}
+		if (this.#generation !== generation) return;
 		if (!response.ok) {
 			this.logout();
 			throw new Error('Invalid token');
@@ -118,12 +138,14 @@ class AuthStore {
 			this.logout();
 			throw new Error('Invalid token');
 		}
+		if (this.#generation !== generation) return;
 
 		this.#applySession(null, claimsForBackendSession(claims), csrf, jwtExpiryMs(claims));
 	}
 
 	logout() {
 		this.#generation++;
+		this.#abortInFlightSession();
 		this.#abortInFlightRefresh();
 		const csrfToken = this.getCsrfToken();
 		if (csrfToken) void this.#clearBackendSession(csrfToken);
@@ -233,6 +255,11 @@ class AuthStore {
 	#abortInFlightRefresh() {
 		this.#refreshAbortController?.abort();
 		this.#refreshAbortController = null;
+	}
+
+	#abortInFlightSession() {
+		this.#sessionAbortController?.abort();
+		this.#sessionAbortController = null;
 	}
 
 	#restoreSession() {
