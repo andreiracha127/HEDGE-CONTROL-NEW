@@ -102,7 +102,7 @@ def test_csrf_middleware_bearer_with_session_cookie_still_requires_csrf() -> Non
     assert response.status_code == 403
 
 
-def test_csrf_middleware_session_endpoint_exempt() -> None:
+def test_csrf_middleware_canonical_session_path_exempt() -> None:
     response = _csrf_client().post("/auth/session")
 
     assert response.status_code == 200
