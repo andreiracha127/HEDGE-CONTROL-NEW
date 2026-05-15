@@ -21,7 +21,12 @@ from fastapi import WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from starlette.websockets import WebSocketState
 
-from app.core.auth import JWKSCache, extract_actor_roles_from_payload, get_auth_settings
+from app.core.auth import (
+    JWKSCache,
+    extract_actor_roles_from_payload,
+    get_auth_disabled_fallback_user,
+    get_auth_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +49,7 @@ def _validate_token(token: str) -> dict[str, Any] | None:
     """Validate JWT token, return claims or None."""
     settings = get_auth_settings()
     if settings is None:
-        # Auth disabled — return anonymous
-        return {
-            "sub": "anonymous",
-            "name": "Anonymous (auth disabled)",
-            "roles": ["trader", "risk_manager", "auditor"],
-        }
+        return get_auth_disabled_fallback_user()
     try:
         header = jwt.get_unverified_header(token)
         jwks = _jwks_cache.get(settings)

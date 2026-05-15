@@ -12,6 +12,7 @@ from starlette.testclient import WebSocketDisconnect
 
 from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
+from app.core.auth import get_auth_disabled_fallback_user
 
 
 VALID_CLAIMS = {"sub": "test-user", "roles": ["risk_manager"]}
@@ -82,6 +83,17 @@ def test_subscribe_ack(client):
             assert resp["type"] == "subscription_ack"
             assert resp["topic"] == "rfq"
             assert resp["id"] == rfq_id
+
+
+def test_rfq_subscribe_ack_with_auth_disabled_fallback(client):
+    rfq_id = str(uuid4())
+    with patch("app.api.routes.ws.get_auth_settings", return_value=None):
+        assert ws_module._validate_token("fake-jwt") is get_auth_disabled_fallback_user()
+        with client.websocket_connect("/ws") as ws:
+            _authenticate(ws)
+            ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
+            resp = ws.receive_json()
+            assert resp["type"] == "subscription_ack"
 
 
 # ─── 5. Subscribe with missing fields → error ─────────────────────
