@@ -8,6 +8,13 @@ function fakeJwt(payload: Record<string, unknown>): string {
 	return `${header}.${body}.${sig}`;
 }
 
+async function waitForRestoreToSettle(authStore: { isRestoring: boolean }, fetchMock: ReturnType<typeof vi.fn>) {
+	for (let i = 0; i < 25; i++) {
+		if (!authStore.isRestoring && fetchMock.mock.calls.length >= 2) return;
+		await Promise.resolve();
+	}
+}
+
 describe('AuthStore', () => {
 	let authStore: typeof import('./auth.svelte').authStore;
 	let gotoMock: ReturnType<typeof vi.fn>;
@@ -93,7 +100,7 @@ describe('AuthStore', () => {
 
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
-			for (let i = 0; i < 4; i++) await Promise.resolve();
+			await waitForRestoreToSettle(mod.authStore, fetchMock);
 
 			expect(fetchMock).toHaveBeenCalledWith(
 				'http://localhost:8000/auth/me',
