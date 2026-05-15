@@ -3,9 +3,9 @@ CSP violation reporter (PR-CL3-4). CSRF-exempt, rate-limited POST /csp/report.
 Accepts legacy csp-report + modern Reporting API body; logs "csp_violation".
 """
 
+import structlog
 from fastapi import APIRouter, Request, status
 from fastapi.responses import JSONResponse, Response
-import structlog
 
 from app.core.rate_limit import RATE_LIMIT_CSP_REPORT, limiter
 
@@ -31,6 +31,14 @@ async def csp_report(request: Request) -> Response:
     # The browser sends one report object or an array of report objects.
     reports = body if isinstance(body, list) else [body]
     for report in reports:
+        if not isinstance(report, dict):
+            logger.warning(
+                "csp_report_validation_failed",
+                reason="invalid report shape (non-object)",
+                status=400,
+                path=str(request.url.path),
+            )
+            return JSONResponse(status_code=400, content={"detail": "invalid CSP report"})
         # Reports have a "csp-report" subkey under the legacy spec or
         # a "body" subkey under the modern Reporting API spec.
         violation = report.get("csp-report") or report.get("body") or report

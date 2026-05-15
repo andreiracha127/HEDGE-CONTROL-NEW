@@ -11,7 +11,7 @@ esac
 
 # Derive WebSocket base URL from HTTP API base URL for CSP connect-src
 # (https://... -> wss://..., http://... -> ws://...)
-export VITE_WS_BASE_URL="${VITE_WS_BASE_URL:-$(printf '%s' "$VITE_API_BASE_URL" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#')}"
+export VITE_WS_BASE_URL="${VITE_WS_BASE_URL:-$(printf '%s' "${VITE_API_BASE_URL:-http://localhost:8000}" | sed -e 's#^https://#wss://#' -e 's#^http://#ws://#')}"
 
 # Substitute all templated variables (PORT for listen, plus CSP Report-Only vars)
 # at container start so nginx.conf lands with concrete origins (no literal ${...})
