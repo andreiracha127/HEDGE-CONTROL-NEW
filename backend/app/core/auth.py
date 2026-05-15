@@ -292,6 +292,11 @@ def _validate_human_roles_at_jwt_time(payload: dict[str, Any]) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid roles claim",
         )
+    if any(r.startswith("service:") for r in raw_roles):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid roles claim",
+        )
     roles = {r for r in raw_roles if r in _VALID_HUMAN_ROLES}
     if "auditor" in roles and len(roles) > 1:
         raise HTTPException(

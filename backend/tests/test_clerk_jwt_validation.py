@@ -120,6 +120,17 @@ def test_clerk_jwt_trader_plus_risk_manager_passes(clerk_keys) -> None:
     assert set(user["roles"]) == {"trader", "risk_manager"}
 
 
+def test_clerk_jwt_rejects_service_roles_on_human_token(clerk_keys) -> None:
+    private_pem, _, jwks = clerk_keys
+    token = make_clerk_token(private_pem, roles=["service:westmetall_ingest"])
+
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_user(token, jwks)
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Invalid roles claim"
+
+
 @pytest.mark.parametrize("roles", [_MISSING, "auditor", {"role": "auditor"}, None, ["auditor", 3]])
 def test_clerk_jwt_malformed_roles_claim_401(clerk_keys, roles) -> None:
     private_pem, _, jwks = clerk_keys
