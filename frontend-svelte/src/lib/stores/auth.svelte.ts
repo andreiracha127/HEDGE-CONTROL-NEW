@@ -339,4 +339,5 @@ class AuthStore {
 	}
 }
 
+// Imported as `$lib/stores/auth.svelte`; SvelteKit resolves this runes module from auth.svelte.ts.
 export const authStore = new AuthStore();
