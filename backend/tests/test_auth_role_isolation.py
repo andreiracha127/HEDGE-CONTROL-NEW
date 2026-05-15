@@ -37,8 +37,9 @@ def test_non_trader_cannot_create_order(role: str, path: str) -> None:
 # -- RFQ creation: require trader -------------------------------------------
 
 
-def test_auditor_cannot_create_rfq() -> None:
-    c = _client_with_roles("auditor")
+@pytest.mark.parametrize("role", ["auditor", "trader"])
+def test_non_risk_manager_cannot_create_rfq(role: str) -> None:
+    c = _client_with_roles(role)
     resp = c.post(
         "/rfqs",
         json={
@@ -109,9 +110,10 @@ def test_all_roles_can_list_orders(role: str) -> None:
 # -- Settlement: require trader --------------------------------------------
 
 
-def test_auditor_cannot_settle_contract() -> None:
-    """Settlement is trader-only per the governance authorization matrix."""
-    c = _client_with_roles("auditor")
+@pytest.mark.parametrize("role", ["auditor", "trader"])
+def test_non_risk_manager_cannot_settle_contract(role: str) -> None:
+    """Settlement is risk_manager-only per the live route gate."""
+    c = _client_with_roles(role)
     resp = c.post(
         "/cashflow/contracts/00000000-0000-0000-0000-000000000001/settle",
         json={
