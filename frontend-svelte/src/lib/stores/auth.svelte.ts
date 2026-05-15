@@ -50,6 +50,7 @@ class AuthStore {
 	#expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
+	#refreshAbortController: AbortController | null = null;
 	#redirecting = false;
 	#isRestoring = $state(false);
 	#generation = 0;
@@ -79,6 +80,7 @@ class AuthStore {
 		try {
 			const claims = decodeJwtPayload(token);
 			if (hasInvalidRoleCombination(claims.roles)) throw new Error('Invalid role combination');
+			this.#abortInFlightRefresh();
 			this.#applySession(null, claims, this.#csrfToken, null);
 		} catch {
 			this.logout();
@@ -96,6 +98,7 @@ class AuthStore {
 			throw new Error('Invalid token');
 		}
 
+		this.#abortInFlightRefresh();
 		const response = await fetch(`${API_BASE}/auth/session`, {
 			method: 'POST',
 			credentials: 'include',
@@ -121,6 +124,7 @@ class AuthStore {
 
 	logout() {
 		this.#generation++;
+		this.#abortInFlightRefresh();
 		const csrfToken = this.getCsrfToken();
 		if (csrfToken) void this.#clearBackendSession(csrfToken);
 		this.#clearTimers();
@@ -224,6 +228,11 @@ class AuthStore {
 		this.#expiryTimer = null;
 		this.#expiryWarningTimer = null;
 		this.#refreshTimer = null;
+	}
+
+	#abortInFlightRefresh() {
+		this.#refreshAbortController?.abort();
+		this.#refreshAbortController = null;
 	}
 
 	#restoreSession() {
@@ -341,10 +350,15 @@ class AuthStore {
 			return;
 		}
 
+		let abortController: AbortController | null = null;
 		try {
+			this.#abortInFlightRefresh();
+			abortController = new AbortController();
+			this.#refreshAbortController = abortController;
 			const response = await fetch(`${API_BASE}/auth/refresh`, {
 				method: 'POST',
 				credentials: 'include',
+				signal: abortController.signal,
 				headers: {
 					'Content-Type': 'application/json',
 					'X-CSRF-Token': csrfToken,
@@ -375,7 +389,12 @@ class AuthStore {
 				nextTokenClaims ? jwtExpiryMs(nextTokenClaims) : this.#backendCookieTokenExpiresAtMs,
 			);
 		} catch {
+			if (abortController?.signal.aborted) return;
 			this.logout();
+		} finally {
+			if (this.#refreshAbortController === abortController) {
+				this.#refreshAbortController = null;
+			}
 		}
 	}
 

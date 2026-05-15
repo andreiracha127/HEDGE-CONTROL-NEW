@@ -361,6 +361,50 @@ describe('AuthStore', () => {
 			);
 		});
 
+		it('aborts an in-flight backend refresh before logout can clear cookies', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const freshToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 7200,
+			});
+			let refreshSignal: AbortSignal | undefined;
+			const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+				if (url.endsWith('/auth/session')) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				if (url.endsWith('/auth/refresh')) {
+					refreshSignal = init?.signal ?? undefined;
+					return new Promise<Response>(() => undefined);
+				}
+				if (url.endsWith('/auth/logout')) {
+					return Promise.resolve(new Response(JSON.stringify({ status: 'logged_out' }), { status: 200 }));
+				}
+				return Promise.resolve(new Response(null, { status: 404 }));
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+			await waitForRefreshBody(fetchMock, JSON.stringify({ session_token: freshToken }));
+
+			expect(refreshSignal?.aborted).toBe(false);
+			authStore.logout();
+			expect(refreshSignal?.aborted).toBe(true);
+		});
+
 		it('refreshes restored cookie sessions with the Clerk provider token instead of early-returning', async () => {
 			const freshToken = fakeJwt({
 				sub: 'user-1',
