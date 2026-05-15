@@ -13,7 +13,12 @@ from starlette.testclient import WebSocketDisconnect
 
 from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
-from app.core.auth import AuthSettings, SESSION_COOKIE_NAME, get_auth_disabled_fallback_user
+from app.core.auth import (
+    AuthSettings,
+    CSRF_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    get_auth_disabled_fallback_user,
+)
 from tests.auth_token_helpers import (
     CLERK_ISSUER,
     generate_rsa_keypair,
@@ -59,13 +64,50 @@ def test_auth_success(client):
 
 def test_auth_uses_session_cookie_when_message_token_empty(client):
     client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
     with _patch_validate_token(VALID_CLAIMS) as validate_token:
-        with client.websocket_connect("/ws") as ws:
-            ws.send_json({"action": "authenticate", "token": ""})
+        with client.websocket_connect(
+            "/ws", headers={"Origin": "http://localhost:5173"}
+        ) as ws:
+            ws.send_json(
+                {"action": "authenticate", "token": "", "csrf_token": "csrf-token"}
+            )
             resp = ws.receive_json()
             assert resp["type"] == "auth_ack"
             assert resp["user"] == "test-user"
     validate_token.assert_called_once_with("cookie-jwt")
+
+
+def test_auth_rejects_cookie_fallback_without_csrf(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "http://localhost:5173"}
+            ) as ws:
+                ws.send_json({"action": "authenticate", "token": ""})
+                ws.receive_json()
+
+    assert exc_info.value.code == 1008
+    validate_token.assert_not_called()
+
+
+def test_auth_rejects_cookie_fallback_from_untrusted_origin(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "https://evil.example"}
+            ) as ws:
+                ws.send_json(
+                    {"action": "authenticate", "token": "", "csrf_token": "csrf-token"}
+                )
+                ws.receive_json()
+
+    assert exc_info.value.code == 1008
+    validate_token.assert_not_called()
 
 
 # ─── 2. Auth failure → close 1008 ─────────────────────────────────

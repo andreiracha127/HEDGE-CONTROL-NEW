@@ -59,7 +59,12 @@ class WsStore {
 			this.#reconnectAttempts = 0;
 			// First-message auth
 			const rawToken = authStore.getToken() ?? '';
-			this.#send({ action: 'authenticate', token: rawToken });
+			const csrfToken = rawToken ? null : authStore.getCsrfToken();
+			this.#send({
+				action: 'authenticate',
+				token: rawToken,
+				...(csrfToken ? { csrf_token: csrfToken } : {}),
+			});
 		};
 
 		this.#ws.onmessage = (event) => {
