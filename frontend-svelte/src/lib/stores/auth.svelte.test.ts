@@ -102,6 +102,7 @@ describe('AuthStore', () => {
 				}),
 			);
 			expect(mod.authStore.isAuthenticated).toBe(true);
+			expect(mod.authStore.isRestoring).toBe(false);
 			expect(mod.authStore.userSub).toBe('user-1');
 			expect(mod.authStore.userRoles).toEqual(['trader']);
 			expect(mod.authStore.getAuthHeader()).toBeNull();

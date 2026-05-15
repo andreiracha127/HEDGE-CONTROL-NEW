@@ -31,8 +31,10 @@ class AuthStore {
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	#redirecting = false;
+	#isRestoring = $state(false);
 
 	readonly isAuthenticated = $derived(this.#claims !== null);
+	readonly isRestoring = $derived(this.#isRestoring);
 	readonly userRoles = $derived<UserRole[]>(this.#claims?.roles ?? []);
 	readonly userName = $derived(this.#claims?.name ?? this.#claims?.sub ?? '');
 	// J-A6-04: immutable subject accessor for evidence fields. Never falls back
@@ -182,6 +184,7 @@ class AuthStore {
 		this.#csrfToken =
 			this.#getStorage()?.getItem(SESSION_CSRF_KEY) ?? this.#readCookie(CSRF_COOKIE_NAME);
 		if (!this.#csrfToken) return;
+		this.#isRestoring = true;
 		void this.#restoreBackendIdentity();
 	}
 
@@ -220,10 +223,14 @@ class AuthStore {
 	}
 
 	async #restoreBackendIdentity() {
-		if (typeof fetch === 'undefined') return;
+		if (typeof fetch === 'undefined') {
+			this.#isRestoring = false;
+			return;
+		}
 		const csrf = this.getCsrfToken();
 		if (!csrf) {
 			this.#clearStoredToken();
+			this.#isRestoring = false;
 			return;
 		}
 		try {
@@ -232,12 +239,14 @@ class AuthStore {
 			});
 			if (!response.ok) {
 				this.#clearStoredToken();
+				this.#isRestoring = false;
 				return;
 			}
 
 			const body = (await response.json()) as { actor_sub?: unknown; roles?: unknown };
 			if (typeof body.actor_sub !== 'string' || body.actor_sub.length === 0) {
 				this.#clearStoredToken();
+				this.#isRestoring = false;
 				return;
 			}
 
@@ -250,6 +259,8 @@ class AuthStore {
 			this.#applySession(null, { sub: body.actor_sub, roles }, csrf);
 		} catch {
 			this.#clearStoredToken();
+		} finally {
+			this.#isRestoring = false;
 		}
 	}
 
