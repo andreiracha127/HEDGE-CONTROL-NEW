@@ -129,23 +129,14 @@ class _CatchAllMiddleware:
 
 
 # Order matters: add_middleware uses insert(0, ...) so the LAST added
-# middleware becomes the outermost.  We want CORSMiddleware outermost
-# and _CatchAllMiddleware inside it to guarantee CORS headers on errors.
-# Execution order (from outermost to innermost):
-#   CORS → CatchAll → StripApiPrefix → StripTrailingSlash → Router
+# middleware becomes the outermost.  CORSMiddleware is registered after
+# function middleware below so CSRF and exception responses still receive CORS
+# headers.
 app.add_middleware(_StripTrailingSlashMiddleware)
 app.add_middleware(_StripApiPrefixMiddleware)
 app.add_middleware(_CatchAllMiddleware)
 
 cors_allow_origins = _cfg.cors_origins_list
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_allow_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"],
-)
 
 instrumentator = Instrumentator()
 instrumentator.instrument(app).expose(app, endpoint="/metrics")
@@ -178,6 +169,15 @@ async def trace_id_middleware(request: Request, call_next):
             status_code=response.status_code,
         )
     return response
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_allow_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"],
+)
 
 
 @app.get("/health")

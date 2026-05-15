@@ -140,3 +140,15 @@ def test_cors_allows_credentials_and_csrf_header() -> None:
     assert response.status_code == 200
     assert response.headers["access-control-allow-credentials"] == "true"
     assert "x-csrf-token" in response.headers["access-control-allow-headers"].lower()
+
+
+def test_csrf_failure_preserves_cors_headers_for_allowed_origin() -> None:
+    response = TestClient(main_app).post(
+        "/orders",
+        headers={"Origin": "http://localhost:5173"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "CSRF token missing or mismatch"}
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert response.headers["access-control-allow-credentials"] == "true"
