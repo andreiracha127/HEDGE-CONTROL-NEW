@@ -19,8 +19,10 @@ from app.models.audit import AuditEvent
 from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.contracts import HedgeContract, HedgeContractStatus
 from app.models.deal import Deal
+from app.models.inbound_webhook_message import InboundWebhookMessage
 from app.models.orders import Order, OrderType, PriceType
 from app.models.rfqs import RFQ, RFQDirection, RFQIntent, RFQState
+from app.services.audit_trail_service import _reset_signing_key_cache
 from app.services.westmetall_cash_settlement import WestmetallFetchEvidence
 
 
@@ -392,6 +394,8 @@ def test_webhook_post_attributes_to_service_webhook_inbound(
 ) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    monkeypatch.setenv("AUDIT_SIGNING_KEY", "test-signing-key-for-audit-hmac")
+    _reset_signing_key_cache()
     monkeypatch.setattr(
         "app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None
     )
@@ -427,9 +431,50 @@ def test_webhook_post_attributes_to_service_webhook_inbound(
     )
 
 
+def test_webhook_post_rolls_back_message_when_audit_signing_key_missing(
+    client, monkeypatch, session
+) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+    monkeypatch.delenv("AUDIT_SIGNING_KEY", raising=False)
+    _reset_signing_key_cache()
+    monkeypatch.setattr(
+        "app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None
+    )
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": "wamid.noaudit",
+                                    "from": "5511999990000",
+                                    "timestamp": "1770000000",
+                                    "type": "text",
+                                    "text": {"body": "hello"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    response = client.post("/webhooks/whatsapp", json=payload)
+
+    assert response.status_code >= 500
+    assert session.query(InboundWebhookMessage).count() == 0
+    assert session.query(AuditEvent).count() == 0
+
+
 def test_westmetall_scheduler_attributes_service_actor(monkeypatch, session) -> None:
     from app.tasks.westmetall_task import run_westmetall_ingestion
 
+    monkeypatch.setenv("AUDIT_SIGNING_KEY", "test-signing-key-for-audit-hmac")
+    _reset_signing_key_cache()
     evidence = WestmetallFetchEvidence(
         source_url="https://example.test",
         html_sha256="abc123",

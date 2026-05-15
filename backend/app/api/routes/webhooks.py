@@ -142,8 +142,7 @@ def _persist_message_for_enqueue(
         )
         session.add(row)
         try:
-            session.commit()
-            session.refresh(row)
+            session.flush()
             AuditTrailService.record_worker_event(
                 session,
                 entity_type="inbound_webhook_message",
@@ -154,6 +153,7 @@ def _persist_message_for_enqueue(
                 metadata={"actor_sub": "service:webhook_inbound"},
             )
             session.commit()
+            session.refresh(row)
             return row.id
         except IntegrityError:
             session.rollback()
