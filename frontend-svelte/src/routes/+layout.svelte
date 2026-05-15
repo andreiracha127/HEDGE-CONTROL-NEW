@@ -4,6 +4,7 @@
 	import { wsStore } from '$lib/stores/ws.svelte';
 	import { notifications, type Notification } from '$lib/stores/notifications.svelte';
 	import { page } from '$app/state';
+	import { clerk, initClerk } from '$lib/clerk';
 
 	let { children } = $props();
 
@@ -11,6 +12,9 @@
 	$effect(() => {
 		if (authStore.isAuthenticated) {
 			wsStore.connect();
+			void initClerk().catch(() => {
+				// Restored cookie sessions can render before Clerk loads; refresh remains best-effort.
+			});
 		} else {
 			wsStore.disconnect();
 		}
@@ -59,6 +63,18 @@
 			case 'error': return 'bg-danger/90 text-white';
 			case 'warning': return 'bg-warning/90 text-surface-950';
 			default: return 'bg-accent/90 text-white';
+		}
+	}
+
+	async function logout() {
+		wsStore.disconnect();
+		try {
+			await initClerk();
+			await clerk.signOut();
+		} catch {
+			// Local/backend logout must not depend on Clerk CDN availability.
+		} finally {
+			authStore.logout();
 		}
 	}
 </script>
@@ -113,7 +129,7 @@
 					<div class="text-xs text-surface-600">{authStore.userRoles.join(', ')}</div>
 				{/if}
 				<button
-					onclick={() => { wsStore.disconnect(); authStore.logout(); }}
+					onclick={logout}
 					class="mt-1 w-full rounded px-2 py-1 text-xs text-surface-400 hover:bg-surface-800 hover:text-surface-200"
 				>
 					{sidebarCollapsed ? '⏻' : 'Sair'}
@@ -133,7 +149,7 @@
 	<div class="fixed top-0 left-0 right-0 z-50 bg-warning px-4 py-2 text-center text-sm font-medium text-surface-950">
 		Sessão expira em breve — faça login novamente para continuar.
 		<button
-			onclick={() => authStore.logout()}
+			onclick={logout}
 			class="ml-2 underline"
 		>
 			Renovar agora

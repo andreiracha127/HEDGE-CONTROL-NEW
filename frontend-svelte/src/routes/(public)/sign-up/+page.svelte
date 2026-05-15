@@ -30,7 +30,7 @@
 
 	onMount(() => {
 		let active = true;
-		let signInMounted = false;
+		let signUpMounted = false;
 		let unsubscribe: (() => void) | undefined;
 
 		void (async () => {
@@ -38,16 +38,16 @@
 				await initClerk();
 				if (!active) return;
 
-				clerk.mountSignIn(mountEl, {
-					path: '/login',
+				clerk.mountSignUp(mountEl, {
+					path: '/sign-up',
 					routing: 'path',
 					forceRedirectUrl: '/',
 					fallbackRedirectUrl: '/',
-					signUpForceRedirectUrl: '/',
-					signUpFallbackRedirectUrl: '/',
-					signUpUrl: '/sign-up',
+					signInForceRedirectUrl: '/',
+					signInFallbackRedirectUrl: '/',
+					signInUrl: '/login',
 				});
-				signInMounted = true;
+				signUpMounted = true;
 				unsubscribe = clerk.addListener(({ session }) => {
 					void establishBackendSession(session);
 				});
@@ -60,13 +60,13 @@
 		return () => {
 			active = false;
 			unsubscribe?.();
-			if (signInMounted && mountEl) clerk.unmountSignIn(mountEl);
+			if (signUpMounted && mountEl) clerk.unmountSignUp(mountEl);
 		};
 	});
 </script>
 
 <svelte:head>
-	<title>Login | Hedge Control</title>
+	<title>Sign up | Hedge Control</title>
 </svelte:head>
 
 <main class="flex min-h-screen items-center justify-center bg-surface-950 px-4 py-8">
