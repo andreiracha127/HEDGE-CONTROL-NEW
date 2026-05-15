@@ -88,6 +88,16 @@ def test_session_endpoint_returns_csrf_token_in_body_and_cookie(monkeypatch) -> 
     assert "Path=/" in csrf_cookie
 
 
+def test_cookie_endpoints_document_set_cookie_headers_in_openapi() -> None:
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    for path in ("/auth/session", "/auth/refresh", "/auth/logout"):
+        headers = schema["paths"][path]["post"]["responses"]["200"]["headers"]
+        assert "Set-Cookie" in headers
+        assert headers["Set-Cookie"]["schema"] == {"type": "string"}
+
+
 def test_authenticated_request_uses_cookie_not_bearer(monkeypatch) -> None:
     client, private_pem, jwks, original = _client_with_clerk_auth(monkeypatch)
     token = make_clerk_token(private_pem, roles=["risk_manager"])

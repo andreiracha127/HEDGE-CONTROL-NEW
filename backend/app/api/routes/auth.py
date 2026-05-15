@@ -17,6 +17,31 @@ from app.core.auth import (
     get_current_user,
 )
 
+_AUTH_COOKIE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "headers": {
+            "Set-Cookie": {
+                "description": (
+                    "Sets the httpOnly session cookie and the readable CSRF cookie "
+                    "used by the double-submit CSRF middleware."
+                ),
+                "schema": {"type": "string"},
+            }
+        }
+    }
+}
+
+_CLEAR_COOKIE_RESPONSES: dict[int | str, dict[str, Any]] = {
+    200: {
+        "headers": {
+            "Set-Cookie": {
+                "description": "Clears the session and CSRF cookies.",
+                "schema": {"type": "string"},
+            }
+        }
+    }
+}
+
 router = APIRouter(tags=["auth"])
 
 
@@ -50,7 +75,7 @@ def _validate_session_token(session_token: str, settings: AuthSettings | None) -
     return payload
 
 
-@router.post("/auth/session")
+@router.post("/auth/session", responses=_AUTH_COOKIE_RESPONSES)
 async def create_session(
     response: Response,
     session_token: str = Body(..., embed=True),
@@ -62,7 +87,7 @@ async def create_session(
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 
-@router.post("/auth/refresh")
+@router.post("/auth/refresh", responses=_AUTH_COOKIE_RESPONSES)
 async def refresh_session(
     response: Response,
     session_token: str = Body(..., embed=True),
@@ -74,7 +99,7 @@ async def refresh_session(
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 
-@router.post("/auth/logout")
+@router.post("/auth/logout", responses=_CLEAR_COOKIE_RESPONSES)
 async def logout(response: Response) -> dict[str, str]:
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")

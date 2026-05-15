@@ -4157,6 +4157,8 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Clears the session and CSRF cookies. */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -4205,6 +4207,8 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Sets the httpOnly session cookie and the readable CSRF cookie used by the double-submit CSRF middleware. */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -4240,6 +4244,8 @@ export interface operations {
             /** @description Successful Response */
             200: {
                 headers: {
+                    /** @description Sets the httpOnly session cookie and the readable CSRF cookie used by the double-submit CSRF middleware. */
+                    "Set-Cookie"?: string;
                     [name: string]: unknown;
                 };
                 content: {
