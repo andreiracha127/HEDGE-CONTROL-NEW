@@ -32,6 +32,7 @@ Original dispatch §4.3 prescribed an interface-based auth store. PR-CL3-2 shipp
 - `#refreshBackendSession` — POSTs `/auth/refresh`; body shape `{session_token: token}` when a token is cached, else `{}` (lines 268-285) ⚠️ see §3.1 below — this contract IS amended for PR-CL3-3
 - `#restoreSession` — cold-load hydration via `/auth/me` then immediate `#refreshBackendSession` to reset 5-min lease (lines 183-263)
 - `SESSION_COOKIE_MAX_AGE_MS` (line 16), `SESSION_COOKIE_REFRESH_LEAD_MS` (line 17), `CSRF_COOKIE_NAME` (line 14), `API_BASE` (line 15) — constants
+- **Refresh 401 → redirect to login** — `#refreshBackendSession` invokes `this.logout()` on any non-OK response (line 289); `logout()` calls `goto('/login')` (line 111). PR-CL3-3 must NOT re-implement this behavior; verify it remains intact post-Clerk-SDK integration.
 
 **PR-CL3-3 obligation:** consume `authStore` as-is. Do not redefine the class. Do not replace runes with stores. Adjust ONLY the call sites that need Clerk SDK integration (see §2 below).
 
@@ -105,9 +106,14 @@ isTraderOnly(): boolean {
 
 (Assuming `userRoles` is the `$derived` reactive roles array; verify at rebase.)
 
-#### §3.3 Refresh fallback to login on 401
+#### §3.3 Refresh fallback to login on 401 — DELIVERED, not remaining work
 
-Original §4.6 logic: on 401 from `/auth/refresh`, clear store + redirect to `/login`. PR-CL3-2's `#refreshBackendSession` currently does not redirect on 401 (verify at line ~290+). PR-CL3-3 must ensure the 401 redirect lands — either inside the store method or via a layout-level `$effect` watching `isAuthenticated`. Choose one; document in PR body.
+**Correction (per Codex inline catch on PR #83 review of SHA `ec3fc1e`):** the original draft of this section erroneously claimed PR-CL3-2's `#refreshBackendSession` does not redirect on 401. Verification of merged baseline `f5320c006`:
+
+- `auth.svelte.ts:288-290` — any non-OK response from `/auth/refresh` triggers `this.logout()`
+- `auth.svelte.ts:99-112` — `logout()` clears claims, tokens, timers, and calls `goto('/login')` at line 111 (guarded by `#redirecting` flag to prevent double-redirect)
+
+The 401 → redirect chain is fully delivered. PR-CL3-3 has NO obligation to add or re-author this behavior. The only PR-CL3-3 responsibility is to verify the chain remains intact after Clerk SDK boot is wired (i.e. Clerk SDK side effects must not interfere with `logout()` or the `#redirecting` guard).
 
 ### Dropped (no longer applicable)
 
@@ -136,7 +142,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 - [ ] `authStore` class and singleton at `auth.svelte.ts:325` reused as-is; not redefined
 - [ ] **NEW** `isTraderOnly()` method added per §3.2
 - [ ] **NEW** Clerk session-token provider wired per §3.1 option (A) or (B); chosen path documented in PR body
-- [ ] On 401 from `/auth/refresh`, store cleared + redirect to `/login` per §3.3
+- [ ] Refresh 401 → `logout()` → `goto('/login')` chain (DELIVERED in PR-CL3-2; verify intact post-Clerk-SDK boot)
 
 ### 4.4 API client CSRF / credentials (DELIVERED §6.4 — no PR-CL3-3 change required)
 
@@ -147,7 +153,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 
 - [ ] Layout effect at 240s interval (PR-CL3-2 delivered via `#setupSessionRefresh`); PR-CL3-3 does not duplicate
 - [ ] Refresh invokes `await clerk.session?.getToken({ skipCache: true })` and passes to `/auth/refresh` per §3.1 amendment
-- [ ] 401 → store cleared + redirect to `/login` per §3.3
+- [ ] Refresh 401 → `logout()` chain DELIVERED in PR-CL3-2 (`auth.svelte.ts:288-290` → `:99-112`); PR-CL3-3 only verifies it remains intact (no Clerk SDK side effect breaks the `#redirecting` guard or `goto('/login')`)
 
 ### 4.6 `manualTokenLoginEnabled` killed (unchanged §6.6, expanded survivor list)
 
@@ -213,7 +219,7 @@ Replaces original §11 step 1-15 with:
 9. Apply original §4.5 with amendment (logout calls `clerk.signOut()` then `authStore.logout()`).
 10. Apply §3.3 (refresh-401 redirect to login).
 11. Apply original §4.7 (kill `manualTokenLoginEnabled` — expanded survivor list per §4.6 above).
-12. Verify §4.8 route-guard cold-load hydration still works post-Clerk-init coexistence.
+12. Verify §4.8 route-guard cold-load hydration AND refresh-401-redirect chain still work post-Clerk-init coexistence.
 13. Run §5 amended verification + original §8 sweep + Vitest + e2e.
 14. Push branch, open PR per original §10. Title format unchanged; PR body must include this amendment URL.
 15. Codex Connector review is the final gate. **Do not merge.**
