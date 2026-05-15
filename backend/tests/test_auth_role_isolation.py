@@ -25,15 +25,11 @@ def _client_with_roles(*roles: str) -> TestClient:
 # -- Order routes: require trader -------------------------------------------
 
 
-def test_auditor_cannot_create_sales_order() -> None:
-    c = _client_with_roles("auditor")
-    resp = c.post("/orders/sales", json={"price_type": "fixed", "quantity_mt": 1.0})
-    assert resp.status_code == 403
-
-
-def test_risk_manager_cannot_create_purchase_order() -> None:
-    c = _client_with_roles("risk_manager")
-    resp = c.post("/orders/purchase", json={"price_type": "fixed", "quantity_mt": 1.0})
+@pytest.mark.parametrize("role", ["auditor", "risk_manager"])
+@pytest.mark.parametrize("path", ["/orders/sales", "/orders/purchase"])
+def test_non_trader_cannot_create_order(role: str, path: str) -> None:
+    c = _client_with_roles(role)
+    resp = c.post(path, json={"price_type": "fixed", "quantity_mt": 1.0})
     assert resp.status_code == 403
 
 

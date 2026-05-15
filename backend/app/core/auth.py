@@ -275,6 +275,8 @@ def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:
 
 
 def _validate_human_roles_at_jwt_time(payload: dict[str, Any]) -> None:
+    # Enforce governance SoD at token-validation time; route helpers repeat the
+    # check as defense-in-depth for all runtime dependency paths.
     raw_roles = payload.get("roles") if isinstance(payload, dict) else None
     if not isinstance(raw_roles, list) or any(not isinstance(r, str) for r in raw_roles):
         raise HTTPException(
