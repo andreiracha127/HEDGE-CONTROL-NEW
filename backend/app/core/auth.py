@@ -184,6 +184,11 @@ _ANONYMOUS_USER: dict[str, Any] = {
     "_auth_disabled_fallback": _AUTH_DISABLED_FALLBACK_MARKER,
 }
 
+
+def get_auth_disabled_fallback_user() -> dict[str, Any]:
+    """Return the singleton dev/test fallback identity used when auth is off."""
+    return _ANONYMOUS_USER
+
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
 _INTERNAL_SERVICE_IDENTITIES = frozenset(
     {
@@ -207,7 +212,7 @@ def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
             )
-        return _ANONYMOUS_USER
+        return get_auth_disabled_fallback_user()
 
     token = _extract_token(request)
     try:
@@ -262,7 +267,8 @@ def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
         return []
     roles = sorted({r for r in raw if isinstance(r, str) and r in _VALID_HUMAN_ROLES})
     if (
-        user.get("sub") == "anonymous"
+        user is _ANONYMOUS_USER
+        and user.get("sub") == "anonymous"
         and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
         and roles == ["auditor", "risk_manager", "trader"]
     ):

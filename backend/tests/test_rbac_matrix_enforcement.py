@@ -10,8 +10,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.auth import (
-    _ANONYMOUS_USER,
     get_current_actor_roles,
+    get_auth_disabled_fallback_user,
     get_current_user,
     require_service_identity,
 )
@@ -162,11 +162,17 @@ def test_get_current_actor_roles_rejects_auditor_mixed_roles(roles) -> None:
 
 
 def test_get_current_actor_roles_allows_dev_anonymous_broad_roles() -> None:
-    assert get_current_actor_roles(_ANONYMOUS_USER) == [
+    assert get_current_actor_roles(get_auth_disabled_fallback_user()) == [
         "auditor",
         "risk_manager",
         "trader",
     ]
+
+
+def test_get_current_actor_roles_rejects_copied_anonymous_fallback() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_actor_roles(dict(get_auth_disabled_fallback_user()))
+    assert exc_info.value.status_code == 401
 
 
 def test_get_current_actor_roles_rejects_signed_anonymous_broad_roles() -> None:
@@ -362,6 +368,73 @@ def test_exposure_reconcile_trader_rejected(client, auth_as) -> None:
 def test_finance_pipeline_trader_rejected(client, auth_as) -> None:
     auth_as("trader")
     response = client.post("/finance/pipeline/run", json={"run_date": "2026-05-11"})
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize("role", ["trader", "auditor"])
+def test_scenario_what_if_run_requires_risk_manager(client, auth_as, role) -> None:
+    auth_as(role)
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-05-11",
+            "period_start": "2026-05-01",
+            "period_end": "2026-05-31",
+            "deltas": [],
+        },
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    ("path", "json_body"),
+    [
+        (
+            "/mtm/snapshots",
+            {
+                "object_type": "order",
+                "object_id": str(uuid.uuid4()),
+                "as_of_date": "2026-05-11",
+                "correlation_id": f"rbac-{uuid.uuid4().hex}",
+            },
+        ),
+        (
+            "/pl/snapshots",
+            {
+                "entity_type": "order",
+                "entity_id": str(uuid.uuid4()),
+                "period_start": "2026-05-01",
+                "period_end": "2026-05-31",
+            },
+        ),
+        (
+            "/cashflow/baseline/snapshots",
+            {
+                "as_of_date": "2026-05-11",
+                "correlation_id": f"rbac-{uuid.uuid4().hex}",
+            },
+        ),
+    ],
+)
+def test_financial_snapshot_mutations_reject_trader(
+    client, auth_as, path, json_body
+) -> None:
+    auth_as("trader")
+    response = client.post(path, json=json_body)
+    assert response.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        f"/mtm/snapshots?object_type=order&object_id={uuid.uuid4()}&as_of_date=2026-05-11",
+        f"/pl/snapshots?entity_type=order&entity_id={uuid.uuid4()}&period_start=2026-05-01&period_end=2026-05-31",
+        "/cashflow/baseline/snapshots?as_of_date=2026-05-11",
+    ],
+)
+def test_financial_snapshot_reads_reject_trader(client, auth_as, path) -> None:
+    auth_as("trader")
+    response = client.get(path)
     assert response.status_code == 403
 
 
