@@ -4,7 +4,7 @@ import secrets
 import time
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from jose import JWTError, jwt
 
 from app.core.auth import (
@@ -101,13 +101,17 @@ async def create_session(
 
 @router.post("/auth/refresh", responses=_AUTH_COOKIE_RESPONSES)
 async def refresh_session(
+    request: Request,
     response: Response,
-    session_token: str = Body(..., embed=True),
+    session_token: str | None = Body(None, embed=True),
     settings: AuthSettings | None = Depends(get_auth_settings),
 ) -> dict[str, str]:
-    payload = _validate_session_token(session_token, settings)
+    token = session_token or request.cookies.get(SESSION_COOKIE_NAME)
+    if not token:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    payload = _validate_session_token(token, settings)
     csrf = secrets.token_urlsafe(32)
-    _set_auth_cookies(response, session_token, csrf)
+    _set_auth_cookies(response, token, csrf)
     return {"actor_sub": payload["sub"], "csrf_token": csrf}
 
 

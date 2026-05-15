@@ -38,7 +38,7 @@ class WsStore {
 		if (this.#ws && this.status !== 'closed' && this.status !== 'error') return;
 
 		const token = authStore.getAuthHeader();
-		if (!token) return;
+		if (!token && !authStore.isAuthenticated) return;
 
 		this.#intentionalClose = false;
 		this.status = 'connecting';

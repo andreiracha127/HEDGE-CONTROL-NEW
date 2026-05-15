@@ -200,6 +200,27 @@ def test_refresh_reexchanges_fresh_clerk_token_and_rotates_csrf(monkeypatch) -> 
     assert SESSION_COOKIE_NAME in _set_cookie_header(response, SESSION_COOKIE_NAME)
 
 
+def test_refresh_can_use_http_only_session_cookie_without_body_token(monkeypatch) -> None:
+    client, private_pem, jwks, original = _client_with_clerk_auth(monkeypatch)
+    old_csrf = "old-csrf"
+    token = make_clerk_token(private_pem, roles=["risk_manager"])
+    client.cookies.set(SESSION_COOKIE_NAME, token)
+    client.cookies.set(CSRF_COOKIE_NAME, old_csrf)
+    try:
+        with patched_jwks(auth_module, jwks):
+            response = client.post(
+                "/auth/refresh",
+                json={},
+                headers={CSRF_HEADER_NAME: old_csrf},
+            )
+    finally:
+        _restore_overrides(original)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["csrf_token"] != old_csrf
+    assert SESSION_COOKIE_NAME in _set_cookie_header(response, SESSION_COOKIE_NAME)
+
+
 def test_auth_me_returns_actor_and_roles(monkeypatch) -> None:
     client, private_pem, jwks, original = _client_with_clerk_auth(monkeypatch)
     token = make_clerk_token(private_pem, roles=["auditor"])

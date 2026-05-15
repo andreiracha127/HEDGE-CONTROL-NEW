@@ -13,7 +13,7 @@ from starlette.testclient import WebSocketDisconnect
 
 from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
-from app.core.auth import AuthSettings, get_auth_disabled_fallback_user
+from app.core.auth import AuthSettings, SESSION_COOKIE_NAME, get_auth_disabled_fallback_user
 from tests.auth_token_helpers import (
     CLERK_ISSUER,
     generate_rsa_keypair,
@@ -54,6 +54,17 @@ def test_auth_success(client):
             resp = _authenticate(ws)
             assert resp["type"] == "auth_ack"
             assert resp["user"] == "test-user"
+
+
+def test_auth_uses_session_cookie_when_message_token_empty(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"action": "authenticate", "token": ""})
+            resp = ws.receive_json()
+            assert resp["type"] == "auth_ack"
+            assert resp["user"] == "test-user"
+    validate_token.assert_called_once_with("cookie-jwt")
 
 
 # ─── 2. Auth failure → close 1008 ─────────────────────────────────

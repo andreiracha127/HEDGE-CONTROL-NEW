@@ -61,37 +61,32 @@ describe('AuthStore', () => {
 			expect(() => authStore.login('a.!!!.c')).toThrow('Invalid token');
 		});
 
-		it('restores authenticated state from session storage after reload', async () => {
-			const token = fakeJwt({
-				sub: 'user-1',
-				name: 'Test User',
-				roles: ['trader'],
-				exp: Math.floor(Date.now() / 1000) + 3600,
-			});
-			authStore.login(token);
+		it('does not restore plaintext JWTs from legacy session storage', async () => {
+			const token = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
+			sessionStorage.setItem('hedge-control.auth.token', token);
 
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
 
-			expect(mod.authStore.isAuthenticated).toBe(true);
-			expect(mod.authStore.userName).toBe('Test User');
-			expect(mod.authStore.getAuthHeader()).toBe(`Bearer ${token}`);
+			expect(mod.authStore.isAuthenticated).toBe(false);
+			expect(mod.authStore.getAuthHeader()).toBeNull();
 		});
 
-		it('re-establishes backend cookies immediately when restoring a cookie session', async () => {
-			const token = fakeJwt({
-				sub: 'user-1',
-				name: 'Test User',
-				roles: ['trader'],
-				exp: Math.floor(Date.now() / 1000) + 3600,
-			});
-			const fetchMock = vi.fn().mockResolvedValue(
-				new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}),
-			);
-			sessionStorage.setItem('hedge-control.auth.token', token);
+		it('restores identity from the httpOnly cookie session and refreshes without a plaintext JWT', async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
 			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
 			vi.stubGlobal('fetch', fetchMock);
 
@@ -101,14 +96,30 @@ describe('AuthStore', () => {
 			await Promise.resolve();
 
 			expect(fetchMock).toHaveBeenCalledWith(
-				'http://localhost:8000/auth/session',
+				'http://localhost:8000/auth/me',
 				expect.objectContaining({
-					method: 'POST',
 					credentials: 'include',
-					body: JSON.stringify({ session_token: token }),
 				}),
 			);
 			expect(mod.authStore.isAuthenticated).toBe(true);
+			expect(mod.authStore.userSub).toBe('user-1');
+			expect(mod.authStore.userRoles).toEqual(['trader']);
+			expect(mod.authStore.getAuthHeader()).toBeNull();
+			expect(mod.authStore.getCsrfToken()).toBe('csrf-old');
+
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-CSRF-Token': 'csrf-old',
+					},
+					body: JSON.stringify({}),
+				}),
+			);
 			expect(mod.authStore.getCsrfToken()).toBe('csrf-new');
 		});
 

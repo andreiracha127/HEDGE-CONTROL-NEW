@@ -1458,7 +1458,7 @@ export interface components {
         /** Body_refresh_session_auth_refresh_post */
         Body_refresh_session_auth_refresh_post: {
             /** Session Token */
-            session_token: string;
+            session_token?: string | null;
         };
         /** CashFlowAnalyticResponse */
         CashFlowAnalyticResponse: {
@@ -4198,7 +4198,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
+        requestBody?: {
             content: {
                 "application/json": components["schemas"]["Body_refresh_session_auth_refresh_post"];
             };

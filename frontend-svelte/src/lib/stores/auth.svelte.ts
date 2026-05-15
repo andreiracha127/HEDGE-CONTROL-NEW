@@ -10,7 +10,6 @@ interface JwtClaims {
 	iat?: number;
 }
 
-const SESSION_TOKEN_KEY = 'hedge-control.auth.token';
 const SESSION_CSRF_KEY = 'hedge-control.auth.csrf';
 const CSRF_COOKIE_NAME = 'csrf_token';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
@@ -33,7 +32,7 @@ class AuthStore {
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	#redirecting = false;
 
-	readonly isAuthenticated = $derived(this.#token !== null);
+	readonly isAuthenticated = $derived(this.#claims !== null);
 	readonly userRoles = $derived<UserRole[]>(this.#claims?.roles ?? []);
 	readonly userName = $derived(this.#claims?.name ?? this.#claims?.sub ?? '');
 	// J-A6-04: immutable subject accessor for evidence fields. Never falls back
@@ -156,13 +155,13 @@ class AuthStore {
 		}, msUntilExpiry);
 	}
 
-	#setupSessionRefresh(token: string, claims: JwtClaims, csrfToken: string | null) {
+	#setupSessionRefresh(claims: JwtClaims, csrfToken: string | null) {
 		if (!csrfToken || typeof fetch === 'undefined') return;
 		const refreshDelay = SESSION_COOKIE_MAX_AGE_MS - SESSION_COOKIE_REFRESH_LEAD_MS;
 		if (claims.exp && claims.exp * 1000 - Date.now() <= refreshDelay) return;
 
 		this.#refreshTimer = setTimeout(() => {
-			void this.#refreshBackendSession(token);
+			void this.#refreshBackendSession();
 		}, refreshDelay);
 	}
 
@@ -176,51 +175,29 @@ class AuthStore {
 	}
 
 	#restoreSession() {
-		const token = this.#getStorage()?.getItem(SESSION_TOKEN_KEY);
-		if (!token) return;
-
-		try {
-			const claims = decodeJwtPayload(token);
-			if (claims.exp && claims.exp * 1000 <= Date.now()) {
-				this.#clearStoredToken();
-				return;
-			}
-
-			this.#token = token;
-			this.#claims = claims;
-			this.#csrfToken =
-				this.#getStorage()?.getItem(SESSION_CSRF_KEY) ?? this.#readCookie(CSRF_COOKIE_NAME);
-			this.showExpiryWarning = false;
-			this.#redirecting = false;
-			this.#setupExpiryTimers(claims);
-			if (this.#csrfToken) {
-				void this.#restoreBackendSession(token);
-			} else {
-				this.#setupSessionRefresh(token, claims, this.#csrfToken);
-			}
-		} catch {
-			this.#clearStoredToken();
-		}
+		this.#csrfToken =
+			this.#getStorage()?.getItem(SESSION_CSRF_KEY) ?? this.#readCookie(CSRF_COOKIE_NAME);
+		if (!this.#csrfToken) return;
+		void this.#restoreBackendIdentity();
 	}
 
-	#applySession(token: string, claims: JwtClaims, csrfToken: string | null) {
+	#applySession(token: string | null, claims: JwtClaims, csrfToken: string | null) {
 		this.#token = token;
 		this.#claims = claims;
 		this.#csrfToken = csrfToken;
 		this.showExpiryWarning = false;
 		this.#redirecting = false;
-		this.#persistToken(token);
+		this.#persistSessionState();
 		this.#setupExpiryTimers(claims);
-		this.#setupSessionRefresh(token, claims, csrfToken);
+		this.#setupSessionRefresh(claims, csrfToken);
 	}
 
-	#persistToken(token: string) {
-		this.#getStorage()?.setItem(SESSION_TOKEN_KEY, token);
+	#persistSessionState() {
 		if (this.#csrfToken) this.#getStorage()?.setItem(SESSION_CSRF_KEY, this.#csrfToken);
 	}
 
 	#clearStoredToken() {
-		this.#getStorage()?.removeItem(SESSION_TOKEN_KEY);
+		this.#getStorage()?.removeItem('hedge-control.auth.token');
 		this.#getStorage()?.removeItem(SESSION_CSRF_KEY);
 	}
 
@@ -238,39 +215,37 @@ class AuthStore {
 		}
 	}
 
-	async #restoreBackendSession(token: string) {
-		if (typeof fetch === 'undefined' || this.#token !== token) return;
+	async #restoreBackendIdentity() {
+		if (typeof fetch === 'undefined') return;
 		try {
-			const response = await fetch(`${API_BASE}/auth/session`, {
-				method: 'POST',
+			const response = await fetch(`${API_BASE}/auth/me`, {
 				credentials: 'include',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ session_token: token }),
 			});
-			if (this.#token !== token) return;
 			if (!response.ok) {
-				this.logout();
+				this.#clearStoredToken();
 				return;
 			}
 
-			const body = (await response.json()) as { csrf_token?: unknown };
-			const csrf =
-				typeof body.csrf_token === 'string' && body.csrf_token.length > 0
-					? body.csrf_token
-					: this.#readCookie(CSRF_COOKIE_NAME);
-			if (!csrf) {
-				this.logout();
+			const body = (await response.json()) as { actor_sub?: unknown; roles?: unknown };
+			if (typeof body.actor_sub !== 'string' || body.actor_sub.length === 0) {
+				this.#clearStoredToken();
 				return;
 			}
 
-			this.#applySession(token, decodeJwtPayload(token), csrf);
+			const roles = Array.isArray(body.roles)
+				? body.roles.filter((role): role is UserRole =>
+						['trader', 'risk_manager', 'auditor'].includes(String(role)),
+					)
+				: [];
+			this.#applySession(null, { sub: body.actor_sub, roles }, this.#csrfToken);
 		} catch {
-			this.logout();
+			this.#clearStoredToken();
 		}
 	}
 
-	async #refreshBackendSession(token: string) {
-		if (typeof fetch === 'undefined' || this.#token !== token) return;
+	async #refreshBackendSession() {
+		if (typeof fetch === 'undefined' || !this.#claims) return;
+		const token = this.#token;
 		const csrfToken = this.getCsrfToken();
 		if (!csrfToken) {
 			this.logout();
@@ -285,7 +260,7 @@ class AuthStore {
 					'Content-Type': 'application/json',
 					'X-CSRF-Token': csrfToken,
 				},
-				body: JSON.stringify({ session_token: token }),
+				body: JSON.stringify(token ? { session_token: token } : {}),
 			});
 			if (this.#token !== token) return;
 			if (!response.ok) {
@@ -303,7 +278,7 @@ class AuthStore {
 				return;
 			}
 
-			this.#applySession(token, decodeJwtPayload(token), nextCsrf);
+			this.#applySession(token, token ? decodeJwtPayload(token) : this.#claims, nextCsrf);
 		} catch {
 			this.logout();
 		}

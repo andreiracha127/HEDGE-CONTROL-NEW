@@ -23,6 +23,7 @@ from starlette.websockets import WebSocketState
 
 from app.core.auth import (
     JWKSCache,
+    SESSION_COOKIE_NAME,
     extract_actor_roles_from_payload,
     get_auth_disabled_fallback_user,
     get_auth_settings,
@@ -210,7 +211,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await manager.disconnect(ws)
             return
 
-        token = msg.get("token", "")
+        token = msg.get("token", "") or ws.cookies.get(SESSION_COOKIE_NAME, "")
         if await manager.authenticate(ws, token):
             user = manager.get_user(ws)
             await ws.send_text(
