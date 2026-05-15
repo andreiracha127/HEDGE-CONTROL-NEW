@@ -175,11 +175,30 @@ def _select_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
 # list intentionally includes ``auditor`` to keep local dev workflows
 # usable; the production/staging gate below prevents this identity from
 # ever being returned in a fail-closed environment.
+_AUTH_DISABLED_FALLBACK_MARKER = object()
+
 _ANONYMOUS_USER: dict[str, Any] = {
     "sub": "anonymous",
     "name": "Anonymous (auth disabled)",
     "roles": ["trader", "risk_manager", "auditor"],
+    "_auth_disabled_fallback": _AUTH_DISABLED_FALLBACK_MARKER,
 }
+
+
+def get_auth_disabled_fallback_user() -> dict[str, Any]:
+    """Return the singleton dev/test fallback identity used when auth is off."""
+    return _ANONYMOUS_USER
+
+_VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+_INTERNAL_SERVICE_IDENTITIES = frozenset(
+    {
+        "service:westmetall_ingest",
+        "service:rfq_outbound",
+        "service:cashflow_pipeline",
+    }
+)
+# ``service:webhook_inbound`` is intentionally excluded here: webhook ingress
+# authenticates through provider signatures, not internal service JWTs.
 
 
 def get_current_user(
@@ -195,7 +214,7 @@ def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
             )
-        return _ANONYMOUS_USER
+        return get_auth_disabled_fallback_user()
 
     token = _extract_token(request)
     try:
@@ -243,23 +262,84 @@ def get_current_actor_sub(
     return actor_sub
 
 
+def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
+    """Validate and normalize human authorization roles from a JWT payload."""
+    raw = user.get("roles") if isinstance(user, dict) else None
+    if not isinstance(raw, list):
+        return []
+    roles = sorted({r for r in raw if isinstance(r, str) and r in _VALID_HUMAN_ROLES})
+    sub = user.get("sub")
+    if isinstance(sub, str) and sub.startswith("service:") and roles:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service identities cannot carry human roles",
+        )
+    if (
+        user is _ANONYMOUS_USER
+        and sub == "anonymous"
+        and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
+        and roles == ["auditor", "risk_manager", "trader"]
+    ):
+        # Auth-disabled local/test fallback is isolated by object identity and
+        # by the fail-closed env gate in get_current_user(); signed JWT payloads
+        # and copied dicts still go through the normal SoD checks below.
+        return roles
+    if "auditor" in roles and len(roles) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid role combination: auditor must be exclusive",
+        )
+    return roles
+
+
+def get_current_actor_roles(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> list[str]:
+    """Authoritative role set for authorization decisions."""
+    return extract_actor_roles_from_payload(user)
+
+
 def require_role(role: str):
     return require_any_role(role)
 
 
 def require_any_role(*roles: str):
     def _dependency(user: dict[str, Any] = Depends(get_current_user)) -> None:
-        if not _auth_enabled():
-            return
         if not isinstance(user, dict):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authenticated user payload is invalid",
             )
-        user_roles = set(user.get("roles") or [])
-        if not user_roles.intersection(set(roles)):
+        actor_roles = get_current_actor_roles(user)
+        if not set(actor_roles).intersection(set(roles)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
             )
 
     return _dependency
+
+
+def require_service_identity(name: str):
+    """Route gate for internal-issued service-account JWTs."""
+    expected = f"service:{name}" if not name.startswith("service:") else name
+    if expected not in _INTERNAL_SERVICE_IDENTITIES:
+        raise ValueError(f"Unknown service identity: {expected}")
+
+    def _gate(user: dict[str, Any] = Depends(get_current_user)) -> None:
+        get_current_actor_roles(user)
+        actor_sub = get_current_actor_sub(user)
+        if actor_sub == expected:
+            return
+        dev_actor_sub = os.getenv("DEV_SERVICE_ACTOR_SUB", "").strip()
+        if (
+            _canonical_env() not in _FAIL_CLOSED_ENVS
+            and dev_actor_sub == expected
+            and user is get_auth_disabled_fallback_user()
+        ):
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Service identity {expected} required",
+        )
+
+    return _gate

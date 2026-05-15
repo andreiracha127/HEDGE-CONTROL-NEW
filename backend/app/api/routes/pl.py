@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_any_role, require_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -44,7 +44,8 @@ def post_pl_snapshot(
             event_type="created",
         )
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> PLSnapshotResponse:
     with unit_of_work(session, request=request):
@@ -56,7 +57,7 @@ def post_pl_snapshot(
             period_end=snapshot_in.period_end,
             commit=False,
         )
-        mark_audit_success(request, snapshot.id)
+        mark_audit_success(request, snapshot.id, metadata={"actor_sub": actor_sub})
     return PLSnapshotResponse.model_validate(snapshot)
 
 

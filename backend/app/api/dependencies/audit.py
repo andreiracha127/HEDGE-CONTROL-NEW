@@ -31,8 +31,10 @@ def mark_audit_success(
 def record_audit_checkpoint(
     request: Request,
     entity_id: uuid.UUID | None = None,
+    *,
+    metadata: dict | None = None,
 ) -> None:
-    mark_audit_success(request, entity_id)
+    mark_audit_success(request, entity_id, metadata=metadata)
     previous = getattr(request.state, "audit_defer_commit", False)
     request.state.audit_defer_commit = True
     try:

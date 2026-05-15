@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_any_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
@@ -62,13 +62,14 @@ def reconcile_exposures(
             event_type="executed",
         )
     ),
-    _user: dict = Depends(get_current_user),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     try:
         with unit_of_work(session, request=request):
             run, summary = ExposureEngineService.reconcile_from_orders(session)
-            mark_audit_success(request, run.id)
+            mark_audit_success(request, run.id, metadata={"actor_sub": actor_sub})
     except ExposureOverAllocationError as exc:
         # Constitution §2.6: over-allocation is a hard-fail. The unit_of_work
         # context manager already rolled back, so no Exposure snapshot — and
@@ -83,7 +84,7 @@ def reconcile_exposures(
 @router.get("/net", response_model=NetExposureResponse)
 def get_net_exposure(
     commodity: Optional[str] = Query(None),
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     items = ExposureEngineService.compute_net_exposure(session, commodity)
@@ -94,7 +95,7 @@ def get_net_exposure(
 def list_hedge_tasks(
     cursor: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     items, next_cursor = ExposureEngineService.list_pending_tasks(
@@ -113,12 +114,13 @@ def execute_hedge_task(
             event_type="executed",
         )
     ),
-    _user: dict = Depends(get_current_user),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     with unit_of_work(session, request=request):
         task = ExposureEngineService.execute_task(session, task_id)
-        mark_audit_success(request, task.id)
+        mark_audit_success(request, task.id, metadata={"actor_sub": actor_sub})
     return HedgeTaskRead.model_validate(task)
 
 
@@ -134,7 +136,7 @@ def list_exposures(
     settlement_month: Optional[str] = Query(None),
     cursor: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     items, next_cursor = ExposureEngineService.list_exposures(
@@ -215,7 +217,7 @@ def list_exposures(
 @router.get("/{exposure_id}")
 def get_exposure(
     exposure_id: UUID,
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     from app.models.orders import Order

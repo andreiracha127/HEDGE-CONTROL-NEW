@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_any_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -61,7 +61,7 @@ _PRICE_UNPROVABLE_RESPONSES = {
 def find_deal_by_linked_entity(
     linked_type: str = Query(..., description="e.g. sales_order, purchase_order"),
     linked_id: UUID = Query(...),
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     """Find the deal that contains a given linked entity (order or contract)."""
@@ -101,7 +101,8 @@ def create_deal(
             event_type="created",
         )
     ),
-    __: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     data = body.model_dump()
@@ -112,7 +113,7 @@ def create_deal(
                 link["linked_type"] = link["linked_type"].value
     with unit_of_work(session, request=request):
         deal = DealEngineService.create_deal(session, data)
-        mark_audit_success(request, deal.id)
+        mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
     return deal
 
 
@@ -122,7 +123,7 @@ def list_deals(
     status_filter: Optional[str] = Query(None, alias="status"),
     cursor: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     q = DealEngineService.list_deals(session, commodity, status_filter)
@@ -143,7 +144,7 @@ def list_deals(
 )
 def pnl_breakdown(
     body: PnlBreakdownRequest,
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     """Compute P&L breakdown for one, many, or all deals."""
@@ -164,7 +165,7 @@ def pnl_breakdown(
 @router.get("/{deal_id}", response_model=DealDetailRead)
 def get_deal(
     deal_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     return DealEngineService.get_detail(session, deal_id)
@@ -183,14 +184,15 @@ def add_link(
             event_type="created",
         )
     ),
-    __: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     with unit_of_work(session, request=request):
         link = DealEngineService.add_link(
             session, deal_id, body.linked_type.value, body.linked_id
         )
-        mark_audit_success(request, link.id)
+        mark_audit_success(request, link.id, metadata={"actor_sub": actor_sub})
     return link
 
 
@@ -205,14 +207,15 @@ def remove_link(
             event_type="deleted",
         )
     ),
-    __: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     with unit_of_work(session, request=request):
         DealEngineService.remove_link(session, deal_id, link_id)
         # Service returns None — anchor the audit on the path parameter
         # (canonical id of the entity that was just deleted).
-        mark_audit_success(request, link_id)
+        mark_audit_success(request, link_id, metadata={"actor_sub": actor_sub})
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -232,7 +235,8 @@ def trigger_pnl_snapshot(
             event_type="created",
         )
     ),
-    __: None = Depends(require_any_role("trader", "risk_manager")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ):
     if snapshot_date is None:
@@ -242,7 +246,7 @@ def trigger_pnl_snapshot(
             snapshot = DealEngineService.compute_deal_pnl(
                 session, deal_id, snapshot_date
             )
-            mark_audit_success(request, snapshot.id)
+            mark_audit_success(request, snapshot.id, metadata={"actor_sub": actor_sub})
     except PriceReferenceUnprovable as exc:
         _raise_price_unprovable(exc)
     return snapshot
@@ -251,7 +255,7 @@ def trigger_pnl_snapshot(
 @router.get("/{deal_id}/pnl-history", response_model=DealPNLHistoryResponse)
 def pnl_history(
     deal_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ):
     snapshots = DealEngineService.get_pnl_history(session, deal_id)

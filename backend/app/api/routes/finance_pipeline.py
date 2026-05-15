@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
@@ -35,13 +35,14 @@ def trigger_pipeline(
         )
     ),
     db: Session = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
 ) -> PipelineRunRead:
     with unit_of_work(db, request=request):
         run = FinancePipelineService.run_daily_pipeline(
             db, body.run_date, commit=False
         )
-        mark_audit_success(request, run.id)
+        mark_audit_success(request, run.id, metadata={"actor_sub": actor_sub})
     return run
 
 
@@ -49,7 +50,7 @@ def trigger_pipeline(
 def list_runs(
     limit: int = 50,
     db: Session = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
 ):
     runs = FinancePipelineService.list_runs(db, limit=limit)
     return {"items": runs}
@@ -59,7 +60,7 @@ def list_runs(
 def get_run_detail(
     run_id: uuid.UUID,
     db: Session = Depends(get_session),
-    _user: dict = Depends(get_current_user),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
 ):
     run = FinancePipelineService.get_run(db, run_id)
     if run is None:

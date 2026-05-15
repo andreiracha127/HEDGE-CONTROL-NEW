@@ -28,6 +28,11 @@ from app.services.westmetall_cash_settlement import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _westmetall_service_actor(monkeypatch):
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
+
+
 # ── fixtures ────────────────────────────────────────────────────────────
 
 
