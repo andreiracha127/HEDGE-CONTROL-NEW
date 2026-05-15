@@ -12,6 +12,9 @@
 	$effect(() => {
 		if (authStore.isAuthenticated) {
 			wsStore.connect();
+			void initClerk().catch(() => {
+				// Restored cookie sessions can render before Clerk loads; refresh remains best-effort.
+			});
 		} else {
 			wsStore.disconnect();
 		}

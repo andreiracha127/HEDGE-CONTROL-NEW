@@ -142,6 +142,7 @@ describe('login page — Clerk SDK surface', () => {
 		resolve(ROUTES, '(public)', 'login', '+page.svelte'),
 		'utf8',
 	);
+	const rootLayoutSource = readFileSync(resolve(ROUTES, '+layout.svelte'), 'utf8');
 	const clerkSource = readFileSync(resolve(SRC, 'lib', 'clerk.ts'), 'utf8');
 
 	it('mounts Clerk SignIn and routes the session through authStore.establishSession', () => {
@@ -155,6 +156,11 @@ describe('login page — Clerk SDK surface', () => {
 		expect(clerkSource).toContain('@clerk/ui@1/dist/ui.browser.js');
 		expect(clerkSource).toContain('__internal_ClerkUICtor');
 		expect(clerkSource).toMatch(/ui:\s*\{\s*ClerkUI:/);
+	});
+
+	it('initializes Clerk on restored authenticated layouts so cookie sessions can refresh', () => {
+		expect(rootLayoutSource).toContain('if (authStore.isAuthenticated)');
+		expect(rootLayoutSource).toContain('void initClerk().catch');
 	});
 
 	it('does not retain the retired manual token form', () => {
