@@ -17,6 +17,10 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const SESSION_COOKIE_MAX_AGE_MS = 300 * 1000;
 const SESSION_COOKIE_REFRESH_LEAD_MS = 60 * 1000;
 
+function backendSessionExpiry(): number {
+	return Math.floor((Date.now() + SESSION_COOKIE_MAX_AGE_MS) / 1000);
+}
+
 function decodeJwtPayload(token: string): JwtClaims {
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('Invalid JWT format');
@@ -26,6 +30,10 @@ function decodeJwtPayload(token: string): JwtClaims {
 
 function hasInvalidRoleCombination(roles: UserRole[] | undefined): boolean {
 	return !!roles?.includes('auditor') && roles.length > 1;
+}
+
+function claimsForBackendSession(claims: JwtClaims): JwtClaims {
+	return { ...claims, exp: backendSessionExpiry() };
 }
 
 class AuthStore {
@@ -102,7 +110,7 @@ class AuthStore {
 			throw new Error('Invalid token');
 		}
 
-		this.#applySession(null, claims, csrf);
+		this.#applySession(null, claimsForBackendSession(claims), csrf);
 	}
 
 	logout() {
@@ -285,7 +293,7 @@ class AuthStore {
 				this.#isRestoring = false;
 				return;
 			}
-			this.#applySession(null, { sub: body.actor_sub, roles }, csrf);
+			this.#applySession(null, { sub: body.actor_sub, roles, exp: backendSessionExpiry() }, csrf);
 			await this.#refreshBackendSession();
 		} catch {
 			this.#clearStoredToken();
@@ -330,7 +338,11 @@ class AuthStore {
 				return;
 			}
 
-			this.#applySession(null, token ? decodeJwtPayload(token) : this.#claims, nextCsrf);
+			this.#applySession(
+				null,
+				claimsForBackendSession(token ? decodeJwtPayload(token) : this.#claims),
+				nextCsrf,
+			);
 		} catch {
 			this.logout();
 		}

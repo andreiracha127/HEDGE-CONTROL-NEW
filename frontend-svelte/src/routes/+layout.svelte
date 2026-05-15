@@ -65,9 +65,14 @@
 
 	async function logout() {
 		wsStore.disconnect();
-		await initClerk();
-		await clerk.signOut();
-		authStore.logout();
+		try {
+			await initClerk();
+			await clerk.signOut();
+		} catch {
+			// Local/backend logout must not depend on Clerk CDN availability.
+		} finally {
+			authStore.logout();
+		}
 	}
 </script>
 
