@@ -15,7 +15,7 @@ export function createDevToken(overrides: {
 	const payload = {
 		sub: overrides.sub ?? 'e2e-test-user',
 		name: overrides.name ?? 'E2E Tester',
-		roles: overrides.roles ?? ['trader', 'risk_manager', 'auditor'],
+		roles: overrides.roles ?? ['trader', 'risk_manager'],
 		iat: Math.floor(Date.now() / 1000),
 		exp: overrides.exp ?? Math.floor(Date.now() / 1000) + 3600,
 	};

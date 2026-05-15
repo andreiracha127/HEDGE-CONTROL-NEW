@@ -88,6 +88,30 @@ def test_session_endpoint_returns_csrf_token_in_body_and_cookie(monkeypatch) -> 
     assert "Path=/" in csrf_cookie
 
 
+def test_session_endpoint_accepts_unsigned_dev_token_when_auth_disabled(
+    monkeypatch,
+) -> None:
+    private_pem, _ = generate_rsa_keypair()
+    token = make_clerk_token(private_pem, roles=["trader"])
+    monkeypatch.delenv("CLERK_FAPI_HOST", raising=False)
+    monkeypatch.delenv("JWT_ISSUER", raising=False)
+    monkeypatch.delenv("JWT_AUDIENCE", raising=False)
+    monkeypatch.delenv("JWKS_URL", raising=False)
+    monkeypatch.setattr(auth_module, "_canonical_env", lambda: "development")
+    monkeypatch.setattr(auth_routes, "_canonical_env", lambda: "development")
+    original = app.dependency_overrides.copy()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_auth_settings] = lambda: None
+    try:
+        response = TestClient(app).post("/auth/session", json={"session_token": token})
+    finally:
+        _restore_overrides(original)
+
+    assert response.status_code == 200, response.text
+    assert response.json()["actor_sub"] == "user_test"
+    assert SESSION_COOKIE_NAME in _set_cookie_header(response, SESSION_COOKIE_NAME)
+
+
 def test_cookie_endpoints_document_set_cookie_headers_in_openapi() -> None:
     app.openapi_schema = None
     schema = app.openapi()

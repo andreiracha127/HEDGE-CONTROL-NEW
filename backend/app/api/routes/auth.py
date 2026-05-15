@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import secrets
+import time
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Response
+from jose import JWTError, jwt
 
 from app.core.auth import (
     CSRF_COOKIE_NAME,
@@ -69,7 +71,17 @@ def _set_auth_cookies(response: Response, session_token: str, csrf: str) -> None
 
 def _validate_session_token(session_token: str, settings: AuthSettings | None) -> dict[str, Any]:
     if settings is None:
-        raise HTTPException(status_code=401, detail="Authentication disabled")
+        if _canonical_env() in _FAIL_CLOSED_ENVS:
+            raise HTTPException(status_code=401, detail="Authentication disabled")
+        try:
+            payload = jwt.get_unverified_claims(session_token)
+        except JWTError as exc:
+            raise HTTPException(status_code=401, detail="Invalid token") from exc
+        exp = payload.get("exp") if isinstance(payload, dict) else None
+        if isinstance(exp, int | float) and exp <= time.time():
+            raise HTTPException(status_code=401, detail="Invalid token")
+        _validate_human_roles_at_jwt_time(payload)
+        return payload
     payload = _validate_clerk_token(session_token, settings)
     _validate_human_roles_at_jwt_time(payload)
     return payload
