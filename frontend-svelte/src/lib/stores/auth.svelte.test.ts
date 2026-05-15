@@ -109,6 +109,7 @@ describe('AuthStore', () => {
 			expect(mod.authStore.getCsrfToken()).toBe('csrf-old');
 
 			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+			// Restored sessions have no plaintext JWT in memory; refresh uses the httpOnly cookie.
 			expect(fetchMock).toHaveBeenLastCalledWith(
 				'http://localhost:8000/auth/refresh',
 				expect.objectContaining({
