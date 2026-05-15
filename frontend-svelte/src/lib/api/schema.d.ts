@@ -340,6 +340,26 @@ export interface paths {
         patch: operations["update_counterparty_counterparties__counterparty_id__patch"];
         trace?: never;
     };
+    "/csp/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Csp Report
+         * @description Accept CSP violation report (legacy or modern shape), log structured event, return 204.
+         */
+        post: operations["csp_report_csp_report_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/deals": {
         parameters: {
             query?: never;
@@ -4923,6 +4943,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    csp_report_csp_report_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };
