@@ -573,7 +573,8 @@ Deviations are hard fails.
   the provider emitted.
 
 - **Storage:** `Numeric(18, 6)` SQL column type (see
-  `backend/app/models/market_data.py:24` for `price_usd` reference shape).
+  `backend/app/models/market_data.py:24` `CashSettlementPrice.price_usd`
+  reference shape).
   Six decimal places handle commodity prices (USD per metric tonne to
   hundredths-of-cents), FX rates (six decimals standard), and basis
   points uniformly without overflow up to 10^12 base units.
