@@ -19,7 +19,7 @@ test.describe('CSP Report-Only infrastructure (D-3.3)', () => {
 	// Regression for Codex P2 on PR #85: docker-entrypoint.sh now derives CLERK_FAPI_HOST
 	// from VITE_CLERK_PUBLISHABLE_KEY (base64 url-safe decode of tenant suffix) instead of
 	// falling back to bare parent domain "clerk.accounts.dev". This prevents CSP blocks post-enforce.
-	test.skip(true, 'Entrypoint derivation tested via docker build smoke in dispatch verification (see handoff). Key example: pk_test_ZmlsdGluZy1wdWctNTUuY2xlcmsuYWNjb3VudHMuZGV2JA -> filting-pug-55.clerk.accounts.dev');
+	// NOTE: header-assertion tests are docker/nginx-gated (internal skip); console smoke test below runs on static dev serve.
 	test('serves Content-Security-Policy-Report-Only header with strict Clerk-aware baseline', async ({
 		page,
 	}) => {
@@ -40,6 +40,7 @@ test.describe('CSP Report-Only infrastructure (D-3.3)', () => {
 	});
 
 	test('does NOT serve an enforce-mode Content-Security-Policy header', async ({ page }) => {
+		test.skip(true, 'Enforce CSP header check requires nginx-injected headers from full docker-compose; CI uses static serve. Manual: docker compose up -d --build ...');
 		const response = await page.goto('/login');
 		const enforce = response!.headers()['content-security-policy'];
 		expect(enforce, 'Enforce CSP header must be absent in report-only ramp').toBeUndefined();
