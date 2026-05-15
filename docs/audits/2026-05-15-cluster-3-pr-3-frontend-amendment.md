@@ -196,8 +196,8 @@ rg -nP "isTraderOnly" frontend-svelte/src/lib/stores/auth.svelte.ts             
 # Verify Clerk session-token provider wired
 rg -nP "clerk\.session\?\.getToken\(.*skipCache: true" frontend-svelte/src/      # MUST match exactly one call site (refresh path)
 
-# Verify NO new manual /auth/* fetches outside the store
-rg -nP 'fetch\(`?\$\{?API_BASE\}?/auth/(session|refresh|logout|me)' frontend-svelte/src/    # MUST be zero outside auth.svelte.ts and lib/clerk.ts
+# Verify NO new manual /auth/* fetches outside the store (delivered surface in auth.svelte.ts is allowed; new call sites elsewhere are forbidden)
+rg -nP 'fetch\(`?\$\{?API_BASE\}?/auth/(session|refresh|logout|me)' frontend-svelte/src/ --glob '!**/stores/auth.svelte.ts' --glob '!**/lib/clerk.ts'    # MUST be zero — only auth.svelte.ts (delivered) and the new lib/clerk.ts (this wave's init module if it makes any auth lifecycle call) are allowed to host these fetches
 
 # Verify no scope creep into PR-CL3-2 territory
 git diff main -- frontend-svelte/src/lib/api/fetch.ts | rg -nP '^[+-].*credentials|^[+-].*X-CSRF-Token'    # MUST be zero
