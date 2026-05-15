@@ -291,6 +291,19 @@ def test_westmetall_ingest_service_identity_accepts(client, auth_as, monkeypatch
     assert response.status_code == 200
 
 
+def test_westmetall_service_identity_rejects_mixed_auditor_roles(
+    client, auth_as, monkeypatch
+) -> None:
+    monkeypatch.delenv("DEV_SERVICE_ACTOR_SUB", raising=False)
+    auth_as("auditor", "risk_manager", sub="service:westmetall_ingest")
+    response = client.post(
+        "/market-data/westmetall/aluminum/cash-settlement/ingest",
+        json={"settlement_date": "2026-01-30"},
+    )
+    assert response.status_code == 401
+    assert "auditor must be exclusive" in response.json()["detail"]
+
+
 def test_westmetall_dev_service_override_rejects_human_actor(
     client, auth_as, monkeypatch
 ) -> None:

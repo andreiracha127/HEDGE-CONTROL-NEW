@@ -319,6 +319,7 @@ def require_service_identity(name: str):
         raise ValueError(f"Unknown service identity: {expected}")
 
     def _gate(user: dict[str, Any] = Depends(get_current_user)) -> None:
+        get_current_actor_roles(user)
         actor_sub = get_current_actor_sub(user)
         if actor_sub == expected:
             return
