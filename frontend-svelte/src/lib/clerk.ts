@@ -14,6 +14,7 @@ type ClerkLoadOptions = NonNullable<Parameters<ClerkInstance['load']>[0]>;
 // TODO(post-cluster-3): swap from the dev publishable key to pk_live_... for the custom domain.
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
+// Live binding initialized by initClerk(); consumers await initClerk() before using clerk.
 export let clerk = undefined as unknown as ClerkInstance;
 
 let loadPromise: Promise<void> | null = null;
