@@ -205,8 +205,9 @@ def _extract_token_with_source(request: Request) -> tuple[str, str]:
     if token:
         return token, "cookie"
     auth = getattr(request, "headers", {}).get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return auth.removeprefix("Bearer ").strip(), "bearer"
+    scheme, _, token = auth.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return token.strip(), "bearer"
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Session cookie missing",

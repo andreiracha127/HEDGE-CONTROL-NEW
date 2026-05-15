@@ -22,7 +22,7 @@
 		}
 	});
 
-	function handleLogin(e: SubmitEvent) {
+	async function handleLogin(e: SubmitEvent) {
 		e.preventDefault();
 		if (!manualLoginEnabled) {
 			notifications.error(
@@ -32,7 +32,7 @@
 		}
 		loading = true;
 		try {
-			authStore.login(token.trim());
+			await authStore.establishSession(token.trim());
 			goto('/');
 		} catch {
 			notifications.error('Token inválido. Verifique e tente novamente.');

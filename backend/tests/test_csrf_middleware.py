@@ -76,7 +76,7 @@ def test_csrf_middleware_post_match_passes() -> None:
 def test_csrf_middleware_bearer_without_session_cookie_passes() -> None:
     response = _csrf_client().post(
         "/probe",
-        headers={"Authorization": "Bearer service-token"},
+        headers={"Authorization": "bearer service-token"},
     )
 
     assert response.status_code == 200

@@ -9,7 +9,8 @@ from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAM
 
 
 def _has_bearer_authorization(request: Request) -> bool:
-    return request.headers.get("Authorization", "").startswith("Bearer ")
+    scheme, _, token = request.headers.get("Authorization", "").partition(" ")
+    return scheme.lower() == "bearer" and bool(token)
 
 
 async def csrf_middleware(request: Request, call_next):

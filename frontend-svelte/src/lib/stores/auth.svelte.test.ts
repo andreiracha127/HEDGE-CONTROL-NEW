@@ -27,6 +27,7 @@ describe('AuthStore', () => {
 	afterEach(() => {
 		sessionStorage.clear();
 		vi.useRealTimers();
+		vi.unstubAllGlobals();
 	});
 
 	describe('login', () => {
@@ -75,6 +76,36 @@ describe('AuthStore', () => {
 			expect(mod.authStore.isAuthenticated).toBe(true);
 			expect(mod.authStore.userName).toBe('Test User');
 			expect(mod.authStore.getAuthHeader()).toBe(`Bearer ${token}`);
+		});
+
+		it('exchanges pasted JWT for httpOnly cookies and stores CSRF token', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await authStore.establishSession(token);
+
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/session',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					body: JSON.stringify({ session_token: token }),
+				}),
+			);
+			expect(authStore.isAuthenticated).toBe(true);
+			expect(authStore.userName).toBe('Test User');
+			expect(authStore.getCsrfToken()).toBe('csrf-1');
 		});
 	});
 

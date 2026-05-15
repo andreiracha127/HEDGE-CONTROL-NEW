@@ -80,6 +80,25 @@ def test_get_current_user_routes_service_token_to_service_validator(service_env)
     assert user["sub"] == "service:westmetall_ingest"
 
 
+def test_get_current_user_accepts_case_insensitive_bearer_scheme(service_env) -> None:
+    private_pem, _ = service_env
+    token = make_service_token(private_pem, sub="service:westmetall_ingest")
+
+    user = get_current_user(
+        type(
+            "Request",
+            (),
+            {
+                "headers": {AUTHORIZATION_HEADER: "bearer " + token},
+                "cookies": {},
+            },
+        )(),
+        settings=object(),
+    )
+
+    assert user["sub"] == "service:westmetall_ingest"
+
+
 def test_service_token_cookie_transport_401(service_env) -> None:
     private_pem, _ = service_env
     token = make_service_token(private_pem, sub="service:westmetall_ingest")
