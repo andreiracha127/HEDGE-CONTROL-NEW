@@ -46,6 +46,19 @@ def test_clerk_jwt_valid_returns_user(clerk_keys) -> None:
     assert user["roles"] == ["risk_manager"]
 
 
+def test_clerk_jwt_bearer_rejected_when_clerk_fapi_host_set(clerk_keys, monkeypatch) -> None:
+    private_pem, _, jwks = clerk_keys
+    token = make_clerk_token(private_pem, roles=["risk_manager"])
+    monkeypatch.setenv("CLERK_FAPI_HOST", "fitting-pug-55.clerk.accounts.dev")
+
+    with patched_jwks(auth_module, jwks):
+        with pytest.raises(HTTPException) as excinfo:
+            get_current_user(_Request(bearer=token), settings=clerk_settings())
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Session cookie missing"
+
+
 def test_clerk_jwt_invalid_signature_401(clerk_keys) -> None:
     _, _, jwks = clerk_keys
     wrong_private, _ = generate_rsa_keypair()

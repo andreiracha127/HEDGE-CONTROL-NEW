@@ -276,11 +276,13 @@ def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:
             decode_kwargs["audience"] = settings.audience
         else:
             decode_kwargs["options"] = {"verify_aud": False}
-        return jwt.decode(token, **decode_kwargs)
+        payload = jwt.decode(token, **decode_kwargs)
     except JWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         ) from exc
+    _validate_human_roles_at_jwt_time(payload)
+    return payload
 
 
 def _validate_human_roles_at_jwt_time(payload: dict[str, Any]) -> None:
@@ -363,9 +365,10 @@ def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
-            )
+        )
         return get_auth_disabled_fallback_user()
 
+    assert settings is not None
     token, source = _extract_token_with_source(request)
     token_issuer = _get_unverified_issuer(token)
     service_issuer = os.getenv("BACKEND_SERVICE_ISSUER", "")
@@ -383,9 +386,7 @@ def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session cookie missing",
         )
-    payload = _validate_clerk_token(token, settings)
-    _validate_human_roles_at_jwt_time(payload)
-    return payload
+    return _validate_clerk_token(token, settings)
 
 
 def mint_service_token(identity: str) -> str:
