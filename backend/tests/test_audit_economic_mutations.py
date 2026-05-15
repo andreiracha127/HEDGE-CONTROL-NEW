@@ -710,6 +710,10 @@ class TestRouteCoverageStatic:
         ): "covered institutional mutation",
         ("POST", "/mtm/snapshots"): "covered institutional mutation",
         ("POST", "/webhooks/whatsapp"): "explicitly out of A5 route audit scope: inbound delivery evidence",
+        (
+            "POST",
+            "/csp/report",
+        ): "explicitly out of A5 route audit scope: CSP violation reports (unauth, CSRF-exempt)",
         ("POST", "/auth/session"): "explicitly out of A5 route audit scope: auth session cookie exchange",
         ("POST", "/auth/refresh"): "explicitly out of A5 route audit scope: auth session refresh",
         ("POST", "/auth/logout"): "explicitly out of A5 route audit scope: auth session logout",
