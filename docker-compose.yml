@@ -44,6 +44,10 @@ services:
       dockerfile: Dockerfile
     environment:
       VITE_API_BASE_URL: http://localhost:8000
+      # CLERK_FAPI_HOST derived from VITE_CLERK_PUBLISHABLE_KEY in frontend .env
+      # (see clerk.ts:clerkFrontendApiFromPublishableKey). Required for CSP
+      # template substitution in nginx Report-Only headers (PR-CL3-4).
+      CLERK_FAPI_HOST: fitting-pug-55.clerk.accounts.dev
     ports:
       - "5173:8080"
     depends_on:

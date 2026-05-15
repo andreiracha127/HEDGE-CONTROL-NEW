@@ -37,6 +37,7 @@ from app.api.routes import (
     scenario,
     webhooks,
     westmetall,
+    csp_report,
 )
 
 configure_logging()
@@ -230,6 +231,7 @@ app.include_router(
 )
 app.include_router(mtm.router, prefix="/mtm", tags=["MTM"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+app.include_router(csp_report.router, prefix="/csp", tags=["CSP"])
 app.include_router(auth.router)
 app.include_router(
     finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
