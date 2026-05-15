@@ -71,6 +71,15 @@ def test_mint_service_token_unknown_raises(service_env) -> None:
         mint_service_token("not_a_real_identity")
 
 
+def test_mint_service_token_missing_env_raises_clear_error(monkeypatch) -> None:
+    monkeypatch.delenv("SERVICE_JWT_SIGNING_KEY", raising=False)
+    monkeypatch.delenv("BACKEND_SERVICE_ISSUER", raising=False)
+    monkeypatch.delenv("BACKEND_SERVICE_AUDIENCE", raising=False)
+
+    with pytest.raises(ValueError, match="Missing service token configuration"):
+        mint_service_token("westmetall_ingest")
+
+
 def test_get_current_user_routes_service_token_to_service_validator(service_env) -> None:
     private_pem, _ = service_env
     token = make_service_token(private_pem, sub="service:westmetall_ingest")

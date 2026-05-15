@@ -384,16 +384,25 @@ def mint_service_token(identity: str) -> str:
     if expected not in _INTERNAL_SERVICE_IDENTITIES:
         raise ValueError(f"Unknown internal service identity: {expected}")
 
+    issuer = os.getenv("BACKEND_SERVICE_ISSUER", "")
+    audience = os.getenv("BACKEND_SERVICE_AUDIENCE", "")
+    signing_key = os.getenv("SERVICE_JWT_SIGNING_KEY", "")
+    if not (issuer and audience and signing_key):
+        raise ValueError(
+            "Missing service token configuration: BACKEND_SERVICE_ISSUER, "
+            "BACKEND_SERVICE_AUDIENCE, and SERVICE_JWT_SIGNING_KEY are required"
+        )
+
     now = int(time.time())
     payload = {
         "sub": expected,
-        "iss": os.environ["BACKEND_SERVICE_ISSUER"],
-        "aud": os.environ["BACKEND_SERVICE_AUDIENCE"],
+        "iss": issuer,
+        "aud": audience,
         "iat": now,
         "exp": now + SERVICE_TOKEN_TTL_SECONDS,
         "nbf": now,
     }
-    return jwt.encode(payload, os.environ["SERVICE_JWT_SIGNING_KEY"], algorithm="RS256")
+    return jwt.encode(payload, signing_key, algorithm="RS256")
 
 
 def get_current_actor_sub(
