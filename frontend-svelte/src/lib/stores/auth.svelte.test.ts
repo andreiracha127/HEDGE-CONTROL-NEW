@@ -86,7 +86,7 @@ describe('AuthStore', () => {
 				exp: Math.floor(Date.now() / 1000) + 3600,
 			});
 			const fetchMock = vi.fn().mockResolvedValue(
-				new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+				new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
 					status: 200,
 					headers: { 'Content-Type': 'application/json' },
 				}),
@@ -118,13 +118,13 @@ describe('AuthStore', () => {
 			const fetchMock = vi
 				.fn()
 				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
 						status: 200,
 						headers: { 'Content-Type': 'application/json' },
 					}),
 				)
 				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-2' }), {
+					new Response(JSON.stringify({ csrf_token: 'csrf-2' }), {
 						status: 200,
 						headers: { 'Content-Type': 'application/json' },
 					}),
@@ -178,7 +178,7 @@ describe('AuthStore', () => {
 			const fetchMock = vi
 				.fn()
 				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
 						status: 200,
 						headers: { 'Content-Type': 'application/json' },
 					}),
