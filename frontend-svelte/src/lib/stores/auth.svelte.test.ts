@@ -579,6 +579,27 @@ describe('AuthStore', () => {
 			expect(authStore.showExpiryWarning).toBe(true);
 		});
 
+		it('does not show an immediate warning for refreshable cookie sessions', async () => {
+			const token = fakeJwt({
+				sub: 'u',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			vi.stubGlobal(
+				'fetch',
+				vi.fn().mockResolvedValue(
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				),
+			);
+
+			await authStore.establishSession(token);
+
+			expect(authStore.showExpiryWarning).toBe(false);
+		});
+
 		it('auto-logouts on token expiry', () => {
 			const expInSec = Math.floor(Date.now() / 1000) + 60; // 1min from now
 			const token = fakeJwt({ sub: 'u', exp: expInSec });

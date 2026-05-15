@@ -182,14 +182,15 @@ class AuthStore {
 			return;
 		}
 
-		// Warning 5 min before expiry
-		const msUntilWarning = msUntilExpiry - 5 * 60 * 1000;
-		if (msUntilWarning > 0) {
-			this.#expiryWarningTimer = setTimeout(() => {
+		if (!this.#csrfToken) {
+			const msUntilWarning = msUntilExpiry - 5 * 60 * 1000;
+			if (msUntilWarning > 0) {
+				this.#expiryWarningTimer = setTimeout(() => {
+					this.showExpiryWarning = true;
+				}, msUntilWarning);
+			} else {
 				this.showExpiryWarning = true;
-			}, msUntilWarning);
-		} else {
-			this.showExpiryWarning = true;
+			}
 		}
 
 		// Auto-logout on expiry
