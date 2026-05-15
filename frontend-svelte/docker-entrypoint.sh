@@ -13,7 +13,31 @@ esac
 # (prevents set -u abort and empty connect-src / Report-To when container started
 # without explicit VITE_API_BASE_URL or CLERK_FAPI_HOST).
 export VITE_API_BASE_URL="${VITE_API_BASE_URL:-http://localhost:8000}"
-export CLERK_FAPI_HOST="${CLERK_FAPI_HOST:-clerk.accounts.dev}"
+
+# Derive CLERK_FAPI_HOST from VITE_CLERK_PUBLISHABLE_KEY if not explicitly set.
+# Clerk publishable keys are url-safe base64 of "<fapi-host>$" — strip prefix,
+# add base64 padding, decode, strip trailing dollar sign.
+if [ -z "${CLERK_FAPI_HOST:-}" ]; then
+  if [ -z "${VITE_CLERK_PUBLISHABLE_KEY:-}" ]; then
+    echo "FATAL: neither CLERK_FAPI_HOST nor VITE_CLERK_PUBLISHABLE_KEY is set" >&2
+    exit 1
+  fi
+  # Strip pk_test_ / pk_live_ prefix
+  _key_body="${VITE_CLERK_PUBLISHABLE_KEY#pk_test_}"
+  _key_body="${_key_body#pk_live_}"
+  # Pad to multiple of 4 with '='
+  case $(( ${#_key_body} % 4 )) in
+    2) _key_body="${_key_body}==" ;;
+    3) _key_body="${_key_body}=" ;;
+  esac
+  # Decode (busybox base64 in alpine accepts -d). Strip trailing $ and any whitespace.
+  CLERK_FAPI_HOST=$(printf '%s' "$_key_body" | base64 -d 2>/dev/null | sed -e 's/\$$//' -e 's/[[:space:]]//g')
+  if [ -z "$CLERK_FAPI_HOST" ] || ! printf '%s' "$CLERK_FAPI_HOST" | grep -qE '^[a-z0-9.-]+\.[a-z]+$'; then
+    echo "FATAL: failed to derive CLERK_FAPI_HOST from VITE_CLERK_PUBLISHABLE_KEY" >&2
+    exit 1
+  fi
+fi
+export CLERK_FAPI_HOST
 
 # Derive WebSocket base URL from HTTP API base URL for CSP connect-src
 # (https://... -> wss://..., http://... -> ws://...)
