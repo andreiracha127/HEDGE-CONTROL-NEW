@@ -14,15 +14,18 @@ type ClerkLoadOptions = NonNullable<Parameters<ClerkInstance['load']>[0]>;
 // TODO(post-cluster-3): swap from the dev publishable key to pk_live_... for the custom domain.
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
-if (!PUBLISHABLE_KEY) {
-	throw new Error('VITE_CLERK_PUBLISHABLE_KEY missing; auth disabled');
-}
-
 export let clerk = undefined as unknown as ClerkInstance;
 
 let loadPromise: Promise<void> | null = null;
 let uiLoadPromise: Promise<void> | null = null;
 let sdkLoadPromise: Promise<ClerkInstance> | null = null;
+
+function requirePublishableKey(): string {
+	if (!PUBLISHABLE_KEY) {
+		throw new Error('VITE_CLERK_PUBLISHABLE_KEY missing; auth disabled');
+	}
+	return PUBLISHABLE_KEY;
+}
 
 function clerkFrontendApiFromPublishableKey(publishableKey: string): string {
 	const encodedDomain = publishableKey.split('_')[2];
@@ -44,9 +47,10 @@ function loadClerkUi(): Promise<void> {
 	uiLoadPromise ??= new Promise((resolve, reject) => {
 		const existingScript = document.getElementById('clerk-ui-bundle') as HTMLScriptElement | null;
 		const script = existingScript ?? document.createElement('script');
+		const publishableKey = requirePublishableKey();
 
 		script.id = 'clerk-ui-bundle';
-		script.src = `https://${clerkFrontendApiFromPublishableKey(PUBLISHABLE_KEY)}/npm/@clerk/ui@1/dist/ui.browser.js`;
+		script.src = `https://${clerkFrontendApiFromPublishableKey(publishableKey)}/npm/@clerk/ui@1/dist/ui.browser.js`;
 		script.async = true;
 		script.crossOrigin = 'anonymous';
 		script.onload = () => {
@@ -73,13 +77,14 @@ function loadClerkJs(): Promise<ClerkInstance> {
 	sdkLoadPromise ??= new Promise((resolve, reject) => {
 		const existingScript = document.getElementById('clerk-js-bundle') as HTMLScriptElement | null;
 		const script = existingScript ?? document.createElement('script');
+		const publishableKey = requirePublishableKey();
 
-		window.__clerk_publishable_key = PUBLISHABLE_KEY;
+		window.__clerk_publishable_key = publishableKey;
 		script.id = 'clerk-js-bundle';
-		script.src = `https://${clerkFrontendApiFromPublishableKey(PUBLISHABLE_KEY)}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`;
+		script.src = `https://${clerkFrontendApiFromPublishableKey(publishableKey)}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`;
 		script.async = true;
 		script.crossOrigin = 'anonymous';
-		script.setAttribute('data-clerk-publishable-key', PUBLISHABLE_KEY);
+		script.setAttribute('data-clerk-publishable-key', publishableKey);
 		script.onload = () => {
 			if (window.Clerk) {
 				resolve(window.Clerk);

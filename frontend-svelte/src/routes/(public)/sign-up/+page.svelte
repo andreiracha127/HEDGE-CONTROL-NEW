@@ -33,22 +33,26 @@
 		let unsubscribe: (() => void) | undefined;
 
 		void (async () => {
-			await initClerk();
-			if (!active) return;
+			try {
+				await initClerk();
+				if (!active) return;
 
-			clerk.mountSignUp(mountEl, {
-				path: '/sign-up',
-				routing: 'path',
-				forceRedirectUrl: '/',
-				fallbackRedirectUrl: '/',
-				signInForceRedirectUrl: '/',
-				signInFallbackRedirectUrl: '/',
-				signInUrl: '/login',
-			});
-			unsubscribe = clerk.addListener(({ session }) => {
-				void establishBackendSession(session);
-			});
-			void establishBackendSession(clerk.session);
+				clerk.mountSignUp(mountEl, {
+					path: '/sign-up',
+					routing: 'path',
+					forceRedirectUrl: '/',
+					fallbackRedirectUrl: '/',
+					signInForceRedirectUrl: '/',
+					signInFallbackRedirectUrl: '/',
+					signInUrl: '/login',
+				});
+				unsubscribe = clerk.addListener(({ session }) => {
+					void establishBackendSession(session);
+				});
+				void establishBackendSession(clerk.session);
+			} catch {
+				if (active) error = 'Configuração de Clerk ausente.';
+			}
 		})();
 
 		return () => {
