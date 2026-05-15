@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_any_role, require_role
+from app.core.auth import require_any_role, require_service_identity
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_SCRAPING, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -132,7 +132,7 @@ def ingest_cash_settlement_daily(
             event_type="ingested",
         )
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_service_identity("westmetall_ingest")),
     session: Session = Depends(get_session),
 ) -> CashSettlementIngestResponse:
     try:
@@ -144,7 +144,11 @@ def ingest_cash_settlement_daily(
             )
             # Skip audit: no row was persisted, so there is no durable mutation anchor.
             if inserted_id is not None:
-                mark_audit_success(request, inserted_id)
+                mark_audit_success(
+                    request,
+                    inserted_id,
+                    metadata={"actor_sub": "service:westmetall_ingest"},
+                )
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
@@ -181,7 +185,7 @@ def ingest_cash_settlement_bulk(
             event_type="bulk_ingested",
         )
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_service_identity("westmetall_ingest")),
     session: Session = Depends(get_session),
 ) -> CashSettlementBulkIngestResponse:
     try:
@@ -199,6 +203,7 @@ def ingest_cash_settlement_bulk(
                     request,
                     batch_uuid,
                     metadata={
+                        "actor_sub": "service:westmetall_ingest",
                         "batch_uuid": str(batch_uuid),
                         "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
                         "source": SOURCE_WESTMETALL,

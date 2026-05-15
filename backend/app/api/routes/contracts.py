@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_user, require_any_role, require_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -38,13 +38,13 @@ def create_hedge_contract(
             event_type="created",
         )
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
-    user: dict = Depends(get_current_user),
+    actor_sub: str = Depends(get_current_actor_sub),
 ) -> HedgeContractRead:
     with unit_of_work(session, request=request):
-        contract = ContractService.create(session, payload, created_by=user.get("sub"))
-        mark_audit_success(request, contract.id)
+        contract = ContractService.create(session, payload, created_by=actor_sub)
+        mark_audit_success(request, contract.id, metadata={"actor_sub": actor_sub})
     return HedgeContractRead.model_validate(contract)
 
 
@@ -62,7 +62,7 @@ def list_hedge_contracts(
     include_deleted: bool = Query(False, description="Include soft-deleted records"),
     cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> HedgeContractListResponse:
     return ContractService.list(
@@ -79,7 +79,7 @@ def list_hedge_contracts(
 @router.get("/hedge/{contract_id}", response_model=HedgeContractRead)
 def get_hedge_contract(
     contract_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> HedgeContractRead:
     contract = ContractService.get_by_id(session, contract_id)
@@ -97,12 +97,13 @@ def archive_hedge_contract(
             event_type="archived",
         )
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> HedgeContractRead:
     with unit_of_work(session, request=request):
         contract = ContractService.archive(session, contract_id)
-        mark_audit_success(request, contract.id)
+        mark_audit_success(request, contract.id, metadata={"actor_sub": actor_sub})
     return HedgeContractRead.model_validate(contract)
 
 
@@ -118,12 +119,13 @@ def update_hedge_contract(
     payload: HedgeContractUpdate,
     request: Request,
     _: None = Depends(audit_event(entity_type="hedge_contract", event_type="updated")),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> HedgeContractRead:
     with unit_of_work(session, request=request):
         contract = ContractService.update(session, contract_id, payload)
-        mark_audit_success(request, contract.id)
+        mark_audit_success(request, contract.id, metadata={"actor_sub": actor_sub})
     return HedgeContractRead.model_validate(contract)
 
 
@@ -141,12 +143,13 @@ def update_hedge_contract_status(
     _: None = Depends(
         audit_event(entity_type="hedge_contract", event_type="status_changed")
     ),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> HedgeContractRead:
     with unit_of_work(session, request=request):
         contract = ContractService.transition_status(session, contract_id, payload)
-        mark_audit_success(request, contract.id)
+        mark_audit_success(request, contract.id, metadata={"actor_sub": actor_sub})
     return HedgeContractRead.model_validate(contract)
 
 
@@ -161,12 +164,13 @@ def delete_hedge_contract(
     contract_id: UUID,
     request: Request,
     _: None = Depends(audit_event(entity_type="hedge_contract", event_type="deleted")),
-    __: None = Depends(require_role("trader")),
+    __: None = Depends(require_role("risk_manager")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> HedgeContractRead:
     with unit_of_work(session, request=request):
         contract = ContractService.delete(session, contract_id)
-        mark_audit_success(request, contract.id)
+        mark_audit_success(request, contract.id, metadata={"actor_sub": actor_sub})
     return HedgeContractRead.model_validate(contract)
 
 
@@ -178,7 +182,7 @@ def delete_hedge_contract(
 @router.get("/hedge/{contract_id}/linkages", response_model=ContractLinkagesResponse)
 def get_contract_linkages(
     contract_id: UUID,
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> ContractLinkagesResponse:
     """Return deals and their linked orders for a given hedge contract."""

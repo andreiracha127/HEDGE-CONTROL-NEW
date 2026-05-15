@@ -14,7 +14,7 @@ from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
 
 
-VALID_CLAIMS = {"sub": "test-user", "roles": ["trader"]}
+VALID_CLAIMS = {"sub": "test-user", "roles": ["risk_manager"]}
 
 
 @pytest.fixture(autouse=True)

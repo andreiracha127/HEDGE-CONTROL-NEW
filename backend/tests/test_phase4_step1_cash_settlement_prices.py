@@ -1,8 +1,15 @@
 from datetime import datetime
 
+import pytest
+
 from app.core.database import SessionLocal
 from app.models.market_data import CashSettlementPrice
 from app.services import westmetall_cash_settlement
+
+
+@pytest.fixture(autouse=True)
+def _westmetall_service_actor(monkeypatch):
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
 
 
 class _FakeResponse:

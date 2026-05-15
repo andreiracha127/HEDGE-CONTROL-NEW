@@ -21,7 +21,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from starlette.websockets import WebSocketState
 
-from app.core.auth import JWKSCache, get_auth_settings
+from app.core.auth import JWKSCache, extract_actor_roles_from_payload, get_auth_settings
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +108,9 @@ class ConnectionManager:
     def get_user(self, ws: WebSocket) -> dict[str, Any] | None:
         state = self._connections.get(ws)
         return state.user if state else None
+
+    def get_state(self, ws: WebSocket) -> "_ConnState | None":
+        return self._connections.get(ws)
 
     async def subscribe(self, ws: WebSocket, topic: str, topic_id: str) -> None:
         async with self._lock:
@@ -227,6 +230,27 @@ async def websocket_endpoint(ws: WebSocket) -> None:
                 topic = msg.get("topic", "")
                 topic_id = msg.get("id", "")
                 if topic and topic_id:
+                    if topic == "rfq":
+                        try:
+                            actor_roles = extract_actor_roles_from_payload(
+                                manager.get_user(ws) or {}
+                            )
+                        except Exception:
+                            actor_roles = []
+                        if not (
+                            "risk_manager" in actor_roles or "auditor" in actor_roles
+                        ):
+                            await ws.send_text(
+                                json.dumps(
+                                    {
+                                        "type": "subscription_error",
+                                        "reason": "forbidden",
+                                        "topic": topic,
+                                        "id": topic_id,
+                                    }
+                                )
+                            )
+                            continue
                     await manager.subscribe(ws, topic, topic_id)
                     await ws.send_text(
                         json.dumps({"type": "subscription_ack", "topic": topic, "id": topic_id})

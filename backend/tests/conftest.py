@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
 os.environ.setdefault("SCHEDULER_DISABLED", "1")
+os.environ.setdefault("APP_ENV", "test")
 # Default audit signing key for tests — fail-closed audit emission requires
 # AUDIT_SIGNING_KEY to be a non-empty value. Individual tests may override
 # (or unset) this within their own fixtures to exercise the fail-closed path.
@@ -51,7 +52,7 @@ def reset_database() -> None:
 @pytest.fixture()
 def client() -> TestClient:
     app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "test-user",
+        "sub": "anonymous",
         "roles": ["trader", "risk_manager", "auditor"]
     }
     return _DefaultCommodityTestClient(app)

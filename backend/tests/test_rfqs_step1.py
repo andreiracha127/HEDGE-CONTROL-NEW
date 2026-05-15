@@ -494,7 +494,7 @@ class TestRFQArchiveLifecycle:
         archive_events = [e for e in events if e.get("trigger") == "archive"]
         assert len(archive_events) == 1
         evt = archive_events[0]
-        assert evt["user_id"] == "test-user"
+        assert evt["user_id"] == "anonymous"
         assert evt["event_timestamp"] is not None
         # Lifecycle marker is ``deleted_at``; ``RFQState`` itself does not
         # change on archive (the row is already CLOSED).

@@ -181,6 +181,15 @@ _ANONYMOUS_USER: dict[str, Any] = {
     "roles": ["trader", "risk_manager", "auditor"],
 }
 
+_VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+_INTERNAL_SERVICE_IDENTITIES = frozenset(
+    {
+        "service:westmetall_ingest",
+        "service:rfq_outbound",
+        "service:cashflow_pipeline",
+    }
+)
+
 
 def get_current_user(
     request: Request,
@@ -243,23 +252,66 @@ def get_current_actor_sub(
     return actor_sub
 
 
+def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
+    """Validate and normalize human authorization roles from a JWT payload."""
+    raw = user.get("roles") if isinstance(user, dict) else None
+    if not isinstance(raw, list):
+        return []
+    roles = sorted({r for r in raw if isinstance(r, str) and r in _VALID_HUMAN_ROLES})
+    if user.get("sub") == "anonymous" and roles == ["auditor", "risk_manager", "trader"]:
+        # Auth-disabled local/test fallback is dev-only; fail-closed envs never
+        # return this identity from get_current_user().
+        return roles
+    if "auditor" in roles and len(roles) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid role combination: auditor must be exclusive",
+        )
+    return roles
+
+
+def get_current_actor_roles(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> list[str]:
+    """Authoritative role set for authorization decisions."""
+    return extract_actor_roles_from_payload(user)
+
+
 def require_role(role: str):
     return require_any_role(role)
 
 
 def require_any_role(*roles: str):
     def _dependency(user: dict[str, Any] = Depends(get_current_user)) -> None:
-        if not _auth_enabled():
-            return
         if not isinstance(user, dict):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authenticated user payload is invalid",
             )
-        user_roles = set(user.get("roles") or [])
-        if not user_roles.intersection(set(roles)):
+        actor_roles = get_current_actor_roles(user)
+        if not set(actor_roles).intersection(set(roles)):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
             )
 
     return _dependency
+
+
+def require_service_identity(name: str):
+    """Route gate for internal-issued service-account JWTs."""
+    expected = f"service:{name}" if not name.startswith("service:") else name
+    if expected not in _INTERNAL_SERVICE_IDENTITIES:
+        raise ValueError(f"Unknown service identity: {expected}")
+
+    def _gate(actor_sub: str = Depends(get_current_actor_sub)) -> None:
+        if actor_sub == expected:
+            return
+        dev_actor_sub = os.getenv("DEV_SERVICE_ACTOR_SUB", "").strip()
+        if _canonical_env() not in _FAIL_CLOSED_ENVS and dev_actor_sub == expected:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Service identity {expected} required",
+        )
+
+    return _gate

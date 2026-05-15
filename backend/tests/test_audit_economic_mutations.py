@@ -25,6 +25,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
+import pytest
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
@@ -60,6 +61,11 @@ from app.services.audit_trail_service import (
     _reset_signing_key_cache,
     verify_signature,
 )
+
+
+@pytest.fixture(autouse=True)
+def _westmetall_service_actor(monkeypatch):
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
 
 
 # ───────────────────────────────────────────────────────────────────────

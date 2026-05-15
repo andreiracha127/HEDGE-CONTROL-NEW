@@ -14,6 +14,7 @@ from datetime import date
 
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
+from app.services.audit_trail_service import AuditTrailService
 from app.services.cash_settlement_prices import (
     ingest_westmetall_cash_settlement_bulk,
 )
@@ -37,10 +38,24 @@ def run_westmetall_ingestion() -> None:
     logger.info("westmetall_task_start")
     session = SessionLocal()
     try:
-        _, _, ingested, skipped, evidence = ingest_westmetall_cash_settlement_bulk(
-            session
+        inserted_ids, batch_uuid, ingested, skipped, evidence = (
+            ingest_westmetall_cash_settlement_bulk(session)
         )
         if ingested:
+            AuditTrailService.record_worker_event(
+                session,
+                entity_type="cash_settlement_price",
+                entity_id=batch_uuid,
+                event_type="bulk_ingested",
+                actor="service:westmetall_ingest",
+                source="westmetall_task",
+                metadata={
+                    "actor_sub": "service:westmetall_ingest",
+                    "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
+                    "source_url": evidence.source_url,
+                    "html_sha256": evidence.html_sha256,
+                },
+            )
             session.commit()
         logger.info(
             "westmetall_task_success",

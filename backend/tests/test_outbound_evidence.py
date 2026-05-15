@@ -260,7 +260,7 @@ def test_reject_quote_preserves_evidence_via_state_not_delete(client) -> None:
         assert q.state == QuoteState.rejected
         assert q.rejected_at is not None
         assert q.rejected_reason == "manual_reject"
-        assert q.rejected_by == "test-user"
+        assert q.rejected_by == "anonymous"
 
 
 def test_reject_quote_outbound_persisted_with_canonical_id(client) -> None:

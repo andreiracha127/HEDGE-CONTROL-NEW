@@ -23,13 +23,13 @@ from app.schemas.whatsapp import WhatsAppSendResult
 def _as_actor(sub: str) -> None:
     app.dependency_overrides[get_current_user] = lambda: {
         "sub": sub,
-        "roles": ["trader", "risk_manager", "auditor"],
+        "roles": ["trader", "risk_manager"],
     }
 
 
 def _as_user_without_sub() -> None:
     app.dependency_overrides[get_current_user] = lambda: {
-        "roles": ["trader", "risk_manager", "auditor"],
+        "roles": ["trader", "risk_manager"],
     }
 
 

@@ -28,6 +28,7 @@ from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.inbound_webhook_delivery import InboundWebhookDelivery
 from app.models.inbound_webhook_message import InboundWebhookMessage
+from app.services.audit_trail_service import AuditTrailService
 from app.services.whatsapp_providers import get_provider_name
 from app.services.webhook_processor import (
     enqueue_message,
@@ -143,6 +144,16 @@ def _persist_message_for_enqueue(
         try:
             session.commit()
             session.refresh(row)
+            AuditTrailService.record_worker_event(
+                session,
+                entity_type="inbound_webhook_message",
+                entity_id=row.id,
+                event_type="received",
+                actor="service:webhook_inbound",
+                source="webhooks.whatsapp",
+                metadata={"actor_sub": "service:webhook_inbound"},
+            )
+            session.commit()
             return row.id
         except IntegrityError:
             session.rollback()
