@@ -406,6 +406,7 @@ class AuthStore {
 			}
 
 			const body = (await response.json()) as { csrf_token?: unknown };
+			if (this.#generation !== generation) return;
 			const nextCsrf =
 				typeof body.csrf_token === 'string' && body.csrf_token.length > 0
 					? body.csrf_token

@@ -443,6 +443,56 @@ describe('AuthStore', () => {
 			expect(refreshSignal?.aborted).toBe(true);
 		});
 
+		it('does not apply a refresh response when logout happens during body parsing', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const freshToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 7200,
+			});
+			let resolveRefreshBody!: (body: { csrf_token: string }) => void;
+			const refreshBody = new Promise<{ csrf_token: string }>((resolve) => {
+				resolveRefreshBody = resolve;
+			});
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url.endsWith('/auth/session')) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				if (url.endsWith('/auth/refresh')) {
+					return Promise.resolve({ ok: true, json: () => refreshBody } as Response);
+				}
+				if (url.endsWith('/auth/logout')) {
+					return Promise.resolve(new Response(JSON.stringify({ status: 'logged_out' }), { status: 200 }));
+				}
+				return Promise.resolve(new Response(null, { status: 404 }));
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+			await waitForRefreshBody(fetchMock, JSON.stringify({ session_token: freshToken }));
+
+			authStore.logout();
+			resolveRefreshBody({ csrf_token: 'csrf-2' });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(authStore.isAuthenticated).toBe(false);
+			expect(authStore.getCsrfToken()).toBe(null);
+		});
+
 		it('aborts an in-flight backend session establishment before logout can be undone', async () => {
 			const token = fakeJwt({
 				sub: 'user-1',
