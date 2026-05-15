@@ -14,6 +14,8 @@ const SESSION_TOKEN_KEY = 'hedge-control.auth.token';
 const SESSION_CSRF_KEY = 'hedge-control.auth.csrf';
 const CSRF_COOKIE_NAME = 'csrf_token';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const SESSION_COOKIE_MAX_AGE_MS = 300 * 1000;
+const SESSION_COOKIE_REFRESH_LEAD_MS = 60 * 1000;
 
 function decodeJwtPayload(token: string): JwtClaims {
 	const parts = token.split('.');
@@ -28,6 +30,7 @@ class AuthStore {
 	#csrfToken = $state<string | null>(null);
 	#expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
+	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	#redirecting = false;
 
 	readonly isAuthenticated = $derived(this.#token !== null);
@@ -153,11 +156,23 @@ class AuthStore {
 		}, msUntilExpiry);
 	}
 
+	#setupSessionRefresh(token: string, claims: JwtClaims, csrfToken: string | null) {
+		if (!csrfToken || typeof fetch === 'undefined') return;
+		const refreshDelay = SESSION_COOKIE_MAX_AGE_MS - SESSION_COOKIE_REFRESH_LEAD_MS;
+		if (claims.exp && claims.exp * 1000 - Date.now() <= refreshDelay) return;
+
+		this.#refreshTimer = setTimeout(() => {
+			void this.#refreshBackendSession(token);
+		}, refreshDelay);
+	}
+
 	#clearTimers() {
 		if (this.#expiryTimer) clearTimeout(this.#expiryTimer);
 		if (this.#expiryWarningTimer) clearTimeout(this.#expiryWarningTimer);
+		if (this.#refreshTimer) clearTimeout(this.#refreshTimer);
 		this.#expiryTimer = null;
 		this.#expiryWarningTimer = null;
+		this.#refreshTimer = null;
 	}
 
 	#restoreSession() {
@@ -178,6 +193,7 @@ class AuthStore {
 			this.showExpiryWarning = false;
 			this.#redirecting = false;
 			this.#setupExpiryTimers(claims);
+			this.#setupSessionRefresh(token, claims, this.#csrfToken);
 		} catch {
 			this.#clearStoredToken();
 		}
@@ -191,6 +207,7 @@ class AuthStore {
 		this.#redirecting = false;
 		this.#persistToken(token);
 		this.#setupExpiryTimers(claims);
+		this.#setupSessionRefresh(token, claims, csrfToken);
 	}
 
 	#persistToken(token: string) {
@@ -214,6 +231,46 @@ class AuthStore {
 			});
 		} catch {
 			// Local logout must still clear client state if the network is unavailable.
+		}
+	}
+
+	async #refreshBackendSession(token: string) {
+		if (typeof fetch === 'undefined' || this.#token !== token) return;
+		const csrfToken = this.getCsrfToken();
+		if (!csrfToken) {
+			this.logout();
+			return;
+		}
+
+		try {
+			const response = await fetch(`${API_BASE}/auth/refresh`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-CSRF-Token': csrfToken,
+				},
+				body: JSON.stringify({ session_token: token }),
+			});
+			if (this.#token !== token) return;
+			if (!response.ok) {
+				this.logout();
+				return;
+			}
+
+			const body = (await response.json()) as { csrf_token?: unknown };
+			const nextCsrf =
+				typeof body.csrf_token === 'string' && body.csrf_token.length > 0
+					? body.csrf_token
+					: this.#readCookie(CSRF_COOKIE_NAME);
+			if (!nextCsrf) {
+				this.logout();
+				return;
+			}
+
+			this.#applySession(token, decodeJwtPayload(token), nextCsrf);
+		} catch {
+			this.logout();
 		}
 	}
 

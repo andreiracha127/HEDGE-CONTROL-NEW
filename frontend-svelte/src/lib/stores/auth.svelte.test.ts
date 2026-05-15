@@ -107,6 +107,48 @@ describe('AuthStore', () => {
 			expect(authStore.userName).toBe('Test User');
 			expect(authStore.getCsrfToken()).toBe('csrf-1');
 		});
+
+		it('refreshes the backend cookie session before the short cookie expires', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-2' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-CSRF-Token': 'csrf-1',
+					},
+					body: JSON.stringify({ session_token: token }),
+				}),
+			);
+			expect(authStore.isAuthenticated).toBe(true);
+			expect(authStore.getCsrfToken()).toBe('csrf-2');
+		});
 	});
 
 	describe('logout', () => {
