@@ -4,6 +4,7 @@ export type UserRole = 'trader' | 'risk_manager' | 'auditor';
 
 interface JwtClaims {
 	sub: string;
+	// Present on direct JWT/Clerk session claims; /auth/me restore only requires actor_sub.
 	name?: string;
 	roles?: UserRole[];
 	exp?: number;
@@ -266,7 +267,8 @@ class AuthStore {
 				return;
 			}
 
-			// Backend auth validates roles first; this is defense-in-depth for malformed responses.
+			// Backend auth validates role combinations first, including auditor separation-of-duties.
+			// This frontend filter is only defense-in-depth for malformed role strings.
 			const roles = Array.isArray(body.roles)
 				? body.roles.filter((role): role is UserRole =>
 						['trader', 'risk_manager', 'auditor'].includes(String(role)),
