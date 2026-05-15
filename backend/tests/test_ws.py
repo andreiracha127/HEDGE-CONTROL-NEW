@@ -60,6 +60,17 @@ def test_auth_failure_closes_1008(client):
         assert exc_info.value.code == 1008
 
 
+def test_auth_rejects_mixed_auditor_roles(client):
+    with _patch_validate_token(
+        {"sub": "bad-actor", "roles": ["auditor", "risk_manager"]}
+    ):
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect("/ws") as ws:
+                ws.send_json({"action": "authenticate", "token": "bad-token"})
+                ws.receive_json()
+        assert exc_info.value.code == 1008
+
+
 # ─── 3. Non-auth first message → close 1008 ───────────────────────
 
 def test_non_auth_first_message_closes_1008(client):

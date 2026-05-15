@@ -94,6 +94,10 @@ class ConnectionManager:
         claims = _validate_token(token)
         if claims is None:
             return False
+        try:
+            extract_actor_roles_from_payload(claims)
+        except Exception:
+            return False
         async with self._lock:
             state = self._connections.get(ws)
             if state:
