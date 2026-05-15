@@ -190,6 +190,15 @@ def test_get_current_actor_roles_accepts_trader_plus_risk_manager() -> None:
     ]
 
 
+def test_get_current_actor_roles_rejects_service_subject_human_roles() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_actor_roles(
+            _as_roles("risk_manager", sub="service:westmetall_ingest")
+        )
+    assert exc_info.value.status_code == 401
+    assert "Service identities cannot carry human roles" in exc_info.value.detail
+
+
 def test_require_service_identity_rejects_unknown_name() -> None:
     with pytest.raises(ValueError):
         require_service_identity("unknown_service")
@@ -301,7 +310,22 @@ def test_westmetall_service_identity_rejects_mixed_auditor_roles(
         json={"settlement_date": "2026-01-30"},
     )
     assert response.status_code == 401
-    assert "auditor must be exclusive" in response.json()["detail"]
+    assert "Service identities cannot carry human roles" in response.json()["detail"]
+
+
+def test_service_subject_human_role_rejected_from_human_gate(client, auth_as) -> None:
+    auth_as("risk_manager", sub="service:westmetall_ingest")
+    response = client.post(
+        "/scenario/what-if/run",
+        json={
+            "as_of_date": "2026-05-11",
+            "period_start": "2026-05-01",
+            "period_end": "2026-05-31",
+            "deltas": [],
+        },
+    )
+    assert response.status_code == 401
+    assert "Service identities cannot carry human roles" in response.json()["detail"]
 
 
 def test_westmetall_dev_service_override_rejects_human_actor(
