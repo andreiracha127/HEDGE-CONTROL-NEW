@@ -28,7 +28,7 @@ async def csrf_middleware(request: Request, call_next):
     if request.method not in ("POST", "PATCH", "PUT", "DELETE"):
         return await call_next(request)
     path = _normalized_path(request.url.path)
-    if path.startswith(("/auth/session", "/webhooks/", "/healthz")):
+    if path.startswith(("/auth/session", "/webhooks/", "/healthz", "/csp/report")):
         return await call_next(request)
     if _has_bearer_authorization(request) and SESSION_COOKIE_NAME not in request.cookies:
         return await call_next(request)

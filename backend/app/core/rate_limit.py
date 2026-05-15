@@ -5,6 +5,7 @@ Limits are configurable via environment variables:
   - RATE_LIMIT_SCRAPING:  default "5/minute"   (Westmetall ingest)
   - RATE_LIMIT_MUTATION:  default "60/minute"   (POST / PUT / PATCH / DELETE)
   - RATE_LIMIT_READ:      default "120/minute"  (GET)
+  - RATE_LIMIT_CSP_REPORT: default "50/minute"  (CSP violation reports from browsers)
 
 Each value follows the slowapi/limits format: "<count>/<period>"
 Examples: "10/minute", "100/hour", "5/second"
@@ -34,6 +35,7 @@ from slowapi.util import get_remote_address
 RATE_LIMIT_SCRAPING = os.getenv("RATE_LIMIT_SCRAPING", "5/minute")
 RATE_LIMIT_MUTATION = os.getenv("RATE_LIMIT_MUTATION", "60/minute")
 RATE_LIMIT_READ = os.getenv("RATE_LIMIT_READ", "120/minute")
+RATE_LIMIT_CSP_REPORT = os.getenv("RATE_LIMIT_CSP_REPORT", "50/minute")
 
 limiter = Limiter(
     key_func=get_remote_address,
