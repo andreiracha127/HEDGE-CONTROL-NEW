@@ -135,7 +135,7 @@ class AuthStore {
 		if (!claims.exp) return;
 
 		const now = Date.now();
-		const expiresAt = claims.exp * 1000;
+		const expiresAt = Math.floor(claims.exp * 1000);
 		const msUntilExpiry = expiresAt - now;
 
 		if (msUntilExpiry <= 0) {
@@ -162,7 +162,7 @@ class AuthStore {
 	#setupSessionRefresh(claims: JwtClaims, csrfToken: string | null) {
 		if (!csrfToken || typeof fetch === 'undefined') return;
 		const refreshDelay = SESSION_COOKIE_MAX_AGE_MS - SESSION_COOKIE_REFRESH_LEAD_MS;
-		if (claims.exp && claims.exp * 1000 - Date.now() <= refreshDelay) return;
+		if (claims.exp && Math.floor(claims.exp * 1000) - Date.now() <= refreshDelay) return;
 
 		this.#refreshTimer = setTimeout(() => {
 			void this.#refreshBackendSession();
@@ -221,6 +221,11 @@ class AuthStore {
 
 	async #restoreBackendIdentity() {
 		if (typeof fetch === 'undefined') return;
+		const csrf = this.getCsrfToken();
+		if (!csrf) {
+			this.#clearStoredToken();
+			return;
+		}
 		try {
 			const response = await fetch(`${API_BASE}/auth/me`, {
 				credentials: 'include',
@@ -242,7 +247,7 @@ class AuthStore {
 						['trader', 'risk_manager', 'auditor'].includes(String(role)),
 					)
 				: [];
-			this.#applySession(null, { sub: body.actor_sub, roles }, this.#csrfToken);
+			this.#applySession(null, { sub: body.actor_sub, roles }, csrf);
 		} catch {
 			this.#clearStoredToken();
 		}
