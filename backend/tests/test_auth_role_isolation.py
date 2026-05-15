@@ -34,7 +34,7 @@ def test_non_trader_cannot_create_order(role: str, path: str) -> None:
     assert resp.status_code == 403
 
 
-# -- RFQ creation: require trader -------------------------------------------
+# -- RFQ creation: require risk_manager --------------------------------------
 
 
 @pytest.mark.parametrize("role", ["auditor", "trader"])
