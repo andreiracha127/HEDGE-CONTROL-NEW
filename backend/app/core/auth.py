@@ -316,11 +316,16 @@ def require_service_identity(name: str):
     if expected not in _INTERNAL_SERVICE_IDENTITIES:
         raise ValueError(f"Unknown service identity: {expected}")
 
-    def _gate(actor_sub: str = Depends(get_current_actor_sub)) -> None:
+    def _gate(user: dict[str, Any] = Depends(get_current_user)) -> None:
+        actor_sub = get_current_actor_sub(user)
         if actor_sub == expected:
             return
         dev_actor_sub = os.getenv("DEV_SERVICE_ACTOR_SUB", "").strip()
-        if _canonical_env() not in _FAIL_CLOSED_ENVS and dev_actor_sub == expected:
+        if (
+            _canonical_env() not in _FAIL_CLOSED_ENVS
+            and dev_actor_sub == expected
+            and user is get_auth_disabled_fallback_user()
+        ):
             return
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

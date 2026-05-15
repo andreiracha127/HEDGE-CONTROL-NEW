@@ -291,6 +291,38 @@ def test_westmetall_ingest_service_identity_accepts(client, auth_as, monkeypatch
     assert response.status_code == 200
 
 
+def test_westmetall_dev_service_override_rejects_human_actor(
+    client, auth_as, monkeypatch
+) -> None:
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
+    auth_as("risk_manager", sub="human-user")
+    response = client.post(
+        "/market-data/westmetall/aluminum/cash-settlement/ingest",
+        json={"settlement_date": "2026-01-30"},
+    )
+    assert response.status_code == 403
+
+
+def test_westmetall_dev_service_override_accepts_auth_disabled_fallback(
+    client, monkeypatch
+) -> None:
+    evidence = WestmetallFetchEvidence(
+        source_url="https://example.test",
+        html_sha256="abc123",
+        fetched_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
+    monkeypatch.setattr(
+        "app.api.routes.westmetall.ingest_westmetall_cash_settlement_daily_for_date",
+        lambda session, settlement_date: (None, 0, 1, evidence),
+    )
+    response = client.post(
+        "/market-data/westmetall/aluminum/cash-settlement/ingest",
+        json={"settlement_date": "2026-01-30"},
+    )
+    assert response.status_code == 200
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json_body"),
     [
