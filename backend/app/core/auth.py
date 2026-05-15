@@ -86,8 +86,10 @@ def validate_auth_config() -> None:
         and _auth_explicitly_disabled()
     ):
         raise RuntimeError(
-            f"AUTH_DISABLED is not honored when APP_ENV={env!r}. "
-            "Configure JWT_ISSUER/JWT_AUDIENCE/JWKS_URL or change APP_ENV."
+            f"Cannot boot in fail-closed environment (APP_ENV={env!r}) when "
+            "AUTH_DISABLED is explicitly set and authentication is not configured. "
+            "Production and staging require authentication. Configure "
+            "CLERK_FAPI_HOST or JWT_ISSUER/JWT_AUDIENCE/JWKS_URL, or change APP_ENV."
         )
 
     cluster3_missing: list[str] = []
@@ -127,8 +129,10 @@ def validate_auth_config() -> None:
     if env in _FAIL_CLOSED_ENVS:
         if _auth_explicitly_disabled():
             raise RuntimeError(
-                f"AUTH_DISABLED is not honored when APP_ENV={env!r}. "
-                "Configure JWT_ISSUER/JWT_AUDIENCE/JWKS_URL or change APP_ENV."
+                f"Cannot boot in fail-closed environment (APP_ENV={env!r}) when "
+                "AUTH_DISABLED is explicitly set. Production and staging require "
+                "authentication. Configure CLERK_FAPI_HOST or "
+                "JWT_ISSUER/JWT_AUDIENCE/JWKS_URL, or change APP_ENV."
             )
         raise RuntimeError(
             f"JWT_ISSUER is empty but APP_ENV={env!r}. "
