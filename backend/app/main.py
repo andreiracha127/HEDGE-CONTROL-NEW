@@ -10,7 +10,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi.errors import RateLimitExceeded
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.core.auth import get_auth_settings, validate_auth_config
+from app.core.auth import get_auth_settings, is_auth_enabled, validate_auth_config
 from app.core.config import get_settings
 from app.core.csrf import csrf_middleware
 from app.core.database import engine
@@ -199,7 +199,7 @@ def readiness() -> dict[str, str]:
         logger.error("readiness_db_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="db_unavailable") from exc
 
-    if _cfg.auth_enabled:
+    if is_auth_enabled():
         try:
             settings = get_auth_settings()
             response = httpx.get(settings.jwks_url, timeout=5.0)

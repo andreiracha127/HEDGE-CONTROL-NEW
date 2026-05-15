@@ -50,6 +50,10 @@ def _auth_enabled() -> bool:
     return bool(os.getenv("CLERK_FAPI_HOST") or get_settings().jwt_issuer)
 
 
+def is_auth_enabled() -> bool:
+    return _auth_enabled()
+
+
 def _auth_explicitly_disabled() -> bool:
     return os.getenv("AUTH_DISABLED", "").lower() in ("1", "true", "yes")
 
