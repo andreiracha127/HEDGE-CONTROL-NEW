@@ -26,7 +26,7 @@ os.environ.setdefault(
 os.environ.setdefault("RATE_LIMIT_MUTATION", "5/minute")
 os.environ.setdefault("RATE_LIMIT_SCRAPING", "5/minute")
 
-from app.core.auth import get_current_user
+from app.core.auth import _ANONYMOUS_USER, get_current_user
 from app.core.database import engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.main import app
@@ -51,10 +51,7 @@ def reset_database() -> None:
 
 @pytest.fixture()
 def client() -> TestClient:
-    app.dependency_overrides[get_current_user] = lambda: {
-        "sub": "anonymous",
-        "roles": ["trader", "risk_manager", "auditor"]
-    }
+    app.dependency_overrides[get_current_user] = lambda: _ANONYMOUS_USER
     return _DefaultCommodityTestClient(app)
 
 

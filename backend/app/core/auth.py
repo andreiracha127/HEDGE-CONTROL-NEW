@@ -175,10 +175,13 @@ def _select_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
 # list intentionally includes ``auditor`` to keep local dev workflows
 # usable; the production/staging gate below prevents this identity from
 # ever being returned in a fail-closed environment.
+_AUTH_DISABLED_FALLBACK_MARKER = object()
+
 _ANONYMOUS_USER: dict[str, Any] = {
     "sub": "anonymous",
     "name": "Anonymous (auth disabled)",
     "roles": ["trader", "risk_manager", "auditor"],
+    "_auth_disabled_fallback": _AUTH_DISABLED_FALLBACK_MARKER,
 }
 
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
@@ -258,7 +261,11 @@ def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
     roles = sorted({r for r in raw if isinstance(r, str) and r in _VALID_HUMAN_ROLES})
-    if user.get("sub") == "anonymous" and roles == ["auditor", "risk_manager", "trader"]:
+    if (
+        user.get("sub") == "anonymous"
+        and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
+        and roles == ["auditor", "risk_manager", "trader"]
+    ):
         # Auth-disabled local/test fallback is dev-only; fail-closed envs never
         # return this identity from get_current_user().
         return roles

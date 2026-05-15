@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.auth import (
+    _ANONYMOUS_USER,
     get_current_actor_roles,
     get_current_user,
     require_service_identity,
@@ -161,9 +162,19 @@ def test_get_current_actor_roles_rejects_auditor_mixed_roles(roles) -> None:
 
 
 def test_get_current_actor_roles_allows_dev_anonymous_broad_roles() -> None:
-    assert get_current_actor_roles(
-        _as_roles("trader", "risk_manager", "auditor", sub="anonymous")
-    ) == ["auditor", "risk_manager", "trader"]
+    assert get_current_actor_roles(_ANONYMOUS_USER) == [
+        "auditor",
+        "risk_manager",
+        "trader",
+    ]
+
+
+def test_get_current_actor_roles_rejects_signed_anonymous_broad_roles() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        get_current_actor_roles(
+            _as_roles("trader", "risk_manager", "auditor", sub="anonymous")
+        )
+    assert exc_info.value.status_code == 401
 
 
 def test_get_current_actor_roles_accepts_trader_plus_risk_manager() -> None:
