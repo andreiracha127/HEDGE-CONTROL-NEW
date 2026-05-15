@@ -176,6 +176,36 @@ def test_ws_validate_token_disables_audience_check_when_clerk_audience_empty():
     assert claims["sub"] == "user_test"
 
 
+def test_ws_rejects_clerk_token_with_service_role_claim(client):
+    private_pem, public_pem = generate_rsa_keypair()
+    token = make_clerk_token(
+        private_pem,
+        roles=["risk_manager", "service:westmetall_ingest"],
+    )
+    original_jwks = ws_module._jwks_cache._jwks
+    original_expires = ws_module._jwks_cache._expires_at
+    ws_module._jwks_cache._jwks = {"keys": [rsa_jwk(public_pem)]}
+    ws_module._jwks_cache._expires_at = time.time() + 3600
+    settings = AuthSettings(
+        issuer=CLERK_ISSUER,
+        audience="hedge-control-tests",
+        jwks_url="https://clerk.example.test/.well-known/jwks.json",
+    )
+    try:
+        with patch("app.api.routes.ws.get_auth_settings", return_value=settings):
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect("/ws") as ws:
+                    ws.send_json({"action": "authenticate", "token": token})
+                    ws.receive_json()
+    finally:
+        ws_module._jwks_cache._jwks = original_jwks
+        ws_module._jwks_cache._expires_at = original_expires
+
+    assert exc_info.value.code == 1008
+    assert manager.active_count == 0
+    assert all(not state.subscriptions for state in manager._connections.values())
+
+
 # ─── 5. Subscribe with missing fields → error ─────────────────────
 
 def test_subscribe_missing_topic(client):

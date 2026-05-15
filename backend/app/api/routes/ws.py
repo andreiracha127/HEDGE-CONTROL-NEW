@@ -17,7 +17,7 @@ import time
 from typing import Any
 from uuid import UUID
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from starlette.websockets import WebSocketState
 
@@ -27,6 +27,7 @@ from app.core.auth import (
     extract_actor_roles_from_payload,
     get_auth_disabled_fallback_user,
     get_auth_settings,
+    _validate_human_roles_at_jwt_time,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,8 +74,11 @@ def _validate_token(token: str) -> dict[str, Any] | None:
         else:
             decode_kwargs["options"] = {"verify_aud": False}
         payload = jwt.decode(token, **decode_kwargs)
+        _validate_human_roles_at_jwt_time(payload)
         return payload
-    except (JWTError, Exception):
+    except (JWTError, HTTPException):
+        return None
+    except Exception:
         return None
 
 
