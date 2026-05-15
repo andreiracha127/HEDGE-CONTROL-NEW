@@ -78,6 +78,40 @@ describe('AuthStore', () => {
 			expect(mod.authStore.getAuthHeader()).toBe(`Bearer ${token}`);
 		});
 
+		it('re-establishes backend cookies immediately when restoring a cookie session', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+			sessionStorage.setItem('hedge-control.auth.token', token);
+			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
+			vi.stubGlobal('fetch', fetchMock);
+
+			vi.resetModules();
+			const mod = await import('./auth.svelte');
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/session',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					body: JSON.stringify({ session_token: token }),
+				}),
+			);
+			expect(mod.authStore.isAuthenticated).toBe(true);
+			expect(mod.authStore.getCsrfToken()).toBe('csrf-new');
+		});
+
 		it('exchanges pasted JWT for httpOnly cookies and stores CSRF token', async () => {
 			const token = fakeJwt({
 				sub: 'user-1',

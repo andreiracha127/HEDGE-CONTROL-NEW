@@ -193,7 +193,11 @@ class AuthStore {
 			this.showExpiryWarning = false;
 			this.#redirecting = false;
 			this.#setupExpiryTimers(claims);
-			this.#setupSessionRefresh(token, claims, this.#csrfToken);
+			if (this.#csrfToken) {
+				void this.#restoreBackendSession(token);
+			} else {
+				this.#setupSessionRefresh(token, claims, this.#csrfToken);
+			}
 		} catch {
 			this.#clearStoredToken();
 		}
@@ -231,6 +235,37 @@ class AuthStore {
 			});
 		} catch {
 			// Local logout must still clear client state if the network is unavailable.
+		}
+	}
+
+	async #restoreBackendSession(token: string) {
+		if (typeof fetch === 'undefined' || this.#token !== token) return;
+		try {
+			const response = await fetch(`${API_BASE}/auth/session`, {
+				method: 'POST',
+				credentials: 'include',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ session_token: token }),
+			});
+			if (this.#token !== token) return;
+			if (!response.ok) {
+				this.logout();
+				return;
+			}
+
+			const body = (await response.json()) as { csrf_token?: unknown };
+			const csrf =
+				typeof body.csrf_token === 'string' && body.csrf_token.length > 0
+					? body.csrf_token
+					: this.#readCookie(CSRF_COOKIE_NAME);
+			if (!csrf) {
+				this.logout();
+				return;
+			}
+
+			this.#applySession(token, decodeJwtPayload(token), csrf);
+		} catch {
+			this.logout();
 		}
 	}
 
