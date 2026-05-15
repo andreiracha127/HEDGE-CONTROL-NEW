@@ -44,8 +44,9 @@ function clerkFrontendApiFromPublishableKey(publishableKey: string): string {
 function loadClerkUi(): Promise<void> {
 	if (typeof window === 'undefined' || typeof document === 'undefined') return Promise.resolve();
 	if (window.__internal_ClerkUICtor) return Promise.resolve();
+	if (uiLoadPromise) return uiLoadPromise;
 
-	uiLoadPromise ??= new Promise((resolve, reject) => {
+	const promise = new Promise<void>((resolve, reject) => {
 		const existingScript = document.getElementById('clerk-ui-bundle') as HTMLScriptElement | null;
 		const script = existingScript ?? document.createElement('script');
 		const publishableKey = requirePublishableKey();
@@ -59,14 +60,22 @@ function loadClerkUi(): Promise<void> {
 				resolve();
 				return;
 			}
+			script.remove();
 			reject(new Error('Clerk UI bundle loaded without exposing __internal_ClerkUICtor'));
 		};
-		script.onerror = () => reject(new Error('Failed to load @clerk/ui bundle'));
+		script.onerror = () => {
+			script.remove();
+			reject(new Error('Failed to load @clerk/ui bundle'));
+		};
 
 		if (!existingScript) document.head.appendChild(script);
+	}).catch((error: unknown) => {
+		uiLoadPromise = null;
+		throw error;
 	});
+	uiLoadPromise = promise;
 
-	return uiLoadPromise;
+	return promise;
 }
 
 function loadClerkJs(): Promise<ClerkInstance> {
@@ -74,8 +83,9 @@ function loadClerkJs(): Promise<ClerkInstance> {
 		return Promise.reject(new Error('ClerkJS can only be loaded in a browser'));
 	}
 	if (window.Clerk) return Promise.resolve(window.Clerk);
+	if (sdkLoadPromise) return sdkLoadPromise;
 
-	sdkLoadPromise ??= new Promise((resolve, reject) => {
+	const promise = new Promise<ClerkInstance>((resolve, reject) => {
 		const existingScript = document.getElementById('clerk-js-bundle') as HTMLScriptElement | null;
 		const script = existingScript ?? document.createElement('script');
 		const publishableKey = requirePublishableKey();
@@ -91,14 +101,22 @@ function loadClerkJs(): Promise<ClerkInstance> {
 				resolve(window.Clerk);
 				return;
 			}
+			script.remove();
 			reject(new Error('ClerkJS bundle loaded without exposing window.Clerk'));
 		};
-		script.onerror = () => reject(new Error('Failed to load @clerk/clerk-js bundle'));
+		script.onerror = () => {
+			script.remove();
+			reject(new Error('Failed to load @clerk/clerk-js bundle'));
+		};
 
 		if (!existingScript) document.head.appendChild(script);
+	}).catch((error: unknown) => {
+		sdkLoadPromise = null;
+		throw error;
 	});
+	sdkLoadPromise = promise;
 
-	return sdkLoadPromise;
+	return promise;
 }
 
 export async function initClerk(): Promise<void> {
@@ -110,7 +128,10 @@ export async function initClerk(): Promise<void> {
 			signUpUrl: '/sign-up',
 			ui: { ClerkUI: window.__internal_ClerkUICtor },
 		});
-	})();
+	})().catch((error: unknown) => {
+		loadPromise = null;
+		throw error;
+	});
 	await loadPromise;
 	authStore.setClerkSessionProvider(async () => {
 		return (await clerk.session?.getToken({ skipCache: true })) ?? null;

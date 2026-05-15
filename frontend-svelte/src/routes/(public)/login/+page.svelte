@@ -30,6 +30,7 @@
 
 	onMount(() => {
 		let active = true;
+		let signInMounted = false;
 		let unsubscribe: (() => void) | undefined;
 
 		void (async () => {
@@ -46,6 +47,7 @@
 					signUpFallbackRedirectUrl: '/',
 					signUpUrl: '/sign-up',
 				});
+				signInMounted = true;
 				unsubscribe = clerk.addListener(({ session }) => {
 					void establishBackendSession(session);
 				});
@@ -58,7 +60,7 @@
 		return () => {
 			active = false;
 			unsubscribe?.();
-			if (mountEl) clerk.unmountSignIn(mountEl);
+			if (signInMounted && mountEl) clerk.unmountSignIn(mountEl);
 		};
 	});
 </script>

@@ -282,6 +282,50 @@ describe('AuthStore', () => {
 			expect(authStore.getCsrfToken()).toBe('csrf-2');
 		});
 
+		it('refreshes the backend cookie before the short Clerk token in that cookie expires', async () => {
+			const shortClerkToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 60,
+			});
+			const freshClerkToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-2' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			vi.stubGlobal('fetch', fetchMock);
+
+			authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshClerkToken));
+			await authStore.establishSession(shortClerkToken);
+			await vi.advanceTimersByTimeAsync(45 * 1000);
+
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					body: JSON.stringify({ session_token: freshClerkToken }),
+				}),
+			);
+			expect(authStore.isAuthenticated).toBe(true);
+			expect(authStore.getCsrfToken()).toBe('csrf-2');
+		});
+
 		it('refreshes restored cookie sessions with the Clerk provider token instead of early-returning', async () => {
 			const freshToken = fakeJwt({
 				sub: 'user-1',

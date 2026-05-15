@@ -16,6 +16,7 @@ const CSRF_COOKIE_NAME = 'csrf_token';
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const SESSION_COOKIE_MAX_AGE_MS = 300 * 1000;
 const SESSION_COOKIE_REFRESH_LEAD_MS = 60 * 1000;
+const CLERK_TOKEN_REFRESH_LEAD_MS = 15 * 1000;
 
 function backendSessionExpiry(): number {
 	return Math.floor((Date.now() + SESSION_COOKIE_MAX_AGE_MS) / 1000);
@@ -36,11 +37,16 @@ function claimsForBackendSession(claims: JwtClaims): JwtClaims {
 	return { ...claims, exp: backendSessionExpiry() };
 }
 
+function jwtExpiryMs(claims: JwtClaims): number | null {
+	return claims.exp ? Math.floor(claims.exp * 1000) : null;
+}
+
 class AuthStore {
 	#token = $state<string | null>(null);
 	#claims = $state<JwtClaims | null>(null);
 	#csrfToken = $state<string | null>(null);
 	#clerkSessionProvider: (() => Promise<string | null>) | null = null;
+	#backendCookieTokenExpiresAtMs: number | null = null;
 	#expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -73,7 +79,7 @@ class AuthStore {
 		try {
 			const claims = decodeJwtPayload(token);
 			if (hasInvalidRoleCombination(claims.roles)) throw new Error('Invalid role combination');
-			this.#applySession(null, claims, this.#csrfToken);
+			this.#applySession(null, claims, this.#csrfToken, null);
 		} catch {
 			this.logout();
 			throw new Error('Invalid token');
@@ -110,7 +116,7 @@ class AuthStore {
 			throw new Error('Invalid token');
 		}
 
-		this.#applySession(null, claimsForBackendSession(claims), csrf);
+		this.#applySession(null, claimsForBackendSession(claims), csrf, jwtExpiryMs(claims));
 	}
 
 	logout() {
@@ -122,6 +128,7 @@ class AuthStore {
 		this.#token = null;
 		this.#claims = null;
 		this.#csrfToken = null;
+		this.#backendCookieTokenExpiresAtMs = null;
 		this.showExpiryWarning = false;
 
 		if (!this.#redirecting) {
@@ -193,8 +200,15 @@ class AuthStore {
 
 	#setupSessionRefresh(claims: JwtClaims, csrfToken: string | null) {
 		if (!csrfToken || typeof fetch === 'undefined') return;
-		const refreshDelay = SESSION_COOKIE_MAX_AGE_MS - SESSION_COOKIE_REFRESH_LEAD_MS;
-		if (claims.exp && Math.floor(claims.exp * 1000) - Date.now() <= refreshDelay) return;
+		const now = Date.now();
+		const backendRefreshAt = now + SESSION_COOKIE_MAX_AGE_MS - SESSION_COOKIE_REFRESH_LEAD_MS;
+		const clerkTokenRefreshAt =
+			this.#backendCookieTokenExpiresAtMs && this.#clerkSessionProvider
+				? this.#backendCookieTokenExpiresAtMs - CLERK_TOKEN_REFRESH_LEAD_MS
+				: null;
+		const refreshAt = Math.min(backendRefreshAt, clerkTokenRefreshAt ?? backendRefreshAt);
+		const refreshDelay = Math.max(0, refreshAt - now);
+		if (claims.exp && Math.floor(claims.exp * 1000) <= now) return;
 
 		this.#refreshTimer = setTimeout(() => {
 			void this.#refreshBackendSession();
@@ -218,11 +232,17 @@ class AuthStore {
 		void this.#restoreBackendIdentity();
 	}
 
-	#applySession(token: string | null, claims: JwtClaims, csrfToken: string | null) {
+	#applySession(
+		token: string | null,
+		claims: JwtClaims,
+		csrfToken: string | null,
+		backendCookieTokenExpiresAtMs: number | null,
+	) {
 		this.#generation++;
 		this.#token = token;
 		this.#claims = claims;
 		this.#csrfToken = csrfToken;
+		this.#backendCookieTokenExpiresAtMs = backendCookieTokenExpiresAtMs;
 		this.showExpiryWarning = false;
 		this.#redirecting = false;
 		this.#persistSessionState();
@@ -293,7 +313,7 @@ class AuthStore {
 				this.#isRestoring = false;
 				return;
 			}
-			this.#applySession(null, { sub: body.actor_sub, roles, exp: backendSessionExpiry() }, csrf);
+			this.#applySession(null, { sub: body.actor_sub, roles, exp: backendSessionExpiry() }, csrf, null);
 			await this.#refreshBackendSession();
 		} catch {
 			this.#clearStoredToken();
@@ -338,10 +358,12 @@ class AuthStore {
 				return;
 			}
 
+			const nextTokenClaims = token ? decodeJwtPayload(token) : null;
 			this.#applySession(
 				null,
-				claimsForBackendSession(token ? decodeJwtPayload(token) : this.#claims),
+				claimsForBackendSession(nextTokenClaims ?? this.#claims),
 				nextCsrf,
+				nextTokenClaims ? jwtExpiryMs(nextTokenClaims) : this.#backendCookieTokenExpiresAtMs,
 			);
 		} catch {
 			this.logout();
