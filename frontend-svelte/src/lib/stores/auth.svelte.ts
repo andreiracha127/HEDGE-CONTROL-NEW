@@ -121,7 +121,7 @@ class AuthStore {
 	}
 
 	getCsrfToken(): string | null {
-		return this.#csrfToken ?? this.#readCookie(CSRF_COOKIE_NAME);
+		return this.#readCookie(CSRF_COOKIE_NAME) ?? this.#csrfToken;
 	}
 
 	hasRole(role: UserRole): boolean {
@@ -257,6 +257,7 @@ class AuthStore {
 					)
 				: [];
 			this.#applySession(null, { sub: body.actor_sub, roles }, csrf);
+			await this.#refreshBackendSession();
 		} catch {
 			this.#clearStoredToken();
 		} finally {

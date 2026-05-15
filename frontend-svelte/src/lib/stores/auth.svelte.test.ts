@@ -26,6 +26,7 @@ describe('AuthStore', () => {
 
 	afterEach(() => {
 		sessionStorage.clear();
+		document.cookie = 'csrf_token=; Max-Age=0; path=/';
 		vi.useRealTimers();
 		vi.unstubAllGlobals();
 	});
@@ -92,8 +93,7 @@ describe('AuthStore', () => {
 
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
-			await Promise.resolve();
-			await Promise.resolve();
+			for (let i = 0; i < 4; i++) await Promise.resolve();
 
 			expect(fetchMock).toHaveBeenCalledWith(
 				'http://localhost:8000/auth/me',
@@ -106,10 +106,7 @@ describe('AuthStore', () => {
 			expect(mod.authStore.userSub).toBe('user-1');
 			expect(mod.authStore.userRoles).toEqual(['trader']);
 			expect(mod.authStore.getAuthHeader()).toBeNull();
-			expect(mod.authStore.getCsrfToken()).toBe('csrf-old');
-
-			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
-			// Restored sessions have no plaintext JWT in memory; refresh uses the httpOnly cookie.
+			// Restored sessions have no plaintext JWT in memory; immediate refresh uses the httpOnly cookie.
 			expect(fetchMock).toHaveBeenLastCalledWith(
 				'http://localhost:8000/auth/refresh',
 				expect.objectContaining({
@@ -153,6 +150,22 @@ describe('AuthStore', () => {
 			expect(authStore.isAuthenticated).toBe(true);
 			expect(authStore.userName).toBe('Test User');
 			expect(authStore.getCsrfToken()).toBe('csrf-1');
+		});
+
+		it('prefers the current CSRF cookie over cached session state', async () => {
+			const token = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ csrf_token: 'csrf-old' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await authStore.establishSession(token);
+			document.cookie = 'csrf_token=csrf-fresh';
+
+			expect(authStore.getCsrfToken()).toBe('csrf-fresh');
 		});
 
 		it('refreshes the backend cookie session before the short cookie expires', async () => {
