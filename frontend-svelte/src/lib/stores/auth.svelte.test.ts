@@ -397,6 +397,16 @@ describe('AuthStore', () => {
 			expect(authStore.hasAnyRole('trader', 'risk_manager')).toBe(false);
 		});
 
+		it('rejects auditor mixed with other human roles', () => {
+			const token = fakeJwt({
+				sub: 'auditor-mixed',
+				roles: ['auditor', 'trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			expect(() => authStore.login(token)).toThrow('Invalid token');
+			expect(authStore.isAuthenticated).toBe(false);
+		});
+
 		it('isTraderOnly is true only for the single trader role', () => {
 			authStore.login(fakeJwt({ sub: 'u1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 }));
 			expect(authStore.isTraderOnly()).toBe(true);

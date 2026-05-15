@@ -24,6 +24,10 @@ function decodeJwtPayload(token: string): JwtClaims {
 	return JSON.parse(payload);
 }
 
+function hasInvalidRoleCombination(roles: UserRole[] | undefined): boolean {
+	return !!roles?.includes('auditor') && roles.length > 1;
+}
+
 class AuthStore {
 	#token = $state<string | null>(null);
 	#claims = $state<JwtClaims | null>(null);
@@ -60,6 +64,7 @@ class AuthStore {
 	login(token: string) {
 		try {
 			const claims = decodeJwtPayload(token);
+			if (hasInvalidRoleCombination(claims.roles)) throw new Error('Invalid role combination');
 			this.#applySession(null, claims, this.#csrfToken);
 		} catch {
 			this.logout();
@@ -71,6 +76,7 @@ class AuthStore {
 		let claims: JwtClaims;
 		try {
 			claims = decodeJwtPayload(sessionToken);
+			if (hasInvalidRoleCombination(claims.roles)) throw new Error('Invalid role combination');
 		} catch {
 			this.logout();
 			throw new Error('Invalid token');
@@ -274,6 +280,11 @@ class AuthStore {
 						['trader', 'risk_manager', 'auditor'].includes(String(role)),
 					)
 				: [];
+			if (hasInvalidRoleCombination(roles)) {
+				this.#clearStoredToken();
+				this.#isRestoring = false;
+				return;
+			}
 			this.#applySession(null, { sub: body.actor_sub, roles }, csrf);
 			await this.#refreshBackendSession();
 		} catch {
