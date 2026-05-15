@@ -114,6 +114,10 @@ class AuthStore {
 		return this.#token ? `Bearer ${this.#token}` : null;
 	}
 
+	getToken(): string | null {
+		return this.#token;
+	}
+
 	getCsrfToken(): string | null {
 		return this.#csrfToken ?? this.#readCookie(CSRF_COOKIE_NAME);
 	}
@@ -232,6 +236,7 @@ class AuthStore {
 				return;
 			}
 
+			// Backend auth validates roles first; this is defense-in-depth for malformed responses.
 			const roles = Array.isArray(body.roles)
 				? body.roles.filter((role): role is UserRole =>
 						['trader', 'risk_manager', 'auditor'].includes(String(role)),

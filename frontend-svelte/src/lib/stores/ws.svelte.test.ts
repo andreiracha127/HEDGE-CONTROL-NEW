@@ -63,6 +63,7 @@ vi.stubGlobal('WebSocket', MockWebSocket);
 vi.mock('./auth.svelte', () => ({
 	authStore: {
 		getAuthHeader: vi.fn(() => 'Bearer fake-token'),
+		getToken: vi.fn(() => 'fake-token'),
 		isAuthenticated: true,
 	},
 }));
@@ -77,7 +78,11 @@ vi.mock('./notifications.svelte', () => ({
 
 describe('WsStore', () => {
 	let wsStore: typeof import('./ws.svelte').wsStore;
-	let authStoreMock: { getAuthHeader: ReturnType<typeof vi.fn>; isAuthenticated: boolean };
+	let authStoreMock: {
+		getAuthHeader: ReturnType<typeof vi.fn>;
+		getToken: ReturnType<typeof vi.fn>;
+		isAuthenticated: boolean;
+	};
 
 	beforeEach(async () => {
 		vi.useFakeTimers();
@@ -88,6 +93,7 @@ describe('WsStore', () => {
 		const authMod = await import('./auth.svelte');
 		authStoreMock = authMod.authStore as unknown as typeof authStoreMock;
 		authStoreMock.getAuthHeader.mockReturnValue('Bearer fake-token');
+		authStoreMock.getToken.mockReturnValue('fake-token');
 		authStoreMock.isAuthenticated = true;
 
 		const mod = await import('./ws.svelte');
@@ -134,6 +140,7 @@ describe('WsStore', () => {
 
 		it('does not connect without auth token', () => {
 			authStoreMock.getAuthHeader.mockReturnValue(null);
+			authStoreMock.getToken.mockReturnValue(null);
 			authStoreMock.isAuthenticated = false;
 			wsStore.connect();
 			expect(wsStore.status).toBe('closed');
@@ -142,6 +149,7 @@ describe('WsStore', () => {
 
 		it('connects with cookie-backed auth when no raw JWT is available', () => {
 			authStoreMock.getAuthHeader.mockReturnValue(null);
+			authStoreMock.getToken.mockReturnValue(null);
 			authStoreMock.isAuthenticated = true;
 
 			wsStore.connect();

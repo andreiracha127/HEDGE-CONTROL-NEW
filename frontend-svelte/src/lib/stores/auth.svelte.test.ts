@@ -314,10 +314,12 @@ describe('AuthStore', () => {
 			const token = fakeJwt({ sub: 'u', exp: Math.floor(Date.now() / 1000) + 3600 });
 			authStore.login(token);
 			expect(authStore.getAuthHeader()).toBe(`Bearer ${token}`);
+			expect(authStore.getToken()).toBe(token);
 		});
 
 		it('returns null when not authenticated', () => {
 			expect(authStore.getAuthHeader()).toBeNull();
+			expect(authStore.getToken()).toBeNull();
 		});
 	});
 

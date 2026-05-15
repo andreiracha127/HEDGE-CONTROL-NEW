@@ -114,6 +114,21 @@ def test_subscribe_ack(client):
             assert resp["id"] == rfq_id
 
 
+def test_rfq_subscribe_forbidden_for_trader(client):
+    rfq_id = str(uuid4())
+    with _patch_validate_token({"sub": "trader-user", "roles": ["trader"]}):
+        with client.websocket_connect("/ws") as ws:
+            _authenticate(ws)
+            ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
+            resp = ws.receive_json()
+            assert resp == {
+                "type": "subscription_error",
+                "reason": "forbidden",
+                "topic": "rfq",
+                "id": rfq_id,
+            }
+
+
 def test_rfq_subscribe_ack_with_auth_disabled_fallback(client):
     rfq_id = str(uuid4())
     with patch("app.api.routes.ws.get_auth_settings", return_value=None):

@@ -37,7 +37,7 @@ class WsStore {
 	connect() {
 		if (this.#ws && this.status !== 'closed' && this.status !== 'error') return;
 
-		const token = authStore.getAuthHeader();
+		const token = authStore.getToken();
 		if (!token && !authStore.isAuthenticated) return;
 
 		this.#intentionalClose = false;
@@ -58,7 +58,7 @@ class WsStore {
 			this.status = 'open';
 			this.#reconnectAttempts = 0;
 			// First-message auth
-			const rawToken = authStore.getAuthHeader()?.replace('Bearer ', '') ?? '';
+			const rawToken = authStore.getToken() ?? '';
 			this.#send({ action: 'authenticate', token: rawToken });
 		};
 

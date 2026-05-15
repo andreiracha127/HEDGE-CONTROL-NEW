@@ -126,4 +126,5 @@ async def logout(response: Response) -> dict[str, str]:
 async def read_current_identity(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
+    # Roles are already validated by the JWT auth boundary before handlers run.
     return {"actor_sub": user["sub"], "roles": user.get("roles", [])}
