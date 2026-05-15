@@ -280,8 +280,9 @@ def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
         and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
         and roles == ["auditor", "risk_manager", "trader"]
     ):
-        # Auth-disabled local/test fallback is dev-only; fail-closed envs never
-        # return this identity from get_current_user().
+        # Auth-disabled local/test fallback is isolated by object identity and
+        # by the fail-closed env gate in get_current_user(); signed JWT payloads
+        # and copied dicts still go through the normal SoD checks below.
         return roles
     if "auditor" in roles and len(roles) > 1:
         raise HTTPException(
