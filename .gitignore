@@ -59,3 +59,6 @@ theming-base-content-master/
 
 # Pre-push dispatch review cache
 .cache/
+
+# Local executor handoffs (orchestrator → external executor; ephemeral)
+.handoffs/
