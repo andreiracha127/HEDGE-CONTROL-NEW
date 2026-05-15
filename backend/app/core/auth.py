@@ -197,6 +197,8 @@ _INTERNAL_SERVICE_IDENTITIES = frozenset(
         "service:cashflow_pipeline",
     }
 )
+# ``service:webhook_inbound`` is intentionally excluded here: webhook ingress
+# authenticates through provider signatures, not internal service JWTs.
 
 
 def get_current_user(
