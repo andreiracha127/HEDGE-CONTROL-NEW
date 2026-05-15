@@ -135,6 +135,7 @@ class AuthStore {
 		return roles.some((r) => this.userRoles.includes(r));
 	}
 
+	// Frontend-only role discriminator for UX guards; backend route gates remain authoritative.
 	isTraderOnly(): boolean {
 		return this.userRoles.length === 1 && this.userRoles[0] === 'trader';
 	}
