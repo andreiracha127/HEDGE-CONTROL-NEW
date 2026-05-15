@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME
 from app.core.csrf import csrf_middleware
 from app.main import app as main_app
 
@@ -71,6 +71,26 @@ def test_csrf_middleware_post_match_passes() -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_csrf_middleware_bearer_without_session_cookie_passes() -> None:
+    response = _csrf_client().post(
+        "/probe",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_csrf_middleware_bearer_with_session_cookie_still_requires_csrf() -> None:
+    client = _csrf_client()
+    client.cookies.set(SESSION_COOKIE_NAME, "session-token")
+    response = client.post(
+        "/probe",
+        headers={"Authorization": "Bearer service-token"},
+    )
+
+    assert response.status_code == 403
 
 
 def test_csrf_middleware_session_endpoint_exempt() -> None:

@@ -5,7 +5,11 @@ import secrets
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 
-from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME
+from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, SESSION_COOKIE_NAME
+
+
+def _has_bearer_authorization(request: Request) -> bool:
+    return request.headers.get("Authorization", "").startswith("Bearer ")
 
 
 async def csrf_middleware(request: Request, call_next):
@@ -13,6 +17,8 @@ async def csrf_middleware(request: Request, call_next):
     if request.method not in ("POST", "PATCH", "PUT", "DELETE"):
         return await call_next(request)
     if request.url.path.startswith(("/auth/session", "/webhooks/", "/healthz")):
+        return await call_next(request)
+    if _has_bearer_authorization(request) and SESSION_COOKIE_NAME not in request.cookies:
         return await call_next(request)
 
     cookie = request.cookies.get(CSRF_COOKIE_NAME)

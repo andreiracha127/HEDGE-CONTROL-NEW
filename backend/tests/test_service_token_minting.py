@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
+from fastapi.testclient import TestClient
 from jose import jwt
 
 from app.core.auth import get_current_user, mint_service_token
+from app.main import app
+from app.services.westmetall_cash_settlement import WestmetallFetchEvidence
 from tests.auth_token_helpers import (
     SERVICE_AUDIENCE,
     SERVICE_ISSUER,
@@ -99,6 +103,37 @@ def test_service_token_with_clerk_issuer_401(service_env) -> None:
         get_current_user(_Request(bearer=token), settings=object())
 
     assert excinfo.value.status_code == 401
+
+
+def test_service_token_mutation_does_not_require_csrf_cookie(
+    service_env, monkeypatch
+) -> None:
+    private_pem, _ = service_env
+    evidence = WestmetallFetchEvidence(
+        source_url="https://example.test",
+        html_sha256="abc123",
+        fetched_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        "app.api.routes.westmetall.ingest_westmetall_cash_settlement_daily_for_date",
+        lambda session, settlement_date: (None, 0, 1, evidence),
+    )
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides.clear()
+    try:
+        response = TestClient(app).post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+            json={"settlement_date": "2026-01-30"},
+            headers={
+                AUTHORIZATION_HEADER: BEARER_PREFIX
+                + make_service_token(private_pem, sub="service:westmetall_ingest")
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        app.dependency_overrides.update(original_overrides)
+
+    assert response.status_code == 200, response.text
 
 
 def test_mint_service_token_cli_entrypoint_exists() -> None:
