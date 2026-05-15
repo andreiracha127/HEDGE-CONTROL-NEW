@@ -439,6 +439,229 @@ scope — this list is the known set, not an exhaustive guarantee):
   execution uses `service:cashflow_pipeline`.
 
 ────────────────────────────────────────
+MARKET-DATA GOVERNANCE
+────────────────────────────────────────
+
+The platform ingests market-data prices that feed pricing of deals,
+mark-to-market valuations, scenario analyses, and cashflow projections.
+Every price that reaches a deal MUST be traceable to a single canonical
+provider with documented trust classification, replay-protected ingest,
+staleness alerting, and end-to-end precision discipline.
+
+This section is the constitutional contract. Per-provider deviations
+require amendment of this section, NOT silent config overrides in code.
+
+Provider trust matrix (binding):
+
+Three tiers classify every market-data provider:
+
+- **trusted** — ingest writes directly to canonical price storage. Prices
+  feed deals / MTM / P&L / scenarios. Provider has been vetted; replay
+  invariants enforced at ingest; stale-feed alerting wired. Promotion to
+  trusted requires constitutional amendment (this section update) with
+  evidence of vetting + production observation period.
+
+- **conditional** — ingest is captured but does NOT write canonical
+  prices. Each ingest event is queued for human review (sidecar table,
+  audit trail attribution `actor_sub="service:<provider>_ingest"`). On
+  human approval, the event is promoted to canonical. Used for
+  onboarding new providers before promotion to trusted, or for providers
+  with known historical drift requiring sign-off per batch.
+
+- **quarantine** — ingest is logged only. Prices NEVER affect deals,
+  MTM, P&L, scenarios, or any business-state computation. Quarantine
+  exists for experimental scrapes, test providers, or providers whose
+  trust has been revoked pending re-vetting. A quarantined provider's
+  events MAY be cross-checked against trusted providers for drift
+  detection, but the quarantine provider itself never wins reconciliation.
+
+Tier transitions (trusted → conditional, conditional → trusted, any →
+quarantine) are constitutional amendments. A silent code-level tier
+override is a hard fail.
+
+Current providers (as of 2026-05-15, Cluster 4 governance appendix
+landing):
+
+- **Westmetall** (`westmetall_ingest`) — `trusted`. Cron-driven daily
+  cash settlement ingest for aluminum (and other LME-tracked metals
+  expanded over time). Replay invariants enforced per below.
+
+No conditional or quarantine providers exist at this writing. Future
+integrations (LME direct, Bloomberg, COMEX, SHFE, etc.) MUST be added
+to this list with explicit tier before any ingest code lands.
+
+Replay-window invariant (binding):
+
+Every ingest event from a `trusted` or `conditional` provider MUST pass
+BOTH checks before persistence. Failure of either is HTTP 400 + structured
+log event `market_data_replay_rejected` with the rejection reason.
+
+- **Timestamp tolerance** — `provider_timestamp` MUST be within
+  `MARKET_DATA_REPLAY_WINDOW_MINUTES` (default 30) of `server_now()`.
+  Events older than the window are rejected as potential replay or
+  clock-drift attack. Per-provider override via
+  `MARKET_DATA_REPLAY_WINDOW_<provider>_MINUTES` env var (e.g.
+  `MARKET_DATA_REPLAY_WINDOW_WESTMETALL_MINUTES`).
+
+- **Sequence number monotonicity** — `sequence_number` (or equivalent
+  provider-supplied monotonic identifier) MUST be strictly greater than
+  the last seen sequence for the same `(provider, instrument)` tuple.
+  Re-ingestion of the same sequence is rejected (replay protection);
+  out-of-order sequences are rejected (ordering protection).
+
+Both checks run BEFORE persistence and BEFORE any downstream side effect
+(audit_event write, MTM recomputation trigger, etc.). The
+`market_data_replay_rejected` structured log event MUST include
+`provider`, `instrument`, `provider_timestamp`, `sequence_number`,
+`reason` (one of `timestamp_out_of_window`, `sequence_not_monotonic`,
+`sequence_duplicate`), and `actor_sub`.
+
+Stale-feed detection invariant (binding):
+
+Every `(provider, instrument)` pair in the `trusted` or `conditional`
+tier MUST have an explicit `max_gap_hours` setting in config. A
+background job (running at `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES`
+cadence, default 15) computes
+`server_now() - last_ingest_at(provider, instrument)` for every pair and
+emits structured log event `market_data_stale_feed` (severity warning)
+when the gap exceeds `max_gap_hours`.
+
+The staleness check MUST NOT block ingest of fresh events from a
+recovering provider; it is alerting-only. Operator response to staleness
+alerts is operational policy, not constitutional.
+
+Per-instrument granularity is mandatory because cadences vary widely
+(cash settlement daily; spot forwards hourly during trading; LBMA fix
+twice daily; OTC FX continuous). A single per-provider heartbeat would
+mask instrument-specific staleness and is therefore explicitly
+insufficient.
+
+Canonical price reconciliation invariant (binding):
+
+Every market-data `instrument` (e.g. `aluminum_cash`, `copper_forward_3m`,
+`usd_brl`) MUST have exactly ONE designated `canonical_provider` in
+config. Only the canonical provider's prices feed downstream computations
+(deals, MTM, P&L, scenarios).
+
+When a second provider (also `trusted`) ingests the same instrument, its
+prices are stored as `audit_only` — separate from canonical — and the
+ingest path computes `drift = |canonical_price - audit_price|`. When
+drift exceeds `MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default
+configurable per instrument; in percent of canonical price), structured
+log event `market_data_drift_alert` is emitted with both prices, both
+provider attributions, and the computed drift.
+
+Drift alerts trigger operator review; they do NOT automatically demote
+the canonical provider or promote the audit-only provider. Canonical
+provider changes are constitutional amendments.
+
+Today only Westmetall exists, so every instrument it covers has
+Westmetall as canonical and zero audit-only providers. The
+reconciliation invariant is forward-looking — it ensures the platform
+is ready to accept a second provider safely without ambiguity about
+which price wins.
+
+Precision contract invariant (binding):
+
+Every price value flows through the same precision pipeline end-to-end.
+Deviations are hard fails.
+
+- **Raw ingest:** parse provider response into `Decimal(str(raw_value))`.
+  Direct conversion via `Decimal(float(raw))` is FORBIDDEN — float is
+  binary-lossy and corrupts last-cents-of-precision silently. The
+  string-first construction preserves the exact decimal representation
+  the provider emitted.
+
+- **Storage:** `Numeric(18, 6)` SQL column type (see
+  `backend/app/models/market_data.py:24` for `price_usd` reference shape).
+  Six decimal places handle commodity prices (USD per metric tonne to
+  hundredths-of-cents), FX rates (six decimals standard), and basis
+  points uniformly without overflow up to 10^12 base units.
+
+- **Downstream calculations (MTM, P&L, scenario, cashflow projection):**
+  read the full `Numeric(18, 6)` value. Any rounding MUST be deferred
+  until display. Intermediate `Decimal` arithmetic preserves the storage
+  precision.
+
+- **Display layer:** `formatPrice(price_usd, 'USD/MT')` (and equivalents
+  for other quote conventions) at the frontend is the SOLE rounding
+  point. Locale-aware formatting (decimal separator, thousands separator,
+  significant digits per asset class) lives in the formatter, never in
+  the storage or calc layer.
+
+- **Currency conversion:** when an instrument quoted in one currency
+  needs valuation in another (e.g. aluminum quoted USD, valued in BRL),
+  conversion MUST happen at calc time using the stored full-precision
+  price and the stored full-precision FX rate. Pre-converting at ingest
+  and storing the converted value is FORBIDDEN — it discards the audit
+  trail of which FX rate was applied when.
+
+Audit-trail attribution (binding):
+
+Every market-data ingest event MUST persist an audit_event row with:
+- `actor_sub = "service:<provider>_ingest"` (current: `service:westmetall_ingest`)
+- `event_type = "market_data_ingested"`
+- `metadata` including `provider`, `instrument`, `provider_timestamp`,
+  `sequence_number`, `tier_at_ingest_time` (frozen value at the moment
+  ingest landed, even if the provider's tier later changes), and
+  `is_canonical` (true if this ingest fed canonical storage; false if
+  audit_only)
+
+This is in addition to (NOT instead of) the existing
+`mark_audit_success` audit attribution shipped in PR-A5-2 (J-A5-05) and
+preserved by Cluster 3 PR-CL3-1 (`westmetall.py:150, :206`). The
+expanded metadata fields are the new contract this section introduces.
+
+Anomalies to be retired upon Cluster 4 implementation closure:
+
+1. Westmetall ingest has no replay-window check at ingest. Accepts any
+   `provider_timestamp`, including timestamps from years ago. Closure
+   requires §"Replay-window invariant" enforcement at
+   `backend/app/api/routes/westmetall.py` POST handlers and the
+   scheduler ingest path.
+
+2. Westmetall ingest has no `sequence_number` tracking per
+   `(provider, instrument)`. Replays of the same payload are accepted
+   silently. Closure requires schema addition (sequence column or
+   equivalent on market_data rows or sibling table) plus monotonicity
+   check at ingest.
+
+3. No background staleness-check job exists. Westmetall silently
+   stopping ingest produces no alert until a downstream consumer
+   notices missing data. Closure requires the
+   `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` job + per-pair
+   `max_gap_hours` config schema.
+
+4. No canonical-vs-audit segregation in storage. The
+   `market_data` table implicitly assumes the only provider is canonical
+   because only one exists today. Closure requires explicit
+   `canonical_provider` config per instrument + audit_only price storage
+   path (even if no audit_only provider exists today, the path must
+   be ready so a future second provider does not require an emergency
+   schema change).
+
+5. No precision-contract documentation. `Numeric(18, 6)` exists at
+   storage today (`market_data.py:24`) but is not declared as
+   constitutional. The end-to-end contract (raw → Decimal(str) → storage
+   → display) is enforced by current code but undocumented as
+   invariant. Closure requires explicit precision-contract assertion in
+   `backend/app/services/price_lookup_service.py` (or equivalent) and a
+   regression test asserting `Decimal(float)` construction raises a
+   guard error in market-data ingest paths.
+
+6. Drift-alerting infrastructure is absent. Even though only one provider
+   exists today, the rule must be declared and the infrastructure scaffolded
+   so a future second-provider integration does NOT require a new audit
+   cycle. Closure requires `MARKET_DATA_DRIFT_THRESHOLD_<instrument>`
+   config + drift computation path scaffolded with a single-provider
+   no-op behavior.
+
+This list is documented; the route sweep in PR-CL4-1 dispatch §6
+mandates implementation MUST also discover any additional gap not
+enumerated here and include it in the implementation scope with a
+PR-body note.
+
+────────────────────────────────────────
 EXECUTION DISCIPLINE
 ────────────────────────────────────────
 
