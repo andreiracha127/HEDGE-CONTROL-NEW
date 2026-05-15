@@ -13,20 +13,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import time
 from typing import Any
 from uuid import UUID
 
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from jose import JWTError, jwt
 from starlette.websockets import WebSocketState
 
 from app.core.auth import (
+    CSRF_COOKIE_NAME,
     JWKSCache,
+    SESSION_COOKIE_NAME,
     extract_actor_roles_from_payload,
     get_auth_disabled_fallback_user,
     get_auth_settings,
+    _validate_human_roles_at_jwt_time,
 )
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -62,16 +67,33 @@ def _validate_token(token: str) -> dict[str, Any] | None:
                 break
         if jwk is None:
             return None
-        payload = jwt.decode(
-            token,
-            jwk,
-            algorithms=["RS256"],
-            audience=settings.audience,
-            issuer=settings.issuer,
-        )
+        decode_kwargs: dict[str, Any] = {
+            "key": jwk,
+            "algorithms": ["RS256"],
+            "issuer": settings.issuer,
+        }
+        if settings.audience:
+            decode_kwargs["audience"] = settings.audience
+        else:
+            decode_kwargs["options"] = {"verify_aud": False}
+        payload = jwt.decode(token, **decode_kwargs)
+        _validate_human_roles_at_jwt_time(payload)
         return payload
-    except (JWTError, Exception):
+    except (JWTError, HTTPException):
         return None
+    except Exception:
+        return None
+
+
+def _cookie_ws_auth_allowed(ws: WebSocket, msg: dict[str, Any]) -> bool:
+    origin = ws.headers.get("origin")
+    if not origin or origin not in get_settings().cors_origins_list:
+        return False
+    csrf_token = msg.get("csrf_token")
+    csrf_cookie = ws.cookies.get(CSRF_COOKIE_NAME)
+    if not isinstance(csrf_token, str) or not csrf_cookie:
+        return False
+    return secrets.compare_digest(csrf_token, csrf_cookie)
 
 
 class ConnectionManager:
@@ -207,7 +229,14 @@ async def websocket_endpoint(ws: WebSocket) -> None:
             await manager.disconnect(ws)
             return
 
-        token = msg.get("token", "")
+        raw_token = msg.get("token", "")
+        token = raw_token if isinstance(raw_token, str) else ""
+        if not token:
+            if not _cookie_ws_auth_allowed(ws, msg):
+                await ws.close(code=1008, reason="Invalid token")
+                await manager.disconnect(ws)
+                return
+            token = ws.cookies.get(SESSION_COOKIE_NAME, "")
         if await manager.authenticate(ws, token):
             user = manager.get_user(ws)
             await ws.send_text(

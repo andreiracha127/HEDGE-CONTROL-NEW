@@ -5,7 +5,7 @@
 	let { children } = $props();
 
 	$effect(() => {
-		if (!authStore.isAuthenticated) {
+		if (!authStore.isAuthenticated && !authStore.isRestoring) {
 			goto('/login');
 		}
 	});

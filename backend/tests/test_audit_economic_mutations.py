@@ -710,6 +710,9 @@ class TestRouteCoverageStatic:
         ): "covered institutional mutation",
         ("POST", "/mtm/snapshots"): "covered institutional mutation",
         ("POST", "/webhooks/whatsapp"): "explicitly out of A5 route audit scope: inbound delivery evidence",
+        ("POST", "/auth/session"): "explicitly out of A5 route audit scope: auth session cookie exchange",
+        ("POST", "/auth/refresh"): "explicitly out of A5 route audit scope: auth session refresh",
+        ("POST", "/auth/logout"): "explicitly out of A5 route audit scope: auth session logout",
         ("POST", "/finance/pipeline/run"): "covered institutional mutation",
     }
 

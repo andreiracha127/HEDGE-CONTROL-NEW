@@ -63,6 +63,9 @@ vi.stubGlobal('WebSocket', MockWebSocket);
 vi.mock('./auth.svelte', () => ({
 	authStore: {
 		getAuthHeader: vi.fn(() => 'Bearer fake-token'),
+		getToken: vi.fn(() => 'fake-token'),
+		getCsrfToken: vi.fn(() => 'csrf-token'),
+		isAuthenticated: true,
 	},
 }));
 
@@ -76,7 +79,12 @@ vi.mock('./notifications.svelte', () => ({
 
 describe('WsStore', () => {
 	let wsStore: typeof import('./ws.svelte').wsStore;
-	let authStoreMock: { getAuthHeader: ReturnType<typeof vi.fn> };
+	let authStoreMock: {
+		getAuthHeader: ReturnType<typeof vi.fn>;
+		getToken: ReturnType<typeof vi.fn>;
+		getCsrfToken: ReturnType<typeof vi.fn>;
+		isAuthenticated: boolean;
+	};
 
 	beforeEach(async () => {
 		vi.useFakeTimers();
@@ -87,6 +95,9 @@ describe('WsStore', () => {
 		const authMod = await import('./auth.svelte');
 		authStoreMock = authMod.authStore as unknown as typeof authStoreMock;
 		authStoreMock.getAuthHeader.mockReturnValue('Bearer fake-token');
+		authStoreMock.getToken.mockReturnValue('fake-token');
+		authStoreMock.getCsrfToken.mockReturnValue('csrf-token');
+		authStoreMock.isAuthenticated = true;
 
 		const mod = await import('./ws.svelte');
 		wsStore = mod.wsStore;
@@ -132,9 +143,24 @@ describe('WsStore', () => {
 
 		it('does not connect without auth token', () => {
 			authStoreMock.getAuthHeader.mockReturnValue(null);
+			authStoreMock.getToken.mockReturnValue(null);
+			authStoreMock.isAuthenticated = false;
 			wsStore.connect();
 			expect(wsStore.status).toBe('closed');
 			expect(mockWsInstance).toBeUndefined();
+		});
+
+		it('connects with cookie-backed auth when no raw JWT is available', () => {
+			authStoreMock.getAuthHeader.mockReturnValue(null);
+			authStoreMock.getToken.mockReturnValue(null);
+			authStoreMock.isAuthenticated = true;
+
+			wsStore.connect();
+			vi.advanceTimersByTime(1);
+
+			expect(mockWsInstance).toBeDefined();
+			const msg = JSON.parse(mockWsInstance!.sent[0]);
+			expect(msg).toEqual({ action: 'authenticate', token: '', csrf_token: 'csrf-token' });
 		});
 	});
 

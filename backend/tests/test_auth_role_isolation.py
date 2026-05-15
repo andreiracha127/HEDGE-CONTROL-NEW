@@ -6,7 +6,7 @@ Verifies that endpoints correctly reject users that lack the required roles.
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.auth import get_current_user
+from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, get_current_user
 from app.main import app
 
 
@@ -16,29 +16,30 @@ from app.main import app
 def _client_with_roles(*roles: str) -> TestClient:
     """Return a TestClient whose auth override exposes *only* the given roles."""
     app.dependency_overrides[get_current_user] = lambda: {"roles": list(roles)}
-    return TestClient(app)
+    client = TestClient(app)
+    client.headers.update({CSRF_HEADER_NAME: "test-csrf-token"})
+    client.cookies.set(CSRF_COOKIE_NAME, "test-csrf-token")
+    return client
 
 
 # -- Order routes: require trader -------------------------------------------
 
 
-def test_auditor_cannot_create_sales_order() -> None:
-    c = _client_with_roles("auditor")
-    resp = c.post("/orders/sales", json={"price_type": "fixed", "quantity_mt": 1.0})
+@pytest.mark.parametrize("role", ["auditor", "risk_manager"])
+@pytest.mark.parametrize("path", ["/orders/sales", "/orders/purchase"])
+def test_non_trader_cannot_create_order(role: str, path: str) -> None:
+    """auditor and risk_manager are the full non-trader human-role set."""
+    c = _client_with_roles(role)
+    resp = c.post(path, json={"price_type": "fixed", "quantity_mt": 1.0})
     assert resp.status_code == 403
 
 
-def test_risk_manager_cannot_create_purchase_order() -> None:
-    c = _client_with_roles("risk_manager")
-    resp = c.post("/orders/purchase", json={"price_type": "fixed", "quantity_mt": 1.0})
-    assert resp.status_code == 403
+# -- RFQ creation: require risk_manager --------------------------------------
 
 
-# -- RFQ creation: require trader -------------------------------------------
-
-
-def test_auditor_cannot_create_rfq() -> None:
-    c = _client_with_roles("auditor")
+@pytest.mark.parametrize("role", ["auditor", "trader"])
+def test_non_risk_manager_cannot_create_rfq(role: str) -> None:
+    c = _client_with_roles(role)
     resp = c.post(
         "/rfqs",
         json={
@@ -109,8 +110,10 @@ def test_all_roles_can_list_orders(role: str) -> None:
 # -- Settlement: require trader --------------------------------------------
 
 
-def test_auditor_cannot_settle_contract() -> None:
-    c = _client_with_roles("auditor")
+@pytest.mark.parametrize("role", ["auditor", "trader"])
+def test_non_risk_manager_cannot_settle_contract(role: str) -> None:
+    """Settlement is risk_manager-only per the live route gate."""
+    c = _client_with_roles(role)
     resp = c.post(
         "/cashflow/contracts/00000000-0000-0000-0000-000000000001/settle",
         json={

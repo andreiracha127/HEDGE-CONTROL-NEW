@@ -8,6 +8,13 @@ function fakeJwt(payload: Record<string, unknown>): string {
 	return `${header}.${body}.${sig}`;
 }
 
+async function waitForRestoreToSettle(authStore: { isRestoring: boolean }, fetchMock: ReturnType<typeof vi.fn>) {
+	for (let i = 0; i < 25; i++) {
+		if (!authStore.isRestoring && fetchMock.mock.calls.length >= 2) return;
+		await Promise.resolve();
+	}
+}
+
 describe('AuthStore', () => {
 	let authStore: typeof import('./auth.svelte').authStore;
 	let gotoMock: ReturnType<typeof vi.fn>;
@@ -26,7 +33,9 @@ describe('AuthStore', () => {
 
 	afterEach(() => {
 		sessionStorage.clear();
+		document.cookie = 'csrf_token=; Max-Age=0; path=/';
 		vi.useRealTimers();
+		vi.unstubAllGlobals();
 	});
 
 	describe('login', () => {
@@ -60,21 +69,152 @@ describe('AuthStore', () => {
 			expect(() => authStore.login('a.!!!.c')).toThrow('Invalid token');
 		});
 
-		it('restores authenticated state from session storage after reload', async () => {
+		it('does not restore plaintext JWTs from legacy session storage', async () => {
+			const token = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
+			sessionStorage.setItem('hedge-control.auth.token', token);
+
+			vi.resetModules();
+			const mod = await import('./auth.svelte');
+
+			expect(mod.authStore.isAuthenticated).toBe(false);
+			expect(mod.authStore.getAuthHeader()).toBeNull();
+		});
+
+		it('restores identity from the httpOnly cookie session and refreshes without a plaintext JWT', async () => {
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
+			vi.stubGlobal('fetch', fetchMock);
+
+			vi.resetModules();
+			const mod = await import('./auth.svelte');
+			await waitForRestoreToSettle(mod.authStore, fetchMock);
+
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/me',
+				expect.objectContaining({
+					credentials: 'include',
+				}),
+			);
+			expect(mod.authStore.isAuthenticated).toBe(true);
+			expect(mod.authStore.isRestoring).toBe(false);
+			expect(mod.authStore.userSub).toBe('user-1');
+			expect(mod.authStore.userRoles).toEqual(['trader']);
+			expect(mod.authStore.getAuthHeader()).toBeNull();
+			// Restored sessions have no plaintext JWT in memory; immediate refresh uses the httpOnly cookie.
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-CSRF-Token': 'csrf-old',
+					},
+					body: JSON.stringify({}),
+				}),
+			);
+			expect(mod.authStore.getCsrfToken()).toBe('csrf-new');
+		});
+
+		it('exchanges pasted JWT for httpOnly cookies and stores CSRF token', async () => {
 			const token = fakeJwt({
 				sub: 'user-1',
 				name: 'Test User',
 				roles: ['trader'],
 				exp: Math.floor(Date.now() / 1000) + 3600,
 			});
-			authStore.login(token);
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+			vi.stubGlobal('fetch', fetchMock);
 
-			vi.resetModules();
-			const mod = await import('./auth.svelte');
+			await authStore.establishSession(token);
 
-			expect(mod.authStore.isAuthenticated).toBe(true);
-			expect(mod.authStore.userName).toBe('Test User');
-			expect(mod.authStore.getAuthHeader()).toBe(`Bearer ${token}`);
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/session',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					body: JSON.stringify({ session_token: token }),
+				}),
+			);
+			expect(authStore.isAuthenticated).toBe(true);
+			expect(authStore.userName).toBe('Test User');
+			expect(authStore.getCsrfToken()).toBe('csrf-1');
+		});
+
+		it('prefers the current CSRF cookie over cached session state', async () => {
+			const token = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
+			const fetchMock = vi.fn().mockResolvedValue(
+				new Response(JSON.stringify({ csrf_token: 'csrf-old' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await authStore.establishSession(token);
+			document.cookie = 'csrf_token=csrf-fresh';
+
+			expect(authStore.getCsrfToken()).toBe('csrf-fresh');
+		});
+
+		it('refreshes the backend cookie session before the short cookie expires', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-2' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			vi.stubGlobal('fetch', fetchMock);
+
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-CSRF-Token': 'csrf-1',
+					},
+					body: JSON.stringify({ session_token: token }),
+				}),
+			);
+			expect(authStore.isAuthenticated).toBe(true);
+			expect(authStore.getCsrfToken()).toBe('csrf-2');
 		});
 	});
 
@@ -98,6 +238,33 @@ describe('AuthStore', () => {
 			authStore.logout();
 
 			expect(gotoMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('calls backend logout to clear httpOnly cookies when CSRF is available', async () => {
+			const token = fakeJwt({ sub: 'user-1', exp: Math.floor(Date.now() / 1000) + 3600 });
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+			vi.stubGlobal('fetch', fetchMock);
+			await authStore.establishSession(token);
+
+			authStore.logout();
+
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/logout',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					keepalive: true,
+					headers: { 'X-CSRF-Token': 'csrf-1' },
+				}),
+			);
 		});
 	});
 
@@ -169,10 +336,12 @@ describe('AuthStore', () => {
 			const token = fakeJwt({ sub: 'u', exp: Math.floor(Date.now() / 1000) + 3600 });
 			authStore.login(token);
 			expect(authStore.getAuthHeader()).toBe(`Bearer ${token}`);
+			expect(authStore.getToken()).toBe(token);
 		});
 
 		it('returns null when not authenticated', () => {
 			expect(authStore.getAuthHeader()).toBeNull();
+			expect(authStore.getToken()).toBeNull();
 		});
 	});
 

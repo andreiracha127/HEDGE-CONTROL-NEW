@@ -37,8 +37,8 @@ class WsStore {
 	connect() {
 		if (this.#ws && this.status !== 'closed' && this.status !== 'error') return;
 
-		const token = authStore.getAuthHeader();
-		if (!token) return;
+		const token = authStore.getToken();
+		if (!token && !authStore.isAuthenticated) return;
 
 		this.#intentionalClose = false;
 		this.status = 'connecting';
@@ -58,8 +58,13 @@ class WsStore {
 			this.status = 'open';
 			this.#reconnectAttempts = 0;
 			// First-message auth
-			const rawToken = authStore.getAuthHeader()?.replace('Bearer ', '') ?? '';
-			this.#send({ action: 'authenticate', token: rawToken });
+			const rawToken = authStore.getToken() ?? '';
+			const csrfToken = rawToken ? null : authStore.getCsrfToken();
+			this.#send({
+				action: 'authenticate',
+				token: rawToken,
+				...(csrfToken ? { csrf_token: csrfToken } : {}),
+			});
 		};
 
 		this.#ws.onmessage = (event) => {

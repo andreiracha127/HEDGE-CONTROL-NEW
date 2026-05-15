@@ -58,6 +58,15 @@ def _settings_override(**overrides) -> Iterator[None]:
             object.__setattr__(s, k, v)
 
 
+def _set_cluster3_env(monkeypatch) -> None:
+    monkeypatch.setenv("CLERK_FAPI_HOST", "fitting-pug-55.clerk.accounts.dev")
+    monkeypatch.setenv("CLERK_AUDIENCE", "hedge-control")
+    monkeypatch.setenv("SERVICE_JWT_SIGNING_KEY", "private-pem-present")
+    monkeypatch.setenv("SERVICE_JWT_PUBLIC_KEY", "public-pem-present")
+    monkeypatch.setenv("BACKEND_SERVICE_ISSUER", "https://api.hedge-control.local")
+    monkeypatch.setenv("BACKEND_SERVICE_AUDIENCE", "internal-services")
+
+
 # ── validate_auth_config — production/staging fail-closed ──────────────────
 
 
@@ -127,7 +136,8 @@ def test_validate_auth_config_allows_disabled_auth_in_nonprod_envs(env, monkeypa
         validate_auth_config()
 
 
-def test_validate_auth_config_allows_full_jwt_config_in_production() -> None:
+def test_validate_auth_config_allows_full_cluster3_config_in_production(monkeypatch) -> None:
+    _set_cluster3_env(monkeypatch)
     with _settings_override(
         app_env="production",
         jwt_issuer="https://issuer.example",
@@ -135,6 +145,35 @@ def test_validate_auth_config_allows_full_jwt_config_in_production() -> None:
         jwks_url="https://issuer.example/jwks",
     ):
         validate_auth_config()
+
+
+def test_validate_auth_config_missing_clerk_host_fails_closed(monkeypatch) -> None:
+    _set_cluster3_env(monkeypatch)
+    monkeypatch.delenv("CLERK_FAPI_HOST", raising=False)
+    with _settings_override(app_env="production", jwt_issuer="", jwt_audience="", jwks_url=""):
+        with pytest.raises(RuntimeError) as excinfo:
+            validate_auth_config()
+    assert "CLERK_FAPI_HOST" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "missing_name",
+    [
+        "SERVICE_JWT_SIGNING_KEY",
+        "SERVICE_JWT_PUBLIC_KEY",
+        "BACKEND_SERVICE_ISSUER",
+        "BACKEND_SERVICE_AUDIENCE",
+    ],
+)
+def test_validate_auth_config_missing_service_keys_fails_closed(
+    monkeypatch, missing_name
+) -> None:
+    _set_cluster3_env(monkeypatch)
+    monkeypatch.delenv(missing_name, raising=False)
+    with _settings_override(app_env="production", jwt_issuer="", jwt_audience="", jwks_url=""):
+        with pytest.raises(RuntimeError) as excinfo:
+            validate_auth_config()
+    assert missing_name in str(excinfo.value)
 
 
 # ── get_current_user — anonymous fallback gating ───────────────────────────

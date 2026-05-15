@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -12,9 +13,21 @@ from starlette.testclient import WebSocketDisconnect
 
 from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
-from app.core.auth import get_auth_disabled_fallback_user
+from app.core.auth import (
+    AuthSettings,
+    CSRF_COOKIE_NAME,
+    SESSION_COOKIE_NAME,
+    get_auth_disabled_fallback_user,
+)
+from tests.auth_token_helpers import (
+    CLERK_ISSUER,
+    generate_rsa_keypair,
+    make_clerk_token,
+    rsa_jwk,
+)
 
 
+# Synthetic authenticated subject; distinct from the auth-disabled "anonymous" fallback.
 VALID_CLAIMS = {"sub": "test-user", "roles": ["risk_manager"]}
 
 
@@ -47,6 +60,54 @@ def test_auth_success(client):
             resp = _authenticate(ws)
             assert resp["type"] == "auth_ack"
             assert resp["user"] == "test-user"
+
+
+def test_auth_uses_session_cookie_when_message_token_empty(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with client.websocket_connect(
+            "/ws", headers={"Origin": "http://localhost:5173"}
+        ) as ws:
+            ws.send_json(
+                {"action": "authenticate", "token": "", "csrf_token": "csrf-token"}
+            )
+            resp = ws.receive_json()
+            assert resp["type"] == "auth_ack"
+            assert resp["user"] == "test-user"
+    validate_token.assert_called_once_with("cookie-jwt")
+
+
+def test_auth_rejects_cookie_fallback_without_csrf(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "http://localhost:5173"}
+            ) as ws:
+                ws.send_json({"action": "authenticate", "token": ""})
+                ws.receive_json()
+
+    assert exc_info.value.code == 1008
+    validate_token.assert_not_called()
+
+
+def test_auth_rejects_cookie_fallback_from_untrusted_origin(client):
+    client.cookies.set(SESSION_COOKIE_NAME, "cookie-jwt")
+    client.cookies.set(CSRF_COOKIE_NAME, "csrf-token")
+    with _patch_validate_token(VALID_CLAIMS) as validate_token:
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with client.websocket_connect(
+                "/ws", headers={"Origin": "https://evil.example"}
+            ) as ws:
+                ws.send_json(
+                    {"action": "authenticate", "token": "", "csrf_token": "csrf-token"}
+                )
+                ws.receive_json()
+
+    assert exc_info.value.code == 1008
+    validate_token.assert_not_called()
 
 
 # ─── 2. Auth failure → close 1008 ─────────────────────────────────
@@ -96,6 +157,33 @@ def test_subscribe_ack(client):
             assert resp["id"] == rfq_id
 
 
+def test_rfq_subscribe_forbidden_for_trader(client):
+    rfq_id = str(uuid4())
+    with _patch_validate_token({"sub": "trader-user", "roles": ["trader"]}):
+        with client.websocket_connect("/ws") as ws:
+            _authenticate(ws)
+            ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
+            resp = ws.receive_json()
+            assert resp == {
+                "type": "subscription_error",
+                "reason": "forbidden",
+                "topic": "rfq",
+                "id": rfq_id,
+            }
+
+
+def test_rfq_subscribe_ack_for_auditor(client):
+    rfq_id = str(uuid4())
+    with _patch_validate_token({"sub": "auditor-user", "roles": ["auditor"]}):
+        with client.websocket_connect("/ws") as ws:
+            _authenticate(ws)
+            ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
+            resp = ws.receive_json()
+            assert resp["type"] == "subscription_ack"
+            assert resp["topic"] == "rfq"
+            assert resp["id"] == rfq_id
+
+
 def test_rfq_subscribe_ack_with_auth_disabled_fallback(client):
     rfq_id = str(uuid4())
     with patch("app.api.routes.ws.get_auth_settings", return_value=None):
@@ -105,6 +193,59 @@ def test_rfq_subscribe_ack_with_auth_disabled_fallback(client):
             ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
             resp = ws.receive_json()
             assert resp["type"] == "subscription_ack"
+
+
+def test_ws_validate_token_disables_audience_check_when_clerk_audience_empty():
+    private_pem, public_pem = generate_rsa_keypair()
+    token = make_clerk_token(private_pem, audience="present-but-ignored")
+    original_jwks = ws_module._jwks_cache._jwks
+    original_expires = ws_module._jwks_cache._expires_at
+    ws_module._jwks_cache._jwks = {"keys": [rsa_jwk(public_pem)]}
+    ws_module._jwks_cache._expires_at = time.time() + 3600
+    settings = AuthSettings(
+        issuer=CLERK_ISSUER,
+        audience="",
+        jwks_url="https://clerk.example.test/.well-known/jwks.json",
+    )
+    try:
+        with patch("app.api.routes.ws.get_auth_settings", return_value=settings):
+            claims = ws_module._validate_token(token)
+    finally:
+        ws_module._jwks_cache._jwks = original_jwks
+        ws_module._jwks_cache._expires_at = original_expires
+
+    assert claims is not None
+    assert claims["sub"] == "user_test"
+
+
+def test_ws_rejects_clerk_token_with_service_role_claim(client):
+    private_pem, public_pem = generate_rsa_keypair()
+    token = make_clerk_token(
+        private_pem,
+        roles=["risk_manager", "service:westmetall_ingest"],
+    )
+    original_jwks = ws_module._jwks_cache._jwks
+    original_expires = ws_module._jwks_cache._expires_at
+    ws_module._jwks_cache._jwks = {"keys": [rsa_jwk(public_pem)]}
+    ws_module._jwks_cache._expires_at = time.time() + 3600
+    settings = AuthSettings(
+        issuer=CLERK_ISSUER,
+        audience="hedge-control-tests",
+        jwks_url="https://clerk.example.test/.well-known/jwks.json",
+    )
+    try:
+        with patch("app.api.routes.ws.get_auth_settings", return_value=settings):
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect("/ws") as ws:
+                    ws.send_json({"action": "authenticate", "token": token})
+                    ws.receive_json()
+    finally:
+        ws_module._jwks_cache._jwks = original_jwks
+        ws_module._jwks_cache._expires_at = original_expires
+
+    assert exc_info.value.code == 1008
+    assert manager.active_count == 0
+    assert all(not state.subscriptions for state in manager._connections.values())
 
 
 # ─── 5. Subscribe with missing fields → error ─────────────────────

@@ -10,8 +10,9 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi.errors import RateLimitExceeded
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.core.auth import get_auth_settings, validate_auth_config
+from app.core.auth import get_auth_settings, is_auth_enabled, validate_auth_config
 from app.core.config import get_settings
+from app.core.csrf import csrf_middleware
 from app.core.database import engine
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import request_latency_seconds
@@ -20,6 +21,7 @@ from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 from app.api.routes import (
     audit,
+    auth,
     cashflow,
     cashflow_ledger,
     contracts,
@@ -127,26 +129,22 @@ class _CatchAllMiddleware:
 
 
 # Order matters: add_middleware uses insert(0, ...) so the LAST added
-# middleware becomes the outermost.  We want CORSMiddleware outermost
-# and _CatchAllMiddleware inside it to guarantee CORS headers on errors.
-# Execution order (from outermost to innermost):
-#   CORS → CatchAll → StripApiPrefix → StripTrailingSlash → Router
+# middleware becomes the outermost.  CORSMiddleware is registered after
+# function middleware below so CSRF and exception responses still receive CORS
+# headers.
 app.add_middleware(_StripTrailingSlashMiddleware)
 app.add_middleware(_StripApiPrefixMiddleware)
 app.add_middleware(_CatchAllMiddleware)
 
 cors_allow_origins = _cfg.cors_origins_list
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_allow_origins,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
-)
-
 instrumentator = Instrumentator()
 instrumentator.instrument(app).expose(app, endpoint="/metrics")
+
+
+@app.middleware("http")
+async def csrf_http_middleware(request: Request, call_next):
+    return await csrf_middleware(request, call_next)
 
 
 @app.middleware("http")
@@ -173,8 +171,22 @@ async def trace_id_middleware(request: Request, call_next):
     return response
 
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=cors_allow_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"],
+)
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
@@ -187,7 +199,7 @@ def readiness() -> dict[str, str]:
         logger.error("readiness_db_failed", error=str(exc))
         raise HTTPException(status_code=503, detail="db_unavailable") from exc
 
-    if _cfg.auth_enabled:
+    if is_auth_enabled():
         try:
             settings = get_auth_settings()
             response = httpx.get(settings.jwks_url, timeout=5.0)
@@ -218,6 +230,7 @@ app.include_router(
 )
 app.include_router(mtm.router, prefix="/mtm", tags=["MTM"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+app.include_router(auth.router)
 app.include_router(
     finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
 )
