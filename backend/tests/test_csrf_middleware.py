@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -25,6 +26,14 @@ def _csrf_client() -> TestClient:
 
     @app.post("/auth/session")
     async def auth_session():
+        return {"ok": True}
+
+    @app.post("/api/auth/session")
+    async def api_auth_session():
+        return {"ok": True}
+
+    @app.post("/auth/session/")
+    async def auth_session_slash():
         return {"ok": True}
 
     @app.post("/webhooks/whatsapp")
@@ -95,6 +104,13 @@ def test_csrf_middleware_bearer_with_session_cookie_still_requires_csrf() -> Non
 
 def test_csrf_middleware_session_endpoint_exempt() -> None:
     response = _csrf_client().post("/auth/session")
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/api/auth/session", "/auth/session/"])
+def test_csrf_middleware_normalized_session_paths_exempt(path: str) -> None:
+    response = _csrf_client().post(path)
 
     assert response.status_code == 200
 

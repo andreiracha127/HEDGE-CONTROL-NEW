@@ -13,11 +13,22 @@ def _has_bearer_authorization(request: Request) -> bool:
     return scheme.lower() == "bearer" and bool(token)
 
 
+def _normalized_path(path: str) -> str:
+    if path == "/api":
+        path = "/"
+    elif path.startswith("/api/"):
+        path = path[4:]
+    if len(path) > 1 and path.endswith("/"):
+        path = path.rstrip("/")
+    return path
+
+
 async def csrf_middleware(request: Request, call_next):
     """Double-submit CSRF check for cookie-authenticated mutating requests."""
     if request.method not in ("POST", "PATCH", "PUT", "DELETE"):
         return await call_next(request)
-    if request.url.path.startswith(("/auth/session", "/webhooks/", "/healthz")):
+    path = _normalized_path(request.url.path)
+    if path.startswith(("/auth/session", "/webhooks/", "/healthz")):
         return await call_next(request)
     if _has_bearer_authorization(request) and SESSION_COOKIE_NAME not in request.cookies:
         return await call_next(request)
