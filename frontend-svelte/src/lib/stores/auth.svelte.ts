@@ -314,7 +314,7 @@ class AuthStore {
 				return;
 			}
 			this.#applySession(null, { sub: body.actor_sub, roles, exp: backendSessionExpiry() }, csrf, null);
-			await this.#refreshBackendSession();
+			if (this.#clerkSessionProvider) await this.#refreshBackendSession();
 		} catch {
 			this.#clearStoredToken();
 		} finally {

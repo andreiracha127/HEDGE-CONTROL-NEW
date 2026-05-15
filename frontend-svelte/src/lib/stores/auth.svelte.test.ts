@@ -8,9 +8,9 @@ function fakeJwt(payload: Record<string, unknown>): string {
 	return `${header}.${body}.${sig}`;
 }
 
-async function waitForRestoreToSettle(authStore: { isRestoring: boolean }, fetchMock: ReturnType<typeof vi.fn>) {
+async function waitForRestoreToSettle(authStore: { isRestoring: boolean }) {
 	for (let i = 0; i < 25; i++) {
-		if (!authStore.isRestoring && fetchMock.mock.calls.length >= 2) return;
+		if (!authStore.isRestoring) return;
 		await Promise.resolve();
 	}
 }
@@ -95,27 +95,19 @@ describe('AuthStore', () => {
 			expect(mod.authStore.getAuthHeader()).toBeNull();
 		});
 
-		it('restores identity from the httpOnly cookie session and refreshes without a plaintext JWT', async () => {
-			const fetchMock = vi
-				.fn()
-				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
-						status: 200,
-						headers: { 'Content-Type': 'application/json' },
-					}),
-				)
-				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
-						status: 200,
-						headers: { 'Content-Type': 'application/json' },
-					}),
-				);
+		it('restores identity from the httpOnly cookie session without a plaintext JWT', async () => {
+			const fetchMock = vi.fn().mockResolvedValueOnce(
+				new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				}),
+			);
 			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
 			vi.stubGlobal('fetch', fetchMock);
 
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
-			await waitForRestoreToSettle(mod.authStore, fetchMock);
+			await waitForRestoreToSettle(mod.authStore);
 
 			expect(fetchMock).toHaveBeenCalledWith(
 				'http://localhost:8000/auth/me',
@@ -128,20 +120,11 @@ describe('AuthStore', () => {
 			expect(mod.authStore.userSub).toBe('user-1');
 			expect(mod.authStore.userRoles).toEqual(['trader']);
 			expect(mod.authStore.getAuthHeader()).toBeNull();
-			// Restored sessions have no plaintext JWT in memory; immediate refresh uses the httpOnly cookie.
-			expect(fetchMock).toHaveBeenLastCalledWith(
+			expect(fetchMock).not.toHaveBeenCalledWith(
 				'http://localhost:8000/auth/refresh',
-				expect.objectContaining({
-					method: 'POST',
-					credentials: 'include',
-					headers: {
-						'Content-Type': 'application/json',
-						'X-CSRF-Token': 'csrf-old',
-					},
-					body: JSON.stringify({}),
-				}),
+				expect.anything(),
 			);
-			expect(mod.authStore.getCsrfToken()).toBe('csrf-new');
+			expect(mod.authStore.getCsrfToken()).toBe('csrf-old');
 		});
 
 		it('exchanges pasted JWT for httpOnly cookies and stores CSRF token', async () => {
@@ -411,7 +394,7 @@ describe('AuthStore', () => {
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
 			mod.authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
-			await waitForRestoreToSettle(mod.authStore, fetchMock);
+			await waitForRestoreToSettle(mod.authStore);
 			await waitForRefreshBody(fetchMock, JSON.stringify({ session_token: freshToken }));
 			await waitForCsrfToken(mod.authStore, 'csrf-newer');
 
