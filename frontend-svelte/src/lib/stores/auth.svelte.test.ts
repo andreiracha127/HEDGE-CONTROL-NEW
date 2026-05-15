@@ -326,6 +326,58 @@ describe('AuthStore', () => {
 			expect(authStore.getCsrfToken()).toBe('csrf-2');
 		});
 
+		it('does not post a stale refresh after the session generation changes during provider await', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const freshToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 7200,
+			});
+			let resolveProvider!: (token: string) => void;
+			const providerPromise = new Promise<string>((resolve) => {
+				resolveProvider = resolve;
+			});
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url.endsWith('/auth/session')) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				if (url.endsWith('/auth/logout')) {
+					return Promise.resolve(new Response(JSON.stringify({ status: 'logged_out' }), { status: 200 }));
+				}
+				return Promise.resolve(
+					new Response(JSON.stringify({ csrf_token: 'csrf-2' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			authStore.setClerkSessionProvider(vi.fn().mockReturnValue(providerPromise));
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+			authStore.logout();
+			resolveProvider(freshToken);
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(fetchMock).not.toHaveBeenCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.anything(),
+			);
+		});
+
 		it('refreshes restored cookie sessions with the Clerk provider token instead of early-returning', async () => {
 			const freshToken = fakeJwt({
 				sub: 'user-1',

@@ -325,10 +325,17 @@ class AuthStore {
 	async #refreshBackendSession() {
 		if (typeof fetch === 'undefined' || !this.#claims) return;
 		const generation = this.#generation;
-		const token = (await this.#clerkSessionProvider?.()) ?? this.#token;
+		let token: string | null;
+		try {
+			token = (await this.#clerkSessionProvider?.()) ?? this.#token;
+		} catch {
+			if (this.#generation === generation) this.logout();
+			return;
+		}
+		if (this.#generation !== generation) return;
 		const csrfToken = this.getCsrfToken();
 		if (!csrfToken) {
-			this.logout();
+			if (this.#generation === generation) this.logout();
 			return;
 		}
 
