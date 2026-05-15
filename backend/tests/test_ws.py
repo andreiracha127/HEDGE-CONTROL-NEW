@@ -22,6 +22,7 @@ from tests.auth_token_helpers import (
 )
 
 
+# Synthetic authenticated subject; distinct from the auth-disabled "anonymous" fallback.
 VALID_CLAIMS = {"sub": "test-user", "roles": ["risk_manager"]}
 
 
