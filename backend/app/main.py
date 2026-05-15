@@ -12,6 +12,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.core.auth import get_auth_settings, validate_auth_config
 from app.core.config import get_settings
+from app.core.csrf import csrf_middleware
 from app.core.database import engine
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import request_latency_seconds
@@ -20,6 +21,7 @@ from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 from app.api.routes import (
     audit,
+    auth,
     cashflow,
     cashflow_ledger,
     contracts,
@@ -140,13 +142,18 @@ cors_allow_origins = _cfg.cors_origins_list
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allow_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Trace-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-Trace-Id", "X-CSRF-Token"],
 )
 
 instrumentator = Instrumentator()
 instrumentator.instrument(app).expose(app, endpoint="/metrics")
+
+
+@app.middleware("http")
+async def csrf_http_middleware(request: Request, call_next):
+    return await csrf_middleware(request, call_next)
 
 
 @app.middleware("http")
@@ -175,6 +182,11 @@ async def trace_id_middleware(request: Request, call_next):
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
@@ -218,6 +230,7 @@ app.include_router(
 )
 app.include_router(mtm.router, prefix="/mtm", tags=["MTM"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
+app.include_router(auth.router)
 app.include_router(
     finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
 )

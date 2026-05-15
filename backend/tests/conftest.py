@@ -26,7 +26,12 @@ os.environ.setdefault(
 os.environ.setdefault("RATE_LIMIT_MUTATION", "5/minute")
 os.environ.setdefault("RATE_LIMIT_SCRAPING", "5/minute")
 
-from app.core.auth import get_auth_disabled_fallback_user, get_current_user
+from app.core.auth import (
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    get_auth_disabled_fallback_user,
+    get_current_user,
+)
 from app.core.database import engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.main import app
@@ -57,6 +62,20 @@ def client() -> TestClient:
 
 class _DefaultCommodityTestClient(TestClient):
     """Preserve legacy order fixtures after commodity became required."""
+
+    _csrf_exempt_prefixes = ("/auth/session", "/webhooks/", "/healthz")
+
+    def request(self, method, url, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if (
+            method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+            and isinstance(url, str)
+            and not url.startswith(self._csrf_exempt_prefixes)
+        ):
+            headers = dict(kwargs.pop("headers", {}) or {})
+            headers.setdefault(CSRF_HEADER_NAME, "test-csrf-token")
+            kwargs["headers"] = headers
+            self.cookies.set(CSRF_COOKIE_NAME, "test-csrf-token")
+        return super().request(method, url, *args, **kwargs)
 
     def post(self, url, *args, **kwargs):  # type: ignore[no-untyped-def]
         json_payload = kwargs.get("json")

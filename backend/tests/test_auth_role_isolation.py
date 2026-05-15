@@ -6,7 +6,7 @@ Verifies that endpoints correctly reject users that lack the required roles.
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.auth import get_current_user
+from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, get_current_user
 from app.main import app
 
 
@@ -16,7 +16,10 @@ from app.main import app
 def _client_with_roles(*roles: str) -> TestClient:
     """Return a TestClient whose auth override exposes *only* the given roles."""
     app.dependency_overrides[get_current_user] = lambda: {"roles": list(roles)}
-    return TestClient(app)
+    client = TestClient(app)
+    client.headers.update({CSRF_HEADER_NAME: "test-csrf-token"})
+    client.cookies.set(CSRF_COOKIE_NAME, "test-csrf-token")
+    return client
 
 
 # -- Order routes: require trader -------------------------------------------
