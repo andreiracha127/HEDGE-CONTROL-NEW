@@ -61,7 +61,7 @@ In [`frontend-svelte/src/lib/stores/ws.svelte.ts`](../../frontend-svelte/src/lib
 
 **PR-CL3-3 amendment:** the original dispatch §4.8 WebSocket clause proposed "obtain a fresh Clerk token at connect time with `await clerk.session?.getToken({ skipCache: true })`". This path is **superseded**. Cookie-based WS auth is the canonical transport going forward; the Clerk-SDK-token-at-connect-time alternative is obsolete. Do not add `clerk.session.getToken` to the WS path. The cookie+CSRF+Origin binding shipped in PR-CL3-2 is sufficient and the backend WS handshake validates it via the same `_validate_human_roles_at_jwt_time` invariant added in PR-CL3-2 cycle 2 (`backend/app/api/routes/ws.py:32, :80`).
 
-**Cached Clerk JWT must not pre-empt the cookie path.** `establishSession` stores JWT in `AuthStore.#token` (`auth.svelte.ts:96`); `ws.svelte.ts:61-66` Bearer-prefers `authStore.getToken()` when non-null. Post-Clerk-sign-in WS would bypass the cookie path, defeating canonical status. PR-CL3-3 MUST stop caching the JWT in `#token` at `establishSession` — the cookie becomes single source-of-truth, and the cached `#token` was already dead weight after §3.1 wires a fresh-token provider for refresh. Add a `ws.svelte.test.ts` regression asserting that after `establishSession(jwt)` + `/auth/me` hydration, WS first-message dispatches cookie+CSRF (not Bearer).
+**Cached Clerk JWT must not pre-empt the cookie path.** `establishSession` stores JWT in `AuthStore.#token` (`auth.svelte.ts:96`); `ws.svelte.ts:61-66` Bearer-prefers `authStore.getToken()` when non-null. Post-Clerk-sign-in WS would bypass the cookie path, defeating canonical status. PR-CL3-3 MUST stop caching the JWT in `#token` at `establishSession` AND ensure refresh success calls `#applySession(null, claims, nextCsrf)` (not Clerk JWT, `auth.svelte.ts:303`) — cookie SSoT; #token dead weight post-§3.1. Add `ws.svelte.test.ts` regression: after `establishSession(jwt)` + post-refresh (cookie session), WS first-message uses cookie+CSRF (not Bearer).
 
 ## 2. Remaining in PR-CL3-3 scope (verbatim from original dispatch unless noted)
 
@@ -176,7 +176,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 
 - [ ] No `clerk.session.getToken` call introduced in `ws.svelte.ts` or related — cookie-based WS auth is canonical (DELIVERED §1 above)
 - [ ] `_validate_human_roles_at_jwt_time` enforcement on WS continues to work post-Clerk-SDK boot (no regression via Clerk SDK side effects on cookie state)
-- [ ] **NEW** `establishSession` stops caching JWT in `AuthStore.#token` per §1 WS amendment (cookie is single source-of-truth)
+- [ ] **NEW** `establishSession` + refresh success stop caching Clerk JWT in `#token` (#applySession(null, claims, csrf) for refresh per §3.1; cookie SSoT)
 - [ ] **NEW** Regression test in `ws.svelte.test.ts` asserts post-`establishSession(jwt)` + `/auth/me` hydration, WS first-message uses cookie+CSRF — not Bearer
 
 ### 4.8 Cross-cutting (unchanged §6.7)
