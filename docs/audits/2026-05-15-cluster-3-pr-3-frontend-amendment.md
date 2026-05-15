@@ -71,7 +71,7 @@ In [`frontend-svelte/src/lib/stores/ws.svelte.ts`](../../frontend-svelte/src/lib
 - **§4.7 Kill `manualTokenLoginEnabled`** — UNCHANGED. Sweep `rg -nP "manualTokenLoginEnabled" frontend-svelte/src/ backend/app/` MUST return zero. Current survivors verified by orchestrator 2026-05-15:
   - `frontend-svelte/src/lib/config/runtime.ts` (flag definition)
   - `frontend-svelte/src/lib/config/runtime.test.ts` (8 references — all to be deleted along with the flag's test coverage)
-  - `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` (the J-A6-10 reconstructability test — **delete entirely**: with the `manualTokenLoginEnabled` gate removed, there is no reconstructability invariant left to verify, since the test asserted the login page imports `runtimeFlags` and gates the paste form on the flag — both the import and the gate are gone)
+  - `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts` — **delete both J-A6-10 `describe` blocks entirely**: (a) lines ~140-168 `describe('login page — J-A6-10 dev-login gating', ...)` with 4 `it` assertions covering `manualTokenLoginEnabled` import, `data-testid="login-config-error"`, `!manualLoginEnabled` submission refusal, `manualTokenLoginReason` dev banner — every cited symbol is removed when the gate dies; (b) lines ~170-180 `describe('runtime config — J-A6-10 build-flag location', ...)` with the `VITE_ALLOW_MANUAL_TOKEN_LOGIN` env-var assertion — the env var disappears alongside the flag. Verify exact line ranges at rebase via `rg -nP "J-A6-10" frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts` and delete the matched `describe` blocks in full.
   - `.env.example` entries (if any)
   - Phase A6 PR #67 three reason-code constants — to be removed entirely
 - **§4.8 Route guard updates** — partially delivered (cold-load hydration gate, see §1 above). Remaining: ensure `initClerk()` boot runs alongside (or before) `authStore.#restoreSession()` so the SignIn page can mount Clerk's modal once Clerk is loaded. The hydration order should be: route enters → `initClerk()` AND `authStore.#restoreSession()` both fire → `isAuthenticated` resolves → redirect decision.
@@ -93,6 +93,8 @@ PR-CL3-2 shipped `#refreshBackendSession()` at [`auth.svelte.ts:268`](../../fron
 - (B) Move `#refreshBackendSession` to a public method, override at boot time from the Clerk init module.
 
 Option (A) is preferred (minimal coupling, keeps the store agnostic to Clerk SDK). Acceptance criterion in §4 below.
+
+**Stale-token guard must be reworked alongside option (A):** the existing `#refreshBackendSession` body has `if (this.#token !== token) return;` at `auth.svelte.ts:287` — an early-return guard that compares the captured `const token = this.#token` (line 270) against the current `this.#token` after the await. For cookie-restored sessions (Clerk session arrived via `/auth/me` hydration, not via `establishSession`), `this.#token === null` while the provider returns a fresh non-null Clerk JWT, making `this.#token !== token` always true and silently skipping cookie/CSRF rotation. PR-CL3-3 MUST replace this guard with one that does not depend on `this.#token` equality — for example a session generation counter (`#generation++` on every `establishSession`/`restoreSession`/`logout`, captured before the await, compared after), or a `this.#claims` identity check, or an explicit cancellation token. Document the chosen strategy in the PR body.
 
 #### §3.2 `isTraderOnly()` helper — NOT delivered by PR-CL3-2
 
@@ -142,6 +144,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 - [ ] `authStore` class and singleton at `auth.svelte.ts:325` reused as-is; not redefined
 - [ ] **NEW** `isTraderOnly()` method added per §3.2
 - [ ] **NEW** Clerk session-token provider wired per §3.1 option (A) or (B); chosen path documented in PR body
+- [ ] **NEW** `#refreshBackendSession` stale-token guard at `auth.svelte.ts:287` reworked per §3.1 stale-token-guard amendment (generation counter / claims-identity check / cancellation token); chosen strategy documented in PR body. Test: cookie-restored session (no `establishSession` call, only `/auth/me` hydration) refresh tick MUST trigger `/auth/refresh` and rotate cookies+CSRF, NOT early-return
 - [ ] Refresh 401 → `logout()` → `goto('/login')` chain (DELIVERED in PR-CL3-2; verify intact post-Clerk-SDK boot)
 
 ### 4.4 API client CSRF / credentials (DELIVERED §6.4 — no PR-CL3-3 change required)
@@ -162,7 +165,7 @@ Replaces original dispatch §6 with this consolidated list. Inherits unchanged i
 - [ ] `rg -nP "manualTokenLoginEnabled" .env.example` returns zero
 - [ ] `frontend-svelte/src/lib/config/runtime.ts` flag definition removed
 - [ ] `frontend-svelte/src/lib/config/runtime.test.ts` flag-related tests deleted (8 references current)
-- [ ] `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts:146-148` **deleted** (no reconstructability invariant remains once gate is removed; rewriting to assert flag absence is not in scope of J-A6-10 reconstructability semantics)
+- [ ] `frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts` — **both J-A6-10 `describe` blocks deleted** in full (dev-login gating ~140-168 + runtime-config build-flag location ~170-180); `rg -nP "J-A6-10|manualTokenLoginEnabled|VITE_ALLOW_MANUAL_TOKEN_LOGIN" frontend-svelte/src/lib/api/reconstructability-surfaces.test.ts` MUST return zero post-deletion
 - [ ] Phase A6 PR #67 three reason-code constants removed
 - [ ] Login page no longer contains paste-token form
 - [ ] Protected layout hydrates `/auth/me` before redirecting on cold load (DELIVERED §1 above)
