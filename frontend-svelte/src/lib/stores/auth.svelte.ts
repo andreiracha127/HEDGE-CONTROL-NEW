@@ -93,6 +93,8 @@ class AuthStore {
 	}
 
 	logout() {
+		const csrfToken = this.getCsrfToken();
+		if (csrfToken) void this.#clearBackendSession(csrfToken);
 		this.#clearTimers();
 		this.#clearStoredToken();
 		this.#token = null;
@@ -199,6 +201,20 @@ class AuthStore {
 	#clearStoredToken() {
 		this.#getStorage()?.removeItem(SESSION_TOKEN_KEY);
 		this.#getStorage()?.removeItem(SESSION_CSRF_KEY);
+	}
+
+	async #clearBackendSession(csrfToken: string) {
+		if (typeof fetch === 'undefined') return;
+		try {
+			await fetch(`${API_BASE}/auth/logout`, {
+				method: 'POST',
+				credentials: 'include',
+				keepalive: true,
+				headers: { 'X-CSRF-Token': csrfToken },
+			});
+		} catch {
+			// Local logout must still clear client state if the network is unavailable.
+		}
 	}
 
 	#getStorage(): Storage | null {

@@ -130,6 +130,33 @@ describe('AuthStore', () => {
 
 			expect(gotoMock).toHaveBeenCalledTimes(1);
 		});
+
+		it('calls backend logout to clear httpOnly cookies when CSRF is available', async () => {
+			const token = fakeJwt({ sub: 'user-1', exp: Math.floor(Date.now() / 1000) + 3600 });
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', csrf_token: 'csrf-1' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(new Response('{}', { status: 200 }));
+			vi.stubGlobal('fetch', fetchMock);
+			await authStore.establishSession(token);
+
+			authStore.logout();
+
+			expect(fetchMock).toHaveBeenLastCalledWith(
+				'http://localhost:8000/auth/logout',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					keepalive: true,
+					headers: { 'X-CSRF-Token': 'csrf-1' },
+				}),
+			);
+		});
 	});
 
 	describe('userSub (J-A6-04)', () => {

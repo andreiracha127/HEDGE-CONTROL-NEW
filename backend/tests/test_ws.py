@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -12,7 +13,13 @@ from starlette.testclient import WebSocketDisconnect
 
 from app.api.routes.ws import manager, _ConnState
 import app.api.routes.ws as ws_module
-from app.core.auth import get_auth_disabled_fallback_user
+from app.core.auth import AuthSettings, get_auth_disabled_fallback_user
+from tests.auth_token_helpers import (
+    CLERK_ISSUER,
+    generate_rsa_keypair,
+    make_clerk_token,
+    rsa_jwk,
+)
 
 
 VALID_CLAIMS = {"sub": "test-user", "roles": ["risk_manager"]}
@@ -105,6 +112,29 @@ def test_rfq_subscribe_ack_with_auth_disabled_fallback(client):
             ws.send_json({"action": "subscribe", "topic": "rfq", "id": rfq_id})
             resp = ws.receive_json()
             assert resp["type"] == "subscription_ack"
+
+
+def test_ws_validate_token_disables_audience_check_when_clerk_audience_empty():
+    private_pem, public_pem = generate_rsa_keypair()
+    token = make_clerk_token(private_pem, audience="present-but-ignored")
+    original_jwks = ws_module._jwks_cache._jwks
+    original_expires = ws_module._jwks_cache._expires_at
+    ws_module._jwks_cache._jwks = {"keys": [rsa_jwk(public_pem)]}
+    ws_module._jwks_cache._expires_at = time.time() + 3600
+    settings = AuthSettings(
+        issuer=CLERK_ISSUER,
+        audience="",
+        jwks_url="https://clerk.example.test/.well-known/jwks.json",
+    )
+    try:
+        with patch("app.api.routes.ws.get_auth_settings", return_value=settings):
+            claims = ws_module._validate_token(token)
+    finally:
+        ws_module._jwks_cache._jwks = original_jwks
+        ws_module._jwks_cache._expires_at = original_expires
+
+    assert claims is not None
+    assert claims["sub"] == "user_test"
 
 
 # ─── 5. Subscribe with missing fields → error ─────────────────────

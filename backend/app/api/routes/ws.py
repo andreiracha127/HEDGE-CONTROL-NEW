@@ -62,13 +62,16 @@ def _validate_token(token: str) -> dict[str, Any] | None:
                 break
         if jwk is None:
             return None
-        payload = jwt.decode(
-            token,
-            jwk,
-            algorithms=["RS256"],
-            audience=settings.audience,
-            issuer=settings.issuer,
-        )
+        decode_kwargs: dict[str, Any] = {
+            "key": jwk,
+            "algorithms": ["RS256"],
+            "issuer": settings.issuer,
+        }
+        if settings.audience:
+            decode_kwargs["audience"] = settings.audience
+        else:
+            decode_kwargs["options"] = {"verify_aud": False}
+        payload = jwt.decode(token, **decode_kwargs)
         return payload
     except (JWTError, Exception):
         return None
