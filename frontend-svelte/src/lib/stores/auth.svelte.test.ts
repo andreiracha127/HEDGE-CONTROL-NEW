@@ -361,6 +361,44 @@ describe('AuthStore', () => {
 			);
 		});
 
+		it('logs out instead of refreshing the old cookie when Clerk provider has no token', async () => {
+			const token = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url.endsWith('/auth/session')) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ csrf_token: 'csrf-1' }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				if (url.endsWith('/auth/logout')) {
+					return Promise.resolve(new Response(JSON.stringify({ status: 'logged_out' }), { status: 200 }));
+				}
+				return Promise.resolve(new Response(null, { status: 404 }));
+			});
+			vi.stubGlobal('fetch', fetchMock);
+
+			authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(null));
+			await authStore.establishSession(token);
+			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
+
+			expect(fetchMock).not.toHaveBeenCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.anything(),
+			);
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/logout',
+				expect.objectContaining({ method: 'POST' }),
+			);
+			expect(authStore.isAuthenticated).toBe(false);
+		});
+
 		it('aborts an in-flight backend refresh before logout can clear cookies', async () => {
 			const token = fakeJwt({
 				sub: 'user-1',

@@ -363,9 +363,16 @@ class AuthStore {
 	async #refreshBackendSession() {
 		if (typeof fetch === 'undefined' || !this.#claims) return;
 		const generation = this.#generation;
-		let token: string | null;
+		let token: string | null = this.#token;
 		try {
-			token = (await this.#clerkSessionProvider?.()) ?? this.#token;
+			if (this.#clerkSessionProvider) {
+				token = await this.#clerkSessionProvider();
+				if (this.#generation !== generation) return;
+				if (!token) {
+					this.logout();
+					return;
+				}
+			}
 		} catch {
 			if (this.#generation === generation) this.logout();
 			return;
