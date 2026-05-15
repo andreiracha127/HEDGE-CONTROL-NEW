@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.core import auth as auth_module
-from app.core.auth import get_current_user
+from app.core.auth import AuthSettings, get_current_user
 from tests.auth_token_helpers import (
     CLERK_ISSUER,
     _MISSING,
@@ -57,6 +57,18 @@ def test_clerk_jwt_bearer_rejected_when_clerk_fapi_host_set(clerk_keys, monkeypa
 
     assert excinfo.value.status_code == 401
     assert excinfo.value.detail == "Session cookie missing"
+
+
+def test_clerk_jwt_bearer_accepted_without_fapi_host(clerk_keys, monkeypatch) -> None:
+    private_pem, _, jwks = clerk_keys
+    token = make_clerk_token(private_pem, roles=["risk_manager"])
+    monkeypatch.delenv("CLERK_FAPI_HOST", raising=False)
+
+    with patched_jwks(auth_module, jwks):
+        user = get_current_user(_Request(bearer=token), settings=clerk_settings())
+
+    assert user["sub"] == "user_test"
+    assert user["roles"] == ["risk_manager"]
 
 
 def test_clerk_jwt_invalid_signature_401(clerk_keys) -> None:
@@ -159,7 +171,13 @@ def test_clerk_jwt_malformed_roles_claim_401(clerk_keys, roles) -> None:
 def test_clerk_audience_can_be_disabled_in_dev_when_empty(clerk_keys) -> None:
     private_pem, _, jwks = clerk_keys
     token = make_clerk_token(private_pem, roles=["risk_manager"], audience=None)
+    settings = AuthSettings(
+        issuer=CLERK_ISSUER,
+        audience="",
+        jwks_url=f"{CLERK_ISSUER}/.well-known/jwks.json",
+    )
 
-    user = _resolve_user(token, jwks, audience="")
+    with patched_jwks(auth_module, jwks):
+        user = get_current_user(_Request(cookie=token), settings=settings)
 
     assert user["sub"] == "user_test"
