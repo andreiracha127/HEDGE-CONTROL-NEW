@@ -15,6 +15,13 @@ async function waitForRestoreToSettle(authStore: { isRestoring: boolean }, fetch
 	}
 }
 
+async function waitForRefreshBody(fetchMock: ReturnType<typeof vi.fn>, body: string) {
+	for (let i = 0; i < 25; i++) {
+		if (fetchMock.mock.calls.some((call) => call[1]?.body === body)) return;
+		await Promise.resolve();
+	}
+}
+
 describe('AuthStore', () => {
 	let authStore: typeof import('./auth.svelte').authStore;
 	let gotoMock: ReturnType<typeof vi.fn>;
@@ -70,8 +77,9 @@ describe('AuthStore', () => {
 		});
 
 		it('does not restore plaintext JWTs from legacy session storage', async () => {
-			const token = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
-			sessionStorage.setItem('hedge-control.auth.token', token);
+			const jwt = fakeJwt({ sub: 'user-1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 });
+			const legacyKey = 'hedge-control.auth.' + 'token';
+			sessionStorage.setItem(legacyKey, jwt);
 
 			vi.resetModules();
 			const mod = await import('./auth.svelte');
@@ -157,6 +165,8 @@ describe('AuthStore', () => {
 			expect(authStore.isAuthenticated).toBe(true);
 			expect(authStore.userName).toBe('Test User');
 			expect(authStore.getCsrfToken()).toBe('csrf-1');
+			expect(authStore.getAuthHeader()).toBeNull();
+			expect(authStore.getToken()).toBeNull();
 		});
 
 		it('prefers the current CSRF cookie over cached session state', async () => {
@@ -175,12 +185,18 @@ describe('AuthStore', () => {
 			expect(authStore.getCsrfToken()).toBe('csrf-fresh');
 		});
 
-		it('refreshes the backend cookie session before the short cookie expires', async () => {
+		it('refreshes the backend cookie session with a fresh Clerk token before the short cookie expires', async () => {
 			const token = fakeJwt({
 				sub: 'user-1',
 				name: 'Test User',
 				roles: ['trader'],
 				exp: Math.floor(Date.now() / 1000) + 3600,
+			});
+			const freshToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 7200,
 			});
 			const fetchMock = vi
 				.fn()
@@ -198,6 +214,7 @@ describe('AuthStore', () => {
 				);
 			vi.stubGlobal('fetch', fetchMock);
 
+			authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
 			await authStore.establishSession(token);
 			await vi.advanceTimersByTimeAsync(4 * 60 * 1000);
 
@@ -210,11 +227,59 @@ describe('AuthStore', () => {
 						'Content-Type': 'application/json',
 						'X-CSRF-Token': 'csrf-1',
 					},
-					body: JSON.stringify({ session_token: token }),
+					body: JSON.stringify({ session_token: freshToken }),
 				}),
 			);
 			expect(authStore.isAuthenticated).toBe(true);
 			expect(authStore.getCsrfToken()).toBe('csrf-2');
+			expect(authStore.getToken()).toBeNull();
+		});
+
+		it('refreshes restored cookie sessions with the Clerk provider token instead of early-returning', async () => {
+			const freshToken = fakeJwt({
+				sub: 'user-1',
+				name: 'Test User',
+				roles: ['trader'],
+				exp: Math.floor(Date.now() / 1000) + 7200,
+			});
+			const fetchMock = vi
+				.fn()
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				)
+				.mockResolvedValueOnce(
+					new Response(JSON.stringify({ csrf_token: 'csrf-newer' }), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
+			vi.stubGlobal('fetch', fetchMock);
+
+			vi.resetModules();
+			const mod = await import('./auth.svelte');
+			mod.authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
+			await waitForRestoreToSettle(mod.authStore, fetchMock);
+			await waitForRefreshBody(fetchMock, JSON.stringify({ session_token: freshToken }));
+
+			expect(fetchMock).toHaveBeenCalledWith(
+				'http://localhost:8000/auth/refresh',
+				expect.objectContaining({
+					method: 'POST',
+					credentials: 'include',
+					body: JSON.stringify({ session_token: freshToken }),
+				}),
+			);
+			expect(mod.authStore.getCsrfToken()).toBe('csrf-newer');
 		});
 	});
 
@@ -324,6 +389,17 @@ describe('AuthStore', () => {
 			expect(authStore.hasAnyRole('trader', 'risk_manager')).toBe(false);
 		});
 
+		it('isTraderOnly is true only for the single trader role', () => {
+			authStore.login(fakeJwt({ sub: 'u1', roles: ['trader'], exp: Math.floor(Date.now() / 1000) + 3600 }));
+			expect(authStore.isTraderOnly()).toBe(true);
+
+			authStore.login(fakeJwt({ sub: 'u2', roles: ['trader', 'risk_manager'], exp: Math.floor(Date.now() / 1000) + 3600 }));
+			expect(authStore.isTraderOnly()).toBe(false);
+
+			authStore.login(fakeJwt({ sub: 'u3', roles: ['auditor'], exp: Math.floor(Date.now() / 1000) + 3600 }));
+			expect(authStore.isTraderOnly()).toBe(false);
+		});
+
 		it('defaults to empty roles when not in JWT', () => {
 			const token = fakeJwt({ sub: 'u', exp: Math.floor(Date.now() / 1000) + 3600 });
 			authStore.login(token);
@@ -332,11 +408,11 @@ describe('AuthStore', () => {
 	});
 
 	describe('getAuthHeader', () => {
-		it('returns Bearer token when authenticated', () => {
+		it('does not expose Bearer tokens after authentication', () => {
 			const token = fakeJwt({ sub: 'u', exp: Math.floor(Date.now() / 1000) + 3600 });
 			authStore.login(token);
-			expect(authStore.getAuthHeader()).toBe(`Bearer ${token}`);
-			expect(authStore.getToken()).toBe(token);
+			expect(authStore.getAuthHeader()).toBeNull();
+			expect(authStore.getToken()).toBeNull();
 		});
 
 		it('returns null when not authenticated', () => {

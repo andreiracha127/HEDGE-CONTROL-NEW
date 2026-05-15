@@ -162,6 +162,24 @@ describe('WsStore', () => {
 			const msg = JSON.parse(mockWsInstance!.sent[0]);
 			expect(msg).toEqual({ action: 'authenticate', token: '', csrf_token: 'csrf-token' });
 		});
+
+		it('uses cookie-backed auth for the post-Clerk session state where AuthStore discards the JWT', () => {
+			authStoreMock.getAuthHeader.mockReturnValue(null);
+			authStoreMock.getToken.mockReturnValue(null);
+			authStoreMock.getCsrfToken.mockReturnValue('csrf-after-establish-session');
+			authStoreMock.isAuthenticated = true;
+
+			wsStore.connect();
+			vi.advanceTimersByTime(1);
+
+			const msg = JSON.parse(mockWsInstance!.sent[0]);
+			expect(msg).toEqual({
+				action: 'authenticate',
+				token: '',
+				csrf_token: 'csrf-after-establish-session',
+			});
+			expect(authStoreMock.getToken).toHaveBeenCalled();
+		});
 	});
 
 	describe('disconnect', () => {

@@ -1,6 +1,6 @@
 /**
- * J-A6-08 / J-A6-09 / J-A6-10 — static invariants for the read-only
- * orders + audit surfaces and the gated manual JWT login.
+ * J-A6-08 / J-A6-09 — static invariants for the read-only
+ * orders + audit surfaces.
  *
  * Mirrors the source-scan pattern used by `page-contracts.test.ts` and
  * `rfq-evidence-integrity.test.ts`.
@@ -137,44 +137,54 @@ describe('layout — J-A6-08/09 navigation visibility', () => {
 	});
 });
 
-describe('login page — J-A6-10 dev-login gating', () => {
+describe('login page — Clerk SDK surface', () => {
 	const source = readFileSync(
 		resolve(ROUTES, '(public)', 'login', '+page.svelte'),
 		'utf8',
 	);
+	const clerkSource = readFileSync(resolve(SRC, 'lib', 'clerk.ts'), 'utf8');
 
-	it('imports the runtime-flags helper and gates the paste form on manualTokenLoginEnabled', () => {
-		expect(source).toContain("import { runtimeFlags } from '$lib/config/runtime'");
-		expect(source).toMatch(/manualTokenLoginEnabled/);
+	it('mounts Clerk SignIn and routes the session through authStore.establishSession', () => {
+		expect(source).toContain('clerk.mountSignIn');
+		expect(source).toContain('authStore.establishSession');
+		expect(source).not.toMatch(/fetch\([^)]*\/auth\/session/);
 	});
 
-	it('renders an explicit configuration error when manual login is disabled', () => {
-		expect(source).toContain('data-testid="login-config-error"');
-		expect(source).toMatch(/\{:else\}/);
+	it('loads the Clerk UI bundle before mounting prebuilt components', () => {
+		expect(clerkSource).toContain('@clerk/ui@1/dist/ui.browser.js');
+		expect(clerkSource).toContain('__internal_ClerkUICtor');
+		expect(clerkSource).toMatch(/ui:\s*\{\s*ClerkUI:/);
 	});
 
-	it('refuses submission when manual login is disabled even if the form is somehow reached', () => {
-		// Even though the form is hidden behind {#if manualLoginEnabled},
-		// handleLogin guards against the disabled case explicitly. Belt
-		// and braces: the dispatch's "do not silently allow dev-only
-		// flow" rule must not depend on the {#if} alone.
-		expect(source).toMatch(/!manualLoginEnabled[\s\S]*?notifications\.error/);
-	});
-
-	it('only shows the dev banner inside the enabled branch', () => {
-		expect(source).toContain('data-testid="login-dev-banner"');
-		// Banner copy must reflect the reason (dev-mode vs explicit-opt-in)
-		expect(source).toMatch(/manualTokenLoginReason/);
+	it('does not retain the retired manual token form', () => {
+		expect(source).not.toContain('login-manual-form');
+		expect(source).not.toContain('login-config-error');
+		expect(source).not.toContain('manual' + 'TokenLoginEnabled');
+		expect(source).not.toContain('VITE_ALLOW_' + 'MANUAL_TOKEN_LOGIN');
+		expect(source).not.toContain('runtimeFlags');
 	});
 });
 
-describe('runtime config — J-A6-10 build-flag location', () => {
+describe('sign-up page — Clerk SDK surface', () => {
+	const source = readFileSync(
+		resolve(ROUTES, '(public)', 'sign-up', '+page.svelte'),
+		'utf8',
+	);
+
+	it('mounts Clerk SignUp and routes the session through authStore.establishSession', () => {
+		expect(source).toContain('clerk.mountSignUp');
+		expect(source).toContain('authStore.establishSession');
+		expect(source).not.toMatch(/fetch\([^)]*\/auth\/session/);
+	});
+});
+
+describe('runtime config', () => {
 	const cfg = readFileSync(resolve(SRC, 'lib', 'config', 'runtime.ts'), 'utf8');
 
-	it('reads only Vite-prefixed env vars (no server secrets leak)', () => {
-		// All compile-time env reads must be VITE_ prefixed; the gating
-		// flag itself follows that convention.
-		expect(cfg).toMatch(/VITE_ALLOW_MANUAL_TOKEN_LOGIN/);
+	it('does not retain the retired manual-token build flag', () => {
+		expect(cfg).not.toContain('VITE_ALLOW_' + 'MANUAL_TOKEN_LOGIN');
+		expect(cfg).not.toContain('manual' + 'TokenLoginEnabled');
+		expect(cfg).not.toContain('manual' + 'TokenLoginReason');
 		expect(cfg).not.toMatch(/process\.env/);
 	});
 });

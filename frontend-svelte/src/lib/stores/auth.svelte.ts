@@ -27,11 +27,13 @@ class AuthStore {
 	#token = $state<string | null>(null);
 	#claims = $state<JwtClaims | null>(null);
 	#csrfToken = $state<string | null>(null);
+	#clerkSessionProvider: (() => Promise<string | null>) | null = null;
 	#expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	#expiryWarningTimer: ReturnType<typeof setTimeout> | null = null;
 	#refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	#redirecting = false;
 	#isRestoring = $state(false);
+	#generation = 0;
 
 	readonly isAuthenticated = $derived(this.#claims !== null);
 	readonly isRestoring = $derived(this.#isRestoring);
@@ -57,7 +59,7 @@ class AuthStore {
 	login(token: string) {
 		try {
 			const claims = decodeJwtPayload(token);
-			this.#applySession(token, claims, this.#csrfToken);
+			this.#applySession(null, claims, this.#csrfToken);
 		} catch {
 			this.logout();
 			throw new Error('Invalid token');
@@ -93,10 +95,11 @@ class AuthStore {
 			throw new Error('Invalid token');
 		}
 
-		this.#applySession(sessionToken, claims, csrf);
+		this.#applySession(null, claims, csrf);
 	}
 
 	logout() {
+		this.#generation++;
 		const csrfToken = this.getCsrfToken();
 		if (csrfToken) void this.#clearBackendSession(csrfToken);
 		this.#clearTimers();
@@ -113,7 +116,7 @@ class AuthStore {
 	}
 
 	getAuthHeader(): string | null {
-		return this.#token ? `Bearer ${this.#token}` : null;
+		return null;
 	}
 
 	getToken(): string | null {
@@ -130,6 +133,17 @@ class AuthStore {
 
 	hasAnyRole(...roles: UserRole[]): boolean {
 		return roles.some((r) => this.userRoles.includes(r));
+	}
+
+	isTraderOnly(): boolean {
+		return this.userRoles.length === 1 && this.userRoles[0] === 'trader';
+	}
+
+	setClerkSessionProvider(provider: (() => Promise<string | null>) | null) {
+		this.#clerkSessionProvider = provider;
+		if (provider && this.#claims && this.getCsrfToken() && typeof fetch !== 'undefined') {
+			void this.#refreshBackendSession();
+		}
 	}
 
 	#setupExpiryTimers(claims: JwtClaims) {
@@ -189,6 +203,7 @@ class AuthStore {
 	}
 
 	#applySession(token: string | null, claims: JwtClaims, csrfToken: string | null) {
+		this.#generation++;
 		this.#token = token;
 		this.#claims = claims;
 		this.#csrfToken = csrfToken;
@@ -267,7 +282,8 @@ class AuthStore {
 
 	async #refreshBackendSession() {
 		if (typeof fetch === 'undefined' || !this.#claims) return;
-		const token = this.#token;
+		const generation = this.#generation;
+		const token = (await this.#clerkSessionProvider?.()) ?? this.#token;
 		const csrfToken = this.getCsrfToken();
 		if (!csrfToken) {
 			this.logout();
@@ -284,7 +300,7 @@ class AuthStore {
 				},
 				body: JSON.stringify(token ? { session_token: token } : {}),
 			});
-			if (this.#token !== token) return;
+			if (this.#generation !== generation) return;
 			if (!response.ok) {
 				this.logout();
 				return;
@@ -300,7 +316,7 @@ class AuthStore {
 				return;
 			}
 
-			this.#applySession(token, token ? decodeJwtPayload(token) : this.#claims, nextCsrf);
+			this.#applySession(null, token ? decodeJwtPayload(token) : this.#claims, nextCsrf);
 		} catch {
 			this.logout();
 		}
