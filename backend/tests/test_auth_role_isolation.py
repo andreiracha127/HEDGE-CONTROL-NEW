@@ -28,6 +28,7 @@ def _client_with_roles(*roles: str) -> TestClient:
 @pytest.mark.parametrize("role", ["auditor", "risk_manager"])
 @pytest.mark.parametrize("path", ["/orders/sales", "/orders/purchase"])
 def test_non_trader_cannot_create_order(role: str, path: str) -> None:
+    """auditor and risk_manager are the full non-trader human-role set."""
     c = _client_with_roles(role)
     resp = c.post(path, json={"price_type": "fixed", "quantity_mt": 1.0})
     assert resp.status_code == 403
@@ -109,6 +110,7 @@ def test_all_roles_can_list_orders(role: str) -> None:
 
 
 def test_auditor_cannot_settle_contract() -> None:
+    """Settlement is trader-only per the governance authorization matrix."""
     c = _client_with_roles("auditor")
     resp = c.post(
         "/cashflow/contracts/00000000-0000-0000-0000-000000000001/settle",
