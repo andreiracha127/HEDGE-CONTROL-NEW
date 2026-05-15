@@ -1,13 +1,15 @@
-import { Clerk } from '@clerk/clerk-js';
+import type { Clerk as ClerkInstance } from '@clerk/clerk-js';
 import { authStore } from '$lib/stores/auth.svelte';
 
 declare global {
 	interface Window {
+		Clerk?: ClerkInstance;
+		__clerk_publishable_key?: string;
 		__internal_ClerkUICtor?: NonNullable<ClerkLoadOptions['ui']>['ClerkUI'];
 	}
 }
 
-type ClerkLoadOptions = NonNullable<Parameters<Clerk['load']>[0]>;
+type ClerkLoadOptions = NonNullable<Parameters<ClerkInstance['load']>[0]>;
 
 // TODO(post-cluster-3): swap from the dev publishable key to pk_live_... for the custom domain.
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
@@ -16,10 +18,11 @@ if (!PUBLISHABLE_KEY) {
 	throw new Error('VITE_CLERK_PUBLISHABLE_KEY missing; auth disabled');
 }
 
-export const clerk = new Clerk(PUBLISHABLE_KEY);
+export let clerk = undefined as unknown as ClerkInstance;
 
 let loadPromise: Promise<void> | null = null;
 let uiLoadPromise: Promise<void> | null = null;
+let sdkLoadPromise: Promise<ClerkInstance> | null = null;
 
 function clerkFrontendApiFromPublishableKey(publishableKey: string): string {
 	const encodedDomain = publishableKey.split('_')[2];
@@ -61,9 +64,41 @@ function loadClerkUi(): Promise<void> {
 	return uiLoadPromise;
 }
 
+function loadClerkJs(): Promise<ClerkInstance> {
+	if (typeof window === 'undefined' || typeof document === 'undefined') {
+		return Promise.reject(new Error('ClerkJS can only be loaded in a browser'));
+	}
+	if (window.Clerk) return Promise.resolve(window.Clerk);
+
+	sdkLoadPromise ??= new Promise((resolve, reject) => {
+		const existingScript = document.getElementById('clerk-js-bundle') as HTMLScriptElement | null;
+		const script = existingScript ?? document.createElement('script');
+
+		window.__clerk_publishable_key = PUBLISHABLE_KEY;
+		script.id = 'clerk-js-bundle';
+		script.src = `https://${clerkFrontendApiFromPublishableKey(PUBLISHABLE_KEY)}/npm/@clerk/clerk-js@6/dist/clerk.browser.js`;
+		script.async = true;
+		script.crossOrigin = 'anonymous';
+		script.setAttribute('data-clerk-publishable-key', PUBLISHABLE_KEY);
+		script.onload = () => {
+			if (window.Clerk) {
+				resolve(window.Clerk);
+				return;
+			}
+			reject(new Error('ClerkJS bundle loaded without exposing window.Clerk'));
+		};
+		script.onerror = () => reject(new Error('Failed to load @clerk/clerk-js bundle'));
+
+		if (!existingScript) document.head.appendChild(script);
+	});
+
+	return sdkLoadPromise;
+}
+
 export async function initClerk(): Promise<void> {
 	loadPromise ??= (async () => {
 		await loadClerkUi();
+		clerk = await loadClerkJs();
 		await clerk.load({
 			signInUrl: '/login',
 			signUpUrl: '/sign-up',

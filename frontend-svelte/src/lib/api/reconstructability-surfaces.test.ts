@@ -151,6 +151,7 @@ describe('login page — Clerk SDK surface', () => {
 	});
 
 	it('loads the Clerk UI bundle before mounting prebuilt components', () => {
+		expect(clerkSource).toContain('@clerk/clerk-js@6/dist/clerk.browser.js');
 		expect(clerkSource).toContain('@clerk/ui@1/dist/ui.browser.js');
 		expect(clerkSource).toContain('__internal_ClerkUICtor');
 		expect(clerkSource).toMatch(/ui:\s*\{\s*ClerkUI:/);

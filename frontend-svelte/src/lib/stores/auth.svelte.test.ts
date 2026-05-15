@@ -22,6 +22,13 @@ async function waitForRefreshBody(fetchMock: ReturnType<typeof vi.fn>, body: str
 	}
 }
 
+async function waitForCsrfToken(authStore: { getCsrfToken: () => string | null }, token: string) {
+	for (let i = 0; i < 25; i++) {
+		if (authStore.getCsrfToken() === token) return;
+		await Promise.resolve();
+	}
+}
+
 describe('AuthStore', () => {
 	let authStore: typeof import('./auth.svelte').authStore;
 	let gotoMock: ReturnType<typeof vi.fn>;
@@ -242,26 +249,26 @@ describe('AuthStore', () => {
 				roles: ['trader'],
 				exp: Math.floor(Date.now() / 1000) + 7200,
 			});
-			const fetchMock = vi
-				.fn()
-				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
-						status: 200,
-						headers: { 'Content-Type': 'application/json' },
-					}),
-				)
-				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ csrf_token: 'csrf-new' }), {
-						status: 200,
-						headers: { 'Content-Type': 'application/json' },
-					}),
-				)
-				.mockResolvedValueOnce(
-					new Response(JSON.stringify({ csrf_token: 'csrf-newer' }), {
-						status: 200,
-						headers: { 'Content-Type': 'application/json' },
-					}),
-				);
+			const fetchMock = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+				if (url.endsWith('/auth/me')) {
+					return Promise.resolve(
+						new Response(JSON.stringify({ actor_sub: 'user-1', roles: ['trader'] }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				if (url.endsWith('/auth/refresh')) {
+					const hasClerkToken = init?.body === JSON.stringify({ session_token: freshToken });
+					return Promise.resolve(
+						new Response(JSON.stringify({ csrf_token: hasClerkToken ? 'csrf-newer' : 'csrf-new' }), {
+							status: 200,
+							headers: { 'Content-Type': 'application/json' },
+						}),
+					);
+				}
+				return Promise.resolve(new Response(null, { status: 404 }));
+			});
 			sessionStorage.setItem('hedge-control.auth.csrf', 'csrf-old');
 			vi.stubGlobal('fetch', fetchMock);
 
@@ -270,6 +277,7 @@ describe('AuthStore', () => {
 			mod.authStore.setClerkSessionProvider(vi.fn().mockResolvedValue(freshToken));
 			await waitForRestoreToSettle(mod.authStore, fetchMock);
 			await waitForRefreshBody(fetchMock, JSON.stringify({ session_token: freshToken }));
+			await waitForCsrfToken(mod.authStore, 'csrf-newer');
 
 			expect(fetchMock).toHaveBeenCalledWith(
 				'http://localhost:8000/auth/refresh',
