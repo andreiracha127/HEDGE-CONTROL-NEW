@@ -905,7 +905,7 @@ def _westmetall_batch_uuid(
         "start_date": start_date.isoformat() if start_date else None,
         "end_date": end_date.isoformat() if end_date else None,
     }
-    return uuid.uuid5(WESTMETALL_BATCH_NAMESPACE, json.dumps(payload, sort_keys=True))
+    return uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(payload, sort_keys=True))
 
 
 def ingest_westmetall_cash_settlement_daily_for_date(
