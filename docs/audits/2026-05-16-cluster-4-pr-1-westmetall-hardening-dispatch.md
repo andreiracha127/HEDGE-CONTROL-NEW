@@ -67,7 +67,7 @@ Verified at HEAD `05ffa2f8e`.
 - `POST /aluminum/cash-settlement/ingest-bulk` (line 173-236) — multi-date ingest. Gated by `require_service_identity("westmetall_ingest")` at `:188`. Calls `ingest_westmetall_cash_settlement_bulk(session, start_date, end_date)`.
 - `GET /aluminum/cash-settlement/prices` (line 89-117) — list/read endpoint; out of scope.
 
-Both POST routes structurally fetch the entire Westmetall page and filter to the requested scope. Per governance §"Backfill exemption" (`docs/governance.md:512-521`) and §"Bulk exemption" (`docs/governance.md:528-533`), the scheduler invocation of `ingest_westmetall_cash_settlement_bulk` is exempt from both timestamp tolerance and sequence monotonicity. The single-date POST path is **also** structurally a page-scrape-then-filter operation (it fetches the same page as bulk and selects one date), and per the binding's Bulk exemption "scheduler daily runs AND `ingest_westmetall_cash_settlement_bulk` paths are fully exempt" — but the **`POST /ingest` single-date route does NOT invoke `ingest_westmetall_cash_settlement_bulk`**; it invokes `ingest_westmetall_cash_settlement_daily_for_date` (a separate function with identical bulk-style page-scrape semantics). The dispatch executor MUST classify the `/ingest` single-date route as bulk-exempt by structural analogy (page-scrape with stable-key idempotency on `(source, symbol, settlement_date)`), document this classification in code comments, and skip the replay-window/sequence-monotonicity helper invocation on this route. The classification is a binding-level fact (the route's `_daily_for_date` helper uses the same page-scrape + stable-key idempotency as bulk), not a per-route exception. Both POST paths thus receive: bulk idempotency hardening (anomaly #2 bulk distinction), canonical-vs-audit segregation, audit metadata expansion. Neither receives timestamp-tolerance/sequence-monotonicity enforcement at request time.
+Both POST routes structurally fetch the entire Westmetall page and filter to the requested scope. Per governance §"Backfill exemption" (`docs/governance.md:512-521`) and §"Bulk exemption" (`docs/governance.md:528-533`), the scheduler invocation of `ingest_westmetall_cash_settlement_bulk` is exempt from both timestamp tolerance and sequence monotonicity. However, the single-date `POST /ingest` route is **NOT** exempt under the current governance text. The dispatch executor MUST update the single-date route (`POST /aluminum/cash-settlement/ingest`) to explicitly invoke the `check_replay_window` and `check_sequence_monotonicity` helpers before persisting the row, ensuring it enforces the mandated live-path checks to fully retire anomalies #1 and #2. Both POST paths thus receive: bulk idempotency hardening (anomaly #2 bulk distinction), canonical-vs-audit segregation, audit metadata expansion.
 
 **Service module** (`backend/app/services/westmetall_cash_settlement.py` at HEAD `05ffa2f8e`):
 
@@ -1077,30 +1077,31 @@ def ingest_cash_settlement_daily(
 ) -> CashSettlementIngestResponse:
     try:
         with unit_of_work(session, request=request):
-            inserted_id, ingested_count, skipped_count, evidence = (
+            # Executor MUST update `ingest_westmetall_cash_settlement_daily_for_date`
+            # to return the existing row's ID on skip as the first element instead of None,
+            # so we always have a durable anchor for the audit event.
+            row_id, ingested_count, skipped_count, evidence = (
                 ingest_westmetall_cash_settlement_daily_for_date(
                     session, payload.settlement_date
                 )
             )
-            if inserted_id is not None:
-                metadata = MarketDataAuditMetadata(
-                    provider=SOURCE_WESTMETALL,
-                    instrument=SYMBOL_DAILY,
-                    actor_sub="service:westmetall_ingest",
-                    tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
-                    is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                    # Bulk-style path: no provider_timestamp / sequence_number;
-                    # stable replay key per governance "Bulk exemption" clause.
-                        # Single-date page-scrape path: replay_key.settlement_date
-                    # uniquely identifies this ingest event per governance
-                    # §"Audit-trail attribution" stable bulk replay key.
-                    single_date_replay_key=payload.settlement_date,
-                )
-                mark_audit_success(
-                    request,
-                    inserted_id,
-                    metadata=metadata.as_metadata_dict(),
-                )
+            
+            metadata = MarketDataAuditMetadata(
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                actor_sub="service:westmetall_ingest",
+                tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+                is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+                # The single-date POST route MUST enforce live-path checks per governance.
+                # The executor MUST wire check_replay_window and check_sequence_monotonicity
+                # into this path.
+                single_date_replay_key=payload.settlement_date,
+            )
+            mark_audit_success(
+                request,
+                row_id,
+                metadata=metadata.as_metadata_dict(),
+            )
     except BulkContentMismatch as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
