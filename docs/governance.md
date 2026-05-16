@@ -565,14 +565,24 @@ config. Only the canonical provider's prices feed downstream computations
 When a second provider (also `trusted`) ingests the same instrument, its
 prices are stored as `audit_only` — separate from canonical — and the
 ingest path computes normalized drift ONLY after matching the canonical
-and audit prices on the same `(instrument, settlement_date)` tuple. If
-no canonical row exists for the audit row's `settlement_date` yet
-(audit provider arrived first or backfilled an older date), the drift
-computation is deferred until the canonical row lands; pairing across
-mismatched settlement dates is FORBIDDEN. Once both rows exist for the
-same `settlement_date`, the normalized drift is computed as
-`abs(canonical_price - audit_price) / canonical_price` (zero-guard when
-canonical_price == 0). When this normalized drift exceeds
+and audit prices on the same `(instrument, observation_key)` tuple,
+where `observation_key` is the canonical observation identifier for that
+instrument's cadence: `settlement_date` for daily-settled instruments
+(e.g. LME cash settlement), `observation_timestamp` for intraday
+instruments (spot forwards hourly, OTC FX continuous), or `tenor +
+fix_date` for tenor-fixed instruments (e.g. LBMA gold fix twice daily).
+The `observation_key` per instrument is declared in config alongside
+`canonical_provider`. If no canonical row exists for the audit row's
+`observation_key` yet (audit provider arrived first or backfilled an
+older observation), the drift computation is deferred until the
+canonical row lands; pairing across mismatched `observation_key` values
+is FORBIDDEN — comparing two different intraday FX ticks from the same
+day, or two different LBMA fixes on the same date, is a silent
+false-positive/false-negative generator and explicitly disallowed. Once
+both rows exist for the same `(instrument, observation_key)`, the
+normalized drift is computed as `abs(canonical_price - audit_price) /
+canonical_price` (zero-guard when canonical_price == 0). When this
+normalized drift exceeds
 `MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default configurable per
 instrument as a decimal fraction, e.g. 0.01 for 1%), structured log event
 `market_data_drift_alert` is emitted with both prices, both provider
