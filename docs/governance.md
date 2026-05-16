@@ -641,14 +641,15 @@ Anomalies to be retired upon Cluster 4 implementation closure:
    be ready so a future second provider does not require an emergency
    schema change).
 
-5. No precision-contract documentation. `Numeric(18, 6)` exists at
-   storage today (`market_data.py:24`) but is not declared as
-   constitutional. The end-to-end contract (raw → Decimal(str) → storage
-   → display) is enforced by current code but undocumented as
-   invariant. Closure requires explicit precision-contract assertion in
-   `backend/app/services/price_lookup_service.py` (or equivalent) and a
-   regression test asserting `Decimal(float)` construction raises a
-   guard error in market-data ingest paths.
+5. Live float parser in Westmetall ingest path. Provider prices are
+   still parsed through `float` in `westmetall_cash_settlement.py:169-175`
+   and persisted directly via `row.price_usd` in
+   `cash_settlement_prices.py:42-47`. Closure requires retiring the float
+   parser before PR-CL4-1: raw payload → `Decimal(str(raw))` at the
+   ingest entrypoint (westmetall_cash_settlement.py / cash_settlement_prices.py),
+   with a guard asserting `Decimal(float)` construction raises in all
+   market-data ingest paths. Regression test surface must cover the
+   westmetall ingest unit tests + price canonicalization assertions.
 
 6. Drift-alerting infrastructure is absent. Even though only one provider
    exists today, the rule must be declared and the infrastructure scaffolded
