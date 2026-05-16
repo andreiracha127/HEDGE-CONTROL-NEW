@@ -79,7 +79,7 @@ Both POST routes structurally fetch the entire Westmetall page and filter to the
 
 - `ingest_westmetall_cash_settlement_daily_for_date` (lines 20-53) — current row constructor at `:42-49`. Idempotency check at `:30-40` skips existing-date row but does NOT compare `price_usd`. Per governance §"Bulk idempotency vs replay distinction" this is a binding violation: differing `price_usd` for the same `(source, symbol, settlement_date)` MUST be rejected as `bulk_content_mismatch`, not silently skipped.
 - `ingest_westmetall_cash_settlement_bulk` (lines 72-144) — row constructor at `:121-129`. Idempotency check at `:99-120` uses `set(existing_dates)` and skips matching rows without `price_usd` comparison. Same binding violation.
-- `_westmetall_batch_uuid` (lines 56-69) — batch UUID derived from `html_sha256`. UNCHANGED; this is batch-level audit evidence, not row-level idempotency.
+- `_westmetall_batch_uuid` (lines 56-69) — currently derived from `html_sha256` + inserted dates. MUST change signature and implementation to accept only the logical request scope (`start_date`, `end_date`) plus the constant provider/instrument values, producing a stable replay key for repeated successful skip-runs. `html_sha256` remains persisted as audit evidence, but MUST NOT feed the batch replay identifier.
 
 **Model** (`backend/app/models/market_data.py` at HEAD `05ffa2f8e`):
 
@@ -753,9 +753,9 @@ class MarketDataSequenceTracker(Base):
     )
 ```
 
-Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Additionally, the request schema MUST be updated to accept the fields required by the live-path replay helpers. Four schemas need updates:
+Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Additionally, the request schema MUST remain a caller intent schema only; live-path replay helper fields are derived from the provider response inside the server. Four schemas need updates:
 
-- `CashSettlementIngestRequest` — POST `/aluminum/cash-settlement/ingest` payload; MUST add `provider_timestamp: datetime` and `sequence_number: int` (both required) so the client supplies the live-path assertions.
+- `CashSettlementIngestRequest` — POST `/aluminum/cash-settlement/ingest` payload; MUST NOT accept `provider_timestamp` or `sequence_number`. The route fetches Westmetall internally, so replay assertions MUST be derived server-side from the parsed provider response. The only request field remains the operator-selected `settlement_date` (plus any existing auth context); an authorized caller must not be able to mint fresh replay assertions for old provider data.
 - `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly. For computed data branches (like `_compute_monthly_averages` in `backend/app/api/routes/westmetall.py` returning `LME_ALU_MONTHLY_AVG`), the executor MUST populate a synthetic flag `is_canonical=True` so response validation succeeds without breaking the existing manual construction. **Crucially, the underlying query for the monthly average MUST be updated to filter the daily rows by `is_canonical=True` to prevent aggregating canonical and audit-only rows together.**
 - `CashSettlementIngestResponse` — POST `/aluminum/cash-settlement/ingest` response; echoes back the canonical flag of the ingested provider (must be `bool` unconditionally, even on idempotent skip).
 - `CashSettlementBulkIngestResponse` — POST `/aluminum/cash-settlement/ingest-bulk` response; echoes the canonical flag for the batch (today always `True` since Westmetall is the canonical provider for `LME_ALU_CASH_SETTLEMENT_DAILY`; future audit-only provider will return `False` on its batch).
@@ -769,6 +769,7 @@ Adding the field on the three response schemas regenerates the OpenAPI surface (
 Refactor `_parse_float` → `_parse_price_decimal`. Promote `WestmetallDailyRow.price_usd`:
 
 ```python
+from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 
 
@@ -776,6 +777,8 @@ from decimal import Decimal, InvalidOperation
 class WestmetallDailyRow:
     settlement_date: date
     price_usd: Decimal  # was: float — promoted per governance §"Precision contract"
+    provider_timestamp: datetime  # derived from provider response, not request payload
+    sequence_number: int  # stable monotonic provider sequence derived server-side
 
 
 def _parse_price_decimal(value: str) -> Decimal | None:
@@ -853,7 +856,18 @@ def parse_westmetall_daily_rows(html: bytes) -> list[WestmetallDailyRow]:
         if parsed_price is None:
             continue
         rows.append(
-            WestmetallDailyRow(settlement_date=parsed_date, price_usd=parsed_price)
+            WestmetallDailyRow(
+                settlement_date=parsed_date,
+                price_usd=parsed_price,
+                # Provider-derived replay assertion. Use the provider page's
+                # settlement date as the event timestamp anchor and a stable
+                # monotonic YYYYMMDD integer as the sequence. Do not source
+                # either value from CashSettlementIngestRequest.
+                provider_timestamp=datetime.combine(
+                    parsed_date, time.min, tzinfo=timezone.utc
+                ),
+                sequence_number=int(parsed_date.strftime("%Y%m%d")),
+            )
         )
     if not rows:
         raise WestmetallLayoutError("no_daily_rows_parsed")
@@ -869,6 +883,8 @@ Delete `_parse_float` (do NOT leave a deprecated alias — governance forbids fl
 Refactor `ingest_westmetall_cash_settlement_daily_for_date` to perform the row-level `price_usd` comparison:
 
 ```python
+import json
+
 from app.services.market_data_governance import (
     BulkContentMismatch,
     MarketDataAuditMetadata,
@@ -879,16 +895,32 @@ from app.services.market_data_governance import (
     tier_for_provider,
 )
 
+def _westmetall_batch_uuid(
+    *,
+    start_date: date | None,
+    end_date: date | None,
+) -> uuid.UUID:
+    """Stable bulk replay key for the logical requested range.
+
+    Do not accept html_sha256 or inserted_dates. Repeating the same successful
+    all-skip range after the provider page changes must produce the same
+    batch_uuid so POST /ingest-bulk always has a stable audit replay key.
+    """
+    payload = {
+        "source": SOURCE_WESTMETALL,
+        "symbol": SYMBOL_DAILY,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+    }
+    return uuid.uuid5(WESTMETALL_BATCH_NAMESPACE, json.dumps(payload, sort_keys=True))
+
 
 def ingest_westmetall_cash_settlement_daily_for_date(
     db: Session,
-    settlement_date: date,
+    row: WestmetallDailyRow,
+    evidence: WestmetallFetchEvidence,
 ) -> tuple[uuid.UUID | None, int, int, WestmetallFetchEvidence]:
-    html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
-    rows = parse_westmetall_daily_rows(html)
-    row = next((r for r in rows if r.settlement_date == settlement_date), None)
-    if row is None:
-        return None, 0, 0, evidence
+    settlement_date = row.settlement_date
 
     # Per governance §"Bulk idempotency vs replay distinction": load ONLY
     # price_usd into the comparison path. html_sha256 (page-level hash) MUST
@@ -970,8 +1002,6 @@ def ingest_westmetall_cash_settlement_bulk(
         batch_uuid = _westmetall_batch_uuid(
             start_date=start_date,
             end_date=end_date,
-            html_sha256=evidence.html_sha256,
-            inserted_dates=[],
         )
         return [], batch_uuid, 0, 0, evidence
 
@@ -1000,7 +1030,6 @@ def ingest_westmetall_cash_settlement_bulk(
     ingested = 0
     skipped = 0
     inserted_prices: list[CashSettlementPrice] = []
-    inserted_dates: list[date] = []
     canonical_flag = is_canonical(SOURCE_WESTMETALL, SYMBOL_DAILY)
 
     for row in rows:
@@ -1049,7 +1078,6 @@ def ingest_westmetall_cash_settlement_bulk(
         )
         db.add(price)
         inserted_prices.append(price)
-        inserted_dates.append(row.settlement_date)
         ingested += 1
 
     if ingested:
@@ -1094,43 +1122,55 @@ def ingest_cash_settlement_daily(
 ) -> CashSettlementIngestResponse:
     try:
         with unit_of_work(session, request=request):
-            # The single-date POST route MUST enforce live-path checks per governance.
-            check_replay_window(
-                provider=SOURCE_WESTMETALL,
-                instrument=SYMBOL_DAILY,
-                provider_timestamp=payload.provider_timestamp,
-                sequence_number=payload.sequence_number,
-                actor_sub="service:westmetall_ingest",
+            html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
+            rows = parse_westmetall_daily_rows(html)
+            row = next(
+                (r for r in rows if r.settlement_date == payload.settlement_date),
+                None,
             )
 
-            # Executor MUST update `ingest_westmetall_cash_settlement_daily_for_date`
-            # to return the existing row's ID on skip as the first element instead of None,
-            # so we always have a durable anchor for the audit event.
-            row_id, ingested_count, skipped_count, evidence = (
-                ingest_westmetall_cash_settlement_daily_for_date(
-                    session, payload.settlement_date
+            if row is None:
+                # Do not consume sequence numbers for no-row ingests
+                # (e.g. weekends); no provider event exists for that date.
+                row_id, ingested_count, skipped_count = None, 0, 0
+            else:
+                # The single-date POST route MUST derive live-path assertions
+                # from the parsed provider response and enforce both checks
+                # before calling the persistence helper. Nothing from
+                # CashSettlementIngestRequest may satisfy replay/sequence.
+                check_replay_window(
+                    provider=SOURCE_WESTMETALL,
+                    instrument=SYMBOL_DAILY,
+                    provider_timestamp=row.provider_timestamp,
+                    sequence_number=row.sequence_number,
+                    actor_sub="service:westmetall_ingest",
                 )
-            )
-            
-            if row_id is not None:
-                # Do not consume sequence numbers for no-row ingests (e.g. weekends)
                 check_sequence_monotonicity(
                     session,
                     provider=SOURCE_WESTMETALL,
                     instrument=SYMBOL_DAILY,
-                    provider_timestamp=payload.provider_timestamp,
-                    sequence_number=payload.sequence_number,
+                    provider_timestamp=row.provider_timestamp,
+                    sequence_number=row.sequence_number,
                     actor_sub="service:westmetall_ingest",
                 )
-                
+
+                # Executor MUST keep `ingest_westmetall_cash_settlement_daily_for_date`
+                # side-effect-free until the two checks above pass, and MUST return
+                # the existing row's ID on skip as the first element instead of None.
+                row_id, ingested_count, skipped_count, evidence = (
+                    ingest_westmetall_cash_settlement_daily_for_date(
+                        session, row, evidence
+                    )
+                )
+
                 metadata = MarketDataAuditMetadata(
                     provider=SOURCE_WESTMETALL,
                     instrument=SYMBOL_DAILY,
                     actor_sub="service:westmetall_ingest",
                     tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
                     is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                    provider_timestamp=payload.provider_timestamp,
-                    sequence_number=payload.sequence_number,
+                    provider_timestamp=row.provider_timestamp,
+                    sequence_number=row.sequence_number,
                 )
                 mark_audit_success(
                     request,
@@ -1161,7 +1201,9 @@ def ingest_cash_settlement_daily(
     )
 ```
 
-Bulk POST (`:173-236`): update the route's `audit_event` decorator to `event_type="market_data_ingested"` (was `bulk_ingested`). Apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY)`.
+Bulk POST (`:173-236`): update the route's `audit_event` decorator to `event_type="market_data_ingested"` (was `bulk_ingested`). Apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The as-metadata serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY)`.
+
+The bulk route MUST call `mark_audit_success` for every successful batch, including all-skip batches where `inserted_ids == []`. Do not wrap the audit write in `if inserted_ids:`. Instead, include `outcome = "ingested"` when `ingested > 0`, `outcome = "all_skip"` when `ingested == 0 and skipped > 0`, and `outcome = "empty_range"` when the filtered provider result has no rows. This preserves operator evidence that POST `/aluminum/cash-settlement/ingest-bulk` ran successfully even when no new `cash_settlement_prices` rows were inserted.
 
 ### 4.7 Scheduler audit metadata expansion
 
@@ -1358,7 +1400,8 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `ingest_westmetall_cash_settlement_daily_for_date` invokes `classify_bulk_row_replay` on every existing-key collision; matching → `emit_bulk_idempotent_skip` + return-as-skip; differing → `emit_bulk_content_mismatch_rejection` + raise `BulkContentMismatch`.
 - [ ] `ingest_westmetall_cash_settlement_bulk` performs the same per-row classification.
 - [ ] `westmetall.py` route handlers catch `BulkContentMismatch` → HTTP 409 CONFLICT with the helper's detail.
-- [ ] Neither helper reads `existing.html_sha256` for row idempotency. Sweep `rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py` — every match is either constructor assignment (`html_sha256=evidence.html_sha256`) or batch UUID derivation; none in the idempotency classification branch.
+- [ ] Neither helper reads `existing.html_sha256` for row idempotency. Sweep `rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py` — every match is constructor assignment (`html_sha256=evidence.html_sha256`) or response/audit evidence serialization; none in `_westmetall_batch_uuid` and none in the idempotency classification branch.
+- [ ] `_westmetall_batch_uuid` accepts only `start_date` and `end_date` (plus provider/instrument constants internally). Both the empty-range branch and the rows-processed branch call it with the same start/end-only shape, so repeated all-skip or empty-range runs keep a stable `batch_uuid` across provider page changes.
 - [ ] **html_sha256 load guard (PR #87 hook P1):** the idempotency lookup query MUST be column-scoped (load only `id` + `settlement_date` + `price_usd`), so `html_sha256` is NEVER pulled into memory on the idempotency code path even though it is also never used. Sweep `rg -nP "db\.query\(CashSettlementPrice\)\\." backend/app/services/cash_settlement_prices.py` — every match MUST be a row constructor / `.add(...)` write path, NEVER an idempotency-lookup `.first()` / `.all()` read. The idempotency read path uses `db.query(CashSettlementPrice.id, CashSettlementPrice.price_usd)` or `db.query(CashSettlementPrice.id, CashSettlementPrice.settlement_date, CashSettlementPrice.price_usd)` exclusively.
 
 ### 6.4 Canonical-vs-audit segregation (anomaly #4)
@@ -1385,6 +1428,8 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.7 Audit-trail metadata expansion
 
 - [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and exactly ONE of the three replay shapes: `provider_timestamp`+`sequence_number` (live single-event paths, e.g. single-date POST), `{source, symbol, settlement_date}` (exempt single-date scrape), or `{source, symbol, batch_id}` (exempt bulk POST + scheduler). The `MarketDataAuditMetadata.__post_init__` check guarantees exactly one identifier shape is populated.
+- [ ] Single-date POST derives `provider_timestamp` and `sequence_number` from the parsed Westmetall response; `CashSettlementIngestRequest` does not define or accept either field. `check_replay_window` and `check_sequence_monotonicity` run before `ingest_westmetall_cash_settlement_daily_for_date(...)` is invoked, and therefore before any `db.add()` or `db.flush()` for the price row.
+- [ ] Bulk POST writes a `market_data_ingested` audit row for every successful batch, including `inserted_ids == []`; metadata includes `outcome` with one of `"ingested"`, `"all_skip"`, or `"empty_range"` so operators can distinguish new-row ingestion from successful replay/empty runs.
 - [ ] Tests MUST explicitly validate the `MarketDataAuditMetadata.__post_init__` hard-fail (raises ValueError) when multiple identifier shapes (e.g. live fields mixed with batch ID) are populated, ensuring the audit-trail mutual exclusion contract is enforced.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
 - [ ] No regression on Cluster 3 PR-CL3-1 `actor_sub="service:westmetall_ingest"` plumbing.
@@ -1396,7 +1441,7 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.9 Cross-cutting isolation
 
 - [ ] `git diff main -- docs/governance.md` returns empty.
-- [ ] `git diff main -- frontend-svelte/` shows ONLY auto-generated OpenAPI types updates with the additive `is_canonical: boolean` field on the three response shapes (no UI / business-logic / formatter / route changes). All non-generated frontend paths are zero-diff.
+- [ ] `git diff main -- frontend-svelte/` shows ONLY auto-generated OpenAPI types updates with the additive `is_canonical: boolean` field on the three response shapes (no UI / business-logic / formatter / route changes). All non-generated frontend paths are zero-diff. This exception is required; rejecting the generated type diff is a verification failure because it would leave the frontend API client stale.
 - [ ] `git diff main -- frontend-svelte/nginx.conf` returns empty (Cluster 3 territory).
 - [ ] `git diff main -- backend/app/core/auth.py` returns empty (Cluster 3 territory — `require_service_identity` already landed in PR #81 and is unchanged).
 - [ ] Single alembic head: `045_market_data_governance_columns`.
@@ -1493,10 +1538,14 @@ DB-required tests for the hardened bulk idempotency (NEW file):
 
 End-to-end FastAPI route tests using the existing JWT/service-identity fixtures (NEW file):
 
-57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT, `provider_timestamp`, and `sequence_number`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, `metadata["provider_timestamp"]` matches payload, and `metadata["sequence_number"]` matches payload (single-date path uses live fields).
-57a. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
+57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and only the requested `settlement_date`; mock the parsed Westmetall row to expose provider-derived `provider_timestamp` and `sequence_number`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, and metadata replay fields match the parsed provider row, not request payload fields.
+57a. **`test_post_ingest_rejects_caller_supplied_replay_assertions`** — POST `/aluminum/cash-settlement/ingest` with extra `provider_timestamp` or `sequence_number` fields fails request validation (or ignores forbidden extras per the repo's existing Pydantic policy, but tests MUST prove those values do not reach `check_replay_window`, `check_sequence_monotonicity`, or audit metadata).
+57b. **`test_post_ingest_checks_sequence_before_daily_persistence`** — mock a provider row with an out-of-order sequence and spy on `ingest_westmetall_cash_settlement_daily_for_date`; route returns the sequence rejection before invoking the persistence helper and no `CashSettlementPrice` row is added/flushed.
+57c. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
 58. **`test_post_ingest_bulk_mismatch_returns_409`** — pre-seed DB with mismatched row; POST `/ingest` for that date returns HTTP 409 with `bulk_content_mismatch` in detail; no row state change in DB.
 59. **`test_post_ingest_bulk_path_persists_audit_metadata`** — POST `/aluminum/cash-settlement/ingest-bulk`; assert `record_worker_event`-or-`mark_audit_success` row metadata contains the governance fields.
+59a. **`test_post_ingest_bulk_all_skip_still_persists_audit_metadata`** — pre-seed every parsed row in the requested range, POST `/aluminum/cash-settlement/ingest-bulk`, and assert a `market_data_ingested` audit row is persisted with `inserted_ids == []`, `outcome == "all_skip"`, and the stable `batch_id` replay key.
+59b. **`test_bulk_batch_uuid_stable_for_empty_and_all_skip_ranges`** — run the same date range twice with different mocked `html_sha256` values and no new rows; assert `_westmetall_batch_uuid(start_date=..., end_date=...)` and persisted audit `batch_id` stay identical.
 
 ### 7.6 Scheduler integration tests `backend/tests/test_westmetall_task_governance.py`
 
@@ -1544,7 +1593,7 @@ rg -nP "WestmetallDailyRow\(.*price_usd=.*float" backend/
 # Bulk idempotency uses classify_bulk_row_replay
 rg -nP "classify_bulk_row_replay" backend/app/services/cash_settlement_prices.py
 
-# html_sha256 NOT in idempotency branches (positive assertion: only constructor + batch_uuid)
+# html_sha256 NOT in idempotency or batch UUID branches (positive assertion: only constructor/evidence serialization)
 rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py
 
 # Canonical flag set on every persisted row
@@ -1616,7 +1665,7 @@ pytest -q backend/tests
 - Currency conversion at ingest (governance forbids).
 - Migrating historical `cash_settlement_prices` rows to new schema beyond the `is_canonical=True` backfill (already covered by `server_default=true()`).
 - nginx CSP / Clerk / cookie / CSRF / RBAC changes (Cluster 3 territory).
-- Replacing `html_sha256` in `cash_settlement_prices` (still required as batch-level audit evidence; the governance binding only forbids using it for row idempotency classification).
+- Removing `html_sha256` evidence persistence from `cash_settlement_prices` or audit metadata; it is still required as evidence, but it MUST NOT feed row idempotency classification or `_westmetall_batch_uuid`.
 - Wiring `emit_drift_alert_if_breach` to a live production call-site (no audit-only provider exists today; forward-looking scaffold only).
 
 ## 10. PR Requirements
@@ -1677,4 +1726,4 @@ The PR body must include:
   - **PR-CL3-1 actor_sub regression** — Codex will verify `service:westmetall_ingest` actor still attributed correctly after metadata expansion. Defense: the expansion ADDS fields; the actor_sub remains at the same key.
 - **Padrão estabelecido por PR #86 (9-cycle absorption, governance):** Cluster 4 territory receives Codex scrutiny on cross-section interdependencies (replay/idempotency/observation-key/precision/canonical/tier cross-reference each other). The implementation MUST cross-reference governance line citations in code comments to make the audit trail self-documenting.
 - **8-section sweep checklist from `feedback_dispatch_self_consistency`:** §3 evidence, §4 boundary, §6 acceptance, §7 tests, §8 verification, §11 workflow MUST consistently enumerate the same 6 anomaly categories + the audit-metadata expansion + the 4 structured-log-event types. Drift between sections is the canonical authoring failure mode.
-- **The largest authoring risk** is silent reintroduction of `Decimal(float(...))` somewhere in the call chain. The sweep `rg -nP "Decimal\\(\\s*float" backend/app/` is mandatory after every step. The second-largest risk is the bulk idempotency check using `html_sha256` again — the sweep `rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py` MUST be eyeballed to confirm every match is constructor assignment or batch_uuid derivation, NEVER inside an idempotency `if/else` branch.
+- **The largest authoring risk** is silent reintroduction of `Decimal(float(...))` somewhere in the call chain. The sweep `rg -nP "Decimal\\(\\s*float" backend/app/` is mandatory after every step. The second-largest risk is the bulk idempotency check or batch replay key using `html_sha256` again — the sweep `rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py` MUST be eyeballed to confirm every match is constructor/evidence serialization, NEVER `_westmetall_batch_uuid` and NEVER inside an idempotency `if/else` branch.
