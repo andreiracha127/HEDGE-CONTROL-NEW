@@ -738,7 +738,7 @@ class MarketDataSequenceTracker(Base):
 
 Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Three schemas need the field (verify exact line numbers with `rg -nP "class (CashSettlementPriceRead|CashSettlementIngestResponse|CashSettlementBulkIngestResponse)" backend/app/schemas/market_data.py`):
 
-- `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly.
+- `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly. For computed data branches (like `_compute_monthly_averages` in `backend/app/api/routes/westmetall.py` returning `LME_ALU_MONTHLY_AVG`), the executor MUST populate a synthetic flag `is_canonical=True` so response validation succeeds without breaking the existing manual construction.
 - `CashSettlementIngestResponse` — POST `/aluminum/cash-settlement/ingest` response; echoes back the canonical flag of the just-ingested row (when `ingested_count > 0`; nullable / `Optional[bool]` when idempotent skip occurs and no new row was persisted).
 - `CashSettlementBulkIngestResponse` — POST `/aluminum/cash-settlement/ingest-bulk` response; echoes the canonical flag for the batch (today always `True` since Westmetall is the canonical provider for `LME_ALU_CASH_SETTLEMENT_DAILY`; future audit-only provider will return `False` on its batch).
 
@@ -1110,9 +1110,9 @@ def ingest_cash_settlement_daily(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
+    # Keep existing required fields (ingested_count, skipped_count, source, symbol, settlement_date, source_url, html_sha256, fetched_at)
     return CashSettlementIngestResponse(
-        ingested=ingested_count,
-        skipped=skipped_count,
+        ... # existing fields
         is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY) if ingested_count > 0 else None,
     )
 ```
@@ -1329,7 +1329,7 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `backend/app/tasks/market_data_staleness_task.py` exists with `run_market_data_staleness_check`.
 - [ ] Registered on the existing scheduler at `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` cadence (default 15).
 - [ ] `_MONITORED_PAIRS` contains `(westmetall, LME_ALU_CASH_SETTLEMENT_DAILY)`.
-- [ ] `max_gap_hours_for("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY")` returns 36 by default; env-var override works.
+- [ ] `max_gap_hours_for("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY")` returns 96 by default; env-var override works.
 - [ ] Per-pair exception in the loop is caught and logged; the loop continues to the next pair.
 
 ### 6.6 Drift-alerting scaffold (anomaly #6)
