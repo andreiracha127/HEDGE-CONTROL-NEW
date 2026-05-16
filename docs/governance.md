@@ -525,15 +525,37 @@ log event `market_data_replay_rejected` with the rejection reason.
   **Bulk exemption**: Scheduler daily runs and
   `ingest_westmetall_cash_settlement_bulk` paths are fully exempt from
   sequence monotonicity; they use the stable `(source, symbol,
-  settlement_date)` replay key instead. Only pure live single-event ingest
-  (if added) remains under strict sequence ordering.
+  settlement_date)` replay key with content-hash comparison instead.
+  Only pure live single-event ingest (if added) remains under strict
+  sequence ordering.
+
+  **Bulk idempotency vs replay distinction**: when a bulk-path row hits
+  an existing `(source, symbol, settlement_date)` key, the ingest
+  pipeline compares the new row's content hash (e.g.
+  `html_sha256`/`price_usd` tuple) against the stored row's hash:
+  - **content matches** → idempotent skip, emit info-level structured
+    log event `market_data_bulk_idempotent_skip` with the matched key.
+    This is normal operation (scheduler scans multi-year history each
+    run and re-encounters every settled date). The skip is NOT a
+    rejection; the bulk run continues processing remaining rows.
+  - **content differs** (different price for the same settlement_date,
+    or different html_sha256 for the same observation) → REJECT with
+    `market_data_replay_rejected` reason `bulk_content_mismatch`. This
+    is the malicious-replay / silent-data-tampering case the binding
+    guards against, and the row is NOT persisted; operator review
+    required.
 
 Both checks run BEFORE persistence and BEFORE any downstream side effect
 (audit_event write, MTM recomputation trigger, etc.). The
 `market_data_replay_rejected` structured log event MUST include
-`provider`, `instrument`, `provider_timestamp`, `sequence_number` (or stable bulk replay key `(source, symbol, settlement_date)` when exempted),
-`reason` (one of `timestamp_out_of_window`, `sequence_not_monotonic`,
-`sequence_duplicate`, `bulk_duplicate`), and `actor_sub`.
+`provider`, `instrument`, `provider_timestamp`, `sequence_number` (or
+stable bulk replay key `(source, symbol, settlement_date)` when
+exempted), `reason` (one of `timestamp_out_of_window`,
+`sequence_not_monotonic`, `sequence_duplicate`, `bulk_content_mismatch`),
+and `actor_sub`. The `market_data_bulk_idempotent_skip` event is
+separate (info-level, not a rejection); it MUST include `provider`,
+`instrument`, `(source, symbol, settlement_date)`, and `actor_sub` but
+NOT a `reason` field — it is not a failure mode.
 
 Stale-feed detection invariant (binding):
 
