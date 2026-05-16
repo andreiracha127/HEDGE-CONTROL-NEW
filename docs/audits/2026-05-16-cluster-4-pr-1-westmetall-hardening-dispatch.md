@@ -1058,8 +1058,6 @@ def ingest_westmetall_cash_settlement_bulk(
     batch_uuid = _westmetall_batch_uuid(
         start_date=start_date,
         end_date=end_date,
-        html_sha256=evidence.html_sha256,
-        inserted_dates=inserted_dates,
     )
     return [price.id for price in inserted_prices], batch_uuid, ingested, skipped, evidence
 ```
