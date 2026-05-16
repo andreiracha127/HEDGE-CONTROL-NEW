@@ -148,7 +148,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Literal, Optional
 
@@ -1391,6 +1391,7 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and exactly ONE of the three replay shapes: `provider_timestamp`+`sequence_number` (true future live single-event endpoints only), `{source, symbol, settlement_date}` (exempt single-date scrape), or `{source, symbol, batch_id}` (exempt bulk POST + scheduler). The `MarketDataAuditMetadata.__post_init__` check guarantees exactly one identifier shape is populated.
 - [ ] Single-date POST does not accept, derive, or fabricate `provider_timestamp` / `sequence_number`. It records `single_date_replay_key=payload.settlement_date`, does not call `check_replay_window` or `check_sequence_monotonicity`, and relies on `ingest_westmetall_cash_settlement_daily_for_date(...)` row-level comparison to reject mismatched existing rows before any new persistence.
 - [ ] Bulk POST writes a `market_data_ingested` audit row for every successful batch, including all-skip runs; route metadata includes `outcome` with one of `"ingested"`, `"all_skip"`, or `"empty_range"` plus the stable batch replay key so operators can distinguish new-row ingestion from successful replay/empty runs.
+- [ ] Tests verify sibling replay-key shapes are mutually distinguishable: single-date route produces `replay_key["settlement_date"]` and no `batch_id`; bulk route produces `replay_key["batch_id"]` and no `settlement_date`.
 - [ ] Tests MUST explicitly validate the `MarketDataAuditMetadata.__post_init__` hard-fail (raises ValueError) when multiple identifier shapes (e.g. live fields mixed with batch ID) are populated, ensuring the audit-trail mutual exclusion contract is enforced.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
 - [ ] No regression on Cluster 3 PR-CL3-1 `actor_sub="service:westmetall_ingest"` plumbing.
@@ -1500,6 +1501,7 @@ DB-required tests for the hardened bulk idempotency (NEW file):
 End-to-end FastAPI route tests using the existing JWT/service-identity fixtures (NEW file):
 
 57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and only the requested `settlement_date`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, and `metadata["replay_key"]["settlement_date"]` equals the requested date.
+57d. **`test_post_ingest_replay_key_shape_has_no_batch_id`** — assert single-date POST audit metadata has `replay_key["settlement_date"]` and does NOT contain `replay_key["batch_id"]`.
 57a. **`test_post_ingest_rejects_caller_supplied_replay_assertions`** — POST `/aluminum/cash-settlement/ingest` with extra `provider_timestamp` or `sequence_number` fields fails request validation (or ignores forbidden extras per the repo's existing Pydantic policy, but tests MUST prove those values do not reach audit metadata).
 57b. **`test_post_ingest_does_not_call_live_replay_helpers`** — spy on `check_replay_window` and `check_sequence_monotonicity`; POST `/aluminum/cash-settlement/ingest` for a valid scraped table row persists/skips through row-level idempotency without invoking either live helper.
 57c. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
