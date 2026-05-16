@@ -1078,6 +1078,8 @@ from app.services.market_data_governance import (
     MarketDataAuditMetadata,
     ReplayWindowViolation,
     SequenceMonotonicityViolation,
+    check_replay_window,
+    check_sequence_monotonicity,
     is_canonical as is_canonical_provider,
     tier_for_provider,
 )
@@ -1102,14 +1104,6 @@ def ingest_cash_settlement_daily(
                 sequence_number=payload.sequence_number,
                 actor_sub="service:westmetall_ingest",
             )
-            check_sequence_monotonicity(
-                session,
-                provider=SOURCE_WESTMETALL,
-                instrument=SYMBOL_DAILY,
-                provider_timestamp=payload.provider_timestamp,
-                sequence_number=payload.sequence_number,
-                actor_sub="service:westmetall_ingest",
-            )
 
             # Executor MUST update `ingest_westmetall_cash_settlement_daily_for_date`
             # to return the existing row's ID on skip as the first element instead of None,
@@ -1121,6 +1115,16 @@ def ingest_cash_settlement_daily(
             )
             
             if row_id is not None:
+                # Do not consume sequence numbers for no-row ingests (e.g. weekends)
+                check_sequence_monotonicity(
+                    session,
+                    provider=SOURCE_WESTMETALL,
+                    instrument=SYMBOL_DAILY,
+                    provider_timestamp=payload.provider_timestamp,
+                    sequence_number=payload.sequence_number,
+                    actor_sub="service:westmetall_ingest",
+                )
+                
                 metadata = MarketDataAuditMetadata(
                     provider=SOURCE_WESTMETALL,
                     instrument=SYMBOL_DAILY,
