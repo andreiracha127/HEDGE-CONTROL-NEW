@@ -16,16 +16,16 @@ Six coupled deliverables:
 
 1. **Market-data governance service module** (`backend/app/services/market_data_governance.py`) — new module hosting tier lookup, replay-window helpers, sequence-monotonicity helpers, bulk-idempotency-vs-replay classifier, canonical-provider lookup, drift computation, and structured-log-event emission. Forward-looking: all live-single-event helpers exist now even where no current path invokes them, so a future provider with a true streaming POST endpoint can wire in without re-opening governance.
 2. **Bulk idempotency hardening (anomaly #2 — bulk distinction)** — refactor `ingest_westmetall_cash_settlement_daily_for_date` and `ingest_westmetall_cash_settlement_bulk` in `cash_settlement_prices.py` to enforce the **row-level** `price_usd` content comparison mandated by governance §"Bulk idempotency vs replay distinction" (lines 535-555): matching `price_usd` → info-level `market_data_bulk_idempotent_skip`; differing `price_usd` for the same `(source, symbol, settlement_date)` → `market_data_replay_rejected` reason `bulk_content_mismatch` + raise (do NOT persist). The `html_sha256` whole-page hash MUST NOT participate in the row idempotency decision (it mutates every time the provider publishes any new row and would silently mask real replay attempts).
-3. **Precision contract enforcement (anomaly #5)** — refactor `westmetall_cash_settlement.py:169-177` `_parse_float` → `_parse_price_decimal(raw: str) -> Decimal | None`. Reject float inputs at the parser boundary (TypeError raised at function entry when a non-`str` is passed). Normalize locale artifacts BEFORE Decimal construction. Construct via `Decimal(str(normalized))`. Promote `WestmetallDailyRow.price_usd` from `float` to `Decimal`. Update `cash_settlement_prices.py:46, :125` row constructors to consume the `Decimal` directly. No `Decimal(float(...))` anywhere in the ingest path.
+3. **Precision contract enforcement (anomaly #5)** — refactor `westmetall_cash_settlement.py` `_parse_float` → `_parse_price_decimal(raw: str) -> Decimal | None`. Reject float inputs at the parser boundary (TypeError raised at function entry when a non-`str` is passed). Normalize locale artifacts BEFORE Decimal construction. Construct via `Decimal(str(normalized))`. Promote `WestmetallDailyRow.price_usd` from `float` to `Decimal`. Update row constructors in `ingest_westmetall_cash_settlement_daily_for_date` and `ingest_westmetall_cash_settlement_bulk` to consume the `Decimal` directly. No `Decimal(float(...))` anywhere in the ingest path.
 4. **Canonical-vs-audit segregation (anomaly #4)** — alembic revision `045_market_data_governance_columns` adds `is_canonical: BOOLEAN NOT NULL DEFAULT TRUE` to `cash_settlement_prices`, backfills existing rows to `True`. Add `MARKET_DATA_CANONICAL_PROVIDER_<INSTRUMENT>` env-var lookup (default `westmetall` for `LME_ALU_CASH_SETTLEMENT_DAILY`). Set `is_canonical = (provider == canonical_provider_for_instrument(instrument))` on insert. Today every Westmetall row remains canonical; the path is now ready to accept a second `trusted` provider as `audit_only` without a follow-up schema change. **Crucially, update `backend/app/services/price_lookup_service.py:100-110` (and `backend/app/utils/market_calendar.py:173-179`) to filter reads by `is_canonical=True` instead of relying on the hard-coded `_canonical_source_for_symbol` map.**
 5. **Stale-feed detection job (anomaly #3)** — new module `backend/app/tasks/market_data_staleness_task.py` registered with the existing scheduler. Per-pair `max_gap_hours` config (default for `westmetall:LME_ALU_CASH_SETTLEMENT_DAILY = 96h` to accommodate weekend gap on Friday cash settlement). Background job at `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` cadence (default 15) computes `now - last_ingest_at` per `(provider, instrument)` pair; emits `market_data_stale_feed` warning when the gap exceeds the per-pair threshold. Alerting-only; never blocks ingest.
 6. **Drift-alerting infrastructure scaffold (anomaly #6) + audit-trail metadata expansion** — `MARKET_DATA_DRIFT_THRESHOLD_<INSTRUMENT>` config (default `0.01` = 1%). `compute_normalized_drift(canonical, audit)` helper (zero-guard). `emit_drift_alert_if_breach(...)` orchestration wired into the ingest path after every audit-only row insert, performing `(instrument, observation_key)` match against the canonical row and deferring computation when canonical row is absent (per governance §"Canonical price reconciliation"). For `cash_settlement_prices`, the canonical `observation_key` is `settlement_date`; the binding's `observation_timestamp` and `tenor+fix_date` alternatives are declared in code (config lookup table) for future-provider readiness but no current row uses them. Today no audit-only provider exists, so the path is unreachable; tested via fixture-synthesized audit row.
 
 Plus mandatory:
 
-- Replay-window helpers (anomaly #1 — must be invoked by the single-date `POST /aluminum/cash-settlement/ingest` route; only bulk/scheduler paths are exempt).
-- Sequence-monotonicity helpers + `market_data_sequence_tracker` table (anomaly #2 — must be invoked by the single-date `POST /aluminum/cash-settlement/ingest` route).
-- Audit-event metadata expansion: every market-data ingest path persists `provider`, `instrument`, `provider_timestamp`, `sequence_number` (or stable bulk key `(source, symbol, settlement_date)` for exempted paths), `tier_at_ingest_time` (frozen lookup), `is_canonical` per governance §"Audit-trail attribution" (lines 673-688).
+- Replay-window helpers (anomaly #1) exist for true live single-event provider paths. The current Westmetall POST routes are scrape/backfill-style fetches of provider tables and therefore use stable replay keys rather than fabricated live timestamps.
+- Sequence-monotonicity helpers + `market_data_sequence_tracker` table (anomaly #2) exist for true live single-event provider paths. The current Westmetall scrape paths remain exempt from sequence advancement and rely on row-level idempotency/replay classification.
+- Audit-event metadata expansion: every market-data ingest path persists `provider`, `instrument`, either live `provider_timestamp`+`sequence_number` or a stable replay key `(source, symbol, settlement_date|batch_id)`, `tier_at_ingest_time` (frozen lookup), `is_canonical` per governance §"Audit-trail attribution" (lines 673-688).
 
 The MARKET-DATA GOVERNANCE section is canonical (`docs/governance.md:451-452`: "This section is the constitutional contract. Per-provider deviations require amendment of this section, NOT silent config overrides in code."). Code MUST conform.
 
@@ -67,7 +67,7 @@ Verified at HEAD `05ffa2f8e`.
 - `POST /aluminum/cash-settlement/ingest-bulk` (line 173-236) — multi-date ingest. Gated by `require_service_identity("westmetall_ingest")` at `:188`. Calls `ingest_westmetall_cash_settlement_bulk(session, start_date, end_date)`.
 - `GET /aluminum/cash-settlement/prices` (line 89-117) — list/read endpoint; out of scope.
 
-Both POST routes structurally fetch the entire Westmetall page and filter to the requested scope. Per governance §"Backfill exemption" (`docs/governance.md:512-521`) and §"Bulk exemption" (`docs/governance.md:528-533`), the scheduler invocation of `ingest_westmetall_cash_settlement_bulk` is exempt from both timestamp tolerance and sequence monotonicity. However, the single-date `POST /ingest` route is **NOT** exempt under the current governance text. The dispatch executor MUST update the single-date route (`POST /aluminum/cash-settlement/ingest`) to explicitly invoke the `check_replay_window` and `check_sequence_monotonicity` helpers before persisting the row, ensuring it enforces the mandated live-path checks to fully retire anomalies #1 and #2. Both POST paths thus receive: bulk idempotency hardening (anomaly #2 bulk distinction), canonical-vs-audit segregation, audit metadata expansion.
+Both POST routes structurally fetch the entire Westmetall page and filter to the requested scope. Per governance §"Backfill exemption" (`docs/governance.md:512-521`) and §"Bulk exemption" (`docs/governance.md:528-533`), the scheduler invocation of `ingest_westmetall_cash_settlement_bulk` is exempt from both timestamp tolerance and sequence monotonicity. The single-date `POST /ingest` route is the same scrape/fetch model scoped to one settlement date: the parsed table date is an observation key, not a provider publish timestamp. Therefore it MUST NOT fabricate `provider_timestamp` or `sequence_number` from `settlement_date`; it uses `single_date_replay_key=payload.settlement_date` in audit metadata and relies on row-level `price_usd` idempotency/replay classification before persistence. Both POST paths thus receive: bulk idempotency hardening (anomaly #2 bulk distinction), canonical-vs-audit segregation, audit metadata expansion.
 
 **Service module** (`backend/app/services/westmetall_cash_settlement.py` at HEAD `05ffa2f8e`):
 
@@ -113,11 +113,11 @@ The 6 enumerated anomalies in §"Anomalies to be retired" (`docs/governance.md:6
 
 | # | Governance citation | Current code | Closure |
 |---|---|---|---|
-| 1 | `:692-702` Replay-window check missing on non-exempt live single-event POST paths | Single-date POST path lacks replay-window check | Add `check_replay_window` helper in `market_data_governance.py` and invoke it in the `POST /aluminum/cash-settlement/ingest` single-date route. Only bulk/scheduler paths are exempt. |
-| 2 | `:704-709` Sequence number tracking missing for live single-event ingest paths | Single-date POST path lacks sequence monotonicity check | Add `check_sequence_monotonicity` helper + `market_data_sequence_tracker` table via alembic 045, and invoke it in the `POST /aluminum/cash-settlement/ingest` single-date route. **Plus**: harden the existing bulk-style stable-key idempotency check to enforce §"Bulk idempotency vs replay distinction" (`price_usd` comparison; matching → `market_data_bulk_idempotent_skip`; differing → `market_data_replay_rejected` reason `bulk_content_mismatch`). |
+| 1 | `:692-702` Replay-window check missing on non-exempt live single-event POST paths | No true live single-event provider POST exists today; Westmetall routes are scrape/backfill-style table fetches | Add `check_replay_window` helper in `market_data_governance.py` for future live providers. Do not invoke it from current Westmetall scrape routes with fabricated settlement-date timestamps; use stable replay keys instead. |
+| 2 | `:704-709` Sequence number tracking missing for live single-event ingest paths | No true live single-event provider POST exists today; Westmetall table dates are observation keys | Add `check_sequence_monotonicity` helper + `market_data_sequence_tracker` table via alembic 045 for future live providers. Current Westmetall scrape routes do not advance the sequence tracker; they harden the existing stable-key idempotency check to enforce §"Bulk idempotency vs replay distinction" (`price_usd` comparison; matching → `market_data_bulk_idempotent_skip`; differing → `market_data_replay_rejected` reason `bulk_content_mismatch`). |
 | 3 | `:711-715` No background staleness-check job | None exists | Add `backend/app/tasks/market_data_staleness_task.py` + per-pair `max_gap_hours` config + `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` cadence. Emit `market_data_stale_feed` warning when gap exceeds threshold. Westmetall+LME_ALU_CASH_SETTLEMENT_DAILY default `max_gap_hours = 96` (allows for Friday-to-Monday weekend gap). |
 | 4 | `:717-723` No canonical-vs-audit segregation | `cash_settlement_prices` has no `is_canonical` column | Alembic 045 adds `is_canonical: BOOLEAN NOT NULL DEFAULT TRUE`. Add `MARKET_DATA_CANONICAL_PROVIDER_<INSTRUMENT>` config. Insert path sets `is_canonical = (provider == canonical_provider_for_instrument(instrument))`. Today every Westmetall row remains canonical. |
-| 5 | `:725-734` Live float parser at `westmetall_cash_settlement.py:169-175` + row constructor at `cash_settlement_prices.py:42-47` | `_parse_float` returns `float`; `WestmetallDailyRow.price_usd: float`; row constructor consumes `float` directly | Rename to `_parse_price_decimal(value: str) -> Decimal \| None`. Raise `TypeError` at entry when `not isinstance(value, str)`. Normalize locale artifacts (nbsp, thousands separator, decimal-comma, whitespace) BEFORE Decimal construction. Construct via `Decimal(str(normalized))`. Promote `WestmetallDailyRow.price_usd: Decimal`. Row constructors at `cash_settlement_prices.py:46, :125` consume `Decimal` directly (no conversion). |
+| 5 | `:725-734` Live float parser + cash-settlement row constructors | `_parse_float` returns `float`; `WestmetallDailyRow.price_usd: float`; row constructors consume `float` directly | Rename to `_parse_price_decimal(value: str) -> Decimal \| None`. Raise `TypeError` at entry when `not isinstance(value, str)`. Normalize locale artifacts (nbsp, thousands separator, decimal-comma, whitespace) BEFORE Decimal construction. Construct via `Decimal(str(normalized))`. Promote `WestmetallDailyRow.price_usd: Decimal`. Row constructors in `ingest_westmetall_cash_settlement_daily_for_date` and `ingest_westmetall_cash_settlement_bulk` consume `Decimal` directly (no conversion). |
 | 6 | `:736-741` Drift-alerting infrastructure absent | None exists | Add `MARKET_DATA_DRIFT_THRESHOLD_<INSTRUMENT>` config (default `0.01` = 1%). Add `compute_normalized_drift(canonical, audit)` helper (zero-guard for canonical_price == 0). Wire into ingest path after every `is_canonical=False` row insert: look up canonical row for same `(instrument, observation_key)`; if absent, defer; if found, compute drift; if `> threshold`, emit `market_data_drift_alert` per §"Canonical price reconciliation" `:613-619`. Today no audit-only provider exists → path unreachable in production; tested via synthesized fixture row. |
 
 ### 3.6 Anomaly preamble — additional gap sweep
@@ -128,7 +128,7 @@ Governance §"Anomalies to be retired" closes with (`docs/governance.md:743-746`
 
 The executor MUST perform `rg -nP "@router\\.(post|patch|put|delete)" backend/app/api/routes/` and identify any market-data-relevant mutation route not covered above. Findings (if any) MUST be added to the implementation scope of this PR with an inline PR-body note. The current expectation is zero additional findings (market-data ingest is concentrated in `westmetall.py`), but the sweep is mandatory and the result MUST be documented in the PR body regardless of outcome.
 
-Additionally: sweep `rg -nP "Decimal\\(\\s*float" backend/app/` and `rg -nP "float\\(.*price" backend/app/services/` to identify any latent float→Decimal contamination outside the Westmetall path. Any finding outside the ingest scope is documented in the PR body as deferred (not in PR-CL4-1 scope) unless it touches the active Westmetall ingest path — in which case it is in scope.
+Additionally: sweep `rg -nP "_parse_float" backend/app/`, `rg -nP "Decimal\\(\\s*float" backend/app/`, and `rg -nP "float\\(.*price" backend/app/services/` before deleting `_parse_float` or touching row constructors. Expected `_parse_float` result before refactor: exactly the current definition and the parser call in `parse_westmetall_daily_rows`; after refactor: zero matches. Any other finding outside the ingest scope is documented in the PR body as deferred (not in PR-CL4-1 scope) unless it touches the active Westmetall ingest path — in which case it is in scope.
 
 ## 4. Required Implementation Boundary
 
@@ -753,9 +753,9 @@ class MarketDataSequenceTracker(Base):
     )
 ```
 
-Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Additionally, the request schema MUST remain a caller intent schema only; live-path replay helper fields are derived from the provider response inside the server. Four schemas need updates:
+Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Additionally, the request schema MUST remain a caller intent schema only; current Westmetall scrape paths do not accept live-path replay helper fields. Four schemas need updates:
 
-- `CashSettlementIngestRequest` — POST `/aluminum/cash-settlement/ingest` payload; MUST NOT accept `provider_timestamp` or `sequence_number`. The route fetches Westmetall internally, so replay assertions MUST be derived server-side from the parsed provider response. The only request field remains the operator-selected `settlement_date` (plus any existing auth context); an authorized caller must not be able to mint fresh replay assertions for old provider data.
+- `CashSettlementIngestRequest` — POST `/aluminum/cash-settlement/ingest` payload; MUST NOT accept `provider_timestamp` or `sequence_number`. The route fetches a Westmetall table internally, and that table exposes observation dates rather than live event timestamps/sequences. The only request field remains the operator-selected `settlement_date` (plus any existing auth context); audit metadata uses `single_date_replay_key=payload.settlement_date`.
 - `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly. For computed data branches (like `_compute_monthly_averages` in `backend/app/api/routes/westmetall.py` returning `LME_ALU_MONTHLY_AVG`), the executor MUST populate a synthetic flag `is_canonical=True` so response validation succeeds without breaking the existing manual construction. **Crucially, the underlying query for the monthly average MUST be updated to filter the daily rows by `is_canonical=True` to prevent aggregating canonical and audit-only rows together.**
 - `CashSettlementIngestResponse` — POST `/aluminum/cash-settlement/ingest` response; echoes back the canonical flag of the ingested provider (must be `bool` unconditionally, even on idempotent skip).
 - `CashSettlementBulkIngestResponse` — POST `/aluminum/cash-settlement/ingest-bulk` response; echoes the canonical flag for the batch (today always `True` since Westmetall is the canonical provider for `LME_ALU_CASH_SETTLEMENT_DAILY`; future audit-only provider will return `False` on its batch).
@@ -769,7 +769,6 @@ Adding the field on the three response schemas regenerates the OpenAPI surface (
 Refactor `_parse_float` → `_parse_price_decimal`. Promote `WestmetallDailyRow.price_usd`:
 
 ```python
-from datetime import datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 
 
@@ -777,8 +776,6 @@ from decimal import Decimal, InvalidOperation
 class WestmetallDailyRow:
     settlement_date: date
     price_usd: Decimal  # was: float — promoted per governance §"Precision contract"
-    provider_timestamp: datetime  # derived from provider response, not request payload
-    sequence_number: int  # stable monotonic provider sequence derived server-side
 
 
 def _parse_price_decimal(value: str) -> Decimal | None:
@@ -856,18 +853,7 @@ def parse_westmetall_daily_rows(html: bytes) -> list[WestmetallDailyRow]:
         if parsed_price is None:
             continue
         rows.append(
-            WestmetallDailyRow(
-                settlement_date=parsed_date,
-                price_usd=parsed_price,
-                # Provider-derived replay assertion. Use the provider page's
-                # settlement date as the event timestamp anchor and a stable
-                # monotonic YYYYMMDD integer as the sequence. Do not source
-                # either value from CashSettlementIngestRequest.
-                provider_timestamp=datetime.combine(
-                    parsed_date, time.min, tzinfo=timezone.utc
-                ),
-                sequence_number=int(parsed_date.strftime("%Y%m%d")),
-            )
+            WestmetallDailyRow(settlement_date=parsed_date, price_usd=parsed_price)
         )
     if not rows:
         raise WestmetallLayoutError("no_daily_rows_parsed")
@@ -917,10 +903,13 @@ def _westmetall_batch_uuid(
 
 def ingest_westmetall_cash_settlement_daily_for_date(
     db: Session,
-    row: WestmetallDailyRow,
-    evidence: WestmetallFetchEvidence,
+    settlement_date: date,
 ) -> tuple[uuid.UUID | None, int, int, WestmetallFetchEvidence]:
-    settlement_date = row.settlement_date
+    html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
+    rows = parse_westmetall_daily_rows(html)
+    row = next((r for r in rows if r.settlement_date == settlement_date), None)
+    if row is None:
+        return None, 0, 0, evidence
 
     # Per governance §"Bulk idempotency vs replay distinction": load ONLY
     # price_usd into the comparison path. html_sha256 (page-level hash) MUST
@@ -1102,10 +1091,6 @@ Single-date POST (`:120-170`):
 from app.services.market_data_governance import (
     BulkContentMismatch,
     MarketDataAuditMetadata,
-    ReplayWindowViolation,
-    SequenceMonotonicityViolation,
-    check_replay_window,
-    check_sequence_monotonicity,
     is_canonical as is_canonical_provider,
     tier_for_provider,
 )
@@ -1122,65 +1107,30 @@ def ingest_cash_settlement_daily(
 ) -> CashSettlementIngestResponse:
     try:
         with unit_of_work(session, request=request):
-            html, evidence = fetch_westmetall_html(WESTMETALL_DAILY_URL)
-            rows = parse_westmetall_daily_rows(html)
-            row = next(
-                (r for r in rows if r.settlement_date == payload.settlement_date),
-                None,
+            # Westmetall single-date POST is an operator-scoped scrape of the
+            # provider table, not a true live single-event feed. Do not invoke
+            # replay/sequence checks with fabricated settlement-date assertions.
+            # The helper performs row-level price comparison before persistence.
+            row_id, ingested_count, skipped_count, evidence = (
+                ingest_westmetall_cash_settlement_daily_for_date(
+                    session, payload.settlement_date
+                )
             )
 
-            if row is None:
-                # Do not consume sequence numbers for no-row ingests
-                # (e.g. weekends); no provider event exists for that date.
-                row_id, ingested_count, skipped_count = None, 0, 0
-            else:
-                # The single-date POST route MUST derive live-path assertions
-                # from the parsed provider response and enforce both checks
-                # before calling the persistence helper. Nothing from
-                # CashSettlementIngestRequest may satisfy replay/sequence.
-                check_replay_window(
-                    provider=SOURCE_WESTMETALL,
-                    instrument=SYMBOL_DAILY,
-                    provider_timestamp=row.provider_timestamp,
-                    sequence_number=row.sequence_number,
-                    actor_sub="service:westmetall_ingest",
-                )
-                check_sequence_monotonicity(
-                    session,
-                    provider=SOURCE_WESTMETALL,
-                    instrument=SYMBOL_DAILY,
-                    provider_timestamp=row.provider_timestamp,
-                    sequence_number=row.sequence_number,
-                    actor_sub="service:westmetall_ingest",
-                )
-
-                # Executor MUST keep `ingest_westmetall_cash_settlement_daily_for_date`
-                # side-effect-free until the two checks above pass, and MUST return
-                # the existing row's ID on skip as the first element instead of None.
-                row_id, ingested_count, skipped_count, evidence = (
-                    ingest_westmetall_cash_settlement_daily_for_date(
-                        session, row, evidence
-                    )
-                )
-
+            if row_id is not None:
                 metadata = MarketDataAuditMetadata(
                     provider=SOURCE_WESTMETALL,
                     instrument=SYMBOL_DAILY,
                     actor_sub="service:westmetall_ingest",
                     tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
                     is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                    provider_timestamp=row.provider_timestamp,
-                    sequence_number=row.sequence_number,
+                    single_date_replay_key=payload.settlement_date,
                 )
                 mark_audit_success(
                     request,
                     row_id,
                     metadata=metadata.as_metadata_dict(),
                 )
-    except (ReplayWindowViolation, SequenceMonotonicityViolation) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
     except BulkContentMismatch as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -1393,7 +1343,7 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `westmetall_cash_settlement.py` — `_parse_float` removed. `_parse_price_decimal(value: str) -> Decimal | None` exists with explicit `not isinstance(value, str)` TypeError.
 - [ ] `WestmetallDailyRow.price_usd: Decimal` (not `float`).
 - [ ] `parse_westmetall_daily_rows` invokes `_parse_price_decimal`.
-- [ ] `cash_settlement_prices.py` row constructors at `:46, :125` consume `row.price_usd` directly (no `Decimal(...)` or `float(...)` wrap).
+- [ ] Row constructors in `ingest_westmetall_cash_settlement_daily_for_date` and `ingest_westmetall_cash_settlement_bulk` consume `row.price_usd` directly (no `Decimal(...)` or `float(...)` wrap).
 - [ ] Sweep `rg -nP "_parse_float|Decimal\\(float|float\\(.*price" backend/app/services/westmetall_cash_settlement.py backend/app/services/cash_settlement_prices.py backend/app/api/routes/westmetall.py` returns zero matches.
 
 ### 6.3 Bulk idempotency hardening (anomaly #2 bulk distinction)
@@ -1430,7 +1380,7 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.7 Audit-trail metadata expansion
 
 - [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and exactly ONE of the three replay shapes: `provider_timestamp`+`sequence_number` (live single-event paths, e.g. single-date POST), `{source, symbol, settlement_date}` (exempt single-date scrape), or `{source, symbol, batch_id}` (exempt bulk POST + scheduler). The `MarketDataAuditMetadata.__post_init__` check guarantees exactly one identifier shape is populated.
-- [ ] Single-date POST derives `provider_timestamp` and `sequence_number` from the parsed Westmetall response; `CashSettlementIngestRequest` does not define or accept either field. `check_replay_window` and `check_sequence_monotonicity` run before `ingest_westmetall_cash_settlement_daily_for_date(...)` is invoked, and therefore before any `db.add()` or `db.flush()` for the price row.
+- [ ] Single-date POST does not accept, derive, or fabricate `provider_timestamp` / `sequence_number`. It records `single_date_replay_key=payload.settlement_date`, does not call `check_replay_window` or `check_sequence_monotonicity`, and relies on `ingest_westmetall_cash_settlement_daily_for_date(...)` row-level comparison to reject mismatched existing rows before any new persistence.
 - [ ] Bulk POST writes a `market_data_ingested` audit row for every successful batch, including `inserted_ids == []`; metadata includes `outcome` with one of `"ingested"`, `"all_skip"`, or `"empty_range"` so operators can distinguish new-row ingestion from successful replay/empty runs.
 - [ ] Tests MUST explicitly validate the `MarketDataAuditMetadata.__post_init__` hard-fail (raises ValueError) when multiple identifier shapes (e.g. live fields mixed with batch ID) are populated, ensuring the audit-trail mutual exclusion contract is enforced.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
@@ -1438,7 +1388,7 @@ A merged PR closes D-4.1 iff every item below is true.
 
 ### 6.8 Forward-looking helpers wired
 
-- [ ] `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach` exist with the contracts above. Sweep `rg -nP "check_replay_window|check_sequence_monotonicity" backend/app/api/routes/` MUST show call-sites inside the `POST /aluminum/cash-settlement/ingest` single-date route. Only bulk/scheduler paths are exempt from these checks.
+- [ ] `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach` exist with the contracts above. Sweep `rg -nP "check_replay_window\(|check_sequence_monotonicity\(" backend/app/api/routes/` MUST show no Westmetall route call-sites unless a future true live provider endpoint is added; current Westmetall single-date/bulk/scheduler scrape paths are replay-key exempt.
 
 ### 6.9 Cross-cutting isolation
 
@@ -1540,9 +1490,9 @@ DB-required tests for the hardened bulk idempotency (NEW file):
 
 End-to-end FastAPI route tests using the existing JWT/service-identity fixtures (NEW file):
 
-57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and only the requested `settlement_date`; mock the parsed Westmetall row to expose provider-derived `provider_timestamp` and `sequence_number`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, and metadata replay fields match the parsed provider row, not request payload fields.
-57a. **`test_post_ingest_rejects_caller_supplied_replay_assertions`** — POST `/aluminum/cash-settlement/ingest` with extra `provider_timestamp` or `sequence_number` fields fails request validation (or ignores forbidden extras per the repo's existing Pydantic policy, but tests MUST prove those values do not reach `check_replay_window`, `check_sequence_monotonicity`, or audit metadata).
-57b. **`test_post_ingest_checks_sequence_before_daily_persistence`** — mock a provider row with an out-of-order sequence and spy on `ingest_westmetall_cash_settlement_daily_for_date`; route returns the sequence rejection before invoking the persistence helper and no `CashSettlementPrice` row is added/flushed.
+57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and only the requested `settlement_date`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, and `metadata["replay_key"]["settlement_date"]` equals the requested date.
+57a. **`test_post_ingest_rejects_caller_supplied_replay_assertions`** — POST `/aluminum/cash-settlement/ingest` with extra `provider_timestamp` or `sequence_number` fields fails request validation (or ignores forbidden extras per the repo's existing Pydantic policy, but tests MUST prove those values do not reach audit metadata).
+57b. **`test_post_ingest_does_not_call_live_replay_helpers`** — spy on `check_replay_window` and `check_sequence_monotonicity`; POST `/aluminum/cash-settlement/ingest` for a valid scraped table row persists/skips through row-level idempotency without invoking either live helper.
 57c. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
 58. **`test_post_ingest_bulk_mismatch_returns_409`** — pre-seed DB with mismatched row; POST `/ingest` for that date returns HTTP 409 with `bulk_content_mismatch` in detail; no row state change in DB.
 59. **`test_post_ingest_bulk_path_persists_audit_metadata`** — POST `/aluminum/cash-settlement/ingest-bulk`; assert `record_worker_event`-or-`mark_audit_success` row metadata contains the governance fields.
@@ -1617,9 +1567,9 @@ rg -nP "db\.query\(CashSettlementPrice\)\\.filter" backend/app/services/cash_set
 rg -nP "rindex\(|has_comma|has_dot" backend/app/services/westmetall_cash_settlement.py
 # MUST find the rindex-based detection per §4.4
 
-# Replay and Sequence helpers MUST be wired in the single-date route
+# Replay and Sequence helpers are future-live-provider only; current Westmetall scrape routes are exempt
 rg -nP "check_replay_window\(|check_sequence_monotonicity\(" backend/app/api/routes/westmetall.py
-# MUST find call-sites for both helpers.
+# MUST be zero matches for current Westmetall routes.
 
 # Drift alert helper has NO production call-site today (expected zero)
 rg -nP "emit_drift_alert_if_breach\(" backend/app/api/routes/ backend/app/tasks/
