@@ -1390,7 +1390,6 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.8 Forward-looking helpers wired
 
 - [ ] `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach` exist with the contracts above. Sweep `rg -nP "check_replay_window|check_sequence_monotonicity" backend/app/api/routes/` MUST show call-sites inside the `POST /aluminum/cash-settlement/ingest` single-date route. Only bulk/scheduler paths are exempt from these checks.
-- [ ] `MarketDataSequenceTracker` is empty in the running DB (no path writes to it today, unless a test uses the single-date ingest).
 
 ### 6.9 Cross-cutting isolation
 
