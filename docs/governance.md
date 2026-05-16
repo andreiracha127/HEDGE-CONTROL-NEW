@@ -552,11 +552,13 @@ config. Only the canonical provider's prices feed downstream computations
 
 When a second provider (also `trusted`) ingests the same instrument, its
 prices are stored as `audit_only` — separate from canonical — and the
-ingest path computes `drift = |canonical_price - audit_price|`. When
-drift exceeds `MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default
-configurable per instrument; in percent of canonical price), structured
-log event `market_data_drift_alert` is emitted with both prices, both
-provider attributions, and the computed drift.
+ingest path computes normalized drift as
+`abs(canonical_price - audit_price) / canonical_price` (zero-guard when
+canonical_price == 0). When this normalized drift exceeds
+`MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default configurable per
+instrument as a decimal fraction, e.g. 0.01 for 1%), structured log event
+`market_data_drift_alert` is emitted with both prices, both provider
+attributions, and the computed normalized drift.
 
 Drift alerts trigger operator review; they do NOT automatically demote
 the canonical provider or promote the audit-only provider. Canonical
