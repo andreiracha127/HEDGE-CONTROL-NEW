@@ -691,9 +691,15 @@ Anomalies to be retired upon Cluster 4 implementation closure:
 
 1. Westmetall ingest has no replay-window check at ingest. Accepts any
    `provider_timestamp`, including timestamps from years ago. Closure
-   requires §"Replay-window invariant" enforcement at
-   `backend/app/api/routes/westmetall.py` POST handlers and the
-   scheduler ingest path.
+   requires §"Replay-window invariant" timestamp-tolerance enforcement
+   **only on non-exempt live single-event POST paths** at
+   `backend/app/api/routes/westmetall.py`. The scheduler daily run +
+   `ingest_westmetall_cash_settlement_bulk` paths (used for missed-day
+   historical recovery) are exempt from timestamp tolerance per the
+   binding's Backfill exemption and instead use the stable-key
+   idempotency check defined under the Sequence number monotonicity
+   Bulk exemption — adding a timestamp guard to those paths would
+   reject legitimate backfills and contradict the binding above.
 
 2. Westmetall ingest has no `sequence_number` tracking per
    `(provider, instrument)`. Replays of the same payload are accepted
