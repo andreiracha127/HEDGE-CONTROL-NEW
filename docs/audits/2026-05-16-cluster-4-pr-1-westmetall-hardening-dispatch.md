@@ -1150,34 +1150,33 @@ def run_westmetall_ingestion() -> None:
         inserted_ids, batch_uuid, ingested, skipped, evidence = (
             ingest_westmetall_cash_settlement_bulk(session)
         )
-        if ingested:
-            metadata = MarketDataAuditMetadata(
-                provider=SOURCE_WESTMETALL,
-                instrument=SYMBOL_DAILY,
-                actor_sub="service:westmetall_ingest",
-                tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
-                is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                # Multi-date batch path: batch_uuid is the stable replay key
-                # for the bulk run; no single settlement_date applies because the
-                # batch spans multiple dates. as_metadata_dict() serializes this
-                # as replay_key={"source", "symbol", "batch_id"} (NOT
-                # settlement_date). Per governance §"Audit-trail attribution"
-                # stable bulk replay key for batch-spanning paths.
-                batch_replay_id=str(batch_uuid),
-            )
-            audit_meta = metadata.as_metadata_dict()
-            audit_meta["inserted_ids"] = [
-                str(inserted_id) for inserted_id in inserted_ids
-            ]
-            audit_meta["source_url"] = evidence.source_url
-            audit_meta["html_sha256"] = evidence.html_sha256
-            audit_meta["batch_uuid"] = str(batch_uuid)
-            AuditTrailService.record_worker_event(
-                session,
-                entity_type="cash_settlement_price",
-                entity_id=batch_uuid,
-                event_type="market_data_ingested",
-                actor="service:westmetall_ingest",
+        metadata = MarketDataAuditMetadata(
+            provider=SOURCE_WESTMETALL,
+            instrument=SYMBOL_DAILY,
+            actor_sub="service:westmetall_ingest",
+            tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+            is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+            # Multi-date batch path: batch_uuid is the stable replay key
+            # for the bulk run; no single settlement_date applies because the
+            # batch spans multiple dates. as_metadata_dict() serializes this
+            # as replay_key={"source", "symbol", "batch_id"} (NOT
+            # settlement_date). Per governance §"Audit-trail attribution"
+            # stable bulk replay key for batch-spanning paths.
+            batch_replay_id=str(batch_uuid),
+        )
+        audit_meta = metadata.as_metadata_dict()
+        audit_meta["inserted_ids"] = [
+            str(inserted_id) for inserted_id in inserted_ids
+        ]
+        audit_meta["source_url"] = evidence.source_url
+        audit_meta["html_sha256"] = evidence.html_sha256
+        audit_meta["batch_uuid"] = str(batch_uuid)
+        AuditTrailService.record_worker_event(
+            session,
+            entity_type="cash_settlement_price",
+            entity_id=batch_uuid,
+            event_type="market_data_ingested",
+            actor="service:westmetall_ingest",
                 source="westmetall_task",
                 metadata=audit_meta,
             )
