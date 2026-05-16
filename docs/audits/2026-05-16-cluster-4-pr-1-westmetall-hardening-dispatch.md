@@ -253,8 +253,8 @@ def check_replay_window(
     provider: str,
     instrument: str,
     provider_timestamp: datetime,
+    sequence_number: int,
     actor_sub: str,
-    sequence_number: int | None = None,
     now: Optional[datetime] = None,
 ) -> None:
     """Enforce timestamp tolerance for a live single-event ingest.
@@ -295,7 +295,7 @@ def check_sequence_monotonicity(
     provider: str,
     instrument: str,
     sequence_number: int,
-    provider_timestamp: datetime | None = None,
+    provider_timestamp: datetime,
     actor_sub: str,
 ) -> None:
     """Enforce strict-greater-than sequence ordering for live single-event ingest.
@@ -333,7 +333,7 @@ def check_sequence_monotonicity(
                 "market_data_replay_rejected",
                 provider=provider,
                 instrument=instrument,
-                provider_timestamp=provider_timestamp.isoformat() if provider_timestamp else None,
+                provider_timestamp=provider_timestamp.isoformat(),
                 sequence_number=sequence_number,
                 last_seen_sequence=last_seen,
                 reason=reason,
