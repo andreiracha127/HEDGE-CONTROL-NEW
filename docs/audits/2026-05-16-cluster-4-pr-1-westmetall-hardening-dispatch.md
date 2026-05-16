@@ -23,8 +23,8 @@ Six coupled deliverables:
 
 Plus mandatory:
 
-- Replay-window helpers (anomaly #1 — forward-looking scaffold; current POST paths are bulk-exempt per governance Backfill exemption clause, so no current route invokes the helper).
-- Sequence-monotonicity helpers + `market_data_sequence_tracker` table (anomaly #2 — forward-looking scaffold for the same reason).
+- Replay-window helpers (anomaly #1 — must be invoked by the single-date `POST /aluminum/cash-settlement/ingest` route; only bulk/scheduler paths are exempt).
+- Sequence-monotonicity helpers + `market_data_sequence_tracker` table (anomaly #2 — must be invoked by the single-date `POST /aluminum/cash-settlement/ingest` route).
 - Audit-event metadata expansion: every market-data ingest path persists `provider`, `instrument`, `provider_timestamp`, `sequence_number` (or stable bulk key `(source, symbol, settlement_date)` for exempted paths), `tier_at_ingest_time` (frozen lookup), `is_canonical` per governance §"Audit-trail attribution" (lines 673-688).
 
 The MARKET-DATA GOVERNANCE section is canonical (`docs/governance.md:451-452`: "This section is the constitutional contract. Per-provider deviations require amendment of this section, NOT silent config overrides in code."). Code MUST conform.
@@ -263,6 +263,17 @@ def check_replay_window(
     and §"Bulk exemption" — do NOT call this helper from those paths.
     """
     server_now = now or now_utc()
+    if provider_timestamp.tzinfo is None:
+        logger.warning(
+            "market_data_replay_rejected",
+            provider=provider,
+            instrument=instrument,
+            provider_timestamp=provider_timestamp.isoformat(),
+            sequence_number=sequence_number,
+            reason="naive_timestamp",
+            actor_sub=actor_sub,
+        )
+        raise ReplayWindowViolation("provider_timestamp must be timezone-aware")
     window = timedelta(minutes=replay_window_minutes_for(provider))
     delta = abs(server_now - provider_timestamp)
     if delta > window:
@@ -1095,6 +1106,8 @@ def ingest_cash_settlement_daily(
                     actor_sub="service:westmetall_ingest",
                     tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
                     is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+                    provider_timestamp=payload.provider_timestamp,
+                    sequence_number=payload.sequence_number,
                     # The single-date POST route MUST enforce live-path checks per governance.
                     # The executor MUST wire check_replay_window and check_sequence_monotonicity
                     # into this path using `payload.provider_timestamp` and `payload.sequence_number`.
