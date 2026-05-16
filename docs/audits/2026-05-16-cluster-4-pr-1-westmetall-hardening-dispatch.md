@@ -603,9 +603,8 @@ class MarketDataAuditMetadata:
     # call-site today per Backfill/Bulk exemption).
     provider_timestamp: Optional[datetime] = None
     sequence_number: Optional[int] = None
-    # Bulk/exempt path replay key — exactly ONE of these two is populated
-    # per ingest event; both None is also valid (e.g. for live single-event
-    # paths that already populate provider_timestamp + sequence_number).
+    # Bulk/exempt path replay key — exactly ONE of the three shapes
+    # (live pair, single_date, or batch_id) must be populated per ingest event.
     #   * single_date_replay_key  -> single-date page-scrape POST
     #     (e.g. POST /aluminum/cash-settlement/ingest with one settlement_date)
     #   * batch_replay_id         -> multi-date batch path
@@ -618,14 +617,14 @@ class MarketDataAuditMetadata:
     batch_replay_id: Optional[str] = None
 
     def __post_init__(self) -> None:
-        if (
-            self.single_date_replay_key is not None
-            and self.batch_replay_id is not None
-        ):
+        has_live = self.provider_timestamp is not None and self.sequence_number is not None
+        has_single = self.single_date_replay_key is not None
+        has_batch = self.batch_replay_id is not None
+        
+        if sum(bool(x) for x in [has_live, has_single, has_batch]) != 1:
             raise ValueError(
-                "MarketDataAuditMetadata: single_date_replay_key and "
-                "batch_replay_id are mutually exclusive — exactly one (or "
-                "neither) must be populated per ingest event."
+                "MarketDataAuditMetadata: exactly one of (provider_timestamp+sequence_number), "
+                "single_date_replay_key, or batch_replay_id must be populated."
             )
 
     def as_metadata_dict(self) -> dict:
@@ -1111,7 +1110,6 @@ def ingest_cash_settlement_daily(
                     # The single-date POST route MUST enforce live-path checks per governance.
                     # The executor MUST wire check_replay_window and check_sequence_monotonicity
                     # into this path using `payload.provider_timestamp` and `payload.sequence_number`.
-                    single_date_replay_key=payload.settlement_date,
                 )
                 mark_audit_success(
                     request,
