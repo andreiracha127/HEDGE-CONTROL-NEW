@@ -1103,9 +1103,10 @@ def ingest_cash_settlement_daily(
                 actor_sub="service:westmetall_ingest",
             )
             check_sequence_monotonicity(
-                session=session,
+                session,
                 provider=SOURCE_WESTMETALL,
                 instrument=SYMBOL_DAILY,
+                provider_timestamp=payload.provider_timestamp,
                 sequence_number=payload.sequence_number,
                 actor_sub="service:westmetall_ingest",
             )
