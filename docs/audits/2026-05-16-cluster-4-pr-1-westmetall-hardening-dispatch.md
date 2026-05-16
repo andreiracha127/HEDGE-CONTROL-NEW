@@ -1113,11 +1113,11 @@ def ingest_cash_settlement_daily(
     # Keep existing required fields (ingested_count, skipped_count, source, symbol, settlement_date, source_url, html_sha256, fetched_at)
     return CashSettlementIngestResponse(
         ... # existing fields
-        is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY) if ingested_count > 0 else None,
+        is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
     )
 ```
 
-Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY) if ingested > 0 else None`.
+Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY)`.
 
 ### 4.7 Scheduler audit metadata expansion
 
@@ -1395,11 +1395,11 @@ Unit tests on `market_data_governance.py` (no DB required for most):
 24. **`test_emit_drift_alert_below_threshold_returns_false`** — drift 0.005 with threshold 0.01 → False, no event.
 25. **`test_emit_drift_alert_above_threshold_returns_true_and_emits`** — drift 0.05 with threshold 0.01 → True, event captured.
 26. **`test_emit_drift_alert_zero_canonical_returns_false`** — None drift → False, no event.
-27. **`test_max_gap_hours_default_westmetall_aluminum`** — `max_gap_hours_for("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY") == 36`.
+27. **`test_max_gap_hours_default_westmetall_aluminum`** — `max_gap_hours_for("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY") == 96`.
 28. **`test_max_gap_hours_env_override`** — env-var override honored.
 29. **`test_max_gap_hours_raises_on_unknown_pair`** — unknown pair raises ValueError.
-30. **`test_emit_stale_feed_below_threshold_returns_false`** — gap 1h, max 36h → False, no event.
-31. **`test_emit_stale_feed_above_threshold_returns_true_and_emits`** — gap 48h, max 36h → True, event captured.
+30. **`test_emit_stale_feed_below_threshold_returns_false`** — gap 1h, max 96h → False, no event.
+31. **`test_emit_stale_feed_above_threshold_returns_true_and_emits`** — gap 100h, max 96h → True, event captured.
 32. **`test_emit_stale_feed_no_last_ingest_at_returns_true`** — `last_ingest_at=None` → True (infinite gap).
 33. **`test_market_data_audit_metadata_as_dict_omits_none_fields`** — `MarketDataAuditMetadata(provider="westmetall", instrument="LME_ALU_CASH_SETTLEMENT_DAILY", actor_sub="service:westmetall_ingest", tier_at_ingest_time="trusted", is_canonical=True, provider_timestamp=None, sequence_number=None, single_date_replay_key=None, batch_replay_id=None).as_metadata_dict()` contains only the 5 required keys; `provider_timestamp`, `sequence_number`, and `replay_key` are absent.
 34. **`test_market_data_audit_metadata_as_dict_single_date_replay_key`** — with `single_date_replay_key=date(2026,5,16)` → `metadata["replay_key"]` is `{"source": "westmetall", "symbol": "LME_ALU_CASH_SETTLEMENT_DAILY", "settlement_date": "2026-05-16"}`.
