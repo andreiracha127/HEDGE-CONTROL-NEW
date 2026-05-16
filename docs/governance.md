@@ -465,9 +465,15 @@ Three tiers classify every market-data provider:
 - **conditional** — ingest is captured but does NOT write canonical
   prices. Each ingest event is queued for human review (sidecar table,
   audit trail attribution `actor_sub="service:<provider>_ingest"`). On
-  human approval, the event is promoted to canonical. Used for
-  onboarding new providers before promotion to trusted, or for providers
-  with known historical drift requiring sign-off per batch.
+  human approval, the event is promoted to `audit_only` storage — it
+  becomes durable evidence and may participate in drift-alert
+  cross-checks against the canonical provider, but it does NOT feed
+  deals / MTM / P&L / scenarios. A conditional provider's prices
+  affect business-state computations ONLY when the provider is
+  reclassified to `trusted` AND designated as `canonical_provider`
+  for the relevant instrument in config; both are constitutional
+  amendments. Per-batch approval is operational sign-off on evidence,
+  not a substitute for the constitutional designation.
 
 - **quarantine** — ingest is logged only. Prices NEVER affect deals,
   MTM, P&L, scenarios, or any business-state computation. Quarantine
@@ -558,8 +564,13 @@ config. Only the canonical provider's prices feed downstream computations
 
 When a second provider (also `trusted`) ingests the same instrument, its
 prices are stored as `audit_only` — separate from canonical — and the
-ingest path computes normalized drift **only on matching
-`settlement_date`** as
+ingest path computes normalized drift ONLY after matching the canonical
+and audit prices on the same `(instrument, settlement_date)` tuple. If
+no canonical row exists for the audit row's `settlement_date` yet
+(audit provider arrived first or backfilled an older date), the drift
+computation is deferred until the canonical row lands; pairing across
+mismatched settlement dates is FORBIDDEN. Once both rows exist for the
+same `settlement_date`, the normalized drift is computed as
 `abs(canonical_price - audit_price) / canonical_price` (zero-guard when
 canonical_price == 0). When this normalized drift exceeds
 `MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default configurable per
@@ -582,10 +593,16 @@ Precision contract invariant (binding):
 Every price value flows through the same precision pipeline end-to-end.
 Deviations are hard fails.
 
-- **Raw ingest:** parse provider response into `Decimal(str(raw_value))`.
-  Direct conversion via `Decimal(float(raw))` is FORBIDDEN — float is
-  binary-lossy and corrupts last-cents-of-precision silently. The
-  string-first construction preserves the exact decimal representation
+- **Raw ingest:** parse provider response into Decimal by first
+  normalizing provider-formatted string artifacts (locale-specific
+  thousands separators like `","` in `"2,567.50"`, non-breaking spaces,
+  decimal-comma vs decimal-point convention, surrounding whitespace),
+  THEN construct `Decimal(str(normalized_value))`. Direct conversion via
+  `Decimal(float(raw))` is FORBIDDEN — float is binary-lossy and
+  corrupts last-cents-of-precision silently. Float inputs MUST be
+  rejected at the parser boundary (accept only `str` / raw-bytes from
+  the provider HTTP response). The string-first construction (after
+  normalization) preserves the exact decimal representation
   the provider emitted.
 
 - **Storage:** `Numeric(18, 6)` SQL column type (see
