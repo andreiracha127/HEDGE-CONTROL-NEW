@@ -502,13 +502,13 @@ log event `market_data_replay_rejected` with the rejection reason.
   clock-drift attack. Per-provider override via
   `MARKET_DATA_REPLAY_WINDOW_<provider>_MINUTES` env var (e.g.
   `MARKET_DATA_REPLAY_WINDOW_WESTMETALL_MINUTES`).
-  **Backfill exemption**: Legitimate historical backfills (initial DB
-  bootstrap or missed-day recovery via
-  `ingest_westmetall_cash_settlement_bulk` in
-  `backend/app/tasks/westmetall_task.py`) are exempt from timestamp
-  tolerance when invoked through controlled admin paths. Such paths
-  still enforce sequence monotonicity + full audit attribution.
-  Normal scheduler/cron ingest remains strictly under the window.
+  **Backfill exemption**: The scheduler daily run and any invocation of
+  `ingest_westmetall_cash_settlement_bulk` (in
+  `backend/app/tasks/westmetall_task.py`) — used for both fresh daily
+  settlement and missed-day historical recovery — are exempt from
+  timestamp tolerance. These paths still enforce sequence monotonicity +
+  full audit attribution. Pure live single-event ingest (if added in
+  future) remains under the 30-minute window.
 
 - **Sequence number monotonicity** — `sequence_number` (or equivalent
   provider-supplied monotonic identifier) MUST be strictly greater than
@@ -652,11 +652,12 @@ Anomalies to be retired upon Cluster 4 implementation closure:
    still parsed through `float` in `westmetall_cash_settlement.py:169-175`
    and persisted directly via `row.price_usd` in
    `cash_settlement_prices.py:42-47`. Closure requires retiring the float
-   parser before PR-CL4-1: raw payload → `Decimal(str(raw))` at the
-   ingest entrypoint (westmetall_cash_settlement.py / cash_settlement_prices.py),
-   with a guard asserting `Decimal(float)` construction raises in all
-   market-data ingest paths. Regression test surface must cover the
-   westmetall ingest unit tests + price canonicalization assertions.
+   parser before PR-CL4-1: parsing helpers MUST explicitly reject float
+   inputs (accept only raw provider str) and construct via
+   `Decimal(str(raw))` at the ingest entrypoint
+   (westmetall_cash_settlement.py / cash_settlement_prices.py). No
+   reliance on `Decimal(float)` raising. Regression test surface must
+   cover westmetall ingest unit tests + price canonicalization assertions.
 
 6. Drift-alerting infrastructure is absent. Even though only one provider
    exists today, the rule must be declared and the infrastructure scaffolded
