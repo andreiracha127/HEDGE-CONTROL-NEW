@@ -455,11 +455,12 @@ Provider trust matrix (binding):
 
 Three tiers classify every market-data provider:
 
-- **trusted** — ingest writes directly to canonical price storage. Prices
-  feed deals / MTM / P&L / scenarios. Provider has been vetted; replay
-  invariants enforced at ingest; stale-feed alerting wired. Promotion to
-  trusted requires constitutional amendment (this section update) with
-  evidence of vetting + production observation period.
+- **trusted** — vetted/eligible provider. Ingest may write to canonical
+  price storage **only if** it is the designated `canonical_provider` for
+  that instrument (see reconciliation invariant below). Prices from a
+  non-canonical trusted provider are stored as `audit_only`. Provider has
+  been vetted; replay invariants enforced; stale-feed alerting wired.
+  Promotion to trusted requires constitutional amendment.
 
 - **conditional** — ingest is captured but does NOT write canonical
   prices. Each ingest event is queued for human review (sidecar table,
@@ -619,10 +620,11 @@ Every market-data ingest event MUST persist an audit_event row with:
 - `actor_sub = "service:<provider>_ingest"` (current: `service:westmetall_ingest`)
 - `event_type = "market_data_ingested"`
 - `metadata` including `provider`, `instrument`, `provider_timestamp`,
-  `sequence_number`, `tier_at_ingest_time` (frozen value at the moment
-  ingest landed, even if the provider's tier later changes), and
-  `is_canonical` (true if this ingest fed canonical storage; false if
-  audit_only)
+  `sequence_number` (or stable bulk replay key `(source, symbol,
+  settlement_date)` for paths exempted from global sequence monotonicity),
+  `tier_at_ingest_time` (frozen value at the moment ingest landed, even if
+  the provider's tier later changes), and `is_canonical` (true if this
+  ingest fed canonical storage; false if audit_only)
 
 This is in addition to (NOT instead of) the existing
 `mark_audit_success` audit attribution shipped in PR-A5-2 (J-A5-05) and
