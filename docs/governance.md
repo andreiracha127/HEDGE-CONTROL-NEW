@@ -516,20 +516,18 @@ log event `market_data_replay_rejected` with the rejection reason.
   the last seen sequence for the same `(provider, instrument)` tuple.
   Re-ingestion of the same sequence is rejected (replay protection);
   out-of-order sequences are rejected (ordering protection).
-  **Backfill-safe replay key**: Bulk historical paths
-  (`ingest_westmetall_cash_settlement_bulk`) use `(source, symbol,
-  settlement_date)` uniqueness (stable row-level key) for replay/duplicate
-  detection instead of global sequence monotonicity or full-page hash.
-  This remains stable even when the provider page `html_sha256` changes
-  due to new daily rows. Live scheduler single-day runs remain under
-  strict sequence ordering.
+  **Bulk exemption**: Scheduler daily runs and
+  `ingest_westmetall_cash_settlement_bulk` paths are fully exempt from
+  sequence monotonicity; they use the stable `(source, symbol,
+  settlement_date)` replay key instead. Only pure live single-event ingest
+  (if added) remains under strict sequence ordering.
 
 Both checks run BEFORE persistence and BEFORE any downstream side effect
 (audit_event write, MTM recomputation trigger, etc.). The
 `market_data_replay_rejected` structured log event MUST include
-`provider`, `instrument`, `provider_timestamp`, `sequence_number`,
+`provider`, `instrument`, `provider_timestamp`, `sequence_number` (or stable bulk replay key `(source, symbol, settlement_date)` when exempted),
 `reason` (one of `timestamp_out_of_window`, `sequence_not_monotonic`,
-`sequence_duplicate`), and `actor_sub`.
+`sequence_duplicate`, `bulk_duplicate`), and `actor_sub`.
 
 Stale-feed detection invariant (binding):
 
