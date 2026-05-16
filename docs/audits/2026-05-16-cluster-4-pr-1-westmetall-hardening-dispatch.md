@@ -726,7 +726,7 @@ Verify alembic chain post-apply: `cd backend ; python -m alembic heads` MUST rep
 
 ```python
 # Add to imports:
-from sqlalchemy import BigInteger, Boolean
+from sqlalchemy import BigInteger, Boolean, PrimaryKeyConstraint
 from sqlalchemy.sql import true
 
 
@@ -741,9 +741,10 @@ class CashSettlementPrice(Base):
 
 class MarketDataSequenceTracker(Base):
     __tablename__ = "market_data_sequence_tracker"
+    __table_args__ = (PrimaryKeyConstraint("provider", "instrument"),)
 
-    provider: Mapped[str] = mapped_column(String(length=64), primary_key=True)
-    instrument: Mapped[str] = mapped_column(String(length=64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(length=64), nullable=False)
+    instrument: Mapped[str] = mapped_column(String(length=64), nullable=False)
     last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1154,6 +1155,8 @@ def ingest_cash_settlement_daily(
 Bulk POST (`:173-236`): update the route's `audit_event` decorator to `event_type="market_data_ingested"` (was `bulk_ingested`). Apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The as-metadata serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY)`.
 
 The bulk route MUST call `mark_audit_success` for every successful batch, including all-skip batches where `inserted_ids == []`. Do not wrap the audit write in `if inserted_ids:`. Instead, include `outcome = "ingested"` when `ingested > 0`, `outcome = "all_skip"` when `ingested == 0 and skipped > 0`, and `outcome = "empty_range"` when the filtered provider result has no rows. This preserves operator evidence that POST `/aluminum/cash-settlement/ingest-bulk` ran successfully even when no new `cash_settlement_prices` rows were inserted.
+
+Route handlers pass only `MarketDataAuditMetadata(...).as_metadata_dict()` plus route-local `outcome` where applicable to `mark_audit_success()`. Legacy evidence fields such as `inserted_ids`, `source_url`, `html_sha256`, and `batch_uuid` remain preserved on the scheduler worker event in §4.7 because that path owns the worker-level evidence envelope; governance metadata parity is the binding invariant shared by routes and scheduler.
 
 ### 4.7 Scheduler audit metadata expansion
 
