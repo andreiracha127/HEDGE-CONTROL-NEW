@@ -502,6 +502,13 @@ log event `market_data_replay_rejected` with the rejection reason.
   clock-drift attack. Per-provider override via
   `MARKET_DATA_REPLAY_WINDOW_<provider>_MINUTES` env var (e.g.
   `MARKET_DATA_REPLAY_WINDOW_WESTMETALL_MINUTES`).
+  **Backfill exemption**: Legitimate historical backfills (initial DB
+  bootstrap or missed-day recovery via
+  `ingest_westmetall_cash_settlement_bulk` in
+  `backend/app/tasks/westmetall_task.py`) are exempt from timestamp
+  tolerance when invoked through controlled admin paths. Such paths
+  still enforce sequence monotonicity + full audit attribution.
+  Normal scheduler/cron ingest remains strictly under the window.
 
 - **Sequence number monotonicity** — `sequence_number` (or equivalent
   provider-supplied monotonic identifier) MUST be strictly greater than
