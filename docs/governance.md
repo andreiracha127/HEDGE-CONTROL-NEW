@@ -513,8 +513,11 @@ log event `market_data_replay_rejected` with the rejection reason.
   `ingest_westmetall_cash_settlement_bulk` (in
   `backend/app/tasks/westmetall_task.py`) — used for both fresh daily
   settlement and missed-day historical recovery — are exempt from
-  timestamp tolerance. These paths still enforce sequence monotonicity +
-  full audit attribution. Pure live single-event ingest (if added in
+  timestamp tolerance. These paths instead enforce the stable-key
+  idempotency check defined under the Sequence number monotonicity
+  invariant's Bulk exemption clause below (NOT sequence monotonicity —
+  they are fully exempt from that too). Full audit attribution is
+  preserved on every row. Pure live single-event ingest (if added in
   future) remains under the 30-minute window.
 
 - **Sequence number monotonicity** — `sequence_number` (or equivalent
@@ -531,17 +534,22 @@ log event `market_data_replay_rejected` with the rejection reason.
 
   **Bulk idempotency vs replay distinction**: when a bulk-path row hits
   an existing `(source, symbol, settlement_date)` key, the ingest
-  pipeline compares the new row's content hash (e.g.
-  `html_sha256`/`price_usd` tuple) against the stored row's hash:
-  - **content matches** → idempotent skip, emit info-level structured
+  pipeline compares the new row's stable **row-level** identity (the
+  parsed `price_usd` value for that settlement_date, NOT any
+  page-level/whole-document hash like `html_sha256` which mutates every
+  time the provider adds an unrelated row to the same page) against the
+  stored row's `price_usd`:
+  - **price_usd matches** → idempotent skip, emit info-level structured
     log event `market_data_bulk_idempotent_skip` with the matched key.
     This is normal operation (scheduler scans multi-year history each
-    run and re-encounters every settled date). The skip is NOT a
-    rejection; the bulk run continues processing remaining rows.
-  - **content differs** (different price for the same settlement_date,
-    or different html_sha256 for the same observation) → REJECT with
-    `market_data_replay_rejected` reason `bulk_content_mismatch`. This
-    is the malicious-replay / silent-data-tampering case the binding
+    run and re-encounters every settled date; the provider page hash
+    changes every time a new daily row is added but historical row
+    prices remain unchanged). The skip is NOT a rejection; the bulk
+    run continues processing remaining rows.
+  - **price_usd differs** for the same `(source, symbol, settlement_date)`
+    → REJECT with `market_data_replay_rejected` reason
+    `bulk_content_mismatch`. This is the malicious-replay /
+    silent-data-tampering case the binding
     guards against, and the row is NOT persisted; operator review
     required.
 
