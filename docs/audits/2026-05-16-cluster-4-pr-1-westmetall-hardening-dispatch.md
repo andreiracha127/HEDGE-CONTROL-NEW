@@ -719,6 +719,7 @@ def downgrade() -> None:
 ```
 
 Verify alembic chain post-apply: `cd backend ; python -m alembic heads` MUST report `045_market_data_governance_columns (head)`.
+Verify the immediate predecessor before authoring the migration: `rg -nP 'revision = "044_drop_deal_lifecycle_fields"|down_revision' backend/alembic/versions/044_drop_deal_lifecycle_fields.py` MUST confirm the `044_drop_deal_lifecycle_fields` revision exists, and `rg --files backend/alembic/versions | rg '044_drop_deal_lifecycle_fields'` MUST return `backend/alembic/versions/044_drop_deal_lifecycle_fields.py`.
 
 ### 4.3 Model updates
 
@@ -754,9 +755,14 @@ class MarketDataSequenceTracker(Base):
     )
 ```
 
-Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Additionally, the request schema MUST remain a caller intent schema only; current Westmetall scrape paths do not accept live-path replay helper fields. Four schemas need updates:
+Pydantic schemas at `backend/app/schemas/market_data.py` MUST distinguish request and response shapes explicitly. The request schema remains caller intent only; the three response schemas expose `is_canonical: bool` so `model_validate` round-trips AND HTTP responses echo the canonical flag back to the caller.
+
+Request schema update:
 
 - `CashSettlementIngestRequest` — POST `/aluminum/cash-settlement/ingest` payload; MUST NOT accept `provider_timestamp` or `sequence_number`. The route fetches a Westmetall table internally, and that table exposes observation dates rather than live event timestamps/sequences. The only request field remains the operator-selected `settlement_date` (plus any existing auth context); audit metadata uses `single_date_replay_key=payload.settlement_date`.
+
+Response schema updates:
+
 - `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly. For computed data branches (like `_compute_monthly_averages` in `backend/app/api/routes/westmetall.py` returning `LME_ALU_MONTHLY_AVG`), the executor MUST populate a synthetic flag `is_canonical=True` so response validation succeeds without breaking the existing manual construction. **Crucially, the underlying query for the monthly average MUST be updated to filter the daily rows by `is_canonical=True` to prevent aggregating canonical and audit-only rows together.**
 - `CashSettlementIngestResponse` — POST `/aluminum/cash-settlement/ingest` response; echoes back the canonical flag of the ingested provider (must be `bool` unconditionally, even on idempotent skip).
 - `CashSettlementBulkIngestResponse` — POST `/aluminum/cash-settlement/ingest-bulk` response; echoes the canonical flag for the batch (today always `True` since Westmetall is the canonical provider for `LME_ALU_CASH_SETTLEMENT_DAILY`; future audit-only provider will return `False` on its batch).
@@ -1302,7 +1308,7 @@ def run_market_data_staleness_check() -> None:
         session.close()
 ```
 
-Register the task with the existing scheduler (verify the scheduler init file: `rg -nP "add_job|scheduled_jobs|run_westmetall_ingestion" backend/app/`). The cron cadence is `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` (default 15). Use the same registration mechanism as `run_westmetall_ingestion`. Per binding: alerting-only, must NOT crash the scheduler if a single pair lookup fails.
+Register the task with the existing scheduler. Current evidence at HEAD shows the registration site in `backend/app/tasks/scheduler.py`: `rg -nP "run_westmetall_ingestion|_scheduler\.add_job|WESTMETALL_CRON_HOUR|WESTMETALL_CRON_MINUTE" backend/app/tasks/scheduler.py` finds the existing `run_westmetall_ingestion` `add_job` block. Mirror that APScheduler `add_job` pattern for `run_market_data_staleness_check`, using an interval cadence sourced from `MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES` (default 15). Per binding: alerting-only, must NOT crash the scheduler if a single pair lookup fails.
 
 ### 4.9 Drift-alerting infrastructure scaffold (anomaly #6)
 
