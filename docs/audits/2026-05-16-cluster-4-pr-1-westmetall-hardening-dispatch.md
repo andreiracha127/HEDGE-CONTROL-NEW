@@ -1154,7 +1154,7 @@ def ingest_cash_settlement_daily(
 
 Bulk POST (`:173-236`): update the route's `audit_event` decorator to `event_type="market_data_ingested"` (was `bulk_ingested`). Apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The as-metadata serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY)`.
 
-The bulk route MUST call `mark_audit_success` for every successful batch, including all-skip batches where `inserted_ids == []`. Do not wrap the audit write in `if inserted_ids:`. Instead, include `outcome = "ingested"` when `ingested > 0`, `outcome = "all_skip"` when `ingested == 0 and skipped > 0`, and `outcome = "empty_range"` when the filtered provider result has no rows. This preserves operator evidence that POST `/aluminum/cash-settlement/ingest-bulk` ran successfully even when no new `cash_settlement_prices` rows were inserted.
+The bulk route MUST call `mark_audit_success` for every successful batch, including all-skip batches where no new row IDs are returned. Do not wrap the audit write in `if inserted_ids:`. Instead, include `outcome = "ingested"` when `ingested > 0`, `outcome = "all_skip"` when `ingested == 0 and skipped > 0`, and `outcome = "empty_range"` when the filtered provider result has no rows. This preserves operator evidence that POST `/aluminum/cash-settlement/ingest-bulk` ran successfully even when no new `cash_settlement_prices` rows were inserted.
 
 Route handlers pass only `MarketDataAuditMetadata(...).as_metadata_dict()` plus route-local `outcome` where applicable to `mark_audit_success()`. Legacy evidence fields such as `inserted_ids`, `source_url`, `html_sha256`, and `batch_uuid` remain preserved on the scheduler worker event in §4.7 because that path owns the worker-level evidence envelope; governance metadata parity is the binding invariant shared by routes and scheduler.
 
@@ -1211,10 +1211,10 @@ def run_westmetall_ingestion() -> None:
             entity_id=batch_uuid,
             event_type="market_data_ingested",
             actor="service:westmetall_ingest",
-                source="westmetall_task",
-                metadata=audit_meta,
-            )
-            session.commit()
+            source="westmetall_task",
+            metadata=audit_meta,
+        )
+        session.commit()
         logger.info(
             "westmetall_task_success",
             ingested_count=ingested,
@@ -1382,9 +1382,9 @@ A merged PR closes D-4.1 iff every item below is true.
 
 ### 6.7 Audit-trail metadata expansion
 
-- [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and exactly ONE of the three replay shapes: `provider_timestamp`+`sequence_number` (live single-event paths, e.g. single-date POST), `{source, symbol, settlement_date}` (exempt single-date scrape), or `{source, symbol, batch_id}` (exempt bulk POST + scheduler). The `MarketDataAuditMetadata.__post_init__` check guarantees exactly one identifier shape is populated.
+- [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and exactly ONE of the three replay shapes: `provider_timestamp`+`sequence_number` (true future live single-event endpoints only), `{source, symbol, settlement_date}` (exempt single-date scrape), or `{source, symbol, batch_id}` (exempt bulk POST + scheduler). The `MarketDataAuditMetadata.__post_init__` check guarantees exactly one identifier shape is populated.
 - [ ] Single-date POST does not accept, derive, or fabricate `provider_timestamp` / `sequence_number`. It records `single_date_replay_key=payload.settlement_date`, does not call `check_replay_window` or `check_sequence_monotonicity`, and relies on `ingest_westmetall_cash_settlement_daily_for_date(...)` row-level comparison to reject mismatched existing rows before any new persistence.
-- [ ] Bulk POST writes a `market_data_ingested` audit row for every successful batch, including `inserted_ids == []`; metadata includes `outcome` with one of `"ingested"`, `"all_skip"`, or `"empty_range"` so operators can distinguish new-row ingestion from successful replay/empty runs.
+- [ ] Bulk POST writes a `market_data_ingested` audit row for every successful batch, including all-skip runs; route metadata includes `outcome` with one of `"ingested"`, `"all_skip"`, or `"empty_range"` plus the stable batch replay key so operators can distinguish new-row ingestion from successful replay/empty runs.
 - [ ] Tests MUST explicitly validate the `MarketDataAuditMetadata.__post_init__` hard-fail (raises ValueError) when multiple identifier shapes (e.g. live fields mixed with batch ID) are populated, ensuring the audit-trail mutual exclusion contract is enforced.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
 - [ ] No regression on Cluster 3 PR-CL3-1 `actor_sub="service:westmetall_ingest"` plumbing.
@@ -1499,7 +1499,7 @@ End-to-end FastAPI route tests using the existing JWT/service-identity fixtures 
 57c. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
 58. **`test_post_ingest_bulk_mismatch_returns_409`** — pre-seed DB with mismatched row; POST `/ingest` for that date returns HTTP 409 with `bulk_content_mismatch` in detail; no row state change in DB.
 59. **`test_post_ingest_bulk_path_persists_audit_metadata`** — POST `/aluminum/cash-settlement/ingest-bulk`; assert `record_worker_event`-or-`mark_audit_success` row metadata contains the governance fields.
-59a. **`test_post_ingest_bulk_all_skip_still_persists_audit_metadata`** — pre-seed every parsed row in the requested range, POST `/aluminum/cash-settlement/ingest-bulk`, and assert a `market_data_ingested` audit row is persisted with `inserted_ids == []`, `outcome == "all_skip"`, and the stable `batch_id` replay key.
+59a. **`test_post_ingest_bulk_all_skip_still_persists_audit_metadata`** — pre-seed every parsed row in the requested range, POST `/aluminum/cash-settlement/ingest-bulk`, and assert a `market_data_ingested` audit row is persisted with `outcome == "all_skip"` and the stable `batch_id` replay key.
 59b. **`test_bulk_batch_uuid_stable_for_empty_and_all_skip_ranges`** — run the same date range twice with different mocked `html_sha256` values and no new rows; assert `_westmetall_batch_uuid(start_date=..., end_date=...)` and persisted audit `batch_id` stay identical.
 
 ### 7.6 Scheduler integration tests `backend/tests/test_westmetall_task_governance.py`
