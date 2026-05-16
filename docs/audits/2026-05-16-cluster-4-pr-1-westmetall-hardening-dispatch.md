@@ -1094,6 +1094,22 @@ def ingest_cash_settlement_daily(
 ) -> CashSettlementIngestResponse:
     try:
         with unit_of_work(session, request=request):
+            # The single-date POST route MUST enforce live-path checks per governance.
+            check_replay_window(
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                provider_timestamp=payload.provider_timestamp,
+                sequence_number=payload.sequence_number,
+                actor_sub="service:westmetall_ingest",
+            )
+            check_sequence_monotonicity(
+                session=session,
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                sequence_number=payload.sequence_number,
+                actor_sub="service:westmetall_ingest",
+            )
+
             # Executor MUST update `ingest_westmetall_cash_settlement_daily_for_date`
             # to return the existing row's ID on skip as the first element instead of None,
             # so we always have a durable anchor for the audit event.
@@ -1112,9 +1128,6 @@ def ingest_cash_settlement_daily(
                     is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
                     provider_timestamp=payload.provider_timestamp,
                     sequence_number=payload.sequence_number,
-                    # The single-date POST route MUST enforce live-path checks per governance.
-                    # The executor MUST wire check_replay_window and check_sequence_monotonicity
-                    # into this path using `payload.provider_timestamp` and `payload.sequence_number`.
                 )
                 mark_audit_success(
                     request,
