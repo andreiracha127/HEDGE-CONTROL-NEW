@@ -38,7 +38,7 @@ The MARKET-DATA GOVERNANCE section is canonical (`docs/governance.md:451-452`: "
 - Do **not** use `html_sha256` (or any page-level whole-document hash) in row-level idempotency decisions. Governance forbids it explicitly (`docs/governance.md:539-541`). `html_sha256` remains in `cash_settlement_prices.html_sha256` as audit evidence per row only — it is NEVER read for replay classification.
 - Do **not** add a timestamp-tolerance check on the scheduler daily run or `ingest_westmetall_cash_settlement_bulk`. Both are exempt per the binding's Backfill exemption (`docs/governance.md:512-521`) and Bulk exemption (`docs/governance.md:528-533`). Adding a timestamp guard to those paths would reject legitimate multi-year backfills and contradict the governance contract.
 - Do **not** add sequence-monotonicity checks on the scheduler or bulk paths. Same exemption.
-- Do **not** widen scope into other clusters' territory. The frontend (Svelte) MUST receive zero diff. nginx MUST receive zero diff. Clerk/JWT/cookie/CSP layers (Cluster 3) MUST receive zero diff.
+- Do **not** widen scope into other clusters' territory. nginx MUST receive zero diff. Clerk/JWT/cookie/CSP layers (Cluster 3) MUST receive zero diff. **Frontend exception (PR #87 hook P1)**: the only permitted frontend diff is the auto-generated OpenAPI types file (typically `frontend-svelte/src/lib/api/schema.d.ts` or equivalent — verify path with `rg -nP "is_canonical|CashSettlementPriceRead" frontend-svelte/src/lib/api/`). The additive `is_canonical: boolean` field on `CashSettlementPriceRead` / `CashSettlementIngestResponse` / `CashSettlementBulkIngestResponse` MUST regenerate into the typed client so frontend consumers can read the flag. Any non-additive frontend change (UI components, business logic, formatters) remains out of scope.
 - Do **not** add new IdP integration, new role, or new service identity beyond the existing `service:westmetall_ingest`. The actor_sub plumbing extends the metadata of the existing identity; it does NOT create a new one.
 - Do **not** pre-convert currency at ingest. Governance forbids it (`docs/governance.md:666-671`).
 - Do **not** rename `cash_settlement_prices`, `CashSettlementPrice`, `WestmetallDailyRow`, or break the `westmetall_ingest` service-identity contract. Cluster 3 PR-CL3-1 hardened these names.
@@ -584,9 +584,34 @@ class MarketDataAuditMetadata:
     actor_sub: str  # "service:<provider>_ingest"
     tier_at_ingest_time: ProviderTier
     is_canonical: bool
-    provider_timestamp: Optional[datetime] = None  # None for bulk paths
-    sequence_number: Optional[int] = None  # None for bulk paths
-    bulk_replay_key: Optional[tuple] = None  # (source, symbol, settlement_date) for bulk
+    # Live single-event ingest paths only (forward-looking; no production
+    # call-site today per Backfill/Bulk exemption).
+    provider_timestamp: Optional[datetime] = None
+    sequence_number: Optional[int] = None
+    # Bulk/exempt path replay key — exactly ONE of these two is populated
+    # per ingest event; both None is also valid (e.g. for live single-event
+    # paths that already populate provider_timestamp + sequence_number).
+    #   * single_date_replay_key  -> single-date page-scrape POST
+    #     (e.g. POST /aluminum/cash-settlement/ingest with one settlement_date)
+    #   * batch_replay_id         -> multi-date batch path
+    #     (POST /aluminum/cash-settlement/ingest-bulk and scheduler bulk run)
+    # The two-field shape avoids the prior tuple representation that forced
+    # callers to fabricate a settlement_date for batch-level events
+    # (see PR #87 Codex catch 3253047614 / hook P2 sibling-sweep-miss on
+    # bulk_replay_key shape divergence between sibling paths).
+    single_date_replay_key: Optional[date] = None
+    batch_replay_id: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.single_date_replay_key is not None
+            and self.batch_replay_id is not None
+        ):
+            raise ValueError(
+                "MarketDataAuditMetadata: single_date_replay_key and "
+                "batch_replay_id are mutually exclusive — exactly one (or "
+                "neither) must be populated per ingest event."
+            )
 
     def as_metadata_dict(self) -> dict:
         d = {
@@ -600,12 +625,17 @@ class MarketDataAuditMetadata:
             d["provider_timestamp"] = self.provider_timestamp.isoformat()
         if self.sequence_number is not None:
             d["sequence_number"] = self.sequence_number
-        if self.bulk_replay_key is not None:
-            source, symbol, settlement_date = self.bulk_replay_key
-            d["bulk_replay_key"] = {
-                "source": source,
-                "symbol": symbol,
-                "settlement_date": settlement_date.isoformat(),
+        if self.single_date_replay_key is not None:
+            d["replay_key"] = {
+                "source": self.provider,
+                "symbol": self.instrument,
+                "settlement_date": self.single_date_replay_key.isoformat(),
+            }
+        elif self.batch_replay_id is not None:
+            d["replay_key"] = {
+                "source": self.provider,
+                "symbol": self.instrument,
+                "batch_id": str(self.batch_replay_id),
             }
         return d
 ```
@@ -706,7 +736,13 @@ class MarketDataSequenceTracker(Base):
     )
 ```
 
-`CashSettlementPriceRead` Pydantic schema (`backend/app/schemas/market_data.py` — verify the exact file) MUST also expose `is_canonical: bool` so `model_validate` round-trips. Confirm the schema file location with `rg -nP "class CashSettlementPriceRead" backend/app/schemas/`.
+Pydantic schemas at `backend/app/schemas/market_data.py` MUST expose `is_canonical: bool` on every market-data-facing model so `model_validate` round-trips AND so HTTP responses echo the canonical flag back to the caller. Three schemas need the field (verify exact line numbers with `rg -nP "class (CashSettlementPriceRead|CashSettlementIngestResponse|CashSettlementBulkIngestResponse)" backend/app/schemas/market_data.py`):
+
+- `CashSettlementPriceRead` — GET `/aluminum/cash-settlement/prices` response; mirrors the ORM `is_canonical` directly.
+- `CashSettlementIngestResponse` — POST `/aluminum/cash-settlement/ingest` response; echoes back the canonical flag of the just-ingested row (when `ingested_count > 0`; nullable / `Optional[bool]` when idempotent skip occurs and no new row was persisted).
+- `CashSettlementBulkIngestResponse` — POST `/aluminum/cash-settlement/ingest-bulk` response; echoes the canonical flag for the batch (today always `True` since Westmetall is the canonical provider for `LME_ALU_CASH_SETTLEMENT_DAILY`; future audit-only provider will return `False` on its batch).
+
+Adding the field on the three response schemas regenerates the OpenAPI surface (`docs/api/openapi_v1.json` if codegen runs in CI) and the frontend-generated types (`frontend-svelte/src/lib/api/schema.d.ts` or equivalent). Per §2's frontend-types exception, this additive regeneration is the only permitted frontend diff. The dispatch §6 acceptance criteria below enforce that the regen IS performed (the typed client must surface `is_canonical: boolean` on each response shape) — leaving the field server-only would silently lose the audit trail at the HTTP boundary, contradicting governance §"Audit-trail attribution".
 
 ### 4.4 Precision contract enforcement (anomaly #5)
 
@@ -746,7 +782,29 @@ def _parse_price_decimal(value: str) -> Decimal | None:
     cleaned = value.strip().replace("\xa0", " ").replace(" ", "")
     if not cleaned:
         return None
-    cleaned = cleaned.replace(",", "")  # thousands separator only — Westmetall format
+    # Locale-aware separator normalization per governance §"Precision contract"
+    # (must handle decimal-comma AND decimal-point conventions; resolves PR #87
+    # Codex catch 3253047615). Algorithm: when both "," and "." are present, the
+    # rightmost is the decimal separator (US "2,567.50" → dot is decimal; EU
+    # "2.567,50" → comma is decimal). When only one of them is present, "."
+    # is treated as the decimal separator (Westmetall's actual convention) and
+    # "," is treated as the thousands separator (Westmetall's actual convention)
+    # — i.e. the single-separator path is conservative and matches the only
+    # provider in the trusted tier today; future providers using a different
+    # single-separator convention add their own per-provider parser before this
+    # generic fallback.
+    has_comma = "," in cleaned
+    has_dot = "." in cleaned
+    if has_comma and has_dot:
+        if cleaned.rindex(",") > cleaned.rindex("."):
+            # EU: "2.567,50" → strip dots (thousands), comma becomes decimal point
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            # US: "2,567.50" → strip commas (thousands), dot is already decimal
+            cleaned = cleaned.replace(",", "")
+    elif has_comma:
+        # Westmetall + US convention: comma is thousands separator → strip it.
+        cleaned = cleaned.replace(",", "")
     try:
         return Decimal(cleaned)
     except InvalidOperation:
@@ -811,23 +869,26 @@ def ingest_westmetall_cash_settlement_daily_for_date(
     if row is None:
         return None, 0, 0, evidence
 
-    existing = (
-        db.query(CashSettlementPrice)
+    # Per governance §"Bulk idempotency vs replay distinction": load ONLY
+    # price_usd into the comparison path. html_sha256 (page-level hash) MUST
+    # NOT participate in row idempotency — and per the binding's spirit MUST
+    # NOT even be loaded into memory on the idempotency code path, because
+    # any later refactor could inadvertently start reading it. Column-scoped
+    # query enforces the load-guard structurally; resolves PR #87 hook P1
+    # on html_sha256 load guard.
+    existing_price_usd: Decimal | None = (
+        db.query(CashSettlementPrice.price_usd)
         .filter(
             CashSettlementPrice.source == SOURCE_WESTMETALL,
             CashSettlementPrice.symbol == SYMBOL_DAILY,
             CashSettlementPrice.settlement_date == settlement_date,
         )
-        .first()
+        .scalar()
     )
-    if existing is not None:
-        # Per governance §"Bulk idempotency vs replay distinction":
-        # compare row-level price_usd (NOT html_sha256). html_sha256 is
-        # page-level and mutates whenever the provider adds any new row;
-        # using it for row idempotency would silently mask real replay attacks.
+    if existing_price_usd is not None:
         outcome = classify_bulk_row_replay(
             new_price_usd=row.price_usd,
-            existing_price_usd=existing.price_usd,
+            existing_price_usd=existing_price_usd,
         )
         if outcome == "idempotent_skip":
             emit_bulk_idempotent_skip(
@@ -843,13 +904,13 @@ def ingest_westmetall_cash_settlement_daily_for_date(
             instrument=SYMBOL_DAILY,
             settlement_date=settlement_date,
             new_price_usd=row.price_usd,
-            existing_price_usd=existing.price_usd,
+            existing_price_usd=existing_price_usd,
             actor_sub="service:westmetall_ingest",
         )
         raise BulkContentMismatch(
             f"price_usd mismatch for ({SOURCE_WESTMETALL}, {SYMBOL_DAILY}, "
             f"{settlement_date.isoformat()}): new={row.price_usd} "
-            f"existing={existing.price_usd}"
+            f"existing={existing_price_usd}"
         )
 
     price = CashSettlementPrice(
@@ -892,10 +953,18 @@ def ingest_westmetall_cash_settlement_bulk(
         )
         return [], batch_uuid, 0, 0, evidence
 
-    # Map existing rows by settlement_date for O(1) lookup with price_usd.
-    existing_by_date: dict[date, CashSettlementPrice] = {
-        existing.settlement_date: existing
-        for existing in db.query(CashSettlementPrice)
+    # Map existing rows by settlement_date for O(1) lookup. Per governance
+    # §"Bulk idempotency vs replay distinction": load ONLY (settlement_date,
+    # price_usd) columns — html_sha256 (page-level hash) MUST NOT be loaded
+    # into memory on the idempotency code path so a later refactor cannot
+    # accidentally start reading it for row classification. Column-scoped
+    # query enforces the load-guard structurally; resolves PR #87 hook P1
+    # on html_sha256 load guard.
+    existing_price_by_date: dict[date, Decimal] = {
+        settlement_date: price_usd
+        for settlement_date, price_usd in db.query(
+            CashSettlementPrice.settlement_date, CashSettlementPrice.price_usd
+        )
         .filter(
             CashSettlementPrice.source == SOURCE_WESTMETALL,
             CashSettlementPrice.symbol == SYMBOL_DAILY,
@@ -913,11 +982,11 @@ def ingest_westmetall_cash_settlement_bulk(
     canonical_flag = is_canonical(SOURCE_WESTMETALL, SYMBOL_DAILY)
 
     for row in rows:
-        existing = existing_by_date.get(row.settlement_date)
-        if existing is not None:
+        existing_price_usd = existing_price_by_date.get(row.settlement_date)
+        if existing_price_usd is not None:
             outcome = classify_bulk_row_replay(
                 new_price_usd=row.price_usd,
-                existing_price_usd=existing.price_usd,
+                existing_price_usd=existing_price_usd,
             )
             if outcome == "idempotent_skip":
                 emit_bulk_idempotent_skip(
@@ -937,13 +1006,13 @@ def ingest_westmetall_cash_settlement_bulk(
                 instrument=SYMBOL_DAILY,
                 settlement_date=row.settlement_date,
                 new_price_usd=row.price_usd,
-                existing_price_usd=existing.price_usd,
+                existing_price_usd=existing_price_usd,
                 actor_sub="service:westmetall_ingest",
             )
             raise BulkContentMismatch(
                 f"price_usd mismatch for ({SOURCE_WESTMETALL}, {SYMBOL_DAILY}, "
                 f"{row.settlement_date.isoformat()}): new={row.price_usd} "
-                f"existing={existing.price_usd}"
+                f"existing={existing_price_usd}"
             )
 
         price = CashSettlementPrice(
@@ -1015,7 +1084,10 @@ def ingest_cash_settlement_daily(
                     is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
                     # Bulk-style path: no provider_timestamp / sequence_number;
                     # stable replay key per governance "Bulk exemption" clause.
-                    bulk_replay_key=(SOURCE_WESTMETALL, SYMBOL_DAILY, payload.settlement_date),
+                        # Single-date page-scrape path: replay_key.settlement_date
+                    # uniquely identifies this ingest event per governance
+                    # §"Audit-trail attribution" stable bulk replay key.
+                    single_date_replay_key=payload.settlement_date,
                 )
                 mark_audit_success(
                     request,
@@ -1038,7 +1110,7 @@ def ingest_cash_settlement_daily(
     return CashSettlementIngestResponse(...)  # unchanged
 ```
 
-Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, `bulk_replay_key` is set to the batch tuple `(SOURCE_WESTMETALL, SYMBOL_DAILY, <bulk batch identifier>)` — use the existing `batch_uuid` as the third element (it identifies the batch invariantly), OR use a structured `(source, symbol, "bulk_batch", batch_uuid)` tuple. Pick the representation that round-trips through `as_metadata_dict` cleanly. Same `BulkContentMismatch` → HTTP 409 handler addition.
+Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition.
 
 ### 4.7 Scheduler audit metadata expansion
 
@@ -1073,7 +1145,13 @@ def run_westmetall_ingestion() -> None:
                 actor_sub="service:westmetall_ingest",
                 tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
                 is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                bulk_replay_key=(SOURCE_WESTMETALL, SYMBOL_DAILY, "bulk_batch"),
+                # Multi-date batch path: batch_uuid is the stable replay key
+                # for the bulk run; no single settlement_date applies because the
+                # batch spans multiple dates. as_metadata_dict() serializes this
+                # as replay_key={"source", "symbol", "batch_id"} (NOT
+                # settlement_date). Per governance §"Audit-trail attribution"
+                # stable bulk replay key for batch-spanning paths.
+                batch_replay_id=str(batch_uuid),
             )
             audit_meta = metadata.as_metadata_dict()
             audit_meta["inserted_ids"] = [
@@ -1213,7 +1291,8 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `backend/alembic/versions/045_market_data_governance_columns.py` exists; `cd backend ; python -m alembic heads` reports exactly `045_market_data_governance_columns (head)`.
 - [ ] `cash_settlement_prices.is_canonical` column exists, NOT NULL, server_default TRUE; existing rows backfilled to TRUE.
 - [ ] `market_data_sequence_tracker` table exists with PK `(provider, instrument)`.
-- [ ] `CashSettlementPrice.is_canonical` model attribute exists; `CashSettlementPriceRead` Pydantic schema exposes `is_canonical`.
+- [ ] `CashSettlementPrice.is_canonical` model attribute exists; `CashSettlementPriceRead`, `CashSettlementIngestResponse`, and `CashSettlementBulkIngestResponse` Pydantic schemas at `backend/app/schemas/market_data.py` all expose `is_canonical` per §4.3.
+- [ ] **Frontend types regen (PR #87 hook P1):** `frontend-svelte/src/lib/api/schema.d.ts` (or whichever generated client file the project uses; verify with `rg -nP "CashSettlementPriceRead|CashSettlementIngestResponse" frontend-svelte/src/lib/api/`) shows additive `is_canonical: boolean` on each of the three response shapes. The diff is auto-generated; no hand-edited frontend logic changes. If the project commits an `openapi.json` artifact (e.g. `docs/api/openapi_v1.json`), it MUST also show the additive field.
 - [ ] `MarketDataSequenceTracker` model exists.
 
 ### 6.2 Precision contract (anomaly #5)
@@ -1230,6 +1309,7 @@ A merged PR closes D-4.1 iff every item below is true.
 - [ ] `ingest_westmetall_cash_settlement_bulk` performs the same per-row classification.
 - [ ] `westmetall.py` route handlers catch `BulkContentMismatch` → HTTP 409 CONFLICT with the helper's detail.
 - [ ] Neither helper reads `existing.html_sha256` for row idempotency. Sweep `rg -nP "html_sha256" backend/app/services/cash_settlement_prices.py` — every match is either constructor assignment (`html_sha256=evidence.html_sha256`) or batch UUID derivation; none in the idempotency classification branch.
+- [ ] **html_sha256 load guard (PR #87 hook P1):** the idempotency lookup query MUST be column-scoped (load only `settlement_date` + `price_usd`), so `html_sha256` is NEVER pulled into memory on the idempotency code path even though it is also never used. Sweep `rg -nP "db\.query\(CashSettlementPrice\)\\." backend/app/services/cash_settlement_prices.py` — every match MUST be a row constructor / `.add(...)` write path, NEVER an idempotency-lookup `.first()` / `.all()` read. The idempotency read path uses `db.query(CashSettlementPrice.price_usd)` or `db.query(CashSettlementPrice.settlement_date, CashSettlementPrice.price_usd)` exclusively.
 
 ### 6.4 Canonical-vs-audit segregation (anomaly #4)
 
@@ -1253,7 +1333,7 @@ A merged PR closes D-4.1 iff every item below is true.
 
 ### 6.7 Audit-trail metadata expansion
 
-- [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, `bulk_replay_key`.
+- [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and `replay_key` (one of two shapes — `{source, symbol, settlement_date}` for single-date POST or `{source, symbol, batch_id}` for bulk POST + scheduler; both shapes round-trip through the same dict key for downstream-consumer uniformity). The `MarketDataAuditMetadata.__post_init__` mutual-exclusion check guarantees `single_date_replay_key` and `batch_replay_id` are never both populated on the same event.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
 - [ ] No regression on Cluster 3 PR-CL3-1 `actor_sub="service:westmetall_ingest"` plumbing.
 
@@ -1265,7 +1345,7 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.9 Cross-cutting isolation
 
 - [ ] `git diff main -- docs/governance.md` returns empty.
-- [ ] `git diff main -- frontend-svelte/` returns empty.
+- [ ] `git diff main -- frontend-svelte/` shows ONLY auto-generated OpenAPI types updates with the additive `is_canonical: boolean` field on the three response shapes (no UI / business-logic / formatter / route changes). All non-generated frontend paths are zero-diff.
 - [ ] `git diff main -- frontend-svelte/nginx.conf` returns empty (Cluster 3 territory).
 - [ ] `git diff main -- backend/app/core/auth.py` returns empty (Cluster 3 territory — `require_service_identity` already landed in PR #81 and is unchanged).
 - [ ] Single alembic head: `045_market_data_governance_columns`.
@@ -1314,8 +1394,10 @@ Unit tests on `market_data_governance.py` (no DB required for most):
 30. **`test_emit_stale_feed_below_threshold_returns_false`** — gap 1h, max 36h → False, no event.
 31. **`test_emit_stale_feed_above_threshold_returns_true_and_emits`** — gap 48h, max 36h → True, event captured.
 32. **`test_emit_stale_feed_no_last_ingest_at_returns_true`** — `last_ingest_at=None` → True (infinite gap).
-33. **`test_market_data_audit_metadata_as_dict_omits_none_fields`** — `MarketDataAuditMetadata(..., provider_timestamp=None, sequence_number=None, bulk_replay_key=None).as_metadata_dict()` does NOT contain those keys.
-34. **`test_market_data_audit_metadata_as_dict_includes_bulk_replay_key`** — with `bulk_replay_key=("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY", date(2026,5,16))` → key is a dict with `source`, `symbol`, `settlement_date` (iso str).
+33. **`test_market_data_audit_metadata_as_dict_omits_none_fields`** — `MarketDataAuditMetadata(provider="westmetall", instrument="LME_ALU_CASH_SETTLEMENT_DAILY", actor_sub="service:westmetall_ingest", tier_at_ingest_time="trusted", is_canonical=True, provider_timestamp=None, sequence_number=None, single_date_replay_key=None, batch_replay_id=None).as_metadata_dict()` contains only the 5 required keys; `provider_timestamp`, `sequence_number`, and `replay_key` are absent.
+34. **`test_market_data_audit_metadata_as_dict_single_date_replay_key`** — with `single_date_replay_key=date(2026,5,16)` → `metadata["replay_key"]` is `{"source": "westmetall", "symbol": "LME_ALU_CASH_SETTLEMENT_DAILY", "settlement_date": "2026-05-16"}`.
+34a. **`test_market_data_audit_metadata_as_dict_batch_replay_id`** — with `batch_replay_id="batch-uuid-abc"` → `metadata["replay_key"]` is `{"source": "westmetall", "symbol": "LME_ALU_CASH_SETTLEMENT_DAILY", "batch_id": "batch-uuid-abc"}`; `settlement_date` key absent.
+34b. **`test_market_data_audit_metadata_post_init_rejects_both_replay_keys`** — instantiating with BOTH `single_date_replay_key=date(2026,5,16)` AND `batch_replay_id="x"` raises `ValueError` (mutual-exclusion guard per `__post_init__`).
 
 ### 7.2 Sequence-monotonicity DB tests `backend/tests/test_market_data_sequence_tracker.py`
 
@@ -1358,7 +1440,8 @@ DB-required tests for the hardened bulk idempotency (NEW file):
 
 End-to-end FastAPI route tests using the existing JWT/service-identity fixtures (NEW file):
 
-57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and a fresh date; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, `metadata["bulk_replay_key"]["source"] == "westmetall"`.
+57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and a fresh date; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, `metadata["replay_key"]["source"] == "westmetall"`, and `metadata["replay_key"]["settlement_date"]` equals the ingested settlement_date in ISO format (single-date path uses `single_date_replay_key`).
+57a. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
 58. **`test_post_ingest_bulk_mismatch_returns_409`** — pre-seed DB with mismatched row; POST `/ingest` for that date returns HTTP 409 with `bulk_content_mismatch` in detail; no row state change in DB.
 59. **`test_post_ingest_bulk_path_persists_audit_metadata`** — POST `/aluminum/cash-settlement/ingest-bulk`; assert `record_worker_event`-or-`mark_audit_success` row metadata contains the governance fields.
 
@@ -1416,6 +1499,19 @@ rg -nP "is_canonical=" backend/app/services/cash_settlement_prices.py
 
 # Audit metadata governance fields plumbed
 rg -nP "MarketDataAuditMetadata\(|as_metadata_dict\(\)" backend/app/api/routes/westmetall.py backend/app/tasks/westmetall_task.py
+# replay_key shape mutual-exclusion: every call-site sets exactly one of
+# single_date_replay_key / batch_replay_id (or neither for live single-event
+# paths). Cross-check that bulk_replay_key (old tuple field) is GONE.
+rg -nP "bulk_replay_key" backend/app/  # MUST be zero
+rg -nP "single_date_replay_key=|batch_replay_id=" backend/app/api/routes/westmetall.py backend/app/tasks/westmetall_task.py
+
+# html_sha256 load guard: idempotency-path queries are column-scoped
+rg -nP "db\.query\(CashSettlementPrice\)\\.filter" backend/app/services/cash_settlement_prices.py
+# MUST be zero matches — full-row queries forbidden on idempotency code path
+
+# Parser locale normalization (PR #87 Codex catch 3253047615): both US and EU formats supported
+rg -nP "rindex\(|has_comma|has_dot" backend/app/services/westmetall_cash_settlement.py
+# MUST find the rindex-based detection per §4.4
 
 # Forward-looking helpers have NO production call-site today (expected zero)
 rg -nP "check_replay_window\(|check_sequence_monotonicity\(|emit_drift_alert_if_breach\(" backend/app/api/routes/ backend/app/tasks/
@@ -1494,7 +1590,7 @@ The PR body must include:
 
 1. `git checkout -b audit-followup/cluster-4-westmetall-hardening` from `main @ 05ffa2f8e` (post-PR #86).
 2. Apply §4.1 (new `market_data_governance.py` module). Write unit tests in §7.1 + §7.2 first if TDD-ing — every helper has a direct test.
-3. Apply §4.2 (alembic 045) + §4.3 (model updates + Pydantic schema). Run `cd backend && python -m alembic upgrade head` against a fresh DB; verify the migration applies cleanly. Roll back + re-apply to test downgrade.
+3. Apply §4.2 (alembic 045) FIRST in isolation: write the migration file, run `cd backend && python -m alembic upgrade head` against a fresh test DB, verify `cash_settlement_prices.is_canonical` column and `market_data_sequence_tracker` table exist via `\d cash_settlement_prices` / `\d market_data_sequence_tracker` (psql), then `python -m alembic downgrade -1` to verify the downgrade and re-upgrade. Migration-first ordering avoids the model-vs-schema mismatch window flagged by PR #87 hook P1. Only after the migration is validated, apply §4.3 (ORM model updates + Pydantic schema updates including the three response schemas per §4.3 expanded scope) in the same commit OR a follow-up commit on the same branch.
 4. Apply §4.4 (precision contract). Run §7.3 tests in isolation.
 5. Apply §4.5 (bulk idempotency hardening). Run §7.4 tests. Sweep §8 between steps to confirm the precision contract sweeps stay zero.
 6. Apply §4.6 (route audit metadata + BulkContentMismatch → 409). Run §7.5 tests.
@@ -1514,6 +1610,8 @@ The PR body must include:
   - **Float-input rejection at TypeError vs ValueError** — `_parse_price_decimal` raises TypeError on non-str input. Codex may prefer ValueError. TypeError is correct here: the input type violates the contract, not its value (governance §"Precision contract" says "Float inputs MUST be rejected at the parser boundary" — the type itself is the violation).
   - **`is_canonical` column server_default vs Python-side default** — using `server_default=true()` is the canonical alembic pattern. Codex may suggest adding a `default=True` mirror on the SQLAlchemy column; harmless to add for safety against migrations being skipped.
   - **`Decimal` exact comparison in `classify_bulk_row_replay`** — exact equality is governance-compliant ("any byte-level difference is a real mismatch"). Codex may flag this as fragile for re-published rows that round differently. Defense: provider re-publishes are byte-identical by construction; if they aren't, the difference IS a real divergence the operator needs to see.
+  - **Parser locale detection ambiguity (PR #87 cycle 1 catch 3253047615)** — `_parse_price_decimal` uses the rightmost-of-`,`-or-`.` heuristic to disambiguate US ("2,567.50") vs EU ("2.567,50") formats when both separators are present. When only one is present, the comma is treated as a thousands separator (matches Westmetall's actual US convention, the only provider today). Codex may flag the single-separator branch as ambiguous for a future EU provider emitting "2567,50" (the parser would output `Decimal("2567")` instead of `Decimal("2567.50")`). Defense: future providers using EU decimal-comma convention MUST add a per-provider parser in front of the generic fallback (mirror of `_PROVIDER_TIER_REGISTRY` registration pattern); the dispatch §4.4 comment block makes this extension path explicit. Adding ambiguous heuristics to the generic parser is worse than per-provider explicit parsing.
+  - **`MarketDataAuditMetadata` two-field replay key (PR #87 cycle 1 P2 absorption)** — the dataclass replaces the prior single `bulk_replay_key: Optional[tuple]` field with two mutually-exclusive optional fields: `single_date_replay_key: Optional[date]` and `batch_replay_id: Optional[str]`. The `__post_init__` enforces mutual exclusion. Codex may suggest collapsing back to a single discriminated-union field. Defense: two-field shape eliminates the prior bug where the scheduler had to fabricate a settlement_date to satisfy the tuple-element `isoformat()` call (PR #87 catch 3253047614). The per-path semantics now match the audit log shape exactly — `replay_key.settlement_date` for single-date events vs `replay_key.batch_id` for batch events.
   - **Drift normalization zero-guard semantics** — returning None vs raising. None is correct (alerting-only invariant; an undefined drift is not an alertable condition). Codex may prefer raising; defend per governance §"Canonical price reconciliation" which says "zero-guard when canonical_price == 0" not "raise on zero".
   - **`observation_key` representation** — the dispatch uses `settlement_date` for daily LME instruments; the binding mentions `observation_timestamp` for intraday and `tenor + fix_date` for tenor-fixed. Codex may flag that the implementation only covers the daily case. Defense: today only daily exists; the helper's `observation_key: str` parameter accepts any string representation, so future intraday / tenor-fix instruments serialize their own observation_key without code change.
   - **`tier_at_ingest_time` frozen value** — the dispatch reads tier at ingest time via `tier_for_provider(provider)` lookup. Codex may flag that if `_PROVIDER_TIER_REGISTRY` is mutated mid-ingest (impossible today since it's a module constant), the metadata would lie. Defense: the registry is module-level and immutable post-import; the only "transition" path is constitutional amendment (governance edit + code edit), not a runtime mutation.
