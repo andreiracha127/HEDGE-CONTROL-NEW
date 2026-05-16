@@ -516,9 +516,9 @@ def emit_drift_alert_if_breach(
 
 _STALENESS_FALLBACK: dict[tuple[str, str], int] = {
     # (provider, instrument): max_gap_hours
-    ("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY"): 36,
-    # 36h allows for 1-day weekend gap (Friday cash settlement published before
-    # Monday's next ingest cycle). Per-deployment override via
+    ("westmetall", "LME_ALU_CASH_SETTLEMENT_DAILY"): 96,
+    # 96h allows for a 3-day weekend gap (Friday to Monday is ~72h + 24h margin)
+    # without false alarms. Per-deployment override via
     # MARKET_DATA_MAX_GAP_HOURS_<PROVIDER>_<INSTRUMENT>.
 }
 
@@ -803,8 +803,11 @@ def _parse_price_decimal(value: str) -> Decimal | None:
             # US: "2,567.50" → strip commas (thousands), dot is already decimal
             cleaned = cleaned.replace(",", "")
     elif has_comma:
-        # Westmetall + US convention: comma is thousands separator → strip it.
-        cleaned = cleaned.replace(",", "")
+        # Decimal-comma vs thousands-comma: if exactly 2 trailing digits, it's a decimal mark
+        if len(cleaned) - cleaned.rindex(",") <= 3:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
     try:
         return Decimal(cleaned)
     except InvalidOperation:
@@ -1064,7 +1067,7 @@ from app.services.market_data_governance import (
 def ingest_cash_settlement_daily(
     payload: CashSettlementIngestRequest,
     request: Request,
-    _: None = Depends(audit_event(entity_type="cash_settlement_price", event_type="ingested")),
+    _: None = Depends(audit_event(entity_type="cash_settlement_price", event_type="market_data_ingested")),
     __: None = Depends(require_service_identity("westmetall_ingest")),
     session: Session = Depends(get_session),
 ) -> CashSettlementIngestResponse:
@@ -1107,10 +1110,14 @@ def ingest_cash_settlement_daily(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
 
-    return CashSettlementIngestResponse(...)  # unchanged
+    return CashSettlementIngestResponse(
+        ingested=ingested_count,
+        skipped=skipped_count,
+        is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY) if ingested_count > 0 else None,
+    )
 ```
 
-Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition.
+Bulk POST (`:173-236`): apply the same `MarketDataAuditMetadata` expansion at `:202-218`. For the bulk path, use `batch_replay_id=str(batch_uuid)` (NOT a tuple, NOT `single_date_replay_key` — the bulk path spans multiple settlement_dates and has no single date to attribute). The `as_metadata_dict()` serialization produces `replay_key = {"source": ..., "symbol": ..., "batch_id": ...}` automatically. The `__post_init__` mutual-exclusion check guarantees a single replay-key shape per event across all sibling paths (single-date POST, bulk POST, scheduler). Same `BulkContentMismatch` → HTTP 409 handler addition. The returned `CashSettlementBulkIngestResponse` MUST populate `is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY) if ingested > 0 else None`.
 
 ### 4.7 Scheduler audit metadata expansion
 
@@ -1164,7 +1171,7 @@ def run_westmetall_ingestion() -> None:
                 session,
                 entity_type="cash_settlement_price",
                 entity_id=batch_uuid,
-                event_type="bulk_ingested",
+                event_type="market_data_ingested",
                 actor="service:westmetall_ingest",
                 source="westmetall_task",
                 metadata=audit_meta,
