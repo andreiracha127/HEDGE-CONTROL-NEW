@@ -882,17 +882,18 @@ def ingest_westmetall_cash_settlement_daily_for_date(
     # NOT even be loaded into memory on the idempotency code path, because
     # any later refactor could inadvertently start reading it. Column-scoped
     # query enforces the load-guard structurally; resolves PR #87 hook P1
-    # on html_sha256 load guard.
-    existing_price_usd: Decimal | None = (
-        db.query(CashSettlementPrice.price_usd)
+    # on html_sha256 load guard. We also load `id` to return it as a durable anchor on skip.
+    existing_row = (
+        db.query(CashSettlementPrice.id, CashSettlementPrice.price_usd)
         .filter(
             CashSettlementPrice.source == SOURCE_WESTMETALL,
             CashSettlementPrice.symbol == SYMBOL_DAILY,
             CashSettlementPrice.settlement_date == settlement_date,
         )
-        .scalar()
+        .first()
     )
-    if existing_price_usd is not None:
+    if existing_row is not None:
+        existing_id, existing_price_usd = existing_row
         outcome = classify_bulk_row_replay(
             new_price_usd=row.price_usd,
             existing_price_usd=existing_price_usd,
@@ -904,7 +905,7 @@ def ingest_westmetall_cash_settlement_daily_for_date(
                 settlement_date=settlement_date,
                 actor_sub="service:westmetall_ingest",
             )
-            return None, 0, 1, evidence
+            return existing_id, 0, 1, evidence
         # outcome == "content_mismatch"
         emit_bulk_content_mismatch_rejection(
             provider=SOURCE_WESTMETALL,
@@ -1346,13 +1347,14 @@ A merged PR closes D-4.1 iff every item below is true.
 ### 6.7 Audit-trail metadata expansion
 
 - [ ] `mark_audit_success` calls in both POST routes pass `MarketDataAuditMetadata(...).as_metadata_dict()`. Metadata persisted includes: `actor_sub`, `provider`, `instrument`, `tier_at_ingest_time`, `is_canonical`, and `replay_key` (one of two shapes — `{source, symbol, settlement_date}` for single-date POST or `{source, symbol, batch_id}` for bulk POST + scheduler; both shapes round-trip through the same dict key for downstream-consumer uniformity). The `MarketDataAuditMetadata.__post_init__` mutual-exclusion check guarantees `single_date_replay_key` and `batch_replay_id` are never both populated on the same event.
+- [ ] Tests MUST explicitly validate the `MarketDataAuditMetadata.__post_init__` hard-fail (raises ValueError) when both `single_date_replay_key` and `batch_replay_id` are populated, ensuring the audit-trail mutual exclusion contract is enforced.
 - [ ] `AuditTrailService.record_worker_event` call in `westmetall_task.py` merges `MarketDataAuditMetadata(...).as_metadata_dict()` with the legacy `inserted_ids`, `source_url`, `html_sha256`, `batch_uuid` fields.
 - [ ] No regression on Cluster 3 PR-CL3-1 `actor_sub="service:westmetall_ingest"` plumbing.
 
-### 6.8 Forward-looking helpers wired (no production call-site today)
+### 6.8 Forward-looking helpers wired
 
-- [ ] `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach` exist with the contracts above. Sweep `rg -nP "check_replay_window|check_sequence_monotonicity" backend/app/api/routes/ backend/app/tasks/` returns zero matches (no live path invokes them per Backfill/Bulk exemption). This zero-match is the expected state; a future live single-event path will add the call-site.
-- [ ] `MarketDataSequenceTracker` is empty in the running DB (no path writes to it today).
+- [ ] `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach` exist with the contracts above. Sweep `rg -nP "check_replay_window|check_sequence_monotonicity" backend/app/api/routes/` MUST show call-sites inside the `POST /aluminum/cash-settlement/ingest` single-date route. Only bulk/scheduler paths are exempt from these checks.
+- [ ] `MarketDataSequenceTracker` is empty in the running DB (no path writes to it today, unless a test uses the single-date ingest).
 
 ### 6.9 Cross-cutting isolation
 
