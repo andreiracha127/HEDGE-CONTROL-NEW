@@ -515,6 +515,12 @@ log event `market_data_replay_rejected` with the rejection reason.
   the last seen sequence for the same `(provider, instrument)` tuple.
   Re-ingestion of the same sequence is rejected (replay protection);
   out-of-order sequences are rejected (ordering protection).
+  **Backfill-safe replay key**: Bulk historical paths
+  (`ingest_westmetall_cash_settlement_bulk`) use (settlement_date +
+  source_url/html_sha256) uniqueness for replay detection instead of
+  global sequence monotonicity, to allow older settlement rows without
+  rejecting legitimate backfills. Live scheduler single-day runs remain
+  under strict sequence ordering.
 
 Both checks run BEFORE persistence and BEFORE any downstream side effect
 (audit_event write, MTM recomputation trigger, etc.). The
