@@ -617,6 +617,9 @@ class MarketDataAuditMetadata:
     batch_replay_id: Optional[str] = None
 
     def __post_init__(self) -> None:
+        if (self.provider_timestamp is not None) ^ (self.sequence_number is not None):
+            raise ValueError("MarketDataAuditMetadata: provider_timestamp and sequence_number must be provided together.")
+
         has_live = self.provider_timestamp is not None and self.sequence_number is not None
         has_single = self.single_date_replay_key is not None
         has_batch = self.batch_replay_id is not None
@@ -1421,7 +1424,9 @@ Unit tests on `market_data_governance.py` (no DB required for most):
 30. **`test_emit_stale_feed_below_threshold_returns_false`** — gap 1h, max 96h → False, no event.
 31. **`test_emit_stale_feed_above_threshold_returns_true_and_emits`** — gap 100h, max 96h → True, event captured.
 32. **`test_emit_stale_feed_no_last_ingest_at_returns_true`** — `last_ingest_at=None` → True (infinite gap).
-33. **`test_market_data_audit_metadata_as_dict_omits_none_fields`** — `MarketDataAuditMetadata(provider="westmetall", instrument="LME_ALU_CASH_SETTLEMENT_DAILY", actor_sub="service:westmetall_ingest", tier_at_ingest_time="trusted", is_canonical=True, provider_timestamp=None, sequence_number=None, single_date_replay_key=None, batch_replay_id=None).as_metadata_dict()` contains only the 5 required keys; `provider_timestamp`, `sequence_number`, and `replay_key` are absent.
+33. **`test_market_data_audit_metadata_as_dict_live_fields`** — `MarketDataAuditMetadata(provider="westmetall", instrument="LME_ALU_CASH_SETTLEMENT_DAILY", actor_sub="service:westmetall_ingest", tier_at_ingest_time="trusted", is_canonical=True, provider_timestamp=datetime(2026,5,16,tzinfo=timezone.utc), sequence_number=42, single_date_replay_key=None, batch_replay_id=None).as_metadata_dict()` contains `provider_timestamp` and `sequence_number`; `replay_key` is absent.
+33a. **`test_market_data_audit_metadata_post_init_rejects_empty_identifiers`** — instantiating with all replay identifiers set to `None` raises `ValueError`.
+33b. **`test_market_data_audit_metadata_post_init_rejects_partial_live`** — instantiating with `provider_timestamp` but no `sequence_number` (or vice versa) raises `ValueError`.
 34. **`test_market_data_audit_metadata_as_dict_single_date_replay_key`** — with `single_date_replay_key=date(2026,5,16)` → `metadata["replay_key"]` is `{"source": "westmetall", "symbol": "LME_ALU_CASH_SETTLEMENT_DAILY", "settlement_date": "2026-05-16"}`.
 34a. **`test_market_data_audit_metadata_as_dict_batch_replay_id`** — with `batch_replay_id="batch-uuid-abc"` → `metadata["replay_key"]` is `{"source": "westmetall", "symbol": "LME_ALU_CASH_SETTLEMENT_DAILY", "batch_id": "batch-uuid-abc"}`; `settlement_date` key absent.
 34b. **`test_market_data_audit_metadata_post_init_rejects_both_replay_keys`** — instantiating with BOTH `single_date_replay_key=date(2026,5,16)` AND `batch_replay_id="x"` raises `ValueError` (mutual-exclusion guard per `__post_init__`).
@@ -1467,7 +1472,7 @@ DB-required tests for the hardened bulk idempotency (NEW file):
 
 End-to-end FastAPI route tests using the existing JWT/service-identity fixtures (NEW file):
 
-57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT and a fresh date; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, `metadata["replay_key"]["source"] == "westmetall"`, and `metadata["replay_key"]["settlement_date"]` equals the ingested settlement_date in ISO format (single-date path uses `single_date_replay_key`).
+57. **`test_post_ingest_persists_audit_metadata_with_governance_fields`** — POST `/aluminum/cash-settlement/ingest` with valid `westmetall_ingest` JWT, `provider_timestamp`, and `sequence_number`; assert persisted audit_event row has `metadata["provider"] == "westmetall"`, `metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"`, `metadata["tier_at_ingest_time"] == "trusted"`, `metadata["is_canonical"] is True`, `metadata["provider_timestamp"]` matches payload, and `metadata["sequence_number"]` matches payload (single-date path uses live fields).
 57a. **`test_post_ingest_bulk_persists_batch_replay_id`** — POST `/aluminum/cash-settlement/ingest-bulk` with date range; assert persisted audit_event row has `metadata["replay_key"]["batch_id"]` equal to `str(batch_uuid)` and `metadata["replay_key"]` does NOT contain a `settlement_date` key (bulk path uses `batch_replay_id`).
 58. **`test_post_ingest_bulk_mismatch_returns_409`** — pre-seed DB with mismatched row; POST `/ingest` for that date returns HTTP 409 with `bulk_content_mismatch` in detail; no row state change in DB.
 59. **`test_post_ingest_bulk_path_persists_audit_metadata`** — POST `/aluminum/cash-settlement/ingest-bulk`; assert `record_worker_event`-or-`mark_audit_success` row metadata contains the governance fields.
