@@ -558,7 +558,8 @@ config. Only the canonical provider's prices feed downstream computations
 
 When a second provider (also `trusted`) ingests the same instrument, its
 prices are stored as `audit_only` — separate from canonical — and the
-ingest path computes normalized drift as
+ingest path computes normalized drift **only on matching
+`settlement_date`** as
 `abs(canonical_price - audit_price) / canonical_price` (zero-guard when
 canonical_price == 0). When this normalized drift exceeds
 `MARKET_DATA_DRIFT_THRESHOLD_<instrument>` (default configurable per
@@ -640,8 +641,9 @@ Anomalies to be retired upon Cluster 4 implementation closure:
 2. Westmetall ingest has no `sequence_number` tracking per
    `(provider, instrument)`. Replays of the same payload are accepted
    silently. Closure requires schema addition (sequence column or
-   equivalent on market_data rows or sibling table) plus monotonicity
-   check at ingest.
+   equivalent) **only for live single-event ingest paths**; bulk/scheduler
+   paths (`ingest_westmetall_cash_settlement_bulk`) are exempt and use the
+   stable `(source, symbol, settlement_date)` replay key instead.
 
 3. No background staleness-check job exists. Westmetall silently
    stopping ingest produces no alert until a downstream consumer
