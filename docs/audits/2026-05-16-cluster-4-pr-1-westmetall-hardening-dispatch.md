@@ -1087,22 +1087,23 @@ def ingest_cash_settlement_daily(
                 )
             )
             
-            metadata = MarketDataAuditMetadata(
-                provider=SOURCE_WESTMETALL,
-                instrument=SYMBOL_DAILY,
-                actor_sub="service:westmetall_ingest",
-                tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
-                is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
-                # The single-date POST route MUST enforce live-path checks per governance.
-                # The executor MUST wire check_replay_window and check_sequence_monotonicity
-                # into this path.
-                single_date_replay_key=payload.settlement_date,
-            )
-            mark_audit_success(
-                request,
-                row_id,
-                metadata=metadata.as_metadata_dict(),
-            )
+            if row_id is not None:
+                metadata = MarketDataAuditMetadata(
+                    provider=SOURCE_WESTMETALL,
+                    instrument=SYMBOL_DAILY,
+                    actor_sub="service:westmetall_ingest",
+                    tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+                    is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+                    # The single-date POST route MUST enforce live-path checks per governance.
+                    # The executor MUST wire check_replay_window and check_sequence_monotonicity
+                    # into this path.
+                    single_date_replay_key=payload.settlement_date,
+                )
+                mark_audit_success(
+                    request,
+                    row_id,
+                    metadata=metadata.as_metadata_dict(),
+                )
     except BulkContentMismatch as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -1527,8 +1528,12 @@ rg -nP "db\.query\(CashSettlementPrice\)\\.filter" backend/app/services/cash_set
 rg -nP "rindex\(|has_comma|has_dot" backend/app/services/westmetall_cash_settlement.py
 # MUST find the rindex-based detection per §4.4
 
-# Forward-looking helpers have NO production call-site today (expected zero)
-rg -nP "check_replay_window\(|check_sequence_monotonicity\(|emit_drift_alert_if_breach\(" backend/app/api/routes/ backend/app/tasks/
+# Replay and Sequence helpers MUST be wired in the single-date route
+rg -nP "check_replay_window\(|check_sequence_monotonicity\(" backend/app/api/routes/westmetall.py
+# MUST find call-sites for both helpers.
+
+# Drift alert helper has NO production call-site today (expected zero)
+rg -nP "emit_drift_alert_if_breach\(" backend/app/api/routes/ backend/app/tasks/
 
 # Stale-feed task wired
 rg -nP "def run_market_data_staleness_check|_MONITORED_PAIRS" backend/app/tasks/market_data_staleness_task.py
@@ -1574,7 +1579,7 @@ pytest -q backend/tests
 - Migrating historical `cash_settlement_prices` rows to new schema beyond the `is_canonical=True` backfill (already covered by `server_default=true()`).
 - nginx CSP / Clerk / cookie / CSRF / RBAC changes (Cluster 3 territory).
 - Replacing `html_sha256` in `cash_settlement_prices` (still required as batch-level audit evidence; the governance binding only forbids using it for row idempotency classification).
-- Wiring `check_replay_window` / `check_sequence_monotonicity` / `emit_drift_alert_if_breach` to a live production call-site (no live single-event path / no audit-only provider exists today; forward-looking scaffold only).
+- Wiring `emit_drift_alert_if_breach` to a live production call-site (no audit-only provider exists today; forward-looking scaffold only).
 
 ## 10. PR Requirements
 
@@ -1598,7 +1603,7 @@ The PR body must include:
 - **Hook artifact paths:** `.cache/dispatch_review/audit-followup-cluster-4-westmetall-hardening-{sha}.json` per push.
 - **Governance statement:** `docs/governance.md` diff is empty.
 - **Alembic statement:** single head `045_market_data_governance_columns`; chain verified.
-- **Forward-looking scaffold disclosure**: explicit note that `check_replay_window`, `check_sequence_monotonicity`, `emit_drift_alert_if_breach`, and the `market_data_sequence_tracker` table are scaffolded but have no production call-site today (Backfill+Bulk exemption / single-provider). Future PRs introducing a live single-event POST path or a second `trusted` provider wire them in.
+- **Forward-looking scaffold disclosure**: explicit note that `emit_drift_alert_if_breach` is scaffolded but has no production call-site today (single-provider). A future PR introducing a second `trusted` provider will wire it in.
 
 ## 11. Workflow
 
