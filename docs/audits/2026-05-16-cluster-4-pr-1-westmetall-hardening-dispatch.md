@@ -1606,7 +1606,7 @@ pytest -q backend/tests/test_market_data_drift_scaffold.py
 pytest -q backend/tests
 ```
 
-`docs/governance.md` diff MUST be empty. Frontend + nginx + `backend/app/core/auth.py` diffs MUST be empty. Alembic head MUST be exactly `045_market_data_governance_columns`.
+`docs/governance.md`, `frontend-svelte/nginx.conf`, and `backend/app/core/auth.py` diffs MUST be empty. Frontend diffs are otherwise limited to the required auto-generated OpenAPI types update that adds `is_canonical: boolean` to the three market-data response shapes. Alembic head MUST be exactly `045_market_data_governance_columns`.
 
 ## 9. Out of Scope
 
