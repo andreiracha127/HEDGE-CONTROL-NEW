@@ -605,8 +605,8 @@ class MarketDataAuditMetadata:
     sequence_number: Optional[int] = None
     # Bulk/exempt path replay key — exactly ONE of the three shapes
     # (live pair, single_date, or batch_id) must be populated per ingest event.
-    #   * single_date_replay_key  -> single-date page-scrape POST
-    #     (e.g. POST /aluminum/cash-settlement/ingest with one settlement_date)
+    #   * single_date_replay_key  -> single-date exempt scrape paths
+    #     (only if a future single-date path is explicitly granted the bulk exemption)
     #   * batch_replay_id         -> multi-date batch path
     #     (POST /aluminum/cash-settlement/ingest-bulk and scheduler bulk run)
     # The two-field shape avoids the prior tuple representation that forced
@@ -1076,6 +1076,8 @@ Single-date POST (`:120-170`):
 from app.services.market_data_governance import (
     BulkContentMismatch,
     MarketDataAuditMetadata,
+    ReplayWindowViolation,
+    SequenceMonotonicityViolation,
     is_canonical as is_canonical_provider,
     tier_for_provider,
 )
@@ -1119,6 +1121,10 @@ def ingest_cash_settlement_daily(
                     row_id,
                     metadata=metadata.as_metadata_dict(),
                 )
+    except (ReplayWindowViolation, SequenceMonotonicityViolation) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     except BulkContentMismatch as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
