@@ -2,7 +2,7 @@
 
 **Date:** 2026-05-17
 **Document type:** Pilot launch decision brief (prescriptive)
-**Pilot target:** Aluminium LME cash / 2-3 pre-approved counterparties / June 2026
+**Pilot target:** Aluminium LME cash / 8 pre-approved counterparties (2 per type: brokers, banks, suppliers, customers) / 140k tonnes/year volume cap / June 2026
 **Author:** Tech-lead (orchestrator)
 **Supersedes:** a prior draft pilot-readiness checklist (`docs/2026-05-14-pilot-readiness-checklist.md`) that existed as an untracked working artifact and was never committed to `main`; its operational content is absorbed into §4 / §5 / §7 below.
 **Source spec:** `docs/superpowers/specs/2026-05-17-tech-lead-pilot-go-no-go-brief-design.md`
@@ -13,7 +13,7 @@
 
 **Verdict:** `conditional-go`.
 
-Approve the launch of a controlled pilot of the Hedge Control Platform in **June 2026** for **aluminium LME cash settlement only** with **2-3 pre-approved counterparties**, contingent on the closure of the **4 hard blockers listed below** and the **signed approval of the four institutional signatories** named in §7.
+Approve the launch of a controlled pilot of the Hedge Control Platform in **June 2026** for **aluminium LME cash settlement only** with **8 pre-approved counterparties (2 brokers, 2 banks, 2 suppliers, 2 customers — fully enumerated in §4)** under a **140k tonnes/year aluminium volume cap**, contingent on the closure of the **4 hard blockers listed below** and the **signed approval of the four institutional signatories** named in §7.
 
 **Why conditional-go (not unconditional-go):** the backend institutional core is fully closed post-A1-A6 backlog retirement (main `94b029dec`, alembic head `045_market_data_governance_columns`, 1440 backend tests passing). However, four compliance and operational fronts do not yet meet the threshold for operation with multiple real counterparties. Each is addressable inside the 4-week runway to a June launch.
 
@@ -23,7 +23,7 @@ Approve the launch of a controlled pilot of the Hedge Control Platform in **June
 |---|---|---|---|---|
 | HB-1 | KYC gate minimum at RFQ creation (counterparty `KYC=approved` checked; governance amendment documenting the gate) | Backend | Guard tests + governance §amendment + audit-event coverage | Operating with non-approved counterparty → compliance violation |
 | HB-2 | Workflow Approvals for mutations above threshold (Deal create/award + HedgeContract settle) | Backend + Frontend | Threshold config + approval state machine + audit trail completeness | Trader/risk_manager bypass of institutional limits |
-| HB-3 | Finance Pipeline daily hardening (6 steps complete + idempotency + scheduled via Railway scheduler service) | Backend + Ops | End-to-end pipeline run + idempotency tests + scheduler runbook evidence | Manual reconciliation at 2-3 counterparty scale becomes operationally infeasible |
+| HB-3 | Finance Pipeline daily hardening (6 steps complete + idempotency + scheduled via Railway scheduler service) | Backend + Ops | End-to-end pipeline run + idempotency tests + scheduler runbook evidence | Manual reconciliation at 8-counterparty / 140k-tonne-annual scale becomes operationally infeasible |
 | HB-4 | Audit Daily Report (canned report for risk + auditor daily consumption; replaces ad-hoc verification) | Backend + Frontend | Report endpoint + frontend view + auditor sign-off of structure | Auditor without operational tooling → audit fatigue within days |
 
 **Pre-requisite baseline (1-day pre-work, not a blocker):** update `docs/GAP_ANALYSIS_LEGACY_VS_NEW.md` to reflect the post-A1-A6 state — Deal Engine and Exposure Engine landed, Cluster 1-4 retired, alembic head 045.
@@ -42,7 +42,7 @@ Each blocker below carries: why it is hard (vs nice-to-have), scope of implement
 
 ### HB-1 — KYC gate minimum at RFQ creation
 
-**Why hard:** governance.md AUTHORIZATION MATRIX (PR #79) declares counterparty per-type access, but no constitutional rule yet requires `kyc_status == approved` before a counterparty appears in any RFQ. With 2-3 real counterparties in the pilot, allowing a non-approved counterparty into the system — even by operator mistake — is a compliance event. A code gate plus a governance amendment is the institutionally consistent fix.
+**Why hard:** governance.md AUTHORIZATION MATRIX (PR #79) declares counterparty per-type access, but no constitutional rule yet requires `kyc_status == approved` before a counterparty appears in any RFQ. With 8 enumerated counterparties spanning 4 types in the pilot (§4), allowing a non-approved counterparty into the system — even by operator mistake — is a compliance event. A code gate plus a governance amendment is the institutionally consistent fix.
 
 **Scope of implementation:**
 1. Governance amendment in `docs/governance.md` — extend the AUTHORIZATION MATRIX section with an explicit KYC-gate invariant ("Counterparty MUST have `kyc_status == approved` before participating in any RFQ invitation, quote, or award").
@@ -76,7 +76,7 @@ Each blocker below carries: why it is hard (vs nice-to-have), scope of implement
 
 ### HB-3 — Finance Pipeline daily hardening
 
-**Why hard:** the Finance Pipeline currently exists as a model + service skeleton but is not running daily under the Railway scheduler service. At 2-3 counterparties the reconciliation evidence must be reconstructable from a deterministic, idempotent daily run, not from manual operator invocation. The pipeline has 6 known steps; gaps in any one break the reconstructability invariant.
+**Why hard:** the Finance Pipeline currently exists as a model + service skeleton but is not running daily under the Railway scheduler service. At 8 counterparties and ~560 tonnes/trading day average aluminium throughput (140k/year ÷ ~250 trading days), the reconciliation evidence must be reconstructable from a deterministic, idempotent daily run, not from manual operator invocation. The pipeline has 6 known steps; gaps in any one break the reconstructability invariant.
 
 **Scope of implementation:**
 1. Confirm the 6 pipeline steps and their idempotency semantics; document any gap as a sub-deliverable inside the dispatch.
@@ -94,7 +94,7 @@ Each blocker below carries: why it is hard (vs nice-to-have), scope of implement
 
 ### HB-4 — Audit Daily Report
 
-**Why hard:** auditor currently verifies signatures ad-hoc via `/audit/events/{event_id}/verify`. At 2-3 counterparties producing many events per day, ad-hoc verification is operationally infeasible by week two of the pilot. A canned daily report — generated server-side, consumed in a single auditor page — is the minimum tooling required for the auditor to stay current without skipping events.
+**Why hard:** auditor currently verifies signatures ad-hoc via `/audit/events/{event_id}/verify`. At 8 counterparties spanning 4 types producing many events per day (RFQ creation, invitation, quote, award, contract settlement, audit-event emission per mutation), ad-hoc verification is operationally infeasible by week two of the pilot. A canned daily report — generated server-side, consumed in a single auditor page — is the minimum tooling required for the auditor to stay current without skipping events.
 
 **Scope of implementation:**
 1. New endpoint `/audit/reports/daily/{date}` aggregating: signed-event count, verification status of a deterministic sample, top-N entities mutated, any audit-signature failure, any RBAC rejection event.
@@ -133,9 +133,19 @@ The conditional-go verdict rests on a state-of-the-system baseline that is mater
 ### In scope
 
 - **Commodity:** LME aluminium cash settlement only. Other LME-tracked metals (copper, etc.) remain post-pilot expansion.
-- **Counterparties:** 2-3 pre-approved counterparties named explicitly in the signed sign-off (§7). Counterparty list change before pilot end requires re-signature by risk_manager + tech-lead.
+- **Counterparties:** 8 pre-approved counterparties spanning all 4 institutional types (per `docs/governance.md` AUTHORIZATION MATRIX, Cluster 3 per-type access). All 8 named explicitly here; any change before pilot end requires re-signature by risk_manager + tech-lead.
+
+  | Type      | Counterparties (pre-approved)                |
+  | --------- | -------------------------------------------- |
+  | Broker    | Stonex Financial, Marex                      |
+  | Bank      | Banco BS2, Itaú                              |
+  | Supplier  | Alecar, Rusal                                |
+  | Customer  | Casa do Alumínio, Aluminios del Mexico        |
+
+  Per-type access semantics (binding): `trader` sees customers + suppliers only; brokers and banks are invisible to `trader` (GET returns 404 to avoid existence leak). Risk_manager and auditor see all 8. **Post-HB-1 (target state for pilot day 1):** the HB-1 KYC gate (§2 HB-1) operates against this pre-approved list — any RFQ invitation pointing at a counterparty not in this table OR with `kyc_status != approved` is rejected at creation with an audit event. **Pre-HB-1 (current code):** the gate does not exist yet; admission is procedural (the 8 names are pre-approved by risk_manager and operator discipline keeps non-list counterparties out — see §6 residual risk "KYC enforcement is manual for the pre-pilot counterparty list").
+
 - **Users:** named operators only (no broad organization rollout); credentials provisioned per user per Cluster 3 RBAC matrix.
-- **Volume cap:** USD `<to be negotiated with risk_manager before sign-off>` per counterparty per trading day. Risk_manager fills the actual figure in the §7 sign-off notes. Any single trade above the cap → halt + tech-lead escalation.
+- **Volume cap:** **140,000 tonnes of aluminium per year (institutional annual cap; equivalent to 140k tonnes/year as written elsewhere in this brief).** Derived per-day average ≈ 560 tonnes (140,000 ÷ ~250 trading days). The institutional cap is the annual figure; risk_manager negotiates per-counterparty and per-day sub-caps from this top-line during sign-off (recorded in §7 notes). Any single trade that would breach the annual cap year-to-date → halt + tech-lead escalation. The HB-2 workflow approval threshold (§2 HB-2) is calibrated against this volume framing.
 - **Supervision:** risk_manager daily (full review per §5); auditor sample-basis (verifies sampled AuditEvent rows daily); tech-lead on-call for engineering escalations during trading hours.
 - **Settlement evidence:** only canonical paths (`/cashflow/contracts/{contract_id}/settle`); generic status-patch settlement remains forbidden per dispatch §4 acceptance criteria of PR #76 (Cluster 1) and re-asserted here.
 
@@ -194,7 +204,7 @@ The pilot signatories accept the following residual risks for the pilot window. 
 
 | Residual | Compensating control during pilot | Re-evaluation trigger |
 |---|---|---|
-| **KYC enforcement is manual for the pre-pilot counterparty list** | All 2-3 counterparties are pre-approved by risk_manager and named in the signed sign-off; the system does not yet block on `kyc_status` (HB-1 hardens this for unsupervised operation post-pilot) | First quarterly pilot review |
+| **KYC enforcement is manual for the pre-pilot counterparty list** | All 8 counterparties (§4) are pre-approved by risk_manager and named in the signed sign-off; the system does not yet block on `kyc_status` (HB-1 hardens this for unsupervised operation post-pilot) | First quarterly pilot review |
 | **IdP is Clerk dev FAPI** | Custom domain Clerk (`pk_live_*`) and RSA keypair via production secrets manager are carryover Cluster 3 items; pilot operates inside restricted-network posture | First quarterly pilot review |
 | **CSP is report-only** | Violation reporter is wired (per PR #85); enforce-flip is deferred 1-2 sprints after pilot start to collect telemetry first | After 1-2 sprints of report-only telemetry |
 | **Single market-data provider (Westmetall)** | Drift-alert scaffold ready in `market_data_governance.py`; no audit-only provider exists today; introduction requires constitutional amendment | When a second `trusted` provider is proposed |
