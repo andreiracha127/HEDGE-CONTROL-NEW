@@ -621,6 +621,8 @@ class TestA5RouteWorkerCoverage:
         assert metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"
         assert metadata["tier_at_ingest_time"] == "trusted"
         assert metadata["is_canonical"] is True
+        # Batch-spanning ingest serializes the stable replay key as a dict so
+        # callers do not fabricate a settlement_date for a multi-date batch.
         assert metadata["replay_key"]["batch_id"] == str(bulk_rows[0].entity_id)
         _assert_signed(bulk_rows[0])
 
