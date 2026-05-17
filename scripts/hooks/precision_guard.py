@@ -21,7 +21,17 @@ INGEST_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"backend[\\/]+app[\\/]+services[\\/]+market_data_governance\.py$"),
 )
 
-FLOAT_LITERAL = re.compile(r"\bfloat\s*\(")
+# Match float(...) but skip the standard Python sentinel idioms
+# float("inf"), float("-inf"), float("infinity"), float("-infinity"), float("nan")
+# (case-insensitive on the literal token). These are not market-data parses;
+# blocking them is a false positive and would permanently block any Write that
+# replays existing sentinel-bearing lines (see PR #90 Greptile review).
+FLOAT_LITERAL = re.compile(
+    r"\bfloat\s*\("
+    r"(?!\s*['\"]"
+    r"(?i:inf(?:inity)?|-inf(?:inity)?|nan)"
+    r"['\"]\s*\))"
+)
 
 
 def main() -> int:
