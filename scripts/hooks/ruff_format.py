@@ -9,9 +9,15 @@ call.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+
+# Matches both absolute `/.../backend/...` and repo-relative `backend/...` paths
+# (after backslash normalization). Claude Code hook payloads can be either form
+# depending on platform and how the session is rooted (PR #90 Greptile + AugmentCode).
+BACKEND_PATH = re.compile(r"(?:^|/)backend/")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
@@ -30,22 +36,26 @@ def main() -> int:
         return 0
 
     normalized = file_path.replace("\\", "/")
-    if "/backend/" not in normalized and not normalized.endswith("/backend"):
+    if not BACKEND_PATH.search(normalized):
         return 0
 
     if not BACKEND_DIR.exists():
         return 0
 
+    # Resolve to absolute before invoking ruff. A relative `backend/app/...` with
+    # cwd=BACKEND_DIR would otherwise resolve to a non-existent `backend/backend/...`.
+    abs_path = str(Path(file_path).resolve())
+
     try:
         check = subprocess.run(
-            ["ruff", "check", "--fix", file_path],
+            ["ruff", "check", "--fix", abs_path],
             cwd=str(BACKEND_DIR),
             capture_output=True,
             text=True,
             timeout=15,
         )
         fmt = subprocess.run(
-            ["ruff", "format", file_path],
+            ["ruff", "format", abs_path],
             cwd=str(BACKEND_DIR),
             capture_output=True,
             text=True,
