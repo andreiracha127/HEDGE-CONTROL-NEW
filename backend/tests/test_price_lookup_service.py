@@ -21,14 +21,14 @@ from app.utils.market_calendar import (
 )
 
 
-def _insert_price(symbol: str, settlement_date: date, price_usd: float, source: str = "westmetall") -> None:
+def _insert_price(symbol: str, settlement_date: date, price_usd: Decimal | str, source: str = "westmetall") -> None:
     with SessionLocal() as session:
         session.add(
             CashSettlementPrice(
                 source=source,
                 symbol=symbol,
                 settlement_date=settlement_date,
-                price_usd=price_usd,
+                price_usd=Decimal(str(price_usd)),
                 source_url="https://example.test/source",
                 html_sha256="0" * 64,
                 fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),

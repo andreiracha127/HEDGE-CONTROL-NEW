@@ -14,14 +14,14 @@ from app.services.mtm_snapshot_service import create_mtm_snapshot_for_order
 from app.services.price_lookup_service import resolve_symbol
 
 
-def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
+def _insert_price(symbol: str, settlement_date: date, price_usd: Decimal | str) -> None:
     with SessionLocal() as session:
         session.add(
             CashSettlementPrice(
                 source="westmetall",
                 symbol=symbol,
                 settlement_date=settlement_date,
-                price_usd=price_usd,
+                price_usd=Decimal(str(price_usd)),
                 source_url="https://example.test/source",
                 html_sha256="0" * 64,
                 fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),

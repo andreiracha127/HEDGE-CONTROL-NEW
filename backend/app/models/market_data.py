@@ -2,10 +2,10 @@ from datetime import date, datetime
 from decimal import Decimal
 import uuid
 
-from sqlalchemy import Date, DateTime, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, Numeric, PrimaryKeyConstraint, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, true
 
 from app.models.base import Base
 
@@ -22,9 +22,25 @@ class CashSettlementPrice(Base):
     symbol: Mapped[str] = mapped_column(String(length=64), nullable=False)
     settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
     price_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    is_canonical: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=true())
 
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
     html_sha256: Mapped[str] = mapped_column(String(length=64), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class MarketDataSequenceTracker(Base):
+    __tablename__ = "market_data_sequence_tracker"
+    __table_args__ = (PrimaryKeyConstraint("provider", "instrument"),)
+
+    provider: Mapped[str] = mapped_column(String(length=64), nullable=False)
+    instrument: Mapped[str] = mapped_column(String(length=64), nullable=False)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )

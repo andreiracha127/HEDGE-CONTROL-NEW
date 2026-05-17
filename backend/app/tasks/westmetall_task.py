@@ -18,8 +18,15 @@ from app.services.audit_trail_service import AuditTrailService
 from app.services.cash_settlement_prices import (
     ingest_westmetall_cash_settlement_bulk,
 )
+from app.services.market_data_governance import (
+    MarketDataAuditMetadata,
+    is_canonical as is_canonical_provider,
+    tier_for_provider,
+)
 from app.services.westmetall_cash_settlement import (
     CircuitOpenError,
+    SOURCE_WESTMETALL,
+    SYMBOL_DAILY,
     WestmetallLayoutError,
 )
 
@@ -41,22 +48,28 @@ def run_westmetall_ingestion() -> None:
         inserted_ids, batch_uuid, ingested, skipped, evidence = (
             ingest_westmetall_cash_settlement_bulk(session)
         )
-        if ingested:
-            AuditTrailService.record_worker_event(
-                session,
-                entity_type="cash_settlement_price",
-                entity_id=batch_uuid,
-                event_type="bulk_ingested",
-                actor="service:westmetall_ingest",
-                source="westmetall_task",
-                metadata={
-                    "actor_sub": "service:westmetall_ingest",
-                    "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
-                    "source_url": evidence.source_url,
-                    "html_sha256": evidence.html_sha256,
-                },
-            )
-            session.commit()
+        metadata = MarketDataAuditMetadata(
+            provider=SOURCE_WESTMETALL,
+            instrument=SYMBOL_DAILY,
+            actor_sub="service:westmetall_ingest",
+            tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+            is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+            batch_replay_id=str(batch_uuid),
+        ).as_metadata_dict()
+        metadata["inserted_ids"] = [str(inserted_id) for inserted_id in inserted_ids]
+        metadata["source_url"] = evidence.source_url
+        metadata["html_sha256"] = evidence.html_sha256
+        metadata["batch_uuid"] = str(batch_uuid)
+        AuditTrailService.record_worker_event(
+            session,
+            entity_type="cash_settlement_price",
+            entity_id=batch_uuid,
+            event_type="market_data_ingested",
+            actor="service:westmetall_ingest",
+            source="westmetall_task",
+            metadata=metadata,
+        )
+        session.commit()
         logger.info(
             "westmetall_task_success",
             ingested_count=ingested,

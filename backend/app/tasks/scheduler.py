@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.logging import get_logger
 from app.tasks.rfq_timeout_task import run_rfq_timeout_check
+from app.tasks.market_data_staleness_task import run_market_data_staleness_check
 from app.tasks.westmetall_task import run_westmetall_ingestion
 
 logger = get_logger()
@@ -51,6 +52,14 @@ def start_scheduler() -> None:
         id="rfq_timeout_check",
         replace_existing=True,
         misfire_grace_time=900,  # allow up to 15 min late execution
+    )
+    _scheduler.add_job(
+        run_market_data_staleness_check,
+        trigger="interval",
+        minutes=int(os.getenv("MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES", "15")),
+        id="market_data_staleness_check",
+        replace_existing=True,
+        misfire_grace_time=900,
     )
     _scheduler.start()
     logger.info(

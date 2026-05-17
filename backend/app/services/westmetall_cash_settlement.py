@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 
 from app.core.utils import now_utc
 import hashlib
@@ -95,7 +96,7 @@ class WestmetallFetchEvidence:
 @dataclass(frozen=True)
 class WestmetallDailyRow:
     settlement_date: date
-    price_usd: float
+    price_usd: Decimal
 
 
 def fetch_westmetall_html(
@@ -166,14 +167,30 @@ def _parse_settlement_date(value: str) -> date | None:
     return None
 
 
-def _parse_float(value: str) -> float | None:
+def _parse_price_decimal(value: str) -> Decimal | None:
+    if not isinstance(value, str):
+        raise TypeError(
+            f"_parse_price_decimal accepts str only; got {type(value).__name__}. "
+            "Float inputs forbidden at parser boundary."
+        )
     cleaned = value.strip().replace("\xa0", " ").replace(" ", "")
     if not cleaned:
         return None
-    cleaned = cleaned.replace(",", "")
+    has_comma = "," in cleaned
+    has_dot = "." in cleaned
+    if has_comma and has_dot:
+        if cleaned.rindex(",") > cleaned.rindex("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif has_comma:
+        if len(cleaned) - cleaned.rindex(",") <= 3:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
     try:
-        return float(cleaned)
-    except ValueError:
+        return Decimal(cleaned)
+    except InvalidOperation:
         return None
 
 
@@ -197,7 +214,7 @@ def parse_westmetall_daily_rows(html: bytes) -> list[WestmetallDailyRow]:
         parsed_date = _parse_settlement_date(cells[0])
         if not parsed_date:
             continue
-        parsed_price = _parse_float(cells[1])
+        parsed_price = _parse_price_decimal(cells[1])
         if parsed_price is None:
             continue
         rows.append(

@@ -30,14 +30,14 @@ from app.services.mtm_order_service import compute_mtm_for_order
 
 
 # ── helpers ────────────────────────────────────────────────────────────
-def _insert_price(symbol: str, settlement_date: date, price_usd: float) -> None:
+def _insert_price(symbol: str, settlement_date: date, price_usd: Decimal | str) -> None:
     with SessionLocal() as session:
         session.add(
             CashSettlementPrice(
                 source="westmetall",
                 symbol=symbol,
                 settlement_date=settlement_date,
-                price_usd=price_usd,
+                price_usd=Decimal(str(price_usd)),
                 source_url="https://example.test/source",
                 html_sha256="0" * 64,
                 fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
@@ -221,7 +221,7 @@ class TestMTMOrderMultiCommodity:
             _insert_price(
                 symbol=COMMODITY_SYMBOL_MAP[commodity],
                 settlement_date=date(2026, 1, 30),
-                price_usd=float(price),
+                price_usd=Decimal(str(price)),
             )
             order_ids.append(
                 (

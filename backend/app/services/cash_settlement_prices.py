@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import uuid
+import json
 from datetime import date
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
 from app.models.market_data import CashSettlementPrice
+from app.services.market_data_governance import (
+    BulkContentMismatch,
+    classify_bulk_row_replay,
+    emit_bulk_content_mismatch_rejection,
+    emit_bulk_idempotent_skip,
+    is_canonical,
+)
 from app.services.westmetall_cash_settlement import (
     SOURCE_WESTMETALL,
     SYMBOL_DAILY,
@@ -28,7 +36,7 @@ def ingest_westmetall_cash_settlement_daily_for_date(
         return None, 0, 0, evidence
 
     existing = (
-        db.query(CashSettlementPrice)
+        db.query(CashSettlementPrice.id, CashSettlementPrice.price_usd)
         .filter(
             CashSettlementPrice.source == SOURCE_WESTMETALL,
             CashSettlementPrice.symbol == SYMBOL_DAILY,
@@ -37,13 +45,39 @@ def ingest_westmetall_cash_settlement_daily_for_date(
         .first()
     )
     if existing is not None:
-        return None, 0, 1, evidence
+        existing_id, existing_price_usd = existing
+        outcome = classify_bulk_row_replay(
+            new_price_usd=row.price_usd,
+            existing_price_usd=existing_price_usd,
+        )
+        if outcome == "idempotent_skip":
+            emit_bulk_idempotent_skip(
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                settlement_date=settlement_date,
+                actor_sub="service:westmetall_ingest",
+            )
+            return existing_id, 0, 1, evidence
+        emit_bulk_content_mismatch_rejection(
+            provider=SOURCE_WESTMETALL,
+            instrument=SYMBOL_DAILY,
+            settlement_date=settlement_date,
+            new_price_usd=row.price_usd,
+            existing_price_usd=existing_price_usd,
+            actor_sub="service:westmetall_ingest",
+        )
+        raise BulkContentMismatch(
+            f"price_usd mismatch for ({SOURCE_WESTMETALL}, {SYMBOL_DAILY}, "
+            f"{settlement_date.isoformat()}): new={row.price_usd} "
+            f"existing={existing_price_usd}"
+        )
 
     price = CashSettlementPrice(
         source=SOURCE_WESTMETALL,
         symbol=SYMBOL_DAILY,
         settlement_date=settlement_date,
         price_usd=row.price_usd,
+        is_canonical=is_canonical(SOURCE_WESTMETALL, SYMBOL_DAILY),
         source_url=evidence.source_url,
         html_sha256=evidence.html_sha256,
         fetched_at=evidence.fetched_at,
@@ -57,16 +91,14 @@ def _westmetall_batch_uuid(
     *,
     start_date: Optional[date],
     end_date: Optional[date],
-    html_sha256: str,
-    inserted_dates: list[date],
 ) -> uuid.UUID:
-    dates = ",".join(d.isoformat() for d in sorted(inserted_dates))
-    canonical_batch_key = (
-        f"source={SOURCE_WESTMETALL}|start={start_date.isoformat() if start_date else ''}|"
-        f"end={end_date.isoformat() if end_date else ''}|html_sha256={html_sha256}|"
-        f"inserted_dates={dates}"
-    )
-    return uuid.uuid5(uuid.NAMESPACE_URL, canonical_batch_key)
+    payload = {
+        "source": SOURCE_WESTMETALL,
+        "symbol": SYMBOL_DAILY,
+        "start_date": start_date.isoformat() if start_date else None,
+        "end_date": end_date.isoformat() if end_date else None,
+    }
+    return uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(payload, sort_keys=True))
 
 
 def ingest_westmetall_cash_settlement_bulk(
@@ -91,15 +123,15 @@ def ingest_westmetall_cash_settlement_bulk(
         batch_uuid = _westmetall_batch_uuid(
             start_date=start_date,
             end_date=end_date,
-            html_sha256=evidence.html_sha256,
-            inserted_dates=[],
         )
         return [], batch_uuid, 0, 0, evidence
 
-    # Fetch existing dates in one query to avoid N+1
-    existing_dates = set(
-        d
-        for (d,) in db.query(CashSettlementPrice.settlement_date)
+    existing_price_by_date = {
+        settlement_date: price_usd
+        for settlement_date, price_usd in db.query(
+            CashSettlementPrice.settlement_date,
+            CashSettlementPrice.price_usd,
+        )
         .filter(
             CashSettlementPrice.source == SOURCE_WESTMETALL,
             CashSettlementPrice.symbol == SYMBOL_DAILY,
@@ -108,28 +140,53 @@ def ingest_westmetall_cash_settlement_bulk(
             ),
         )
         .all()
-    )
+    }
 
     ingested = 0
     skipped = 0
     inserted_prices: list[CashSettlementPrice] = []
-    inserted_dates: list[date] = []
+    canonical_flag = is_canonical(SOURCE_WESTMETALL, SYMBOL_DAILY)
     for row in rows:
-        if row.settlement_date in existing_dates:
-            skipped += 1
-            continue
+        existing_price_usd = existing_price_by_date.get(row.settlement_date)
+        if existing_price_usd is not None:
+            outcome = classify_bulk_row_replay(
+                new_price_usd=row.price_usd,
+                existing_price_usd=existing_price_usd,
+            )
+            if outcome == "idempotent_skip":
+                emit_bulk_idempotent_skip(
+                    provider=SOURCE_WESTMETALL,
+                    instrument=SYMBOL_DAILY,
+                    settlement_date=row.settlement_date,
+                    actor_sub="service:westmetall_ingest",
+                )
+                skipped += 1
+                continue
+            emit_bulk_content_mismatch_rejection(
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                settlement_date=row.settlement_date,
+                new_price_usd=row.price_usd,
+                existing_price_usd=existing_price_usd,
+                actor_sub="service:westmetall_ingest",
+            )
+            raise BulkContentMismatch(
+                f"price_usd mismatch for ({SOURCE_WESTMETALL}, {SYMBOL_DAILY}, "
+                f"{row.settlement_date.isoformat()}): new={row.price_usd} "
+                f"existing={existing_price_usd}"
+            )
         price = CashSettlementPrice(
             source=SOURCE_WESTMETALL,
             symbol=SYMBOL_DAILY,
             settlement_date=row.settlement_date,
             price_usd=row.price_usd,
+            is_canonical=canonical_flag,
             source_url=evidence.source_url,
             html_sha256=evidence.html_sha256,
             fetched_at=evidence.fetched_at,
         )
         db.add(price)
         inserted_prices.append(price)
-        inserted_dates.append(row.settlement_date)
         ingested += 1
 
     if ingested:
@@ -138,7 +195,5 @@ def ingest_westmetall_cash_settlement_bulk(
     batch_uuid = _westmetall_batch_uuid(
         start_date=start_date,
         end_date=end_date,
-        html_sha256=evidence.html_sha256,
-        inserted_dates=inserted_dates,
     )
     return [price.id for price in inserted_prices], batch_uuid, ingested, skipped, evidence

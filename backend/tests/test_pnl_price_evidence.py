@@ -108,7 +108,7 @@ def _insert_price(
     *,
     symbol: str,
     settlement_date: date,
-    price_usd: float,
+    price_usd: Decimal | str,
     source: str = "westmetall",
 ) -> None:
     session.add(
@@ -116,7 +116,7 @@ def _insert_price(
             source=source,
             symbol=symbol,
             settlement_date=settlement_date,
-            price_usd=price_usd,
+            price_usd=Decimal(str(price_usd)),
             source_url="https://example.test/source",
             html_sha256="0" * 64,
             fetched_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
