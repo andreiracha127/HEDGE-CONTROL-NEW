@@ -3,7 +3,7 @@
 **Date:** 2026-05-17
 **Status:** Design approved by Andrei; ready for implementation planning
 **Output artifact:** `docs/2026-05-tech-lead-executive-analysis.md` (rewritten in place)
-**Sibling action:** `docs/2026-05-14-pilot-readiness-checklist.md` deleted in the same commit (`git rm`)
+**Sibling action:** `docs/2026-05-14-pilot-readiness-checklist.md` removed from the working tree in the same operation. At authoring time the file was assumed to be tracked; at execution time it turned out to be an untracked working draft (never committed to `main`), so the removal landed as a working-tree delete rather than a `git rm` — see the brief's commit message for the deviation note.
 
 ---
 

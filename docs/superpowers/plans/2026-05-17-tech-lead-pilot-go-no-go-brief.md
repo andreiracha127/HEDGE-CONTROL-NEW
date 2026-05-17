@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rewrite `docs/2026-05-tech-lead-executive-analysis.md` as a prescriptive pilot go/no-go sign-off brief and delete the now-redundant `docs/2026-05-14-pilot-readiness-checklist.md` in a single commit.
+**Goal:** Rewrite `docs/2026-05-tech-lead-executive-analysis.md` as a prescriptive pilot go/no-go sign-off brief and remove the now-redundant `docs/2026-05-14-pilot-readiness-checklist.md` from the working tree in a single commit. (At authoring time the checklist was assumed to be tracked; Task 10 §2 below uses `git rm`, but if the file is untracked at execution time, a plain working-tree delete is the equivalent operation — see the brief's commit message for the deviation note.)
 
 **Architecture:** Doc-authoring task with single-file output (one markdown file rewritten) plus a single-file deletion (the deprecated checklist). The brief follows the Decision-First, Evidence-Backing structure approved during brainstorming (7 sections; ~220-275 lines total). Source-of-truth is the design spec at `docs/superpowers/specs/2026-05-17-tech-lead-pilot-go-no-go-brief-design.md`.
 

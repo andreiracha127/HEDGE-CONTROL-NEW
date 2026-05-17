@@ -4,7 +4,7 @@
 **Document type:** Pilot launch decision brief (prescriptive)
 **Pilot target:** Aluminium LME cash / 2-3 pre-approved counterparties / June 2026
 **Author:** Tech-lead (orchestrator)
-**Supersedes:** `docs/2026-05-14-pilot-readiness-checklist.md` (deleted in the same commit)
+**Supersedes:** a prior draft pilot-readiness checklist (`docs/2026-05-14-pilot-readiness-checklist.md`) that existed as an untracked working artifact and was never committed to `main`; its operational content is absorbed into §4 / §5 / §7 below.
 **Source spec:** `docs/superpowers/specs/2026-05-17-tech-lead-pilot-go-no-go-brief-design.md`
 
 ---
@@ -15,7 +15,7 @@
 
 Approve the launch of a controlled pilot of the Hedge Control Platform in **June 2026** for **aluminium LME cash settlement only** with **2-3 pre-approved counterparties**, contingent on the closure of the **4 hard blockers listed below** and the **signed approval of the four institutional signatories** named in §7.
 
-**Why conditional-go (not unconditional-go):** the backend institutional core is fully closed post-A1-A6 backlog retirement (main `94b029dec`, alembic head `045_market_data_governance_columns`, 1440 backend tests passing). However, four compliance and operational frontes do not yet meet the threshold for operation with multiple real counterparties. Each is addressable inside the 4-week runway to a June launch.
+**Why conditional-go (not unconditional-go):** the backend institutional core is fully closed post-A1-A6 backlog retirement (main `94b029dec`, alembic head `045_market_data_governance_columns`, 1440 backend tests passing). However, four compliance and operational fronts do not yet meet the threshold for operation with multiple real counterparties. Each is addressable inside the 4-week runway to a June launch.
 
 ### Hard blockers (mandatory before go-decision)
 
@@ -80,7 +80,7 @@ Each blocker below carries: why it is hard (vs nice-to-have), scope of implement
 
 **Scope of implementation:**
 1. Confirm the 6 pipeline steps and their idempotency semantics; document any gap as a sub-deliverable inside the dispatch.
-2. Wire the daily run into `app/scheduler_main.py` with `SCHEDULER_DISABLED` discipline (per `docs/runbook-railway.md`).
+2. Wire the daily run into `backend/app/scheduler_main.py` with `SCHEDULER_DISABLED` discipline (per `docs/runbook-railway.md`).
 3. Add per-step idempotency tests (re-running the same step with the same inputs must be a no-op).
 4. Runbook expansion in `docs/runbook-railway.md` documenting the daily run, expected outputs, and failure-recovery procedure.
 
@@ -231,4 +231,4 @@ The signed brief is the authoritative pilot-launch record. Any amendment (counte
 
 ---
 
-*This brief replaces and deletes `docs/2026-05-14-pilot-readiness-checklist.md` in the same commit. The checklist's operational content lives in §4 (scope), §5 (daily routine), and §7 (sign-off table) of this document.*
+*This brief supersedes a prior draft pilot-readiness checklist (`docs/2026-05-14-pilot-readiness-checklist.md`) that existed as an untracked working artifact and was never committed to `main`. The checklist's operational content lives in §4 (scope), §5 (daily routine), and §7 (sign-off table) of this document.*
