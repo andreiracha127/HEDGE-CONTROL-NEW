@@ -151,6 +151,16 @@ def test_classify_bulk_row_replay_exact_compare_not_tolerance() -> None:
     )
 
 
+def test_classify_bulk_row_replay_normalizes_to_storage_scale() -> None:
+    assert (
+        classify_bulk_row_replay(
+            new_price_usd=Decimal("100.0000004"),
+            existing_price_usd=Decimal("100.000000"),
+        )
+        == "idempotent_skip"
+    )
+
+
 def test_emit_bulk_idempotent_skip_has_no_reason_field() -> None:
     with capture_logs() as logs:
         emit_bulk_idempotent_skip(
@@ -267,6 +277,19 @@ def test_emit_stale_feed_below_threshold_returns_false() -> None:
         )
     assert result is False
     assert logs == []
+
+
+def test_emit_stale_feed_logs_naive_timestamp_assumption() -> None:
+    now = datetime(2026, 5, 16, 12, tzinfo=timezone.utc)
+    with capture_logs() as logs:
+        result = emit_stale_feed_if_breach(
+            provider="westmetall",
+            instrument=INSTRUMENT,
+            last_ingest_at=datetime(2026, 5, 16, 11),
+            now=now,
+        )
+    assert result is False
+    assert logs[-1]["event"] == "market_data_stale_feed_timestamp_naive"
 
 
 def test_emit_stale_feed_above_threshold_returns_true_and_emits() -> None:

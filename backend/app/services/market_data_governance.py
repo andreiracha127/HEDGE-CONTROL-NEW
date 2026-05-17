@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Literal
 
 import structlog
@@ -22,6 +22,7 @@ ProviderTier = Literal["trusted", "conditional", "quarantine"]
 BulkIdempotencyOutcome = Literal["idempotent_skip", "content_mismatch"]
 
 DEFAULT_REPLAY_WINDOW_MINUTES = 30
+MARKET_DATA_STORAGE_SCALE = Decimal("0.000001")
 
 _PROVIDER_TIER_REGISTRY: dict[str, ProviderTier] = {
     "westmetall": "trusted",
@@ -199,7 +200,13 @@ def classify_bulk_row_replay(
             "classify_bulk_row_replay requires Decimal existing_price_usd, "
             f"got {type(existing_price_usd).__name__}"
         )
-    return "idempotent_skip" if new_price_usd == existing_price_usd else "content_mismatch"
+    normalized_new = new_price_usd.quantize(
+        MARKET_DATA_STORAGE_SCALE, rounding=ROUND_HALF_UP
+    )
+    normalized_existing = existing_price_usd.quantize(
+        MARKET_DATA_STORAGE_SCALE, rounding=ROUND_HALF_UP
+    )
+    return "idempotent_skip" if normalized_new == normalized_existing else "content_mismatch"
 
 
 def emit_bulk_idempotent_skip(
@@ -315,6 +322,13 @@ def emit_stale_feed_if_breach(
         gap_hours = float("inf")
     else:
         if last_ingest_at.tzinfo is None:
+            logger.warning(
+                "market_data_stale_feed_timestamp_naive",
+                provider=provider,
+                instrument=instrument,
+                last_ingest_at=last_ingest_at.isoformat(),
+                assumed_timezone=str(server_now.tzinfo),
+            )
             last_ingest_at = last_ingest_at.replace(tzinfo=server_now.tzinfo)
         gap_hours = (server_now - last_ingest_at).total_seconds() / 3600
     max_gap_hours = max_gap.total_seconds() / 3600
