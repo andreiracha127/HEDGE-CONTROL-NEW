@@ -351,10 +351,17 @@ Counterparty KYC gate (binding, Pilot Hard Blocker 1):
 
 The counterparty `kyc_status` field is the constitutional gate for any
 RFQ-lifecycle participation. The field already exists at
-`backend/app/models/counterparty.py:23` (enum `KycStatus` with members
-{pending, approved, expired}; default `pending`) and is exposed on the
-Counterparty schema/route — what is missing is the gate that enforces
-its meaning. This subsection binds that meaning constitutionally.
+`backend/app/models/counterparty.py:23-27` (enum `KycStatus` with
+members {pending, approved, expired, rejected}; default `pending`) and
+is exposed on the Counterparty schema/route — what is missing is the
+gate that enforces its meaning. This subsection binds that meaning
+constitutionally.
+
+The gate admits ONLY `approved`. The other three members — `pending`,
+`expired`, `rejected` — all deny with the same refusal semantics
+described below; the difference between them is procedural (how the
+counterparty arrived at that status and what the path forward is),
+not gate behavior.
 
 Gate scope (binding):
 
@@ -391,21 +398,23 @@ Gate scope (binding):
   requesting_actor_sub}`.
 
 The gate is fail-closed: the default `KycStatus.pending` denies, an
-explicitly `expired` status denies, and absence of the field
-(impossible per schema NOT NULL) also denies. There is NO bypass flag
-and NO config override. Operators wanting an exception MUST first
-transition the counterparty's `kyc_status` to `approved` via the
-status-transition path below; the gate then admits naturally.
+explicitly `expired` status denies, an explicitly `rejected` status
+denies, and absence of the field (impossible per schema NOT NULL)
+also denies. The only admit-path is `approved`. There is NO bypass
+flag and NO config override. Operators wanting an exception MUST
+first transition the counterparty's `kyc_status` to `approved` via
+the status-transition path below; the gate then admits naturally.
 
 Status transitions (binding):
 
-- `kyc_status` mutations on ANY counterparty type (transitions between
-  {pending, approved, expired}) are authorized only to `risk_manager`.
-  This explicitly OVERRIDES the trader per-type CRUD admission for
-  this single field (see trader role bullet above): trader CAN update
-  customer/supplier counterparties' non-KYC fields (e.g. contact info,
-  address) but CANNOT mutate `kyc_status` on any counterparty type.
-  Auditor cannot mutate per matrix (read-only). Service identities
+- `kyc_status` mutations on ANY counterparty type (transitions
+  between any of the four members {pending, approved, expired,
+  rejected}) are authorized only to `risk_manager`. This explicitly
+  OVERRIDES the trader per-type CRUD admission for this single field
+  (see trader role bullet above): trader CAN update customer/supplier
+  counterparties' non-KYC fields (e.g. contact info, address) but
+  CANNOT mutate `kyc_status` on any counterparty type. Auditor cannot
+  mutate per matrix (read-only). Service identities
   (`service:westmetall_ingest`, `service:rfq_outbound`,
   `service:cashflow_pipeline`, `service:webhook_inbound`) have no
   Counterparty-mutation scope and therefore no `kyc_status` mutation
@@ -418,16 +427,39 @@ Status transitions (binding):
   text (minimum 8 characters; enforced at the schema/service layer
   before persistence). HMAC-signed per audit-trail invariant.
 
-- `expired → approved` transitions are NOT auto-promoted by any
-  background task; an explicit risk_manager-initiated POST with reason
-  is mandatory. This prevents an expired KYC from drifting back to
-  approved without active oversight.
+- Member semantics (binding, applies to all transitions to/from each
+  state):
+  - `pending` — counterparty exists in the platform but has not yet
+    been KYC-approved. Default state on creation. Gate denies.
+  - `approved` — KYC verification complete; risk_manager has signed
+    off. Only admit-state for the gate.
+  - `expired` — previously approved counterparty whose KYC has
+    lapsed (e.g. annual renewal cycle missed). Gate denies. Path
+    forward: risk_manager-initiated `expired → approved` transition
+    with reason.
+  - `rejected` — explicit administrative hold (e.g. compliance
+    failure, sanctions hit, or risk-rating downgrade). Gate denies
+    with the same semantics as `pending`/`expired`. Path forward
+    requires explicit risk_manager-initiated `rejected → approved`
+    transition with reason citing the remediation. The `rejected`
+    state is institutionally distinct from `expired` (rejected =
+    "we said no", expired = "approval lapsed in time"); both deny
+    identically at the gate.
 
-- `approved → pending` and `approved → expired` are valid (revocation
-  paths); both follow the same audit-event contract. Once revoked,
-  the gate rules above apply immediately (in-flight RFQ invitations
-  to that counterparty become unawardable; in-flight quotes from that
-  counterparty become unpersistable).
+- No auto-promotion: `pending → approved`, `expired → approved`, and
+  `rejected → approved` transitions are NEVER performed by background
+  tasks or migrations. All three require an explicit
+  risk_manager-initiated POST with reason. This prevents drift back
+  to approved without active oversight.
+
+- Revocation paths (`approved → pending`, `approved → expired`,
+  `approved → rejected`) are valid and follow the same audit-event
+  contract. Once revoked, the gate rules above apply immediately —
+  in-flight RFQ invitations to that counterparty become unawardable
+  (the award path re-checks `kyc_status` at award moment per the gate
+  scope rules) and in-flight quotes from that counterparty become
+  unpersistable (the quote-ingestion path re-checks at the
+  internal-processing boundary).
 
 Pilot scope binding (operational pre-condition for Pilot Hard
 Blocker 1 closure):
