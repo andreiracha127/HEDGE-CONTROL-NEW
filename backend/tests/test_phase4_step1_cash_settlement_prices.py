@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 
 import pytest
 
@@ -49,7 +50,7 @@ def test_ingest_inserts_then_skips_idempotently(client, monkeypatch) -> None:
     assert resp1.json()["ingested_count"] == 1
     assert resp1.json()["skipped_count"] == 0
 
-    # Different HTML value should not overwrite existing record (still skipped).
+    # Different HTML value is a content mismatch, not an idempotent skip.
     html_changed = b"""
     <html><body>
       <table>
@@ -63,14 +64,13 @@ def test_ingest_inserts_then_skips_idempotently(client, monkeypatch) -> None:
         "/market-data/westmetall/aluminum/cash-settlement/ingest",
         json={"settlement_date": "2026-01-30"},
     )
-    assert resp2.status_code == 200
-    assert resp2.json()["ingested_count"] == 0
-    assert resp2.json()["skipped_count"] == 1
+    assert resp2.status_code == 409
 
     with SessionLocal() as session:
         row = session.query(CashSettlementPrice).first()
         assert row is not None
-        assert float(row.price_usd) == 2567.50
+        assert row.price_usd == Decimal("2567.500000")
+        assert row.is_canonical is True
         assert row.source == "westmetall"
         assert row.symbol == "LME_ALU_CASH_SETTLEMENT_DAILY"
         assert row.source_url.startswith("https://")

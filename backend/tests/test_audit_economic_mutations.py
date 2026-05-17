@@ -593,7 +593,7 @@ class TestA5RouteWorkerCoverage:
             session, entity_type="cash_settlement_price", entity_id=single_price.id
         )
         assert len(single_rows) == 1
-        assert single_rows[0].event_type == "ingested"
+        assert single_rows[0].event_type == "market_data_ingested"
         _assert_signed(single_rows[0])
 
         _mock_westmetall_html(
@@ -610,21 +610,23 @@ class TestA5RouteWorkerCoverage:
             session.query(AuditEvent)
             .filter(
                 AuditEvent.entity_type == "cash_settlement_price",
-                AuditEvent.event_type == "bulk_ingested",
+                AuditEvent.event_type == "market_data_ingested",
+                AuditEvent.entity_id != single_price.id,
             )
             .all()
         )
         assert len(bulk_rows) == 1
         metadata = bulk_rows[0].payload["metadata"]
-        assert metadata["source"] == "westmetall"
-        assert metadata["requested_start_date"] == "2026-02-02"
-        assert metadata["requested_end_date"] == "2026-02-03"
-        assert metadata["html_sha256"] == bulk.json()["html_sha256"]
-        assert len(metadata["inserted_ids"]) == 2
-        assert metadata["batch_uuid"] == str(bulk_rows[0].entity_id)
+        assert metadata["provider"] == "westmetall"
+        assert metadata["instrument"] == "LME_ALU_CASH_SETTLEMENT_DAILY"
+        assert metadata["tier_at_ingest_time"] == "trusted"
+        assert metadata["is_canonical"] is True
+        # Batch-spanning ingest serializes the stable replay key as a dict so
+        # callers do not fabricate a settlement_date for a multi-date batch.
+        assert metadata["replay_key"]["batch_id"] == str(bulk_rows[0].entity_id)
         _assert_signed(bulk_rows[0])
 
-    def test_westmetall_rollback_and_noop_paths_do_not_emit_audit(
+    def test_westmetall_rollback_rolls_back_and_idempotent_skip_emits_audit(
         self, client, session, monkeypatch
     ) -> None:
         _mock_westmetall_html(monkeypatch, [("30.01.2026", "2,567.50")])
@@ -649,7 +651,7 @@ class TestA5RouteWorkerCoverage:
         )
         assert skipped.status_code == 200
         assert skipped.json()["skipped_count"] == 1
-        assert session.query(AuditEvent).count() == 1
+        assert session.query(AuditEvent).count() == 2
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -835,7 +837,7 @@ def _insert_price(
     session: Session,
     *,
     settlement_date: date,
-    price_usd: str | float,
+    price_usd: Decimal | str,
     symbol: str = "LME_ALU_CASH_SETTLEMENT_DAILY",
 ) -> None:
     session.add(

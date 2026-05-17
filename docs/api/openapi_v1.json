@@ -778,6 +778,10 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
+          },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
           }
         },
         "required": [
@@ -787,7 +791,8 @@
           "symbol",
           "source_url",
           "html_sha256",
-          "fetched_at"
+          "fetched_at",
+          "is_canonical"
         ],
         "title": "CashSettlementBulkIngestResponse",
         "type": "object"
@@ -846,6 +851,10 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
+          },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
           }
         },
         "required": [
@@ -856,7 +865,8 @@
           "settlement_date",
           "source_url",
           "html_sha256",
-          "fetched_at"
+          "fetched_at",
+          "is_canonical"
         ],
         "title": "CashSettlementIngestResponse",
         "type": "object"
@@ -907,6 +917,10 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
+          },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
           }
         },
         "required": [
@@ -918,7 +932,8 @@
           "source_url",
           "html_sha256",
           "fetched_at",
-          "created_at"
+          "created_at",
+          "is_canonical"
         ],
         "title": "CashSettlementPriceRead",
         "type": "object"

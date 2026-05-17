@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from decimal import Decimal
 import uuid
 
 import pytest
@@ -14,7 +15,7 @@ from app.services.price_lookup_service import resolve_symbol
 
 def _insert_price(
     settlement_date: date,
-    price_usd: float,
+    price_usd: Decimal | str,
     symbol: str = "LME_ALU_CASH_SETTLEMENT_DAILY",
 ) -> None:
     with SessionLocal() as session:
@@ -23,7 +24,7 @@ def _insert_price(
                 source="westmetall",
                 symbol=symbol,
                 settlement_date=settlement_date,
-                price_usd=price_usd,
+                price_usd=Decimal(str(price_usd)),
                 source_url="https://example.test/source",
                 html_sha256="0" * 64,
                 fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),

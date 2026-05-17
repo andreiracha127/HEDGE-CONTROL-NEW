@@ -25,6 +25,7 @@ class CashSettlementIngestResponse(BaseModel):
     source_url: str = Field(..., max_length=512)
     html_sha256: str = Field(..., max_length=128)
     fetched_at: datetime
+    is_canonical: bool
 
 
 class CashSettlementBulkIngestResponse(BaseModel):
@@ -35,6 +36,7 @@ class CashSettlementBulkIngestResponse(BaseModel):
     source_url: str = Field(..., max_length=512)
     html_sha256: str = Field(..., max_length=128)
     fetched_at: datetime
+    is_canonical: bool
 
 
 class CashSettlementPriceRead(BaseModel):
@@ -45,6 +47,7 @@ class CashSettlementPriceRead(BaseModel):
     symbol: str = Field(..., max_length=64)
     settlement_date: date
     price_usd: Decimal
+    is_canonical: bool
     source_url: str = Field(..., max_length=512)
     html_sha256: str = Field(..., max_length=128)
     fetched_at: datetime

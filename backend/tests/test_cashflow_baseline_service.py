@@ -26,14 +26,14 @@ from app.services.cashflow_baseline_service import create_cashflow_baseline_snap
 from app.services.cashflow_ledger_service import ingest_hedge_contract_settlement
 
 
-def _insert_price(settlement_date: date, price_usd: float) -> None:
+def _insert_price(settlement_date: date, price_usd: Decimal | str) -> None:
     with SessionLocal() as session:
         session.add(
             CashSettlementPrice(
                 source="westmetall",
                 symbol="LME_ALU_CASH_SETTLEMENT_DAILY",
                 settlement_date=settlement_date,
-                price_usd=price_usd,
+                price_usd=Decimal(str(price_usd)),
                 source_url="https://example.test/source",
                 html_sha256="0" * 64,
                 fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),

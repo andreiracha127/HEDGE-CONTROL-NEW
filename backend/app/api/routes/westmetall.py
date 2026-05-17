@@ -18,6 +18,12 @@ from app.services.cash_settlement_prices import (
     ingest_westmetall_cash_settlement_bulk,
     ingest_westmetall_cash_settlement_daily_for_date,
 )
+from app.services.market_data_governance import (
+    BulkContentMismatch,
+    MarketDataAuditMetadata,
+    is_canonical as is_canonical_provider,
+    tier_for_provider,
+)
 from app.services.westmetall_cash_settlement import (
     CircuitOpenError,
     SOURCE_WESTMETALL,
@@ -47,6 +53,7 @@ def _compute_monthly_averages(
     """Compute monthly-average prices from daily LME_ALU_CASH_SETTLEMENT_DAILY rows."""
     q = session.query(CashSettlementPrice).filter(
         CashSettlementPrice.symbol == SYMBOL_DAILY,
+        CashSettlementPrice.is_canonical.is_(True),
     )
     if start_date:
         q = q.filter(CashSettlementPrice.settlement_date >= start_date)
@@ -77,6 +84,7 @@ def _compute_monthly_averages(
                 price_usd=avg_price.quantize(
                     Decimal("0.01"), rounding=ROUND_HALF_EVEN
                 ),
+                is_canonical=True,
                 source_url="computed_from_daily",
                 html_sha256="n/a",
                 fetched_at=now,
@@ -129,7 +137,7 @@ def ingest_cash_settlement_daily(
     _: None = Depends(
         audit_event(
             entity_type="cash_settlement_price",
-            event_type="ingested",
+            event_type="market_data_ingested",
         )
     ),
     __: None = Depends(require_service_identity("westmetall_ingest")),
@@ -137,18 +145,29 @@ def ingest_cash_settlement_daily(
 ) -> CashSettlementIngestResponse:
     try:
         with unit_of_work(session, request=request):
-            inserted_id, ingested_count, skipped_count, evidence = (
+            row_id, ingested_count, skipped_count, evidence = (
                 ingest_westmetall_cash_settlement_daily_for_date(
                     session, payload.settlement_date
                 )
             )
-            # Skip audit: no row was persisted, so there is no durable mutation anchor.
-            if inserted_id is not None:
+            if row_id is not None:
+                metadata = MarketDataAuditMetadata(
+                    provider=SOURCE_WESTMETALL,
+                    instrument=SYMBOL_DAILY,
+                    actor_sub="service:westmetall_ingest",
+                    tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+                    is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+                    single_date_replay_key=payload.settlement_date,
+                )
                 mark_audit_success(
                     request,
-                    inserted_id,
-                    metadata={"actor_sub": "service:westmetall_ingest"},
+                    row_id,
+                    metadata=metadata.as_metadata_dict(),
                 )
+    except BulkContentMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
@@ -167,6 +186,7 @@ def ingest_cash_settlement_daily(
         source_url=evidence.source_url,
         html_sha256=evidence.html_sha256,
         fetched_at=evidence.fetched_at,
+        is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
     )
 
 
@@ -182,7 +202,7 @@ def ingest_cash_settlement_bulk(
     _: None = Depends(
         audit_event(
             entity_type="cash_settlement_price",
-            event_type="bulk_ingested",
+            event_type="market_data_ingested",
         )
     ),
     __: None = Depends(require_service_identity("westmetall_ingest")),
@@ -197,25 +217,25 @@ def ingest_cash_settlement_bulk(
                     end_date=payload.end_date,
                 )
             )
-            # Skip audit: no rows were persisted, so there is no durable mutation anchor.
-            if inserted_ids:
-                mark_audit_success(
-                    request,
-                    batch_uuid,
-                    metadata={
-                        "actor_sub": "service:westmetall_ingest",
-                        "batch_uuid": str(batch_uuid),
-                        "inserted_ids": [str(inserted_id) for inserted_id in inserted_ids],
-                        "source": SOURCE_WESTMETALL,
-                        "requested_start_date": payload.start_date.isoformat()
-                        if payload.start_date
-                        else None,
-                        "requested_end_date": payload.end_date.isoformat()
-                        if payload.end_date
-                        else None,
-                        "html_sha256": evidence.html_sha256,
-                    },
-                )
+            metadata = MarketDataAuditMetadata(
+                provider=SOURCE_WESTMETALL,
+                instrument=SYMBOL_DAILY,
+                actor_sub="service:westmetall_ingest",
+                tier_at_ingest_time=tier_for_provider(SOURCE_WESTMETALL),
+                is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
+                batch_replay_id=str(batch_uuid),
+            ).as_metadata_dict()
+            if ingested_count > 0:
+                metadata["outcome"] = "ingested"
+            elif skipped_count > 0:
+                metadata["outcome"] = "all_skip"
+            else:
+                metadata["outcome"] = "empty_range"
+            mark_audit_success(request, batch_uuid, metadata=metadata)
+    except BulkContentMismatch as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     except WestmetallLayoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
@@ -233,4 +253,5 @@ def ingest_cash_settlement_bulk(
         source_url=evidence.source_url,
         html_sha256=evidence.html_sha256,
         fetched_at=evidence.fetched_at,
+        is_canonical=is_canonical_provider(SOURCE_WESTMETALL, SYMBOL_DAILY),
     )

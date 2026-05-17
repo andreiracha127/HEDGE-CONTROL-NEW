@@ -1682,6 +1682,8 @@ export interface components {
             html_sha256: string;
             /** Ingested Count */
             ingested_count: number;
+            /** Is Canonical */
+            is_canonical: boolean;
             /** Skipped Count */
             skipped_count: number;
             /** Source */
@@ -1711,6 +1713,8 @@ export interface components {
             html_sha256: string;
             /** Ingested Count */
             ingested_count: number;
+            /** Is Canonical */
+            is_canonical: boolean;
             /**
              * Settlement Date
              * Format: date
@@ -1744,6 +1748,8 @@ export interface components {
              * Format: uuid
              */
             id: string;
+            /** Is Canonical */
+            is_canonical: boolean;
             /** Price Usd */
             price_usd: string;
             /**
