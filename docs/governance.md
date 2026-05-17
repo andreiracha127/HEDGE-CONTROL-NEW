@@ -350,12 +350,14 @@ Authorization invariants:
 Counterparty KYC gate (binding, Pilot Hard Blocker 1):
 
 The counterparty `kyc_status` field is the constitutional gate for any
-RFQ-lifecycle participation. The field already exists at
-`backend/app/models/counterparty.py:23-27` (enum `KycStatus` with
-members {pending, approved, expired, rejected}; default `pending`) and
-is exposed on the Counterparty schema/route — what is missing is the
-gate that enforces its meaning. This subsection binds that meaning
-constitutionally.
+RFQ-lifecycle participation. The field already exists in the data
+layer: the `KycStatus` enum is defined at
+`backend/app/models/counterparty.py:23-27` (members {pending, approved,
+expired, rejected}), and the mapped column on `Counterparty` is at
+`backend/app/models/counterparty.py:67-71` (`nullable=False`,
+`default=KycStatus.pending`). The field is exposed on the Counterparty
+schema/route — what is missing is the gate that enforces its meaning.
+This subsection binds that meaning constitutionally.
 
 The gate admits ONLY `approved`. The other three members — `pending`,
 `expired`, `rejected` — all deny with the same refusal semantics
@@ -365,13 +367,17 @@ not gate behavior.
 
 Gate scope (binding):
 
-- RFQ invitation create: any handler that creates an `RFQInvitation`
-  row — whether human-issued (POST `/rfqs/{id}/list-invitations`,
-  POST `/rfqs/{id}/refresh-counterparty`) or service-driven
-  (`service:rfq_outbound`) — MUST refuse if the target counterparty's
-  `kyc_status != approved`. Refusal is HTTP 422 for human-issued
-  requests (or the equivalent application-layer rejection for
-  service-driven paths). An audit event of type
+- RFQ invitation create: any service-layer code path that creates an
+  `RFQInvitation` row — whether reached through a human-issued route
+  (the HB-1 implementation dispatch enumerates the specific entry
+  points after a sweep of `backend/app/api/routes/rfqs.py` and
+  `backend/app/services/rfq_service.py`; representative entry points
+  observed at amendment time include `POST /rfqs` and the
+  `/{rfq_id}/actions/refresh-counterparty` re-invite path) or invoked
+  by the `service:rfq_outbound` outbound worker — MUST refuse if the
+  target counterparty's `kyc_status != approved`. Refusal is HTTP 422
+  for human-issued requests (or the equivalent application-layer
+  rejection for service-driven paths). An audit event of type
   `rfq_invitation_rejected_kyc_not_approved` MUST be recorded BEFORE
   the rejection response is returned. Audit payload MUST include:
   `counterparty_id`, `kyc_status_observed`, `requesting_actor_sub`,
@@ -382,17 +388,21 @@ Gate scope (binding):
   `kyc_status` has dropped from `approved` since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
-  Service identities above). Audit event
+  Service identities above). The gate applies equally to the
+  human-issued quote-submission route (`POST
+  /rfqs/{rfq_id}/quotes`) and to the LLM-parsed inbound path
+  downstream of `webhook_processor`. Audit event
   `rfq_quote_rejected_kyc_not_approved` with payload shape
-  `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id,
-  rejection_path}`. The webhook protocol itself is unchanged — the
-  gate is the processing layer that decides whether the parsed quote
-  persists into `RFQQuote`.
+  `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id
+  (nullable for human-issued path), rejection_path}`. The webhook
+  protocol itself is unchanged — the gate is the processing layer
+  that decides whether the parsed quote persists into `RFQQuote`.
 
-- RFQ award: the award path (POST `/rfqs/{id}/award`) MUST refuse if
-  the awarded quote's counterparty `kyc_status != approved` at the
-  moment of award, even if the original invitation was created when
-  the counterparty was approved. Audit event
+- RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
+  defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
+  awarded quote's counterparty `kyc_status != approved` at the moment
+  of award, even if the original invitation was created when the
+  counterparty was approved. Audit event
   `rfq_award_rejected_kyc_not_approved` with payload
   `{counterparty_id, kyc_status_observed, rfq_id, quote_id,
   requesting_actor_sub}`.
