@@ -624,7 +624,7 @@ class TestA5RouteWorkerCoverage:
         assert metadata["replay_key"]["batch_id"] == str(bulk_rows[0].entity_id)
         _assert_signed(bulk_rows[0])
 
-    def test_westmetall_rollback_and_noop_paths_do_not_emit_audit(
+    def test_westmetall_rollback_rolls_back_and_idempotent_skip_emits_audit(
         self, client, session, monkeypatch
     ) -> None:
         _mock_westmetall_html(monkeypatch, [("30.01.2026", "2,567.50")])
