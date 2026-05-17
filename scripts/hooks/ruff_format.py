@@ -68,6 +68,9 @@ def main() -> int:
         print("ruff timed out; skipping format", file=sys.stderr)
         return 0
 
+    # Stream asymmetry below is intentional, not a copy-paste mistake:
+    # - `ruff check` writes lint diagnostics to stdout (the primary output for piping/parsing).
+    # - `ruff format` writes formatted file contents to stdout and parse/IO errors to stderr.
     msgs: list[str] = []
     if check.returncode != 0 and check.stdout.strip():
         msgs.append("ruff check (autofix attempted):")
