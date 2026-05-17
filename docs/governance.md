@@ -367,22 +367,57 @@ not gate behavior.
 
 Gate scope (binding):
 
-- RFQ invitation create: any service-layer code path that creates an
-  `RFQInvitation` row — whether reached through a human-issued route
-  (the HB-1 implementation dispatch enumerates the specific entry
-  points after a sweep of `backend/app/api/routes/rfqs.py` and
-  `backend/app/services/rfq_service.py`; representative entry points
-  observed at amendment time include `POST /rfqs` and the
-  `/{rfq_id}/actions/refresh-counterparty` re-invite path) or invoked
-  by the `service:rfq_outbound` outbound worker — MUST refuse if the
-  target counterparty's `kyc_status != approved`. Refusal is HTTP 422
+- RFQ invitation create (admission-only scope): the `RFQInvitation`
+  table is used for two institutionally distinct purposes
+  (`RFQInvitationPurpose` enum at `backend/app/models/rfqs.py:110-115`,
+  5 members):
+
+  - **Admission purposes** (gated): `rfq_invite` and `refresh`. These
+    are the rows that grant a counterparty entry into an RFQ
+    lifecycle — `rfq_invite` is the initial invitation,
+    `refresh` is a re-invite. Representative code paths today:
+    `rfq_service.py:640` (rfq_invite), `rfq_service.py:1057` and
+    `:1342` (refresh).
+  - **Outbox/notification purposes** (EXEMPT from the KYC gate):
+    `reject_quote`, `award_notify`, `reject_notify`. These rows are
+    durable outbound communication evidence — they record that the
+    platform informed a counterparty of a negative or terminal
+    outcome (quote rejection, award notification to non-winning
+    counterparties, etc.) — and MUST persist regardless of the
+    counterparty's `kyc_status`. Gating these would prevent the
+    platform from recording mandatory revocation/award/rejection
+    communications exactly when they are most operationally
+    important (e.g. notifying a counterparty whose KYC was revoked
+    that their pending quote is now rejected). Representative code
+    paths today: `rfq_service.py:1188` (reject_quote),
+    `rfq_orchestrator.py:1826` (award_notify),
+    `rfq_orchestrator.py:1901` (reject_notify).
+
+  Gate rule: any service-layer code path that creates an
+  `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
+  reached through a human-issued route or invoked by the
+  `service:rfq_outbound` outbound worker — MUST refuse if the target
+  counterparty's `kyc_status != approved`. The HB-1 implementation
+  dispatch is responsible for sweeping every admission-purpose
+  invocation site and wiring the guard there. Refusal is HTTP 422
   for human-issued requests (or the equivalent application-layer
   rejection for service-driven paths). An audit event of type
   `rfq_invitation_rejected_kyc_not_approved` MUST be recorded BEFORE
   the rejection response is returned. Audit payload MUST include:
   `counterparty_id`, `kyc_status_observed`, `requesting_actor_sub`,
-  and `rfq_id` if the parent RFQ already exists. HMAC signature
-  mandatory per `audit_trail_service` invariant.
+  `attempted_purpose` (one of `{rfq_invite, refresh}`), and `rfq_id`
+  if the parent RFQ already exists. HMAC signature mandatory per
+  `audit_trail_service` invariant. Outbox-purpose writes proceed
+  normally with their existing audit trail; the KYC gate MUST NOT
+  intercept them.
+
+  If a future `RFQInvitationPurpose` enum member is introduced, the
+  amendment author MUST classify it as admission-gated or
+  outbox-exempt in this section before that member is used in
+  production. The default classification (when this section is
+  silent on a new member) is admission-gated (fail-closed), but
+  silence is an institutional anti-pattern — every member must be
+  explicitly partitioned.
 
 - RFQ quote ingestion: inbound quotes from a counterparty whose
   `kyc_status` has dropped from `approved` since the invitation was
