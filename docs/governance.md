@@ -429,9 +429,16 @@ Gate scope (binding):
   downstream of `webhook_processor`. Audit event
   `rfq_quote_rejected_kyc_not_approved` with payload shape
   `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id
-  (nullable for human-issued path), rejection_path}`. The webhook
-  protocol itself is unchanged — the gate is the processing layer
-  that decides whether the parsed quote persists into `RFQQuote`.
+  (nullable for human-issued path), rejection_path,
+  requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
+  parity with `rfq_invitation_rejected_kyc_not_approved` and
+  `rfq_award_rejected_kyc_not_approved`: the human-issued
+  quote-submission path runs under a `risk_manager` JWT context so
+  the actor sub is available exactly as it is on the award path and
+  MUST be captured for audit attribution; the inbound/LLM path has
+  no human actor, so the field is nullable. The webhook protocol
+  itself is unchanged — the gate is the processing layer that
+  decides whether the parsed quote persists into `RFQQuote`.
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
