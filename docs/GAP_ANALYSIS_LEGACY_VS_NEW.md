@@ -162,20 +162,21 @@ O novo backend mantém a **arquitetura superior** (UUID PKs, Pydantic v2, HMAC a
 
 ## 2. STATUS DOS GAPS ALTOS (P1) — Governança e Compliance
 
-### 2.1 KYC & Compliance Suite — ABSENT — HB-1
+### 2.1 KYC Gate — ABSENT (campo existe, gate não) — HB-1
 
 **Legacy:** `kyc.py` (40) + `kyc_gate.py` (120) + `so_kyc_gate.py` (91) + models `KycDocument`, `CreditCheck`, `KycCheck`
-**Novo:** ABSENT — busca por `kyc` em `backend/app/` retorna zero matches.
+**Novo:** PARCIAL com gap institucional explícito —
+- **Existe:** enum `KycStatus` + campo `Counterparty.kyc_status` em `backend/app/models/counterparty.py:23,67` (default `pending`); filter `kyc_status` na rota `backend/app/api/routes/counterparties.py`; schema `backend/app/schemas/counterparty.py`.
+- **ABSENT:** o **gate** institucional — nenhum guard em `rfq_service.py`/`contract_service.py`/`deal_engine.py` bloqueia mutação quando `kyc_status != approved`; nenhum audit event do tipo `*_rejected_kyc_not_approved`; nenhum teste `test_*_kyc_gate.py`; e ausentes os modelos completos da suite (`KycDocument`, `CreditCheck`, `KycCheck`) para auditoria documental.
 
-**Implicação institucional para o pilot:** este é o conteúdo exato de **HB-1** do pilot brief (`docs/2026-05-tech-lead-executive-analysis.md` §2 HB-1). Sem o gate, qualquer counterparty pode entrar em RFQ — risco de compliance event no Day 1 do pilot. Sequência prevista: governance amendment em `docs/governance.md` → implementation dispatch → executor session → PR.
+**Implicação institucional para o pilot:** este é o conteúdo exato de **HB-1** do pilot brief (`docs/2026-05-tech-lead-executive-analysis.md` §2 HB-1). O campo existe mas é decorativo — qualquer counterparty com `kyc_status=pending` (default!) pode entrar em RFQ hoje. Risco de compliance event no Day 1 do pilot. Sequência prevista: governance amendment em `docs/governance.md` → implementation dispatch → executor session → PR.
 
 **Cobertura mínima esperada para fechar HB-1:**
-- Guard em `backend/app/services/rfq_service.py` na criação de `RFQInvitation` (e idealmente também no path de quote/award para defense-in-depth)
+- Guard em `backend/app/services/rfq_service.py` na criação de `RFQInvitation` (e idealmente também no path de quote/award para defense-in-depth) lendo o campo `Counterparty.kyc_status` já existente
 - Audit event `rfq_invitation_rejected_kyc_not_approved` com payload assinado HMAC
-- Test file `backend/tests/test_rfq_kyc_gate.py` cobrindo positive + negative cases
-- Schema validation no `RFQInvitation` impedindo persistência se `Counterparty.kyc_status != approved`
+- Test file `backend/tests/test_rfq_kyc_gate.py` cobrindo positive + negative cases (incluindo defaults `pending`)
 
-**Modelos necessários:** mínimo viável para o pilot é apenas o campo `kyc_status` na `Counterparty` (não exige `KycDocument`/`CreditCheck`/`KycCheck` completos). A suite completa é P1 pós-pilot.
+**Schema:** **nenhuma migração necessária para HB-1** — o campo `kyc_status` já existe e é o único campo lido pelo gate. A suite completa (`KycDocument`/`CreditCheck`/`KycCheck` para evidência documental) é P1 pós-pilot.
 
 ---
 
@@ -511,11 +512,11 @@ O novo backend mantém a **arquitetura superior** (UUID PKs, Pydantic v2, HMAC a
 
 ### 9.HB — Pilot Hard Blockers (Junho 2026)
 
-Substituem a Fase 1 do roadmap anterior (que está fechada). Sequência prescrita pelo handoff `.handoffs/orchestrator-handoff-2026-05-17.md` + pilot brief.
+Substituem a Fase 1 do roadmap anterior (que está fechada). Sequência prescrita pelo pilot brief `docs/2026-05-tech-lead-executive-analysis.md` §1 e §2.
 
 | Ordem | Hard Blocker                                          | Deps               | Estimativa     | Status         |
 | ----- | ----------------------------------------------------- | ------------------ | -------------- | -------------- |
-| HB-0  | GAP_ANALYSIS refresh (este documento)                 | —                  | 1 dia          | Em curso       |
+| HB-0  | GAP_ANALYSIS refresh (este documento)                 | —                  | 1 dia          | LANDED quando este PR mergear |
 | HB-1  | KYC gate at RFQ + governance amendment                | HB-0               | Semana 1-2     | Próximo        |
 | HB-2  | Workflow Approvals (state machine + alembic 046 + frontend) | HB-1         | Semana 1-3     | Pendente       |
 | HB-3  | Finance Pipeline daily hardening + Railway wiring     | (HB-1 não bloqueia) | Semana 2-4     | Pendente      |
@@ -589,7 +590,7 @@ Originalmente estimada em ~2.500 linhas; entregue como parte de Phases A1-A6 + C
 11. **RBAC matrix é constitucional** — `docs/governance.md` AUTHORIZATION MATRIX (linhas 189-340) é fonte da verdade; rotas usam `@require_role`/`@require_any_role` (`backend/app/core/auth.py`); teste `test_rbac_matrix_enforcement.py` é guard.
 12. **Audit trail HMAC fail-closed** — `AUDIT_SIGNING_KEY` validator gateado por `APP_ENV` em prod/staging (`test_audit_signing_key_required.py`); verify endpoint público para auditor.
 13. **Cluster 4 market-data governance é load-bearing** — `market_data_governance.py` + `market_data_sequence_tracker` + alembic `045` são pré-requisito para HB-3 (Finance Pipeline daily depende de market_snapshot estável).
-14. **Pre-push hook v2 é review gate ativo** — `.githooks/pre-push` + `scripts/pre_push_review.py`; trata achados como sieve, valida P1 contra diff antes de absorver (false-positives empíricos documentados em `.handoffs/orchestrator-handoff-2026-05-17.md` §3).
+14. **Pre-push hook v2 é review gate ativo** — `.githooks/pre-push` + `scripts/pre_push_review.py`; trata achados como sieve, valida P1 contra diff antes de absorver. Rule sheet em `docs/audit-protocol/dispatch-review-rules.md`; false-positive classes empíricas documentadas em `docs/dev-setup.md` (seção "Pre-push dispatch review hook").
 
 ---
 
