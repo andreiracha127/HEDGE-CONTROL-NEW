@@ -54,7 +54,6 @@ from sqlalchemy.orm import Session
 
 from app.models.counterparty import Counterparty, KycStatus
 from app.services.audit_trail_service import AuditTrailService
-from app.utils.payload_canonical import dumps_canonical  # if not present, use json.dumps with sort_keys=True
 
 GatePoint = Literal["rfq_invitation", "rfq_quote", "rfq_award"]
 
@@ -107,7 +106,7 @@ def assert_kyc_approved(
         entity_type="counterparty",
         entity_id=counterparty_id,
         event_type=event_type,
-        payload_raw=dumps_canonical(payload),
+        payload_raw="",  # see canonicalization note below
         payload_obj=payload,
         commit=False,  # caller's unit_of_work handles transaction boundary
     )
@@ -122,8 +121,15 @@ def assert_kyc_approved(
 ```
 
 Verification of imports against current HEAD:
+
 - `AuditTrailService.record` signature at `backend/app/services/audit_trail_service.py:74-119` accepts `commit: bool = True`; the executor MUST pass `commit=False` so the rejection audit row lands in the same transaction the gate caller manages, allowing the HTTPException rollback to drop the failed mutation while keeping the rejection evidence visible after the route's `unit_of_work` flush. Confirm the `unit_of_work` pattern preserves the audit row on HTTPException at the route boundary; if the existing pattern rolls back the audit row too, the executor MUST emit the audit event in a separate session/transaction (see `webhook_processor` for the dual-session pattern).
-- `dumps_canonical` import path: if `app/utils/payload_canonical.py` does not exist at HEAD (executor MUST verify with `find_symbol` first), substitute the existing canonicalization helper already used by `AuditTrailService.record` internally — `normalize_payload_raw` at `backend/app/services/audit_trail_service.py` (the body of `record()` calls it; cite the file for the executor). Do NOT invent a new helper.
+
+- **Canonicalization of `payload_raw`**: the snippet above sets `payload_raw=""` as a placeholder. The real value MUST be a JSON-canonical serialization of `payload_obj`. Per the `AuditTrailService.record` body (lines 92-94 — call site `payload_canonical, payload_obj = normalize_payload_raw(payload_obj)`), the recorder internally invokes `normalize_payload_raw` on `payload_obj` and uses its first return value as the canonical payload for the checksum + signature computation; the `payload_raw` argument to `record()` is unused on the canonicalization path. The executor MUST verify this behavior by reading `backend/app/services/audit_trail_service.py:92-94` and decide between two acceptable shapes:
+  (a) Pass `payload_raw=""` (or any sentinel) and rely on `record()` recomputing canonical form from `payload_obj` — clean and matches the existing recorder contract.
+  (b) Pre-compute via `normalize_payload_raw(payload)` in the gate primitive and pass the first tuple element as `payload_raw` — explicit but duplicates the recorder's internal call.
+  Choose (a) unless reading the recorder reveals that `payload_raw` is actually consumed; document the choice in the executor's PR body.
+  Do NOT invent a new canonicalization helper (`dumps_canonical`, `json.dumps(..., sort_keys=True)`, etc.) — the institutional canonical form is whatever `normalize_payload_raw` produces, and only that helper.
+
 - `Literal` typing import is stdlib `typing.Literal`.
 
 ### §4.2 Gate sites in `backend/app/services/rfq_service.py`
@@ -241,14 +247,14 @@ def set_kyc_status(
         entity_type="counterparty",
         entity_id=counterparty_id,
         event_type="counterparty_kyc_status_changed",
-        payload_raw=dumps_canonical(payload),
+        payload_raw="",  # see §4.1 canonicalization note
         payload_obj=payload,
         commit=False,
     )
     return cp
 ```
 
-Insert in `backend/app/services/counterparty_service.py` between `update` (lines 70-88) and `soft_delete` (lines 90-101). Same `dumps_canonical` import discipline as §4.1.
+Insert in `backend/app/services/counterparty_service.py` between `update` (lines 70-88) and `soft_delete` (lines 90-101). Use the same `payload_raw=""` + `payload_obj=payload` convention as §4.1 (the recorder's internal `normalize_payload_raw` handles canonicalization — do NOT introduce a new helper).
 
 #### §4.3.3 New route in `backend/app/api/routes/counterparties.py`
 
@@ -390,22 +396,23 @@ E2E Playwright is NOT required for this PR — the surface is institutional/inte
 
 ## §8 Audit-trail emission
 
-Four new audit `event_type` values land in this PR. All emitted via `AuditTrailService.record(...)` (cite `backend/app/services/audit_trail_service.py:74-119` for the signature). All HMAC-signed by the existing recorder (`AUDIT_SIGNING_KEY` required in prod/staging per `app/services/audit_trail_service.py` MissingAuditSigningKey hard-fail).
+Four mandatory audit `event_type` values land in this PR, plus one defensive event that is added conditionally on schema state (clarified explicitly below). All emitted via `AuditTrailService.record(...)` (cite `backend/app/services/audit_trail_service.py:74-119` for the signature). All HMAC-signed by the existing recorder (`AUDIT_SIGNING_KEY` required in prod/staging per `audit_trail_service.py` `MissingAuditSigningKey` hard-fail).
 
-| event_type | emitted from | entity_type | payload shape (binding per amendment) |
-|---|---|---|---|
-| `rfq_invitation_rejected_kyc_not_approved` | `assert_kyc_approved` (§4.1) called from §4.2.1/2/3 | `counterparty` | `{counterparty_id, kyc_status_observed, requesting_actor_sub, rfq_id (nullable), attempted_purpose ∈ {rfq_invite, refresh}}` |
-| `rfq_quote_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.4 | `counterparty` | `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id (nullable for human path), rejection_path ∈ {human_post, webhook_inbound_llm}, requesting_actor_sub (nullable for inbound/LLM path)}` |
-| `rfq_award_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.5 | `counterparty` | `{counterparty_id, kyc_status_observed, rfq_id, quote_id, requesting_actor_sub}` |
-| `counterparty_kyc_status_changed` | `CounterpartyService.set_kyc_status` (§4.3.2) | `counterparty` | `{counterparty_id, previous_status, new_status, transition_actor_sub, reason}` |
+**Status convention** in the table below:
+- **MANDATORY** = the event-type constant string MUST exist in the executor's code base after this PR (i.e. the recorder has a defined call site emitting that exact `event_type` value); whether a given event INSTANCE is recorded at runtime depends on the trigger (gate fires / transition occurs / etc.).
+- **CONDITIONAL** = the event-type constant exists in code ONLY IF the executor's schema verification finds the precondition true. If the precondition is false, the constant is not added and no call site exists.
 
-Defensive emission for §4.4 (existing PATCH attempt to set kyc_status):
+| # | event_type | status | emitted from | entity_type | trigger | payload shape (binding per amendment) |
+|---|---|---|---|---|---|---|
+| 1 | `rfq_invitation_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` (§4.1) called from §4.2.1 / §4.2.2 / §4.2.3 | `counterparty` | each gate fire on an admission-purpose invitation create | `{counterparty_id, kyc_status_observed, requesting_actor_sub, rfq_id (nullable), attempted_purpose ∈ {rfq_invite, refresh}}` |
+| 2 | `rfq_quote_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` called from §4.2.4 | `counterparty` | each gate fire on quote ingestion (human-issued POST or webhook/LLM path) | `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id (nullable for human path), rejection_path ∈ {human_post, webhook_inbound_llm}, requesting_actor_sub (nullable for inbound/LLM path)}` |
+| 3 | `rfq_award_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` called from §4.2.5 | `counterparty` | each gate fire on award path | `{counterparty_id, kyc_status_observed, rfq_id, quote_id, requesting_actor_sub}` |
+| 4 | `counterparty_kyc_status_changed` | MANDATORY | `CounterpartyService.set_kyc_status` (§4.3.2) | `counterparty` | each invocation of the new endpoint (POST `/counterparties/{id}/kyc-status`) | `{counterparty_id, previous_status, new_status, transition_actor_sub, reason}` |
+| 5 | `counterparty_kyc_status_change_via_wrong_endpoint` | CONDITIONAL (only if `CounterpartyUpdate` schema currently exposes `kyc_status`) | PATCH `/counterparties/{id}` rejection path (§4.4) | `counterparty` | attempted PATCH including a `kyc_status` field | `{counterparty_id, attempted_status, requesting_actor_sub}` |
 
-| event_type | emitted from | entity_type | payload shape |
-|---|---|---|---|
-| `counterparty_kyc_status_change_via_wrong_endpoint` | PATCH `/counterparties/{id}` rejection path (§4.4) | `counterparty` | `{counterparty_id, attempted_status, requesting_actor_sub}` |
+For event 5, the executor's verification step in §4.4 determines whether the constant + call site are added. The expected outcome is "schema does NOT expose `kyc_status`" → event 5 is a no-op and is not added. If the verification surprises with "schema DOES expose `kyc_status`", the executor adds the defensive path + this event and documents the verification result in the PR body.
 
-This last event is added only if the executor's verification of `CounterpartyUpdate` schema finds that `kyc_status` is currently exposed there. If not exposed, the event type is unused and not added.
+The §10 acceptance criterion `grep` for event-type strings (item 7) requires the FOUR mandatory event types to appear in the codebase post-merge. Event 5 is excluded from the acceptance grep precisely because of its conditional status.
 
 Audit emission timing rule (binding): the rejection audit MUST land in the audit table BEFORE the HTTPException is raised. The amendment's wording — "MUST be recorded BEFORE the rejection response is returned" — is reproduced verbatim in §8 to guide the executor. Per §4.1, the emission uses `commit=False` so that the outer `unit_of_work` flushes the rejection row alongside the rollback of the failed mutation. If the executor finds that the existing `unit_of_work` pattern rolls back the audit row on HTTPException, the executor MUST switch to a dual-session pattern (separate `Session` for audit emission with its own commit, mirroring `webhook_processor` for the rejection-evidence persistence) and document the choice in the PR body.
 
