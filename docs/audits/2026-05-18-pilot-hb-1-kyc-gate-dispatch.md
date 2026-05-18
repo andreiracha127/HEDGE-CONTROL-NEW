@@ -147,7 +147,7 @@ The dispatch refers to these by literal string everywhere (`rfq_invite`, `refres
 
 #### §4.2.1 `RFQService.create` (lines 455-711)
 
-The method's loop at lines ~625-647 iterates pre-resolved counterparties and constructs `RFQInvitation` rows with `purpose=RFQInvitationPurpose.rfq_invite` (line 640). Insert the gate IMMEDIATELY before line 630 (the `row = RFQInvitation(` line). On a single-counterparty loop iteration that fails the gate, the gate raises HTTPException(422) and the surrounding `unit_of_work` rolls back the partial RFQ row + any earlier invitation rows; the audit event for the rejection persists. If the institutional intent is "create the RFQ but skip the failing counterparties", that is OUT of HB-1 scope — HB-1 binds fail-closed-per-call. The dispatch executor MUST NOT implement skip-and-continue.
+`actor_sub: str` ALREADY in the signature at line 460 (verified — Cluster 2 backend hardening). NO signature change required. The method's loop at lines ~625-647 iterates pre-resolved counterparties and constructs `RFQInvitation` rows with `purpose=RFQInvitationPurpose.rfq_invite` (line 640). Insert the gate IMMEDIATELY before line 630 (the `row = RFQInvitation(` line). On a single-counterparty loop iteration that fails the gate, the gate raises HTTPException(422) and the surrounding `unit_of_work` rolls back the partial RFQ row + any earlier invitation rows; the audit event for the rejection persists. If the institutional intent is "create the RFQ but skip the failing counterparties", that is OUT of HB-1 scope — HB-1 binds fail-closed-per-call. The dispatch executor MUST NOT implement skip-and-continue.
 
 Concrete shape:
 ```python
@@ -157,7 +157,7 @@ assert_kyc_approved(
     session,
     cp.id,
     gate_point="rfq_invitation",
-    requesting_actor_sub=actor_sub,  # threaded from route
+    requesting_actor_sub=actor_sub,  # already a parameter of create()
     rfq_id=rfq.id if rfq.id else None,  # rfq may not be flushed yet
     extra_payload={"attempted_purpose": "rfq_invite"},
 )
@@ -171,46 +171,69 @@ row = RFQInvitation(
 
 **Method signature contract (binding for §4.2.1 + §4.2.2 + §4.2.3 + §4.2.4 + §4.2.5):**
 
-The gate primitive's signature accepts `requesting_actor_sub: str | None` (nullable, per §4.1) because some service-driven call sites legitimately have no human actor (e.g. `service:rfq_outbound` worker processing a queue, or internal orchestration code calling `RFQService.create` without a route context). Nullable at the gate level allows the gate to be invoked from any caller without artificial sentinel values.
+The gate primitive's signature accepts `requesting_actor_sub: str | None` (nullable, per §4.1) because the quote-ingestion gate site (§4.2.4) has a legitimate inbound-path that passes None. The other four sites pass non-null values because their service methods already require `actor_sub`.
 
-The contract is asymmetric by call-site class:
+**Baseline verification at HEAD `d4e946eb` (dispatch author observed; executor re-verifies on branch HEAD):**
 
-- **Route-handler-driven call sites (human-issued):** The route handler MUST thread `actor_sub: str = Depends(get_current_actor_sub)` (`backend/app/core/auth.py:417-433`) through to the service method, and the service method MUST accept `actor_sub` as a REQUIRED kwarg (`str`, non-nullable) from these callers. The route handler is the only place `get_current_actor_sub` resolves to a real value; the service signature reflects the route's contract.
-
-- **Service-driven call sites (worker / orchestrator):** The caller MAY pass `actor_sub=None` if no human actor exists. The audit event payload will record `requesting_actor_sub: null` in those cases. The audit-event consumer (auditor reading the events) interprets `null` as "service-driven, attribution = service identity" — to be cross-referenced via the trace_id middleware's stored service identity if needed.
-
-Concrete per-method signatures (binding; the executor MUST trace each call site to enforce the contract):
-
-| Service method | Signature change | Route caller (must pass actor_sub) | Service caller (may pass None) |
+| Service method | Current signature at HEAD | Signature change required in this PR | Required action in this PR |
 |---|---|---|---|
-| `RFQService.create` | add `actor_sub: str` (REQUIRED) | `backend/app/api/routes/rfqs.py:102` POST `""` | none observed at HEAD — keep param REQUIRED to force route-only invocation |
-| `RFQService.refresh` | add `actor_sub: str` (REQUIRED) | `rfqs.py:442` POST `/{rfq_id}/actions/refresh` | none observed |
-| `RFQService.refresh_counterparty` | add `actor_sub: str` (REQUIRED) | `rfqs.py:408` POST `/{rfq_id}/actions/refresh-counterparty` | none observed |
-| `RFQService.submit_quote` | add `actor_sub: str \| None = None` + `inbound_message_id: uuid.UUID \| None = None` | `rfqs.py:266` POST `/{rfq_id}/quotes` MUST pass `actor_sub`, MUST pass `inbound_message_id=None` | `webhook_processor` MUST pass `inbound_message_id=<uuid>`, MUST pass `actor_sub=None` |
-| `RFQService.award` | add `actor_sub: str` (REQUIRED) | `rfqs.py:474` POST `/{rfq_id}/actions/award` | none observed |
+| `RFQService.create` (line 457) | `def create(session, payload: RFQCreate, actor_sub: str, audit_checkpoint=None) -> RFQ` | **NONE** — `actor_sub` already present (Cluster 2 backend hardening) | Insert `assert_kyc_approved(..., requesting_actor_sub=actor_sub, ...)` in §4.2.1; verify route already threads it |
+| `RFQService.refresh` (line 976) | `def refresh(session, rfq_id, actor_sub: str, audit_checkpoint=None) -> RFQ` | **NONE** — already present | Insert gate per §4.2.2 |
+| `RFQService.refresh_counterparty` (line 1271) | `def refresh_counterparty(session, rfq_id, counterparty_id, actor_sub: str, audit_checkpoint=None) -> RFQ` | **NONE** — already present | Insert gate per §4.2.3 |
+| `RFQService.submit_quote` (line 818) | `def submit_quote(session, rfq_id, payload: RFQQuoteCreate) -> RFQQuote` | **ADD** `actor_sub: str \| None = None` AND `inbound_message_id: uuid.UUID \| None = None` | Add both kwargs + gate per §4.2.4; route caller passes `actor_sub`; webhook caller passes `inbound_message_id` |
+| `RFQService.award` (line 1386) | `def award(session, rfq_id, actor_sub: str) -> RFQ` | **NONE** — already present | Insert gate per §4.2.5 |
 
-For the methods with REQUIRED `actor_sub`, internal callers that do not have a real actor_sub MUST NOT be created in this PR. If a future need arises (e.g. a scheduled job that auto-refreshes RFQs), that's a separate ticket that amends the signature or introduces a service identity per the AUTHORIZATION MATRIX. The dispatch's executor MUST flag and halt if they discover any pre-existing internal caller of these methods that lacks a route context — that's an indicator the prior code violated the matrix.
+Reason for the asymmetry: the 4 admission/award methods were hardened with `actor_sub` during Cluster 2 backend hardening (PR #71, `feedback_executor_false_completion_pattern` memory). `submit_quote` was excluded from that wave because the human-issued quote-submission path and the LLM/webhook-parsed path were both being refactored at the time; the parameter was deferred. HB-1 closes that defer.
 
-The audit payload for events 1/2/3 (§8) reflects this nullability contract: `requesting_actor_sub` is nullable in the payload because event 2 (quote ingestion) has a legitimate inbound-path that passes None, and events 1/3 might in the future cover service-driven paths. For the human-issued paths in this PR's scope, the field MUST be populated; the route handler enforcement makes that mechanical.
+**Route-handler responsibility (binding):** every route in `backend/app/api/routes/rfqs.py` that invokes one of the gated service methods MUST thread `actor_sub: str = Depends(get_current_actor_sub)` (`backend/app/core/auth.py:417-433`). The executor MUST verify by grepping the route bodies; if a route doesn't already pass `actor_sub` into the service call (the parameter exists in the signature but the route is missing it), the executor MUST add the pass-through. Concretely:
+
+- `POST /rfqs` (rfqs.py:102) → calls `RFQService.create(..., actor_sub=actor_sub, ...)` 
+- `POST /{rfq_id}/actions/refresh` (rfqs.py:442) → calls `RFQService.refresh(..., actor_sub=actor_sub, ...)`
+- `POST /{rfq_id}/actions/refresh-counterparty` (rfqs.py:408) → calls `RFQService.refresh_counterparty(..., actor_sub=actor_sub, ...)`
+- `POST /{rfq_id}/quotes` (rfqs.py:266) → calls `RFQService.submit_quote(..., actor_sub=actor_sub, inbound_message_id=None)` (after the signature change)
+- `POST /{rfq_id}/actions/award` (rfqs.py:474) → calls `RFQService.award(..., actor_sub=actor_sub)`
+- `webhook_processor` (LLM-parsed quote path) → calls `RFQService.submit_quote(..., actor_sub=None, inbound_message_id=<delivery uuid>)`
+
+If any of the 4 already-hardened methods is found at HEAD to have a route caller that does NOT pass `actor_sub` (positional vs kwarg drift, missing Depends), the executor MUST close that gap in this PR as part of §4.2 — it's a Cluster-2 invariant violation that should not persist beyond HB-1 merge.
+
+The audit payload for events 1/2/3 (§8) reflects the nullability contract: `requesting_actor_sub` is nullable in the payload (because event 2 quote ingestion has a non-null route path AND a null inbound path). Events 1 and 3 in this PR's scope always populate it because their service methods require non-null `actor_sub`.
 
 #### §4.2.2 `RFQService.refresh` (lines 974-1097)
 
-`RFQInvitation` row at line ~1047 with `purpose=RFQInvitationPurpose.refresh` (line 1057). Insert the gate IMMEDIATELY before line 1047. Same `actor_sub` threading rule. The `extra_payload` for the rejection audit MUST set `"attempted_purpose": "refresh"`.
+`actor_sub: str` ALREADY in the signature at line 979 (verified). `RFQInvitation` row at line ~1047 with `purpose=RFQInvitationPurpose.refresh` (line 1057). Insert the gate IMMEDIATELY before line 1047, passing the existing `actor_sub`. The `extra_payload` for the rejection audit MUST set `"attempted_purpose": "refresh"`.
 
 #### §4.2.3 `RFQService.refresh_counterparty` (lines 1269-1382)
 
-`RFQInvitation` row at line ~1332 with `purpose=RFQInvitationPurpose.refresh` (line 1342). Insert the gate IMMEDIATELY before line 1332. Same threading rule. `extra_payload`: `"attempted_purpose": "refresh"`.
+`actor_sub: str` ALREADY in the signature at line 1275 (verified). `RFQInvitation` row at line ~1332 with `purpose=RFQInvitationPurpose.refresh` (line 1342). Insert the gate IMMEDIATELY before line 1332. `extra_payload`: `"attempted_purpose": "refresh"`.
 
-#### §4.2.4 `RFQService.submit_quote` (lines 816-919)
+#### §4.2.4 `RFQService.submit_quote` (lines 818-919) — REQUIRES SIGNATURE CHANGE
 
-Gate the quote ingestion: load the inbound quote's claimed `counterparty_id` from `payload`, call `assert_kyc_approved` with `gate_point="rfq_quote"`. Place the gate at the top of the method body, AFTER any payload validation that surfaces parser errors but BEFORE any persistence side effect. The `extra_payload` for the audit MUST include:
-- `rejection_path`: `"human_post"` for the route-issued path, `"webhook_inbound_llm"` for the LLM-parsed path
-- `inbound_message_id`: nullable; populated only when the call originated from `webhook_processor` (the human path passes `None`)
-- `requesting_actor_sub` from the call site; populated for human path (risk_manager sub), nullable for inbound/LLM path
+Current signature at HEAD `d4e946eb` (verified at line 818): `def submit_quote(session: Session, rfq_id: UUID, payload: RFQQuoteCreate) -> RFQQuote`. No `actor_sub`, no `inbound_message_id`.
 
-Method signature: add `actor_sub: str | None = None` and `inbound_message_id: uuid.UUID | None = None` kwargs. Default `None` for both keeps backward compatibility with any internal caller that does not need them, but the human-issued route MUST pass `actor_sub`, and the webhook path MUST pass `inbound_message_id`.
+This is the only one of the 5 methods that requires a signature change in this PR — see the "Method signature contract" table above for the asymmetry rationale.
 
-Route handler at `backend/app/api/routes/rfqs.py:266` (POST `/{rfq_id}/quotes`) MUST be amended to thread `actor_sub = Depends(get_current_actor_sub)` and pass it into `RFQService.submit_quote(..., actor_sub=actor_sub)`. Webhook caller in `backend/app/services/webhook_processor.py` MUST pass `inbound_message_id=delivery.inbound_message_id` (or the equivalent — executor verifies the actual webhook persistence flow).
+**Signature change (binding):** add two kwargs with `None` defaults:
+```python
+@staticmethod
+def submit_quote(
+    session: Session,
+    rfq_id: UUID,
+    payload: RFQQuoteCreate,
+    actor_sub: str | None = None,
+    inbound_message_id: uuid.UUID | None = None,
+) -> RFQQuote:
+```
+
+`None` defaults preserve backward compatibility with any internal caller not yet updated, but the route handler and the webhook caller MUST pass the appropriate value per the per-call-site table above.
+
+**Gate insertion:** at the top of the method body, AFTER any payload validation that surfaces parser errors but BEFORE any persistence side effect. The `extra_payload` for the audit MUST include:
+- `rejection_path`: `"human_post"` if `inbound_message_id is None` (route-issued path), `"webhook_inbound_llm"` if `inbound_message_id is not None`
+- `inbound_message_id`: passes through from the kwarg (nullable for human path)
+- `requesting_actor_sub` from the `actor_sub` kwarg (nullable for inbound/LLM path)
+
+**Route-handler change:** `backend/app/api/routes/rfqs.py:266` (POST `/{rfq_id}/quotes`) is currently `__: None = Depends(audit_event(entity_type="rfq_quote", event_type="created")), ... actor_sub: str = Depends(get_current_actor_sub)` (verify the existing `actor_sub` Depends; if absent, executor adds it). The handler MUST be amended to pass `actor_sub=actor_sub, inbound_message_id=None` into `RFQService.submit_quote`.
+
+**Webhook caller change:** `backend/app/services/webhook_processor.py` (executor locates the exact `submit_quote` call via `grep -n "submit_quote" backend/app/services/webhook_processor.py`) MUST pass `actor_sub=None, inbound_message_id=<delivery uuid>` — the delivery row's UUID is the institutional anchor that links the rejection audit back to the inbound message.
 
 #### §4.2.5 `RFQService.award` (lines 1384-1619)
 
@@ -228,7 +251,7 @@ assert_kyc_approved(
 )
 ```
 
-Route at `backend/app/api/routes/rfqs.py:474` (POST `/{rfq_id}/actions/award`) MUST thread `actor_sub` per the same pattern. Verify the existing route already uses `Depends(get_current_actor_sub)` (per Cluster 2 backend hardening per `feedback_executor_false_completion_pattern` memory references); if so, the change is purely a kwarg pass-through.
+`actor_sub: str` ALREADY in `RFQService.award` signature at line 1386 (verified). Route at `backend/app/api/routes/rfqs.py:474` (POST `/{rfq_id}/actions/award`) per Cluster 2 backend hardening already passes `actor_sub`; executor verifies and adds the pass-through if absent. The gate insertion is the only required code change in §4.2.5.
 
 ### §4.3 New endpoint: `POST /counterparties/{counterparty_id}/kyc-status`
 
