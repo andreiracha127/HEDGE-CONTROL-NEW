@@ -196,11 +196,14 @@ deviation requires constitutional amendment, not silent override.
 Human roles (3, no admin/viewer):
 
 - `trader` (commercial team)
-  - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier}
+  - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier},
+    EXCEPT mutations to `kyc_status` — see "Counterparty KYC gate" below.
+    `kyc_status` is risk_manager-only across all counterparty types.
   - Order CRUD (Sales Orders + Purchase Orders)
   - Read of operational primitives (orders, customer/supplier counterparties)
   - Cannot: HedgeContracts, RFQs, Deals, Links, Scenario, MTM/P&L writes,
-    Counterparty {broker, bank_br} read or write, audit log
+    Counterparty {broker, bank_br} read or write, `kyc_status` mutations
+    on any counterparty type, audit log
 
 - `risk_manager` (system owner)
   - Counterparty CRUD all 4 types
@@ -343,6 +346,210 @@ Authorization invariants:
   attribution context after that provider authentication succeeds.
 - The RBAC matrix is canonical. A per-route deviation is a constitutional
   amendment requiring this section's update, not a silent override in code.
+
+Counterparty KYC gate (binding, Pilot Hard Blocker 1):
+
+The counterparty `kyc_status` field is the constitutional gate for any
+RFQ-lifecycle participation. The field already exists in the data
+layer: the `KycStatus` enum is defined at
+`backend/app/models/counterparty.py:23-27` (members {pending, approved,
+expired, rejected}), and the mapped column on `Counterparty` is at
+`backend/app/models/counterparty.py:67-71` (`nullable=False`,
+`default=KycStatus.pending`). The field is exposed on the Counterparty
+schema/route — what is missing is the gate that enforces its meaning.
+This subsection binds that meaning constitutionally.
+
+The gate admits ONLY `approved`. The other three members — `pending`,
+`expired`, `rejected` — all deny with the same refusal semantics
+described below; the difference between them is procedural (how the
+counterparty arrived at that status and what the path forward is),
+not gate behavior.
+
+Gate scope (binding):
+
+- RFQ invitation create (admission-only scope): the `RFQInvitation`
+  table is used for two institutionally distinct purposes
+  (`RFQInvitationPurpose` enum at `backend/app/models/rfqs.py:110-115`,
+  5 members):
+
+  - **Admission purposes** (gated): `rfq_invite` and `refresh`. These
+    are the rows that grant a counterparty entry into an RFQ
+    lifecycle — `rfq_invite` is the initial invitation,
+    `refresh` is a re-invite. Representative code paths today:
+    `rfq_service.py:640` (rfq_invite), `rfq_service.py:1057` and
+    `:1342` (refresh).
+  - **Outbox/notification purposes** (EXEMPT from the KYC gate):
+    `reject_quote`, `award_notify`, `reject_notify`. These rows are
+    durable outbound communication evidence — they record that the
+    platform informed a counterparty of a negative or terminal
+    outcome (quote rejection, award notification to non-winning
+    counterparties, etc.) — and MUST persist regardless of the
+    counterparty's `kyc_status`. Gating these would prevent the
+    platform from recording mandatory revocation/award/rejection
+    communications exactly when they are most operationally
+    important (e.g. notifying a counterparty whose KYC was revoked
+    that their pending quote is now rejected). Representative code
+    paths today: `rfq_service.py:1188` (reject_quote),
+    `rfq_orchestrator.py:1826` (award_notify),
+    `rfq_orchestrator.py:1901` (reject_notify).
+
+  Gate rule: any service-layer code path that creates an
+  `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
+  reached through a human-issued route or invoked by the
+  `service:rfq_outbound` outbound worker — MUST refuse if the target
+  counterparty's `kyc_status != approved`. The HB-1 implementation
+  dispatch is responsible for sweeping every admission-purpose
+  invocation site and wiring the guard there. Refusal is HTTP 422
+  for human-issued requests (or the equivalent application-layer
+  rejection for service-driven paths). An audit event of type
+  `rfq_invitation_rejected_kyc_not_approved` MUST be recorded BEFORE
+  the rejection response is returned. Audit payload MUST include:
+  `counterparty_id`, `kyc_status_observed`, `requesting_actor_sub`,
+  `attempted_purpose` (one of `{rfq_invite, refresh}`), and `rfq_id`
+  if the parent RFQ already exists. HMAC signature mandatory per
+  `audit_trail_service` invariant. Outbox-purpose writes proceed
+  normally with their existing audit trail; the KYC gate MUST NOT
+  intercept them.
+
+  If a future `RFQInvitationPurpose` enum member is introduced, the
+  amendment author MUST classify it as admission-gated or
+  outbox-exempt in this section before that member is used in
+  production. The default classification (when this section is
+  silent on a new member) is admission-gated (fail-closed), but
+  silence is an institutional anti-pattern — every member must be
+  explicitly partitioned.
+
+- RFQ quote ingestion: inbound quotes from a counterparty whose
+  `kyc_status` has dropped from `approved` since the invitation was
+  issued MUST be rejected at the internal-processing boundary (after
+  provider authentication succeeds at the webhook ingress; see
+  Service identities above). The gate applies equally to the
+  human-issued quote-submission route (`POST
+  /rfqs/{rfq_id}/quotes`) and to the LLM-parsed inbound path
+  downstream of `webhook_processor`. Audit event
+  `rfq_quote_rejected_kyc_not_approved` with payload shape
+  `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id
+  (nullable for human-issued path), rejection_path,
+  requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
+  parity with `rfq_invitation_rejected_kyc_not_approved` and
+  `rfq_award_rejected_kyc_not_approved`: the human-issued
+  quote-submission path runs under a `risk_manager` JWT context so
+  the actor sub is available exactly as it is on the award path and
+  MUST be captured for audit attribution; the inbound/LLM path has
+  no human actor, so the field is nullable. The webhook protocol
+  itself is unchanged — the gate is the processing layer that
+  decides whether the parsed quote persists into `RFQQuote`.
+
+- RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
+  defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
+  awarded quote's counterparty `kyc_status != approved` at the moment
+  of award, even if the original invitation was created when the
+  counterparty was approved. Audit event
+  `rfq_award_rejected_kyc_not_approved` with payload
+  `{counterparty_id, kyc_status_observed, rfq_id, quote_id,
+  requesting_actor_sub}`.
+
+The gate is fail-closed: the default `KycStatus.pending` denies, an
+explicitly `expired` status denies, an explicitly `rejected` status
+denies, and absence of the field (impossible per schema NOT NULL)
+also denies. The only admit-path is `approved`. There is NO bypass
+flag and NO config override. Operators wanting an exception MUST
+first transition the counterparty's `kyc_status` to `approved` via
+the status-transition path below; the gate then admits naturally.
+
+Status transitions (binding):
+
+- `kyc_status` mutations on ANY counterparty type (transitions
+  between any of the four members {pending, approved, expired,
+  rejected}) are authorized only to `risk_manager`. This explicitly
+  OVERRIDES the trader per-type CRUD admission for this single field
+  (see trader role bullet above): trader CAN update customer/supplier
+  counterparties' non-KYC fields (e.g. contact info, address) but
+  CANNOT mutate `kyc_status` on any counterparty type. Auditor cannot
+  mutate per matrix (read-only). Service identities
+  (`service:westmetall_ingest`, `service:rfq_outbound`,
+  `service:cashflow_pipeline`, `service:webhook_inbound`) have no
+  Counterparty-mutation scope and therefore no `kyc_status` mutation
+  scope either.
+
+- Every transition MUST emit an audit event of type
+  `counterparty_kyc_status_changed` with payload
+  `{counterparty_id, previous_status, new_status,
+  transition_actor_sub, reason}` where `reason` is mandatory free
+  text (minimum 8 characters; enforced at the schema/service layer
+  before persistence). HMAC-signed per audit-trail invariant.
+
+- Member semantics (binding, applies to all transitions to/from each
+  state):
+  - `pending` — counterparty exists in the platform but has not yet
+    been KYC-approved. Default state on creation. Gate denies.
+  - `approved` — KYC verification complete; risk_manager has signed
+    off. Only admit-state for the gate.
+  - `expired` — previously approved counterparty whose KYC has
+    lapsed (e.g. annual renewal cycle missed). Gate denies. Path
+    forward: risk_manager-initiated `expired → approved` transition
+    with reason.
+  - `rejected` — explicit administrative hold (e.g. compliance
+    failure, sanctions hit, or risk-rating downgrade). Gate denies
+    with the same semantics as `pending`/`expired`. Path forward
+    requires explicit risk_manager-initiated `rejected → approved`
+    transition with reason citing the remediation. The `rejected`
+    state is institutionally distinct from `expired` (rejected =
+    "we said no", expired = "approval lapsed in time"); both deny
+    identically at the gate.
+
+- No auto-promotion: `pending → approved`, `expired → approved`, and
+  `rejected → approved` transitions are NEVER performed by background
+  tasks or migrations. All three require an explicit
+  risk_manager-initiated POST with reason. This prevents drift back
+  to approved without active oversight.
+
+- Revocation paths (`approved → pending`, `approved → expired`,
+  `approved → rejected`) are valid and follow the same audit-event
+  contract. Once revoked, the gate rules above apply immediately —
+  in-flight RFQ invitations to that counterparty become unawardable
+  (the award path re-checks `kyc_status` at award moment per the gate
+  scope rules) and in-flight quotes from that counterparty become
+  unpersistable (the quote-ingestion path re-checks at the
+  internal-processing boundary).
+
+Pilot scope binding (operational pre-condition for Pilot Hard
+Blocker 1 closure):
+
+The 8 counterparties enumerated in
+`docs/2026-05-tech-lead-executive-analysis.md` §4 — Stonex Financial,
+Marex, Banco BS2, Itaú, Alecar, Rusal, Casa do Alumínio, Aluminios
+del Mexico — MUST be persisted with `kyc_status = approved` BEFORE
+pilot launch. This persistence is an operational pre-condition
+recorded in §7 of the pilot brief as part of the risk_manager
+sign-off. Any counterparty present in the platform but NOT in this
+list remains at default `kyc_status = pending` and is therefore
+gated out of every RFQ lifecycle event by the rules above. Adding a
+9th pilot counterparty is governed by §4 of the pilot brief (requires
+re-signature) AND by an explicit `kyc_status = approved` persistence
+event with audit trail.
+
+Schema (binding):
+
+- NO alembic migration is required for the gate itself. The
+  `Counterparty.kyc_status` column and `KycStatus` enum already exist
+  (introduced in the Phase A1 Counterparty model creation). The
+  HB-1 implementation dispatch therefore prescribes service-layer
+  guards + audit-event wiring + tests; it does NOT prescribe a model
+  or migration change for the gate.
+
+- The full KYC documentary suite (`KycDocument`, `CreditCheck`,
+  `KycCheck` models with linked attestation documents) is P1
+  post-pilot per `docs/GAP_ANALYSIS_LEGACY_VS_NEW.md` §2.1. The gate
+  above operates on the existing single field; document-evidence
+  persistence is a separate concern and a separate amendment when it
+  enters scope.
+
+This invariant takes precedence over any silent-default behavior.
+The current absence of the gate in code is a known constitutional
+violation that the HB-1 implementation PR closes; once that PR is
+merged, removal or weakening of any of the rules above requires a
+new amendment to this section, not a code change.
 
 Anomalies to be retired upon Cluster 3 implementation closure
 (current pre-CL3 route gates that violate the target matrix above;
