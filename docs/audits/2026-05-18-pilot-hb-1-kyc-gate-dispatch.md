@@ -124,17 +124,26 @@ Verification of imports against current HEAD:
 
 - `AuditTrailService.record` signature at `backend/app/services/audit_trail_service.py:74-119` accepts `commit: bool = True`; the executor MUST pass `commit=False` so the rejection audit row lands in the same transaction the gate caller manages, allowing the HTTPException rollback to drop the failed mutation while keeping the rejection evidence visible after the route's `unit_of_work` flush. Confirm the `unit_of_work` pattern preserves the audit row on HTTPException at the route boundary; if the existing pattern rolls back the audit row too, the executor MUST emit the audit event in a separate session/transaction (see `webhook_processor` for the dual-session pattern).
 
-- **Canonicalization of `payload_raw`**: the snippet above sets `payload_raw=""` as a placeholder. The real value MUST be a JSON-canonical serialization of `payload_obj`. Per the `AuditTrailService.record` body (lines 92-94 — call site `payload_canonical, payload_obj = normalize_payload_raw(payload_obj)`), the recorder internally invokes `normalize_payload_raw` on `payload_obj` and uses its first return value as the canonical payload for the checksum + signature computation; the `payload_raw` argument to `record()` is unused on the canonicalization path. The executor MUST verify this behavior by reading `backend/app/services/audit_trail_service.py:92-94` and decide between two acceptable shapes:
-  (a) Pass `payload_raw=""` (or any sentinel) and rely on `record()` recomputing canonical form from `payload_obj` — clean and matches the existing recorder contract.
-  (b) Pre-compute via `normalize_payload_raw(payload)` in the gate primitive and pass the first tuple element as `payload_raw` — explicit but duplicates the recorder's internal call.
-  Choose (a) unless reading the recorder reveals that `payload_raw` is actually consumed; document the choice in the executor's PR body.
-  Do NOT invent a new canonicalization helper (`dumps_canonical`, `json.dumps(..., sort_keys=True)`, etc.) — the institutional canonical form is whatever `normalize_payload_raw` produces, and only that helper.
+- **Canonicalization of `payload_raw` (binding)**: pass `payload_raw=""` as shown. Per `AuditTrailService.record` body (`backend/app/services/audit_trail_service.py:92-94` — `payload_canonical, payload_obj = normalize_payload_raw(payload_obj)`), the recorder canonicalizes from `payload_obj` internally and the `payload_raw` argument is unused on the canonicalization path. There is no executor choice here: the empty-string sentinel is the prescription. Do NOT invent a new canonicalization helper (`dumps_canonical`, `json.dumps(..., sort_keys=True)`, etc.) — the institutional canonical form is whatever `normalize_payload_raw` produces, and the recorder calls it directly.
 
 - `Literal` typing import is stdlib `typing.Literal`.
 
 ### §4.2 Gate sites in `backend/app/services/rfq_service.py`
 
 Five guard insertions, all calling `assert_kyc_approved` BEFORE the `RFQInvitation` row construction (for admission purposes) or BEFORE the quote persistence / award update (for quote and award). Cite line numbers refer to HEAD `d4e946eb` (post-amendment-merge baseline); the executor MUST re-verify offsets on branch HEAD.
+
+**`RFQInvitationPurpose` enum membership verification (binding):** the enum at `backend/app/models/rfqs.py:110-115` has exactly 5 members:
+
+```python
+class RFQInvitationPurpose(enum.Enum):
+    rfq_invite = "rfq_invite"
+    refresh = "refresh"
+    reject_quote = "reject_quote"
+    award_notify = "award_notify"
+    reject_notify = "reject_notify"
+```
+
+The dispatch refers to these by literal string everywhere (`rfq_invite`, `refresh`, `reject_quote`, `award_notify`, `reject_notify`). The partition is binding per the amendment: admission-gated = {rfq_invite, refresh}; outbox-exempt = {reject_quote, award_notify, reject_notify}. The executor MUST NOT extend the gate to outbox members and MUST NOT add new admission members without amending `docs/governance.md` first.
 
 #### §4.2.1 `RFQService.create` (lines 455-711)
 
@@ -286,11 +295,19 @@ def transition_kyc_status(
 
 Per the amendment, `require_role("risk_manager")` is the ONLY allowed gate. `require_any_role("trader", "risk_manager")` would admit trader and silently break the amendment. The executor MUST NOT use `require_any_role` here.
 
-### §4.4 Reject `kyc_status` in existing PATCH `/counterparties/{counterparty_id}`
+### §4.4 Remove `kyc_status` from `CounterpartyUpdate` schema
 
-The existing PATCH endpoint (at `backend/app/api/routes/counterparties.py`, current handler — executor verifies file:line via `find_symbol`) accepts a `CounterpartyUpdate` payload. If the payload includes a `kyc_status` field today (executor verifies the schema), the request MUST be rejected with HTTP 422 directing the caller to use the new dedicated endpoint. The rejection path emits an audit event of type `counterparty_kyc_status_change_via_wrong_endpoint` with payload `{counterparty_id, attempted_status, requesting_actor_sub}` for traceability.
+Verification against HEAD: `backend/app/schemas/counterparty.py:71` currently exposes `kyc_status: KycStatus | None = None` on the `CounterpartyUpdate` model. Per the amendment's binding rule ("`kyc_status` mutations on ANY counterparty type are authorized only to `risk_manager`") and the constitutional precedence clause, the existing exposure is a known constitutional violation that this dispatch closes.
 
-If `CounterpartyUpdate` does NOT expose `kyc_status` at HEAD (likely, since trader is supposed to have per-type CRUD without KYC mutation rights), this is a no-op — verify and skip. Either way, the schema MUST NOT add `kyc_status` as a settable field.
+Mandatory action (binding):
+
+1. Delete the line `kyc_status: KycStatus | None = None` from `backend/app/schemas/counterparty.py:71` (the `CounterpartyUpdate` body). After this change, Pydantic silently drops any `kyc_status` key from incoming PATCH payloads (extras-ignore is the existing default behavior for this schema); the trader CANNOT mutate `kyc_status` via this endpoint because there is no longer a settable field for it.
+
+2. Verify post-change: the existing PATCH handler (route in `backend/app/api/routes/counterparties.py`; executor locates via `find_symbol` or `grep -n "@router.patch" backend/app/api/routes/counterparties.py`) requires NO further code change beyond the schema field removal. The route still binds `CounterpartyUpdate`, but Pydantic now ignores `kyc_status` keys silently rather than mutating the row.
+
+3. Keep `sanctions_status: SanctionsStatus | None = None` (line 72) and `risk_rating: RiskRating | None = None` (line 73) UNCHANGED. Those fields are NOT in the HB-1 amendment scope; a future amendment may extend the per-field carve-out, but this PR is binding only on `kyc_status`.
+
+The risk_manager-only `POST /counterparties/{counterparty_id}/kyc-status` (§4.3) is the SOLE transition path after this PR merges. No defensive audit event is emitted for the silently-dropped PATCH key — Pydantic's silent drop means the route handler never observes the attempted mutation, so there is nothing to record. The protection is the schema removal itself, not a runtime guard. This is structurally cleaner than a runtime check and forecloses the bypass surface at the validation boundary.
 
 ### §4.5 Service-identity scope clarification (defensive note, not a code change)
 
@@ -396,23 +413,20 @@ E2E Playwright is NOT required for this PR — the surface is institutional/inte
 
 ## §8 Audit-trail emission
 
-Four mandatory audit `event_type` values land in this PR, plus one defensive event that is added conditionally on schema state (clarified explicitly below). All emitted via `AuditTrailService.record(...)` (cite `backend/app/services/audit_trail_service.py:74-119` for the signature). All HMAC-signed by the existing recorder (`AUDIT_SIGNING_KEY` required in prod/staging per `audit_trail_service.py` `MissingAuditSigningKey` hard-fail).
+Exactly four audit `event_type` values land in this PR. All emitted via `AuditTrailService.record(...)` (cite `backend/app/services/audit_trail_service.py:74-119` for the signature). All HMAC-signed by the existing recorder (`AUDIT_SIGNING_KEY` required in prod/staging per `audit_trail_service.py` `MissingAuditSigningKey` hard-fail).
 
-**Status convention** in the table below:
-- **MANDATORY** = the event-type constant string MUST exist in the executor's code base after this PR (i.e. the recorder has a defined call site emitting that exact `event_type` value); whether a given event INSTANCE is recorded at runtime depends on the trigger (gate fires / transition occurs / etc.).
-- **CONDITIONAL** = the event-type constant exists in code ONLY IF the executor's schema verification finds the precondition true. If the precondition is false, the constant is not added and no call site exists.
+The constant strings MUST exist in the executor's code base after this PR (one defined call site per event_type). Whether a given event INSTANCE is recorded at runtime depends on the trigger column below — events 1/2/3 emit on each gate fire, event 4 emits on each transition. None of them emit unconditionally per request.
 
-| # | event_type | status | emitted from | entity_type | trigger | payload shape (binding per amendment) |
-|---|---|---|---|---|---|---|
-| 1 | `rfq_invitation_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` (§4.1) called from §4.2.1 / §4.2.2 / §4.2.3 | `counterparty` | each gate fire on an admission-purpose invitation create | `{counterparty_id, kyc_status_observed, requesting_actor_sub, rfq_id (nullable), attempted_purpose ∈ {rfq_invite, refresh}}` |
-| 2 | `rfq_quote_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` called from §4.2.4 | `counterparty` | each gate fire on quote ingestion (human-issued POST or webhook/LLM path) | `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id (nullable for human path), rejection_path ∈ {human_post, webhook_inbound_llm}, requesting_actor_sub (nullable for inbound/LLM path)}` |
-| 3 | `rfq_award_rejected_kyc_not_approved` | MANDATORY | `assert_kyc_approved` called from §4.2.5 | `counterparty` | each gate fire on award path | `{counterparty_id, kyc_status_observed, rfq_id, quote_id, requesting_actor_sub}` |
-| 4 | `counterparty_kyc_status_changed` | MANDATORY | `CounterpartyService.set_kyc_status` (§4.3.2) | `counterparty` | each invocation of the new endpoint (POST `/counterparties/{id}/kyc-status`) | `{counterparty_id, previous_status, new_status, transition_actor_sub, reason}` |
-| 5 | `counterparty_kyc_status_change_via_wrong_endpoint` | CONDITIONAL (only if `CounterpartyUpdate` schema currently exposes `kyc_status`) | PATCH `/counterparties/{id}` rejection path (§4.4) | `counterparty` | attempted PATCH including a `kyc_status` field | `{counterparty_id, attempted_status, requesting_actor_sub}` |
+The PATCH-bypass-attempt defensive audit event (`counterparty_kyc_status_change_via_wrong_endpoint`) that earlier drafts considered is NOT included. Per §4.4, removing `kyc_status` from `CounterpartyUpdate` causes Pydantic to silently drop the key from incoming payloads, so the route handler never observes the attempted mutation — there is nothing to record. The structural protection (field removal) replaces the runtime audit guard.
 
-For event 5, the executor's verification step in §4.4 determines whether the constant + call site are added. The expected outcome is "schema does NOT expose `kyc_status`" → event 5 is a no-op and is not added. If the verification surprises with "schema DOES expose `kyc_status`", the executor adds the defensive path + this event and documents the verification result in the PR body.
+| # | event_type | emitted from | entity_type | trigger | payload shape (binding per amendment) |
+|---|---|---|---|---|---|
+| 1 | `rfq_invitation_rejected_kyc_not_approved` | `assert_kyc_approved` (§4.1) called from §4.2.1 / §4.2.2 / §4.2.3 | `counterparty` | each gate fire on an admission-purpose invitation create | `{counterparty_id, kyc_status_observed, requesting_actor_sub, rfq_id (nullable), attempted_purpose ∈ {rfq_invite, refresh}}` |
+| 2 | `rfq_quote_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.4 | `counterparty` | each gate fire on quote ingestion (human-issued POST or webhook/LLM path) | `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id (nullable for human path), rejection_path ∈ {human_post, webhook_inbound_llm}, requesting_actor_sub (nullable for inbound/LLM path)}` |
+| 3 | `rfq_award_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.5 | `counterparty` | each gate fire on award path | `{counterparty_id, kyc_status_observed, rfq_id, quote_id, requesting_actor_sub}` |
+| 4 | `counterparty_kyc_status_changed` | `CounterpartyService.set_kyc_status` (§4.3.2) | `counterparty` | each invocation of POST `/counterparties/{id}/kyc-status` | `{counterparty_id, previous_status, new_status, transition_actor_sub, reason}` |
 
-The §10 acceptance criterion `grep` for event-type strings (item 7) requires the FOUR mandatory event types to appear in the codebase post-merge. Event 5 is excluded from the acceptance grep precisely because of its conditional status.
+The §10 acceptance criterion `grep` for event-type strings (item 7) requires all four event types to appear in the codebase post-merge as distinct constant strings.
 
 Audit emission timing rule (binding): the rejection audit MUST land in the audit table BEFORE the HTTPException is raised. The amendment's wording — "MUST be recorded BEFORE the rejection response is returned" — is reproduced verbatim in §8 to guide the executor. Per §4.1, the emission uses `commit=False` so that the outer `unit_of_work` flushes the rejection row alongside the rollback of the failed mutation. If the executor finds that the existing `unit_of_work` pattern rolls back the audit row on HTTPException, the executor MUST switch to a dual-session pattern (separate `Session` for audit emission with its own commit, mirroring `webhook_processor` for the rejection-evidence persistence) and document the choice in the PR body.
 
@@ -442,21 +456,22 @@ Every item below is verifiable post-merge by running the cited command against t
 4. **Outbox purposes remain ungated.** `grep -nB5 "RFQInvitationPurpose\.(reject_quote|award_notify|reject_notify)" backend/app/services/rfq_service.py backend/app/services/rfq_orchestrator.py` shows NO `assert_kyc_approved` call in the 5 preceding lines of each outbox-purpose row construction at `rfq_service.py:1188`, `rfq_orchestrator.py:1826`, `rfq_orchestrator.py:1901`. (Enforces §2 boundary + amendment partition rule.)
 5. **New endpoint exists.** `grep -n "kyc-status" backend/app/api/routes/counterparties.py` returns the new route decorator. (Enforces §4.3.3.)
 6. **New endpoint is risk_manager-only.** `grep -nB3 "kyc-status" backend/app/api/routes/counterparties.py` shows `require_role("risk_manager")` in the preceding decorator stack — NOT `require_any_role(...)`. (Enforces §4.3.3 amendment rule.)
-7. **Four audit event types are emitted from code.** `grep -rnE "rfq_invitation_rejected_kyc_not_approved|rfq_quote_rejected_kyc_not_approved|rfq_award_rejected_kyc_not_approved|counterparty_kyc_status_changed" backend/app/` returns ≥4 occurrences (one per event type, possibly more if multiple call sites for one type — but each type must appear at least once). (Enforces §8.)
-8. **Backend tests pass.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py tests/test_counterparty_kyc_transition.py tests/test_rbac_matrix_enforcement.py -v` exits 0 with ≥20 new test cases (per §7.1+§7.2+§7.3+§7.4).
-9. **Full suite green.** `cd backend && python -m pytest -q` exits 0; the count of passing tests is at least `<baseline + 20>` where baseline is the pre-merge count.
-10. **OpenAPI regen + frontend type drift check pass.** `cd frontend-svelte && npm run api:types && git diff --exit-code src/lib/api/schema.d.ts` shows the regenerated file matches the committed file. `npm run api:types:check` passes. (Enforces Rule 36.)
-11. **Frontend vitest passes.** `cd frontend-svelte && npm run test` exits 0 with the new KYC-section test cases included.
-12. **Frontend build passes.** `cd frontend-svelte && npm run build` exits 0; ECharts bundle-size budget (`scripts/check-bundle-size.sh`) still passes.
-13. **Pre-push hook v2 clean.** The hook run on the final implementation push produces 0 P1 findings.
-14. **AugmentCode + Greptile gates green.** Per `reference-review-gates-2026-05-17`: Greptile +1 reaction on the implementation PR + all inline comments resolved + `Greptile Review` CI check green + AugmentCode catches absorbed.
-15. **8 pilot counterparties admission readiness (operational, NOT a code gate).** Verifiable by Andrei post-merge via: `gh pr merge` of this PR, then risk_manager calls `POST /counterparties/{id}/kyc-status` (via Swagger or the new frontend UI) for each of the 8 counterparties enumerated in `docs/2026-05-tech-lead-executive-analysis.md` §4 with `new_status=approved, reason=<pilot pre-approval per §7 sign-off>`. This is recorded in the pilot brief's §7 sign-off notes, NOT in the PR.
+7. **`kyc_status` removed from `CounterpartyUpdate`.** `grep -nA20 "class CounterpartyUpdate" backend/app/schemas/counterparty.py | grep "kyc_status"` returns 0 matches. The `sanctions_status` and `risk_rating` fields remain unchanged (out of HB-1 amendment scope; verifiable with the same grep replacing the keyword). (Enforces §4.4.)
+8. **Four audit event types are emitted from code.** `grep -rnE "rfq_invitation_rejected_kyc_not_approved|rfq_quote_rejected_kyc_not_approved|rfq_award_rejected_kyc_not_approved|counterparty_kyc_status_changed" backend/app/` returns ≥4 occurrences (one per event type, possibly more if multiple call sites for one type — but each type must appear at least once). (Enforces §8.)
+9. **Backend tests pass.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py tests/test_counterparty_kyc_transition.py tests/test_rbac_matrix_enforcement.py -v` exits 0 with ≥20 new test cases (per §7.1+§7.2+§7.3+§7.4).
+10. **Full suite green.** `cd backend && python -m pytest -q` exits 0; the count of passing tests is at least `<baseline + 20>` where baseline is the pre-merge count.
+11. **OpenAPI regen + frontend type drift check pass.** `cd frontend-svelte && npm run api:types && git diff --exit-code src/lib/api/schema.d.ts` shows the regenerated file matches the committed file. `npm run api:types:check` passes. (Enforces Rule 36.)
+12. **Frontend vitest passes.** `cd frontend-svelte && npm run test` exits 0 with the new KYC-section test cases included.
+13. **Frontend build passes.** `cd frontend-svelte && npm run build` exits 0; ECharts bundle-size budget (`scripts/check-bundle-size.sh`) still passes.
+14. **Pre-push hook v2 clean.** The hook run on the final implementation push produces 0 P1 findings.
+15. **AugmentCode + Greptile gates green.** Per `reference-review-gates-2026-05-17`: Greptile +1 reaction on the implementation PR + all inline comments resolved + `Greptile Review` CI check green + AugmentCode catches absorbed.
+16. **8 pilot counterparties admission readiness (operational, NOT a code gate).** Verifiable by Andrei post-merge via: `gh pr merge` of this PR, then risk_manager calls `POST /counterparties/{id}/kyc-status` (via Swagger or the new frontend UI) for each of the 8 counterparties enumerated in `docs/2026-05-tech-lead-executive-analysis.md` §4 with `new_status=approved, reason=<pilot pre-approval per §7 sign-off>`. This is recorded in the pilot brief's §7 sign-off notes, NOT in the PR.
 
 ## §11 Workflow
 
 1. Executor session opens isolated branch from current main HEAD `725f76809` (or whatever main is at session-start; executor verifies with `git fetch origin && git log origin/main -1`).
 2. Executor reads this dispatch end-to-end, reads `docs/governance.md` "Counterparty KYC gate" subsection in full, reads the cited code excerpts in `backend/app/services/rfq_service.py` / `backend/app/services/counterparty_service.py` / `backend/app/services/audit_trail_service.py` / `backend/app/core/auth.py` / `backend/app/models/counterparty.py` to verify identifiers and line offsets at branch HEAD.
-3. Executor implements §4.1 (new module) first, then §4.2.1 → §4.2.5 (gate sites) in order, then §4.3 (new endpoint + schema + service method), then §4.4 (PATCH rejection), then §4.5 (verification, no code change).
+3. Executor implements §4.1 (new module) first, then §4.2.1 → §4.2.5 (gate sites) in order, then §4.3 (new endpoint + schema + service method), then §4.4 (remove `kyc_status` from `CounterpartyUpdate`), then §4.5 (verification, no code change).
 4. Executor runs `cd backend && ruff check . && ruff format . && python -m pytest -x -q` after the backend changes land.
 5. Executor implements §6 (frontend changes), runs `cd frontend-svelte && npm run check && npm run test && npm run build`.
 6. Executor pushes the branch. Pre-push hook v2 reviews the dispatch — wait, this PR doesn't modify the dispatch; hook may or may not fire depending on whether the executor edited `docs/audits/`. If the executor adds a "PR summary" markdown in `docs/audits/2026-05-XX-pilot-hb-1-implementation-summary.md`, the hook will fire on that file. If not, hook is silent.
