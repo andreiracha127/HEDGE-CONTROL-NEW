@@ -315,8 +315,9 @@ def set_kyc_status(
     at lines 124-163 / delete_counterparty at lines 167-190 for the
     canonical reference). This service method MUST NOT emit its own
     audit row — doing so would produce a duplicate `counterparty_kyc_status_changed`
-    audit event when the route layer's `audit_event(event_type='kyc_status_changed')`
-    Depends fires its own emission via `request.state.audit_commit()`.
+    audit event when the route layer's
+    `audit_event(event_type='counterparty_kyc_status_changed')` Depends fires
+    its own emission via `request.state.audit_commit()`.
 
     backend/app/services/counterparty_service.py:45-50 — get_by_id
     returns None on soft-deleted rows. Every other mutation path in
@@ -374,7 +375,10 @@ def transition_kyc_status(
     request: Request,
     actor_sub: str = Depends(get_current_actor_sub),
     _: None = Depends(
-        audit_event(entity_type="counterparty", event_type="kyc_status_changed")
+        audit_event(
+            entity_type="counterparty",
+            event_type="counterparty_kyc_status_changed",
+        )
     ),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
@@ -459,7 +463,7 @@ After §4.4.1 + §4.4.2 + §4.4.4:
 - PATCH `/counterparties/{id}` with payload including `kyc_status` → Pydantic silently drops the key (the field is gone from `CounterpartyUpdate`) → route handler sees no `kyc_status` in `data` → service's `update` proceeds without touching the field → no mutation.
 - Internal caller invoking `CounterpartyService.update(session, cp, {"kyc_status": "approved"}, ...)` → service raises HTTP 403 BEFORE any setattr → audit-friendly error response.
 - POST `/counterparties` or `CounterpartyService.create(...)` with `kyc_status` in payload → Pydantic silently drops the field at the route layer (gone from `CounterpartyCreate`); service hardcodes `KycStatus.pending` regardless of payload contents → new row always lands at `pending`. Risk_manager subsequently transitions via §4.3 once KYC documentation is approved.
-- Risk_manager calling POST `/counterparties/{id}/kyc-status` → route handler's `audit_event(event_type="kyc_status_changed")` Depends registers the audit-commit callback → route invokes `CounterpartyService.set_kyc_status` which routes through `get_by_id` (soft-delete-aware, returns 404 on logically-deleted rows per §4.3.2) → on live counterparties, field mutates → route calls `mark_audit_success(request, cp.id, metadata={...previous_status, new_status, reason, actor_sub})` → `unit_of_work` fires `audit_commit` which emits the HMAC-signed `counterparty_kyc_status_changed` audit row on the same session as the mutation, then commits both atomically (per §8 timing rule).
+- Risk_manager calling POST `/counterparties/{id}/kyc-status` → route handler's `audit_event(entity_type="counterparty", event_type="counterparty_kyc_status_changed")` Depends registers the audit-commit callback → route invokes `CounterpartyService.set_kyc_status` which routes through `get_by_id` (soft-delete-aware, returns 404 on logically-deleted rows per §4.3.2) → on live counterparties, field mutates → route calls `mark_audit_success(request, cp.id, metadata={...previous_status, new_status, reason, actor_sub})` → `unit_of_work` fires `audit_commit` which emits the HMAC-signed `counterparty_kyc_status_changed` audit row on the same session as the mutation, then commits both atomically (per §8 timing rule).
 
 The risk_manager-only `POST /counterparties/{counterparty_id}/kyc-status` (§4.3) is the SOLE transition path after this PR merges. The three bypass closures (UPDATE schema removal in §4.4.1, UPDATE service guard in §4.4.2, CREATE schema removal + service hardcode in §4.4.4 below) together foreclose the bypass surfaces at all three boundaries (validation, direct-call, and creation-time write). No additional runtime audit event is added for blocked attempts — the protection is structural at the schema and service layers, and the legitimate path's audit event (`counterparty_kyc_status_changed`, §8 event 4) is the institutional record of every successful transition.
 
@@ -604,7 +608,7 @@ The PATCH-bypass-attempt defensive audit event (`counterparty_kyc_status_change_
 | 1 | `rfq_invitation_rejected_kyc_not_approved` | `assert_kyc_approved` (§4.1) called from §4.2.1 / §4.2.2 / §4.2.3 | `counterparty` | each gate fire on an admission-purpose invitation create | `{counterparty_id, kyc_status_observed, requesting_actor_sub, rfq_id (nullable), attempted_purpose ∈ {rfq_invite, refresh}}` |
 | 2 | `rfq_quote_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.4 | `counterparty` | each gate fire on quote ingestion (human-issued POST or webhook/LLM path) | `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id (nullable for human path), rejection_path ∈ {human_post, webhook_inbound_llm}, requesting_actor_sub (nullable for inbound/LLM path)}` |
 | 3 | `rfq_award_rejected_kyc_not_approved` | `assert_kyc_approved` called from §4.2.5 | `counterparty` | each gate fire on award path | `{counterparty_id, kyc_status_observed, rfq_id, quote_id, requesting_actor_sub}` |
-| 4 | `counterparty_kyc_status_changed` | route layer via `audit_event(event_type="kyc_status_changed")` Depends in `backend/app/api/routes/counterparties.py` (§4.3.3) | `counterparty` | each successful invocation of POST `/counterparties/{id}/kyc-status` (route's `mark_audit_success` call inside `unit_of_work`) | `{request: {new_status, reason}, metadata: {actor_sub, previous_status, new_status, reason}}` — `audit_event._commit_audit` merges request body with `mark_audit_success` metadata per `backend/app/api/dependencies/audit.py:97-99` |
+| 4 | `counterparty_kyc_status_changed` | route layer via `audit_event(entity_type="counterparty", event_type="counterparty_kyc_status_changed")` Depends in `backend/app/api/routes/counterparties.py` (§4.3.3). The composed `event_type` (matching the descriptive form used by events 1/2/3) is passed VERBATIM into `AuditTrailService.record(...)` at `backend/app/api/dependencies/audit.py:101-110` — the dependency does NOT compose `f"{entity_type}_{event_type}"`; it threads both kwargs through unchanged. The literal string `"counterparty_kyc_status_changed"` therefore appears in `backend/app/api/routes/counterparties.py` and is findable by §10.13's grep. | `counterparty` | each successful invocation of POST `/counterparties/{id}/kyc-status` (route's `mark_audit_success` call inside `unit_of_work`) | `{request: {new_status, reason}, metadata: {actor_sub, previous_status, new_status, reason}}` — `audit_event._commit_audit` merges request body with `mark_audit_success` metadata per `backend/app/api/dependencies/audit.py:97-99` |
 
 The §10 acceptance criterion `grep` for event-type strings (item 7) requires all four event types to appear in the codebase post-merge as distinct constant strings.
 
