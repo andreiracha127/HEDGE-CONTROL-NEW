@@ -420,10 +420,11 @@ The new `CounterpartyService.set_kyc_status` method (§4.3.2) is the SOLE legiti
 
 #### §4.4.3 Net effect
 
-After §4.4.1 + §4.4.2:
+After §4.4.1 + §4.4.2 + §4.4.4:
 - PATCH `/counterparties/{id}` with payload including `kyc_status` → Pydantic silently drops the key (the field is gone from `CounterpartyUpdate`) → route handler sees no `kyc_status` in `data` → service's `update` proceeds without touching the field → no mutation.
 - Internal caller invoking `CounterpartyService.update(session, cp, {"kyc_status": "approved"}, ...)` → service raises HTTP 403 BEFORE any setattr → audit-friendly error response.
-- Risk_manager calling POST `/counterparties/{id}/kyc-status` → route handler invokes `CounterpartyService.set_kyc_status` (NOT `update`) → field mutates with audit event.
+- POST `/counterparties` or `CounterpartyService.create(...)` with `kyc_status` in payload → Pydantic silently drops the field at the route layer (gone from `CounterpartyCreate`); service hardcodes `KycStatus.pending` regardless of payload contents → new row always lands at `pending`. Risk_manager subsequently transitions via §4.3 once KYC documentation is approved.
+- Risk_manager calling POST `/counterparties/{id}/kyc-status` → route handler invokes `CounterpartyService.set_kyc_status` (NOT `update`) → helper routes through `CounterpartyService.get_by_id` first (soft-delete-aware, returns 404 on logically-deleted rows per §4.3.2) → on live counterparties, field mutates with `counterparty_kyc_status_changed` audit event (request-session `commit=False`, atomic with the mutation per §8 timing rule).
 
 The risk_manager-only `POST /counterparties/{counterparty_id}/kyc-status` (§4.3) is the SOLE transition path after this PR merges. The three bypass closures (UPDATE schema removal in §4.4.1, UPDATE service guard in §4.4.2, CREATE schema removal + service hardcode in §4.4.4 below) together foreclose the bypass surfaces at all three boundaries (validation, direct-call, and creation-time write). No additional runtime audit event is added for blocked attempts — the protection is structural at the schema and service layers, and the legitimate path's audit event (`counterparty_kyc_status_changed`, §8 event 4) is the institutional record of every successful transition.
 
