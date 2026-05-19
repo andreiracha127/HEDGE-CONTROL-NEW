@@ -51,6 +51,7 @@ Desktop.ini
 
 # Root markdown files
 /*.md
+!/AGENTS.md
 
 # Third-party theme assets
 theming-base-content-master/
