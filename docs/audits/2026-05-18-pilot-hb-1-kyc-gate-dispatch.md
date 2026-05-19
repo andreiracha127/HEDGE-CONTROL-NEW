@@ -57,6 +57,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.counterparty import Counterparty, KycStatus
 from app.services.audit_trail_service import AuditTrailService
+from app.services.counterparty_service import CounterpartyService
 
 GatePoint = Literal["rfq_invitation", "rfq_quote", "rfq_award"]
 
@@ -93,7 +94,15 @@ def assert_kyc_approved(
 
     Returns the loaded Counterparty when status is approved.
     """
-    cp = db.get(Counterparty, counterparty_id)
+    # Use CounterpartyService.get_by_id (NOT db.get) so soft-deleted rows
+    # return None and the gate fails closed with 404. Raw db.get returns
+    # soft-deleted counterparties; a counterparty that is logically deleted
+    # but still has kyc_status=approved would otherwise pass the gate and
+    # admit RFQ invitations, quotes, and awards against a deleted entity.
+    # Mirrors §4.3.2 set_kyc_status and every other mutation path in
+    # backend/app/api/routes/counterparties.py (see counterparties.py:136
+    # update_counterparty for the canonical pattern).
+    cp = CounterpartyService.get_by_id(db, counterparty_id)
     if cp is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -508,6 +517,7 @@ Comprehensive coverage for all five service-layer gate sites, all four KycStatus
 - `test_award_admits_when_still_approved` — happy path; award proceeds; no rejection audit
 - `test_gate_audit_event_is_hmac_signed` — verifies the audit row's `signature` field is populated and validates via `AuditTrailService.verify_event`
 - `test_kyc_gate_only_applies_to_admission_purposes` — institutional partition guard (governance-awareness): enumerates the 5 current `RFQInvitationPurpose` members ({rfq_invite, refresh, reject_quote, award_notify, reject_notify}), drives test scenarios that trigger each purpose's persistence path, and asserts the gate fires ONLY on {rfq_invite, refresh}. The other three purposes MUST persist their `RFQInvitationPurpose` rows successfully even when the counterparty is non-approved. Test docstring includes the directive: "If a new `RFQInvitationPurpose` member is added to `backend/app/models/rfqs.py:110-115`, this test MUST be updated to classify the new member as admission-gated or outbox-exempt per `docs/governance.md` 'Counterparty KYC gate' amendment; the dispatch's forward-compatibility clause MUST also be amended in the same PR." This test is the institutional drift guard.
+- `test_gate_rejects_soft_deleted_counterparty` — create counterparty with `kyc_status=approved`, then `CounterpartyService.soft_delete` it; call `assert_kyc_approved` directly (or drive a gate fire through `POST /rfqs` for the same counterparty); assert response 404 (NOT 422 — because the helper routes through `CounterpartyService.get_by_id` which returns None on soft-delete, triggering the 404 branch BEFORE the kyc_status check); assert NO `rfq_invitation_rejected_kyc_not_approved` audit event recorded (the 404 fires before the kyc_status check, so no rejection audit emits — soft-delete is a distinct rejection class from kyc-not-approved). This is the institutional regression guard for the soft-delete pattern in §4.1; mirrors `test_set_kyc_status_404_on_soft_deleted` in §7.2.
 - `test_gate_audit_survives_route_rollback` — institutional regression guard for the dual-session pattern (§4.1). Drives a gate fire through a real route call (FastAPI TestClient → `POST /rfqs` with a non-approved counterparty); confirms the response is 422; opens a fresh `SessionLocal()` (NOT the test's request session) and queries for the `rfq_invitation_rejected_kyc_not_approved` audit row by `entity_id == counterparty_id` — row MUST exist with a valid HMAC signature. The test fails if a future refactor reverts the helper to a single-session `commit=False` pattern (the original defect closed by FIX 1 of the absorption cycle for this dispatch).
 
 Use the existing test-isolation pattern: `tests/conftest.py` autouse fixture provides a fresh SQLite-in-memory DB; helpers in `backend/tests/auth_token_helpers.py` mint test JWTs with the required role claim.
@@ -606,15 +616,16 @@ Every item below is verifiable post-merge by running the cited command against t
 9. **`CounterpartyService.update` rejects `kyc_status` in data dict.** `grep -nA10 "def update" backend/app/services/counterparty_service.py | grep -E "kyc_status.*HTTPException|raise.*kyc_status"` returns at least one match. A targeted test (`pytest backend/tests/test_counterparty_kyc_transition.py::test_update_rejects_kyc_status_in_data` per §7.2) confirms the runtime guard fires with HTTP 403. (Enforces §4.4.2.)
 10. **`set_kyc_status` respects soft-delete.** `cd backend && python -m pytest tests/test_counterparty_kyc_transition.py::test_set_kyc_status_404_on_soft_deleted -v` exits 0. Test creates a counterparty, soft-deletes it via `CounterpartyService.soft_delete`, then calls POST `/counterparties/{id}/kyc-status` as risk_manager — response is 404 and no `counterparty_kyc_status_changed` audit row appears in the database. (Enforces §4.3.2 soft-delete guard via `CounterpartyService.get_by_id`.)
 11. **Four audit event types are emitted from code.** `grep -rnE "rfq_invitation_rejected_kyc_not_approved|rfq_quote_rejected_kyc_not_approved|rfq_award_rejected_kyc_not_approved|counterparty_kyc_status_changed" backend/app/` returns ≥4 occurrences (one per event type, possibly more if multiple call sites for one type — but each type must appear at least once). (Enforces §8.)
-12. **Rejection audit survives route rollback.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py::test_gate_audit_survives_route_rollback -v` exits 0. The test triggers a gate fire through a route handler (`POST /rfqs` with a non-approved counterparty), confirms the route response is 422, and queries the database via a fresh `SessionLocal()` for the `rfq_invitation_rejected_kyc_not_approved` audit row by `entity_id == counterparty_id` — row MUST exist with valid HMAC signature. (Enforces §4.1 dual-session pattern; the test fails if a future refactor reverts the helper to single-session `commit=False`.)
-13. **Backend tests pass.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py tests/test_counterparty_kyc_transition.py tests/test_rbac_matrix_enforcement.py -v` exits 0 with ≥20 new test cases (per §7.1+§7.2+§7.3+§7.4).
-14. **Full suite green.** `cd backend && python -m pytest -q` exits 0; the count of passing tests is at least `<baseline + 20>` where baseline is the pre-merge count.
-15. **OpenAPI regen + frontend type drift check pass.** `cd frontend-svelte && npm run api:types && git diff --exit-code src/lib/api/schema.d.ts` shows the regenerated file matches the committed file. `npm run api:types:check` passes. (Enforces Rule 36.)
-16. **Frontend vitest passes.** `cd frontend-svelte && npm run test` exits 0 with the new KYC-section test cases included.
-17. **Frontend build passes.** `cd frontend-svelte && npm run build` exits 0; ECharts bundle-size budget (`scripts/check-bundle-size.sh`) still passes.
-18. **Pre-push hook v2 clean.** The hook run on the final implementation push produces 0 P1 findings.
-19. **AugmentCode + Greptile gates green.** Per `reference-review-gates-2026-05-17`: Greptile +1 reaction on the implementation PR + all inline comments resolved + `Greptile Review` CI check green + AugmentCode catches absorbed.
-20. **8 pilot counterparties admission readiness (operational, NOT a code gate).** Verifiable by Andrei post-merge via: `gh pr merge` of this PR, then risk_manager calls `POST /counterparties/{id}/kyc-status` (via Swagger or the new frontend UI) for each of the 8 counterparties enumerated in `docs/2026-05-tech-lead-executive-analysis.md` §4 with `new_status=approved, reason=<pilot pre-approval per §7 sign-off>`. This is recorded in the pilot brief's §7 sign-off notes, NOT in the PR.
+12. **Gate fails closed on soft-deleted counterparty.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py::test_gate_rejects_soft_deleted_counterparty -v` exits 0. Test soft-deletes a counterparty with `kyc_status=approved`, then exercises the gate (direct call or via route) — response is 404 (NOT 422) and no `rfq_invitation_rejected_kyc_not_approved` audit row is recorded. (Enforces §4.1 helper routing through `CounterpartyService.get_by_id` rather than raw `db.get`, mirroring §4.3.2 and `counterparties.py:136`.)
+13. **Rejection audit survives route rollback.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py::test_gate_audit_survives_route_rollback -v` exits 0. The test triggers a gate fire through a route handler (`POST /rfqs` with a non-approved counterparty), confirms the route response is 422, and queries the database via a fresh `SessionLocal()` for the `rfq_invitation_rejected_kyc_not_approved` audit row by `entity_id == counterparty_id` — row MUST exist with valid HMAC signature. (Enforces §4.1 dual-session pattern; the test fails if a future refactor reverts the helper to single-session `commit=False`.)
+14. **Backend tests pass.** `cd backend && python -m pytest tests/test_rfq_kyc_gate.py tests/test_counterparty_kyc_transition.py tests/test_rbac_matrix_enforcement.py -v` exits 0 with ≥20 new test cases (per §7.1+§7.2+§7.3+§7.4).
+15. **Full suite green.** `cd backend && python -m pytest -q` exits 0; the count of passing tests is at least `<baseline + 20>` where baseline is the pre-merge count.
+16. **OpenAPI regen + frontend type drift check pass.** `cd frontend-svelte && npm run api:types && git diff --exit-code src/lib/api/schema.d.ts` shows the regenerated file matches the committed file. `npm run api:types:check` passes. (Enforces Rule 36.)
+17. **Frontend vitest passes.** `cd frontend-svelte && npm run test` exits 0 with the new KYC-section test cases included.
+18. **Frontend build passes.** `cd frontend-svelte && npm run build` exits 0; ECharts bundle-size budget (`scripts/check-bundle-size.sh`) still passes.
+19. **Pre-push hook v2 clean.** The hook run on the final implementation push produces 0 P1 findings.
+20. **AugmentCode + Greptile gates green.** Per `reference-review-gates-2026-05-17`: Greptile +1 reaction on the implementation PR + all inline comments resolved + `Greptile Review` CI check green + AugmentCode catches absorbed.
+21. **8 pilot counterparties admission readiness (operational, NOT a code gate).** Verifiable by Andrei post-merge via: `gh pr merge` of this PR, then risk_manager calls `POST /counterparties/{id}/kyc-status` (via Swagger or the new frontend UI) for each of the 8 counterparties enumerated in `docs/2026-05-tech-lead-executive-analysis.md` §4 with `new_status=approved, reason=<pilot pre-approval per §7 sign-off>`. This is recorded in the pilot brief's §7 sign-off notes, NOT in the PR.
 
 ## §11 Workflow
 
