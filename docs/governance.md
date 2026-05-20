@@ -925,7 +925,13 @@ Common payload fields (binding for ALL six events):
                                      # consume chain
   threshold_dimension_used: <enum>,  # notional_usd |
                                      # settlement_amount_usd
-  threshold_value_at_request: <Decimal>,
+  threshold_at_request: <Decimal>,    # SAME column name as the
+                                      # schema binding below
+                                      # (workflow_approval_requests.
+                                      # threshold_at_request); the
+                                      # audit-payload field carries
+                                      # the column value verbatim,
+                                      # not a renamed copy.
   threshold_config_value: <Decimal>, # the configured threshold the
                                      # value crossed
   requested_by: <actor_sub>,
@@ -949,9 +955,22 @@ Common payload fields (binding for ALL six events):
   rejection_reason: {                # populated on rejected only;
     code: <enum>,                    # null on superseded (cancel
                                      # is not a rejection reason).
-                                     # e.g. policy_violation,
-                                     # counterparty_risk,
-                                     # payload_concern, other
+                                     # EXHAUSTIVE enum (binding
+                                     # for the alembic CREATE TYPE):
+                                     #   policy_violation,
+                                     #   counterparty_risk,
+                                     #   payload_concern,
+                                     #   threshold_inappropriate,
+                                     #   other
+                                     # (note: payload_drift_detected
+                                     # is NOT a rejection_reason_code
+                                     # — it is the HTTP 422 detail
+                                     # string on the consume
+                                     # endpoint when the recomputed
+                                     # payload hash mismatches; the
+                                     # approval row stays in
+                                     # `approved` state, no
+                                     # rejection transition occurs)
     free_text: <string>              # mandatory; min 8 chars
   } | null,
   time_to_approval_ms: <int> | null, # populated on granted /
