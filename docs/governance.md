@@ -1127,6 +1127,466 @@ violation that the HB-2 implementation PR closes; once that PR is
 merged, removal or weakening of any of the rules above requires a
 new amendment to this section, not a code change.
 
+Finance Pipeline daily reconstructability (binding, Pilot Hard Blocker 3):
+
+The Finance Pipeline is the institutional surface through which the
+day's MTM, P&L, cashflow baseline, and risk-flag evidence is
+materialized. At 8 counterparties and ~560 tonnes/trading-day
+aluminium throughput per the pilot brief §4 (140k/year ÷ ~250
+trading days), every business day MUST close with a deterministic,
+reconstructable pipeline run; manual operator invocation as a
+primary control is operationally infeasible at this scale and
+constitutionally insufficient because manual cadence breaks the
+reconstructability invariant (a missed day cannot be retroactively
+proven against a deterministic ledger). This subsection binds the
+pipeline constitutionally.
+
+Daily-run obligation (binding):
+
+- Every business day (per `app/services/lme_calendar.py` —
+  specifically `Calendar.is_business_day(d)` at
+  `app/services/lme_calendar.py:69`, the same trading-day calendar
+  that drives MTM cash-settlement lookups) MUST produce exactly
+  one `FinancePipelineRun` row with `status = completed`. Holidays
+  and weekends per the LME calendar are exempt — no run is
+  required, no run is permitted (a run with `run_date` falling on
+  a non-trading day is a constitutional violation closed at the
+  service layer by an early-return guard to be added in the HB-3
+  implementation).
+
+- The run MUST be triggered by the Railway `scheduler` service
+  (the standalone process that drives `app/scheduler_main.py` per
+  `docs/runbook-railway.md`). Web-worker invocation is forbidden —
+  the `SCHEDULER_DISABLED=true` discipline that isolates web
+  workers from background work (set in Dockerfile CMD + Railway
+  start command per `CLAUDE.md`) MUST be preserved. The HB-3
+  dispatch registers the pipeline job inside
+  `app/tasks/scheduler.py` (which currently has zero references
+  to `finance_pipeline` — confirmed gap, this is the central
+  HB-3 implementation deliverable) so the job only fires under
+  the standalone process.
+
+- Manual invocation via `POST /finance/pipeline/run` (the existing
+  route in `app/api/routes/finance_pipeline.py:25-46`) is
+  PRESERVED as an operational escape hatch (e.g. backfilling a
+  missed day after a scheduler outage). The manual path remains
+  gated by `require_role("risk_manager")` per the existing
+  decorator and continues to emit the `manual_run_triggered`
+  audit event at the route layer. Manual runs MUST still respect
+  the per-day idempotency invariant below — re-invoking for an
+  already-completed `run_date` returns the existing run row, not
+  a new one (current behavior at
+  `app/services/finance_pipeline_service.py:47-53` already
+  satisfies this for the `completed` case; the HB-3 implementation
+  preserves it).
+
+The six canonical pipeline steps (binding):
+
+The pipeline runs exactly six steps in this sequential order. The
+canonical enumeration is the module-level constant `PIPELINE_STEPS`
+in `app/models/finance_pipeline.py:41-48` (currently a `list`; the
+HB-3 implementation MUST convert it to a `tuple` to bind
+immutability — mutable module-level state is incompatible with
+constitutional enumeration). The steps are:
+
+1. `market_snapshot` — counts cash-settlement prices ingested up
+   to `run_date` (read against `CashSettlementPrice` per the
+   MARKET-DATA GOVERNANCE appendix). Treats stale-instrument flags
+   as informational — stale-feed handling is the appendix's
+   responsibility, not the pipeline's, so this step does NOT fail
+   on stale rows.
+2. `mtm_computation` — invokes
+   `app.services.mtm_contract_service.compute_mtm_for_contract`
+   for every `HedgeContract` whose `status = active`. Per the
+   precision contract (`app/core/precision.py`), all MTM math is
+   `Decimal`; live `float` parsing on this path is forbidden.
+3. `pl_snapshot` — invokes
+   `app.services.pl_snapshot_service.create_pl_snapshot` for every
+   active hedge contract. P&L snapshots are append-only /
+   immutable per the existing snapshot-service invariant;
+   re-running this step over the same
+   `(contract_id, period_start, period_end)` triple MUST be a
+   no-op (the snapshot service is responsible for the
+   primary-key-conflict path — the pipeline step does NOT silently
+   swallow the conflict).
+4. `cashflow_baseline` — invokes
+   `app.services.cashflow_baseline_service.create_cashflow_baseline_snapshot`
+   with `correlation_id = str(run.id)` (current behavior at
+   `app/services/finance_pipeline_service.py:218-223`) so the
+   persisted baseline row is traceable back to the originating
+   pipeline run via the existing audit-event correlation chain.
+5. `risk_flags` — surfaces institutional risk anomalies for the
+   day: contracts missing the day's MTM price (per the
+   PriceQuote provenance binding in MARKET-DATA GOVERNANCE),
+   unhedged exposures above the operational guardrail, KYC
+   regressions on counterparties with active deals (per the HB-1
+   KYC gate amendment above), and workflow approvals still
+   `pending` or `approved` past their `expires_at` (per the HB-2
+   Workflow Approval gate amendment above). The step writes a
+   `FinancePipelineRiskFlag` row per surfaced anomaly (table
+   introduced by the HB-3 alembic revision); zero flags is a
+   valid outcome and does NOT block run completion. The current
+   stub at `app/services/finance_pipeline_service.py:228-232`
+   (returns 0 unconditionally) is a known constitutional
+   violation that the HB-3 implementation closes — the stub
+   MUST NOT be deployed as the production step body.
+6. `summary` — aggregates `records_processed` across the first
+   five steps for operator-facing reporting (current behavior at
+   `app/services/finance_pipeline_service.py:234-242`). Read-only
+   against the four upstream entities; emits no side effects
+   beyond the `records_processed` total recorded on the step row.
+
+Adding or removing a step from `PIPELINE_STEPS` is a constitutional
+change requiring an amendment to this section + an alembic data
+migration. The `steps_total = 6` default on `FinancePipelineRun`
+(`app/models/finance_pipeline.py:70`) binds the count at the
+schema layer.
+
+Per-step idempotency invariant (binding):
+
+- Re-running any step within the same `FinancePipelineRun` MUST be
+  a no-op or converge to the same persisted result. The service
+  already implements the run-level skip via
+  `if step.status == PipelineStepStatus.completed: continue`
+  (`app/services/finance_pipeline_service.py:76-77`); the HB-3
+  implementation MUST preserve this behavior and additionally
+  ensure that mid-step partial output is convergent (e.g. if
+  `mtm_computation` wrote 7 of 10 MTMs before crashing, the
+  resumed run computes the remaining 3 without rewriting the 7
+  already-persisted — the underlying snapshot services are
+  responsible for this property, but the pipeline step body MUST
+  iterate in a stable order so resumed iteration covers the same
+  set).
+
+- Cross-day re-runs are NOT idempotent against a different
+  `run_date` — re-invoking for `D-1` after `D` has already
+  completed produces a separate run for `D-1` (the per-day
+  uniqueness invariant below is scoped per `run_date`, not
+  across dates).
+
+- The DB-level idempotency anchor is a UNIQUE constraint on
+  `finance_pipeline_runs.run_date` that the HB-3 alembic revision
+  MUST add. Application-level dedup via `inputs_hash` alone (the
+  current state at
+  `app/services/finance_pipeline_service.py:39-45`) is
+  insufficient against concurrent invocations: two scheduler
+  firings (or scheduler + manual) within the same race window
+  could both miss the existing-row check and produce duplicate
+  rows. The UNIQUE constraint forces the second writer to either
+  conflict (manual path) or skip (scheduler path with explicit
+  pre-write SELECT).
+
+Failure semantics (binding):
+
+- A step that raises any exception MUST mark the step `failed`
+  with the exception's truncated message (current behavior at
+  `app/services/finance_pipeline_service.py:94-101`), set the run
+  to `partial`, and halt the run after the failed step.
+  Subsequent steps DO NOT execute in the same invocation — the
+  run resumes from the failed step on the next invocation per
+  the resume semantics above. This whole-step failure-propagation
+  behavior is the binding institutional pattern.
+
+- Silent exception swallowing INSIDE step bodies is FORBIDDEN
+  per the supreme constitution's "No silent fallback" rule. The
+  current `except Exception: pass` patterns at
+  `app/services/finance_pipeline_service.py:174-179`
+  (`mtm_computation`), `:193-205` (`pl_snapshot`), and `:217-226`
+  (`cashflow_baseline`), plus the unconditional `return 0` at
+  `:228-232` (`risk_flags`), are known constitutional violations
+  that the HB-3 implementation MUST close. The replacement
+  pattern is:
+
+  - For per-contract processing failures inside `mtm_computation`
+    / `pl_snapshot` / `cashflow_baseline` that are recoverable
+    (e.g. missing the day's price for one contract while others
+    succeed): capture the failure as a `FinancePipelineRiskFlag`
+    row of `flag_type = missing_mtm_price` (or analogous) on the
+    same run, and continue processing the remaining contracts.
+    The step still reports the successfully-processed count via
+    `records_processed`; the surfaced flag is the audit evidence
+    of the unprocessable contract.
+  - For structural failures that affect the whole step (missing
+    configuration, DB-level error, canonical price-feed provider
+    unreachable per MARKET-DATA GOVERNANCE): let the exception
+    propagate; the existing service-level handler at
+    `:94-101` marks the step `failed` and halts the run.
+
+- A `partial` run cannot close the business day. Until a
+  resumed invocation transitions it to `completed`, the
+  reconstructability invariant is violated for that `run_date`;
+  this is monitored via the audit-event surface below and via
+  the brief §5 stop-condition checklist.
+
+Reconstructability invariant (binding):
+
+- Every `FinancePipelineRun` row + its child
+  `FinancePipelineStep` rows + the HMAC-signed audit events
+  emitted at each transition (see Audit events below) together
+  constitute the deterministic ledger of the day. Re-reading
+  these three tables (plus the new `finance_pipeline_risk_flags`
+  table introduced by the HB-3 alembic revision) MUST be
+  sufficient to reconstruct, for any past business day:
+
+  - whether the day closed (`status = completed`),
+  - which step(s) failed and at what timestamp,
+  - how many records each completed step processed,
+  - the actor (`service:cashflow_pipeline` service identity for
+    scheduled runs, or the human `actor_sub` for manual runs)
+    responsible for each transition,
+  - the canonical inputs hash that triggered the run
+    (`FinancePipelineRun.inputs_hash` computed via
+    `FinancePipelineRun.compute_hash` at
+    `app/models/finance_pipeline.py:84-86`).
+
+- No additional data source (operational logs, ad-hoc queries,
+  external reports, scheduler logs) is required for
+  reconstruction. The HB-3 implementation's acceptance criteria
+  MUST include a reconstruction test that materializes a past
+  run's state from these four tables alone.
+
+Service-identity attribution (binding):
+
+- The scheduler-triggered pipeline run executes under the
+  existing `service:cashflow_pipeline` service identity (per the
+  AUTHORIZATION MATRIX above, line 250: "cashflow_ledger +
+  finance_pipeline writes"). This amendment introduces NO new
+  service identity — `service:cashflow_pipeline` is the binding
+  attribution for all scheduler-driven Finance Pipeline writes
+  (the daily run plus the per-step row writes, the
+  `finance_pipeline_risk_flags` writes, and the run/step audit
+  events). The internal-JWT minting pattern for service
+  identities (short-lived TTL ~5min, signed by backend) per the
+  AUTHORIZATION MATRIX applies to this attribution unchanged.
+
+- Manual `POST /finance/pipeline/run` invocations continue to
+  execute under the calling human's JWT (`risk_manager`
+  identity) and emit audit events with the human `actor_sub` —
+  the existing route-layer attribution at
+  `app/api/routes/finance_pipeline.py:39,45` already binds this
+  via `Depends(get_current_actor_sub)` + `metadata={"actor_sub":
+  actor_sub}` on `mark_audit_success`. Manual provenance MUST
+  remain distinguishable from scheduled provenance in the audit
+  payload via the `trigger_source` enum field below.
+
+Audit events (binding):
+
+Every state transition on a `FinancePipelineRun` or
+`FinancePipelineStep` row emits an HMAC-signed audit event via
+`AuditTrailService.record(...)`
+(`app/services/audit_trail_service.py:76`). Six event types (one
+per transition the state machine admits — the "every state
+transition" invariant binds the enumeration to the existing run /
+step status enums at `app/models/finance_pipeline.py:26-38`):
+
+1. `finance_pipeline_run_started` — on `FinancePipelineRun` row
+   creation OR on resume of a `partial` run back to `running`.
+   `entity_type = "finance_pipeline_run"`, `entity_id = run.id`.
+2. `finance_pipeline_run_completed` — on transition to
+   `status = completed`.
+3. `finance_pipeline_run_failed_partial` — on transition to
+   `status = partial` (one or more steps failed; the run remains
+   resumable on next invocation).
+4. `finance_pipeline_step_started` — on a step transitioning to
+   `running`. `entity_type = "finance_pipeline_step"`,
+   `entity_id = step.id`.
+5. `finance_pipeline_step_completed` — on a step transitioning to
+   `completed`.
+6. `finance_pipeline_step_failed` — on a step transitioning to
+   `failed`.
+
+The existing route-level `manual_run_triggered` audit event at
+`app/api/routes/finance_pipeline.py:31-36` is SEPARATE from this
+enumeration — it captures the manual-invocation gesture itself
+(actor crossed the route layer with intent to trigger), distinct
+from the six lifecycle events above which capture pipeline-state
+transitions. Both surfaces persist; the route-level event remains
+the human-intent record, the six lifecycle events remain the
+state-machine record.
+
+Common payload fields (binding for ALL six lifecycle events):
+
+```
+{
+  run_id: <uuid>,                    # the FinancePipelineRun.id;
+                                     # for step-level events this
+                                     # is the parent run id
+  run_date: <iso8601 date>,
+  inputs_hash: <sha256>,             # the canonical inputs hash
+                                     # bound by
+                                     # FinancePipelineRun.compute_hash
+  actor: <string>,                   # "service:cashflow_pipeline"
+                                     # for scheduled runs, or the
+                                     # human actor_sub for manual
+                                     # invocation
+  trigger_source: <enum>,            # "scheduler" | "manual"
+                                     # (mirrors the new
+                                     # `triggered_by` column on
+                                     # finance_pipeline_runs below)
+  step_name: <enum> | null,          # populated on the three
+                                     # step_* events; null on the
+                                     # three run_* events.
+                                     # Values are members of
+                                     # PIPELINE_STEPS.
+  step_number: <int> | null,         # populated on step_* events
+                                     # (mirrors
+                                     # FinancePipelineStep.step_number)
+  records_processed: <int> | null,   # populated on
+                                     # step_completed and on
+                                     # run_completed (sum across
+                                     # steps); null on the four
+                                     # other events
+  error_message: <string> | null,    # populated on step_failed
+                                     # and on run_failed_partial
+                                     # (truncated to 500 chars per
+                                     # the existing model field);
+                                     # null on the four success
+                                     # transitions
+  previous_status: <enum> | null,    # null on the two creation
+                                     # transitions
+                                     # (run_started on fresh
+                                     # creation, step_started);
+                                     # populated on resume
+                                     # (run_started from `partial`)
+                                     # and on all completion /
+                                     # failure transitions to
+                                     # disambiguate source state
+  flags_count: <int> | null          # populated on
+                                     # finance_pipeline_step_completed
+                                     # ONLY for step_name =
+                                     # "risk_flags" (count of
+                                     # FinancePipelineRiskFlag rows
+                                     # written by the step); null
+                                     # on all other events
+}
+```
+
+Sink invariant: the audit-trail sink MUST remain append-only /
+WORM (write-once-read-many) per the existing `AuditEvent` table
+constraints. The HB-3 implementation introduces no new admin
+route that mutates AuditEvent rows; this is an acceptance
+criterion.
+
+Schema invariants (binding):
+
+The existing `finance_pipeline_runs` and `finance_pipeline_steps`
+tables (`app/models/finance_pipeline.py:51-114`) remain in place.
+The HB-3 implementation alembic revision (continuing from the
+HB-2 implementation head — HB-2 binds revision `046` per the
+HB-2 amendment above, so HB-3 implementation continues from
+whichever revision number the HB-2 implementation PR actually
+ships, verified via `alembic heads` at HB-3 dispatch authoring
+time) MUST add:
+
+- UNIQUE constraint on `finance_pipeline_runs.run_date` (per the
+  per-day idempotency invariant above). Postgres native UNIQUE
+  and SQLite UNIQUE share the same DDL; no `with_variant`
+  fallback is required for this constraint.
+
+- New `finance_pipeline_risk_flags` table for the `risk_flags`
+  step output. Columns:
+
+  ```
+  id                    : uuid PK
+  run_id                : uuid FK → finance_pipeline_runs.id
+  flag_type             : enum {
+                            missing_mtm_price,
+                            unhedged_exposure_over_guardrail,
+                            kyc_regression_with_active_deals,
+                            workflow_approval_pending_past_expiry
+                          }
+  severity              : enum {informational, warning, critical}
+  subject_entity_type   : string (e.g. "hedge_contract",
+                          "counterparty",
+                          "workflow_approval_request")
+  subject_entity_id     : uuid, nullable (null for run-scoped
+                          flags such as a missed prior-day run)
+  payload               : JSONB().with_variant(sa.Text(), "sqlite")
+                          per the Cluster 4 variant pattern
+  created_at            : timestamp(tz=True), default now()
+  ```
+
+  Composite index `(run_id, severity)` on this table for the
+  auditor's daily report (HB-4) consumption.
+
+- New `triggered_by` column on `finance_pipeline_runs` (enum:
+  `scheduler`, `manual`). Data migration MUST default the column
+  to `manual` on the backfill of any pre-existing rows (preserves
+  current provenance — every existing row was produced by the
+  manual route). Subsequent inserts MUST set the column
+  explicitly. This mirrors the `trigger_source` field carried by
+  the audit-event payload above.
+
+- The `PIPELINE_STEPS` constant at
+  `app/models/finance_pipeline.py:41-48` MUST be converted from
+  `list` to `tuple` in the same PR (mutability of a
+  constitutionally-bound enumeration is itself a defect; the
+  schema-level `steps_total = 6` default depends on this
+  enumeration being stable across the process lifetime).
+
+Chain hygiene: the HB-3 alembic revision MUST be added as a
+forward step in the chain, never by rewriting an applied
+revision's `down_revision`. Single-head invariant is preserved
+(per the existing `tests/test_alembic_chain.py` guard).
+
+Stop-condition integration (binding):
+
+- A scheduler firing that ends with `status = partial`, or a
+  business day that ends with NO `completed` run for that
+  `run_date` (e.g. scheduler outage, infrastructure failure),
+  triggers the brief §5 stop-condition "Any scheduler failure on
+  the Finance Pipeline daily run (post-HB-3 closure)". The HB-3
+  implementation MUST provide an observable signal — at minimum
+  the ABSENCE of a `finance_pipeline_run_completed` audit event
+  for the business day, queryable against the `AuditEvent` table
+  by `entity_type = "finance_pipeline_run"` + `event_type =
+  "finance_pipeline_run_completed"` + the day's range on
+  `timestamp_utc`. Specific alerting mechanism (Slack webhook,
+  email, dashboard query) is an implementation decision for the
+  HB-3 dispatch, not a constitutional binding.
+
+- The auditor's daily report (HB-4, pending amendment) MUST
+  surface the presence/absence of the day's
+  `finance_pipeline_run_completed` event as one of its
+  top-level fields; the HB-4 amendment will bind this
+  cross-reference when authored.
+
+Phase 2 deferral (binding, NOT in HB-3 scope):
+
+- Advanced `risk_flags` taxonomy expansions beyond the four
+  enumerated above (e.g. price-deviation anomalies vs prior-day
+  close, counterparty-concentration thresholds, cross-instrument
+  basis-risk surfaces, prior-day-completion-absence as a
+  first-class flag rather than just an audit-event-absence
+  signal) are REGISTERED here as future-amendment work. The
+  four-flag taxonomy above is the institutional minimum for
+  pilot closure; expansion requires a new amendment to this
+  section.
+
+- Cross-day rollup reporting (weekly / monthly aggregates over
+  the daily runs) is NOT in HB-3 scope. The daily ledger is
+  sufficient for reconstructability; rollups are a downstream
+  reporting concern that can be added without modifying this
+  binding.
+
+- Backfilling pre-HB-3-merge business days into the
+  `finance_pipeline_runs` table is NOT prescribed. Pre-merge
+  reconstruction relies on the existing per-entity audit trail
+  (MTM snapshots, P&L snapshots, cashflow baselines), which the
+  HB-3 amendment does not modify. A future amendment may
+  prescribe a one-time backfill if institutional review
+  requires it; absent such an amendment, the HB-3 invariant
+  applies only forward from the implementation PR's merge
+  timestamp.
+
+This invariant takes precedence over any silent-default behavior.
+The current absence of the scheduled daily run, the four
+silent-exception sites in `finance_pipeline_service.py`, and the
+`risk_flags` production-stub are known constitutional violations
+that the HB-3 implementation PR closes; once that PR is merged,
+removal or weakening of any of the rules above requires a new
+amendment to this section, not a code change.
+
 Anomalies to be retired upon Cluster 3 implementation closure
 (current pre-CL3 route gates that violate the target matrix above;
 PR-CL3-1 dispatch §3 MUST sweep every backend route against this
