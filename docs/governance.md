@@ -1008,7 +1008,18 @@ Schema (binding):
     `mutation_payload_canonical` (jsonb in postgres / TEXT in
     sqlite), `mutation_payload_hash` (string, SHA-256),
     `correlation_id` (uuid, indexed), `idempotency_key` (string,
-    nullable, indexed), `created_at`/`updated_at` (timestamps),
+    nullable, partial-UNIQUE on rows where the column is non-null —
+    binds the Pending-mutation step 4 "same key returns existing
+    row" guarantee at the DB layer; without this, concurrent
+    submits with the same key would race past the
+    application-layer lookup and produce duplicate rows.
+    Postgres: `CREATE UNIQUE INDEX … ON workflow_approval_requests
+    (idempotency_key) WHERE idempotency_key IS NOT NULL`.
+    SQLite test variant: `CREATE UNIQUE INDEX … ON
+    workflow_approval_requests (idempotency_key) WHERE
+    idempotency_key IS NOT NULL` — SQLite 3.8+ supports the same
+    partial-index syntax, so no variant fallback needed for this
+    constraint), `created_at`/`updated_at` (timestamps),
     `expires_at` (timestamp), `consumed_at` (timestamp,
     nullable), `rejection_reason_code` (enum from the rejection
     `code` enumeration above, nullable), `rejection_reason_text`
