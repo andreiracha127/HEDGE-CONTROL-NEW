@@ -157,7 +157,20 @@ class FinancePipelineRiskFlag(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    __table_args__ = (
+        # DB-level dedup defense matching §5.3 alembic. Mirrors the constraint
+        # declared in the migration so ORM-level integrity errors fire too.
+        UniqueConstraint(
+            "run_id",
+            "subject_entity_id",
+            "flag_type",
+            name="uq_finance_pipeline_risk_flags_run_subject_type",
+        ),
+    )
 ```
+
+Add `UniqueConstraint` to the existing `from sqlalchemy import …` import block at the top of the file.
 
 Modify `FinancePipelineRun` to add the `triggered_by` column (insert after existing `inputs_hash` declaration at line 72):
 
@@ -979,11 +992,34 @@ op.create_index(
     "finance_pipeline_risk_flags",
     ["run_id", "severity"],
 )
+# DB-level dedup defense for the (run_id, subject_entity_id, flag_type)
+# triple. §4.7 routine 1 + §4.5 cross-step skip provide application-level
+# anti-join, but the UNIQUE constraint below is the authoritative defense
+# against any future second-emission code path silently inserting a
+# duplicate row. Matches the run_date idempotency pattern in §5.2.
+#
+# Note on nullable subject_entity_id: both Postgres and SQLite treat NULL
+# as DISTINCT in UNIQUE constraints by default. This permits multiple
+# run-scoped flags (where subject_entity_id is NULL) of the same type
+# within a run — which is intentional (e.g. a missed-prior-day flag with
+# subject_entity_id=NULL could occur once per detection pass without
+# blocking the constraint). For NON-NULL subject_entity_id, the constraint
+# is fully effective.
+op.create_unique_constraint(
+    "uq_finance_pipeline_risk_flags_run_subject_type",
+    "finance_pipeline_risk_flags",
+    ["run_id", "subject_entity_id", "flag_type"],
+)
 ```
 
 In `downgrade()`:
 
 ```python
+op.drop_constraint(
+    "uq_finance_pipeline_risk_flags_run_subject_type",
+    "finance_pipeline_risk_flags",
+    type_="unique",
+)
 op.drop_index("ix_finance_pipeline_risk_flags_run_id_severity", table_name="finance_pipeline_risk_flags")
 op.drop_index("ix_finance_pipeline_risk_flags_run_id", table_name="finance_pipeline_risk_flags")
 op.drop_table("finance_pipeline_risk_flags")
@@ -1057,7 +1093,8 @@ Required cases (at least one test function per bullet):
 - `test_mtm_step_structural_failure_halts_run` — patch `compute_mtm_for_contract` to raise a non-recoverable exception (e.g. `sqlalchemy.exc.DatabaseError`); assert run transitions to `partial`, the failed step has status `failed`, `finance_pipeline_step_failed` audit event emitted, subsequent steps NOT executed.
 - `test_risk_flags_step_emits_all_four_flag_types` — fixture seeds (a) a contract without a PriceQuote for run_date → `missing_mtm_price`, (b) a counterparty with unhedged tonnes above guardrail → `unhedged_exposure_over_guardrail`, (c) a counterparty with `kyc_status != approved` + an active Deal → `kyc_regression_with_active_deals`, (d) a `pending` workflow_approval past `expires_at` → `workflow_approval_pending_past_expiry`. Assert four `FinancePipelineRiskFlag` rows with matching `flag_type` enum values.
 - `test_risk_flags_step_zero_flags_is_valid` — fixture seeds a clean state; assert step completes, returns 0, step status `completed`.
-- `test_no_double_flagging_of_missing_mtm_price_per_contract` — fixture seeds an active contract with no `PriceQuote` row for `run_date` (so both §4.4 per-contract handler AND §4.7 routine 1 would otherwise emit). Run the full pipeline. Assert EXACTLY ONE `FinancePipelineRiskFlag` row exists with `(run_id=run.id, flag_type=missing_mtm_price, subject_entity_id=contract.id)` — NOT two. Assert the `flags_count` field of the `finance_pipeline_step_completed` event for the `risk_flags` step equals the actual row count in `finance_pipeline_risk_flags` for that run (reconstructability consistency).
+- `test_unique_constraint_blocks_duplicate_flag_emission` — directly insert two `FinancePipelineRiskFlag` rows with the same `(run_id, subject_entity_id, flag_type)` triple (non-null subject_entity_id); assert the second insert raises `IntegrityError`. Confirms the DB-level defense from §5.3 is shipped, not just declared. The application-level anti-join in §4.7 is a fast-path; the constraint is the authoritative invariant.
+- `test_no_double_flagging_of_missing_mtm_price_per_contract` — fixture seeds an active contract with no `PriceQuote` row for `run_date` (so both §4.4 per-contract handler AND §4.7 routine 1 would otherwise emit). Run the full pipeline. Assert EXACTLY ONE `FinancePipelineRiskFlag` row exists with `(run_id=run.id, flag_type=missing_mtm_price, subject_entity_id=contract.id)` — NOT two. The dedup invariant is on the triple itself. Separately, assert the `flags_count` field of the `finance_pipeline_step_completed` event for the `risk_flags` step equals `0` (the return value of `_step_risk_flags`, which anti-joined the only candidate out per §4.7 routine 1) — `flags_count` is bound to "flags written BY this step" per §4.8, NOT to the total run row count.
 - `test_pipeline_steps_is_tuple` — `assert isinstance(PIPELINE_STEPS, tuple)`; static check that mutability was removed.
 - `test_six_audit_events_emitted_per_full_run` — assert exactly 1×`run_started` + 6×`step_started` + 6×`step_completed` + 1×`run_completed` events emitted; check the common payload fields (`run_id`, `run_date`, `inputs_hash`, `trigger_source`, `step_name`/`step_number` for step events) are populated correctly.
 - `test_scheduled_run_attributes_to_service_cashflow_pipeline` — call `run_daily_pipeline` with `trigger_source=scheduler` and `actor="service:cashflow_pipeline"`; assert the emitted audit-event payload has `"actor": "service:cashflow_pipeline"` and `"trigger_source": "scheduler"`.
@@ -1165,6 +1202,7 @@ Each criterion is a verifiable command against the merged HEAD. The PR is accept
 26. End-to-end manual test: with `SCHEDULER_DISABLED=false` against a local stack, the scheduler fires `finance_pipeline_daily` at the next 19:00 UTC tick (or accelerate via `FINANCE_PIPELINE_CRON_HOUR` / `FINANCE_PIPELINE_CRON_MINUTE` for the smoke test); confirm a `finance_pipeline_run_completed` row appears in the `audit_events` table for the business day. Captured in the PR description as a smoke-test transcript.
 27. Reconstruction test (`test_reconstruct_past_run_from_four_tables_alone`) explicitly asserts that ONLY the four tables (`finance_pipeline_runs`, `finance_pipeline_steps`, `finance_pipeline_risk_flags`, `audit_events`) are queried during reconstruction. The test fails if any other table is touched.
 28. `ruff check backend/` and `ruff format --check backend/` both pass.
+29. `grep -n "uq_finance_pipeline_risk_flags_run_subject_type" backend/alembic/versions/*.py` returns ≥ 1 match (the dedup UNIQUE constraint on `(run_id, subject_entity_id, flag_type)` is present in the §5.3 alembic block). The DB-level defense against duplicate-flag emission is shipped, not just the application-level anti-join in §4.7.
 
 ## §11 Workflow
 
