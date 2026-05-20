@@ -1040,9 +1040,16 @@ Schema (binding):
     partial-index syntax, so no variant fallback needed for this
     constraint), `created_at`/`updated_at` (timestamps),
     `expires_at` (timestamp), `consumed_at` (timestamp,
-    nullable), `rejection_reason_code` (enum from the rejection
-    `code` enumeration above, nullable), `rejection_reason_text`
-    (string, nullable). Composite index on `(status, expires_at)`
+    nullable), `rejection_reason_code` (enum, nullable;
+    EXHAUSTIVE values binding for the alembic
+    `CREATE TYPE rejection_reason_code AS ENUM (...)`:
+    `policy_violation`, `counterparty_risk`, `payload_concern`,
+    `threshold_inappropriate`, `other` — same list as the
+    audit-payload `rejection_reason.code` enum above; note
+    `payload_drift_detected` is NOT a member, it is an HTTP 422
+    detail string on the consume endpoint),
+    `rejection_reason_text` (string, nullable). Composite index
+    on `(status, expires_at)`
     for the expiry sweeper (covers both `pending` and `approved`
     lookups — both source states are eligible for time-based
     expiry per the state-machine binding above).
