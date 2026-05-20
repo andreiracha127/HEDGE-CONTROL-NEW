@@ -326,12 +326,30 @@ class ApprovalPolicy(Base):
 
 Current handler at HEAD `7c0588a8d` (verified): `create_deal(body: DealCreate, request: Request, ...)`. The handler currently calls `DealEngine.create_deal(session, body.model_dump())` synchronously.
 
-**Notional computation contract (binding — executor verification required):** the amendment binds `notional_usd` as the threshold dimension for deal_create, computed at gate-evaluation time from `fixed_price_value * quantity_t` (Decimal precision). The current `DealCreate` schema (`backend/app/schemas/deal.py:38-42`) carries ONLY `name`, `commodity`, and `links` — there is no direct `notional_usd`, `fixed_price_value`, or `quantity_t` field. The executor MUST verify how notional is reachable at gate-evaluation time and choose ONE of the following resolution paths, documenting the choice in the PR description:
+**Notional computation contract (binding):** the amendment binds `notional_usd` as the threshold dimension for deal_create, computed at gate-evaluation time from `fixed_price_value * quantity_t` (Decimal precision). The current `DealCreate` schema (`backend/app/schemas/deal.py:38-42`) carries ONLY `name`, `commodity`, and `links` — there is no direct `notional_usd`, `fixed_price_value`, or `quantity_t` field. The dispatch binds the following resolution: **extend `DealCreate` with an explicit `notional_usd: Decimal = Field(ge=0)` field; the gate reads it directly from `body.notional_usd`.** The frontend (§6) computes the notional from the user's selected links (HedgeContracts) and submits it explicitly so the request contract is self-describing.
 
-- **Path A (preferred — derive from linked HedgeContracts)**: iterate `body.links` for entries with `linked_type == DealLinkedType.contract`; load each linked `HedgeContract` and sum `contract.fixed_price_value * contract.quantity_t` for the notional. If the sum is `0` (no contract links), the deal is below-threshold by construction and the gate does NOT fire — synchronous path proceeds. The executor MUST verify the `HedgeContract` model columns at branch HEAD and confirm `fixed_price_value` + `quantity_t` are present (per the amendment's wording).
-- **Path B (fallback — extend `DealCreate`)**: add an explicit `notional_usd: Decimal` field to `DealCreate` with `Field(ge=0)` validation and require the caller to supply it; the gate reads it directly from `body.notional_usd`. This path requires a coordinated frontend change to compute and submit the field, plus schema regeneration. Use only if Path A's link-resolution is operationally fragile.
+Rationale for binding the explicit-field path (vs link-derivation): (a) the request contract is self-describing — the OpenAPI schema surfaces the threshold dimension that triggers the gate, so the frontend and the API consumer agree on the value; (b) the gate's threshold-evaluation does not depend on resolving the (potentially polymorphic) link entities at gate-eval time, which would couple gate evaluation to HedgeContract model details and create a load order between link validation and threshold check; (c) the audit row's `mutation_payload_canonical` and `mutation_payload_hash` are exact functions of the request body, with no implicit dependency on the linked-entity state at request time. Link-derivation was considered (Path A in an earlier draft) but rejected for these reasons.
 
-The executor's PR description records which path was chosen and why. Either path is constitutional; the gate's threshold-evaluation behavior is identical once notional is computed.
+**Schema change (binding):** `backend/app/schemas/deal.py` `DealCreate` adds:
+
+```python
+class DealCreate(BaseModel):
+    name: str
+    commodity: str
+    notional_usd: Decimal = Field(
+        ge=0,
+        description=(
+            "USD notional triggering the HB-2 approval gate above the "
+            "configured threshold (default USD 500,000). The caller MUST "
+            "supply this value; the gate evaluates against it directly."
+        ),
+    )
+    links: list["DealLinkCreate"] = []
+```
+
+The `ge=0` validator forbids negative notionals; `Decimal` preserves precision per the platform precision contract (`backend/app/core/precision.py`). The frontend computes this from the user's selected HedgeContract link prices and quantities and submits the rounded Decimal.
+
+**Backend gate consumes `body.notional_usd` directly** — see the §4.3.1 handler shape below.
 
 **Gate insertion (binding shape):**
 
@@ -348,12 +366,11 @@ def create_deal(
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> DealRead | dict:
-    notional_usd = _compute_deal_notional(session, body)  # see Path A/B above
     approval = workflow_approval_service.evaluate_and_maybe_create(
         session,
         mutation_type=MutationType.deal_create,
         payload_obj=body.model_dump(mode="json"),
-        threshold_value=notional_usd,
+        threshold_value=body.notional_usd,
         requesting_actor_sub=actor_sub,
         requesting_actor_ip=request.client.host if request.client else None,
         requesting_actor_session_id=request.headers.get("X-Session-ID"),
@@ -377,9 +394,11 @@ The handler's response model annotation widens to `DealRead | dict` to accommoda
 
 Current handler (verified): `award_rfq(rfq_id: UUID, payload: RFQAwardRequest, ...)`. The award path materializes the awarded `RFQQuote` into a Deal in the same transaction via `RFQService.award` (which calls `DealEngine.create_deal` internally).
 
-**Notional computation (binding):** the awarded `RFQQuote.fixed_price * RFQQuote.quantity` (or whichever Decimal-precision fields the current RFQQuote model exposes — executor verifies at branch HEAD). The gate runs AFTER the awarded quote is loaded but BEFORE any state mutation on `RFQ` or `HedgeContract` or `Deal`.
+**Notional computation (binding):** the awarded `RFQQuote.fixed_price * RFQQuote.quantity` (Decimal precision). The gate runs AFTER the awarded quote is loaded but BEFORE any state mutation on `RFQ` or `HedgeContract` or `Deal`. The executor MUST verify the exact Decimal-typed price/quantity fields on the current `RFQQuote` model at branch HEAD (`grep -nE "fixed_price|quantity|Numeric" backend/app/models/rfqs.py`); if the columns are named differently, the executor reads them by their HEAD names but the binding remains `price × quantity → notional_usd` in Decimal precision.
 
 **Awarded-quote reference (binding for the 202 path):** when above threshold, the `WorkflowApprovalRequest` row's `mutation_payload_canonical` MUST include the awarded `RFQQuote.id` so the consume path (§4.4.5) can reconstruct the award call deterministically. The payload obj is `{"rfq_id": str(rfq_id), "awarded_quote_id": str(quote.id)}` — a small, deterministic shape that the consume endpoint can verify the hash of and then thread through `RFQService.award`. The Deal is NOT created on the 202 path; it materializes only when the consume endpoint fires `RFQService.award`.
+
+**Awarded-quote selection (binding, no new helper required):** the existing `RFQService.award` method at branch HEAD already contains the awarded-quote selection logic in its first stanza (typically a sort by ranking score + tie-break by submission time). The dispatch does NOT prescribe a new `resolve_awarded_quote` helper; instead, the executor REFACTORS the existing selection logic from `RFQService.award` into a pure read-only helper named `RFQService.resolve_awarded_quote(session, rfq_id) -> RFQQuote`. The refactor is purely mechanical (extract method) — the helper does not mutate state, it only reads the ranked quotes and returns the winner. `RFQService.award` then calls `quote = self.resolve_awarded_quote(...)` as its first line. The executor MUST verify by `grep -n "def award" backend/app/services/rfq_service.py` that the current method contains a selection block; if it does not (e.g. the award path receives an explicit `quote_id` payload), the gate site instead reads `quote_id` from the payload directly with no refactor needed.
 
 **Gate insertion shape:**
 
@@ -398,12 +417,8 @@ def award_rfq(
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> RFQRead | dict:
-    # Load the awarded quote (the existing award path picks the
-    # highest-ranked quote from the trade ranking; executor verifies
-    # the current selection method in RFQService and exposes it as a
-    # lookup helper, e.g. RFQService.resolve_awarded_quote(session, rfq_id)).
     quote = RFQService.resolve_awarded_quote(session, rfq_id)
-    notional_usd = quote.fixed_price * quote.quantity
+    notional_usd = quote.fixed_price * quote.quantity  # Decimal × Decimal
     approval = workflow_approval_service.evaluate_and_maybe_create(
         session,
         mutation_type=MutationType.deal_award,
@@ -429,7 +444,12 @@ def award_rfq(
     return RFQRead.model_validate(rfq)
 ```
 
-If `RFQService.resolve_awarded_quote` does not exist at HEAD, the executor adds it as a thin helper (or inlines the existing selection logic from `RFQService.award`'s first stanza). The helper MUST be idempotent — `resolve_awarded_quote` does not mutate state; it only reads.
+**Payload shape contract (binding for §4.3.1 / §4.3.2 / §4.3.3):** each gate site passes a `payload_obj` (dict) into `evaluate_and_maybe_create` that:
+- contains EVERY field the consume endpoint needs to reconstruct the mutation deterministically (NOT a denormalized snapshot of unrelated request state),
+- is stable under JSON canonicalization (UUIDs serialized as `str`, Decimals serialized via Pydantic's `mode="json"`, no embedded Python objects),
+- excludes ephemeral fields that change between request and consume time (e.g. timestamps, idempotency keys — those live on the row's own columns, not in `mutation_payload_canonical`).
+
+The three resulting shapes — `body.model_dump(mode="json")` for deal_create, `{rfq_id, awarded_quote_id}` for deal_award, `{contract_id, ...payload.model_dump(mode="json")}` for hedge_contract_settle — share the property that `_compute_payload_hash` on the same logical mutation always produces the same hash (the canonical form is order-stable per `normalize_payload_raw`). The consume endpoint (§4.4 #6) submits the same shape, so hash recomputation matches by construction unless the caller actually changed a field.
 
 #### §4.3.3 `POST /cashflow/contracts/{contract_id}/settle` (`backend/app/api/routes/cashflow_ledger.py:28`)
 
@@ -880,33 +900,60 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    # Seed approval_policy per amendment lines 635-658.
-    import json
+    # Seed approval_policy per amendment lines 635-658. The
+    # required_approver_roles + fallback_when_requester_is columns are
+    # JSONB on postgres and TEXT-holding-JSON on sqlite — the bulk_insert
+    # column types declare the variant-aware shape so SQLAlchemy passes
+    # the dict/list directly to the JSONB adapter on postgres (no
+    # double-encoding via json.dumps) and TEXT-coerces the value on
+    # sqlite (which serializes through the same adapter path because
+    # JSONB().with_variant(sa.Text(), "sqlite") inherits TypeEngine's
+    # bind_processor / result_processor pair).
     op.bulk_insert(
         sa.table(
             "approval_policy",
-            sa.column("mutation_type", sa.String),
-            sa.column("required_approver_roles", sa.String),
-            sa.column("fallback_when_requester_is", sa.String),
-            sa.column("threshold_dimension", sa.String),
+            sa.column(
+                "mutation_type",
+                sa.Enum(
+                    "deal_create", "deal_award", "hedge_contract_settle",
+                    name="workflow_approval_mutation_type",
+                    create_type=False,
+                ),
+            ),
+            sa.column(
+                "required_approver_roles",
+                JSONB().with_variant(sa.Text(), "sqlite"),
+            ),
+            sa.column(
+                "fallback_when_requester_is",
+                JSONB().with_variant(sa.Text(), "sqlite"),
+            ),
+            sa.column(
+                "threshold_dimension",
+                sa.Enum(
+                    "notional_usd", "settlement_amount_usd",
+                    name="workflow_approval_threshold_dimension",
+                    create_type=False,
+                ),
+            ),
         ),
         [
             {
                 "mutation_type": "deal_create",
-                "required_approver_roles": json.dumps(["risk_manager"]),
-                "fallback_when_requester_is": json.dumps({}),
+                "required_approver_roles": ["risk_manager"],
+                "fallback_when_requester_is": {},
                 "threshold_dimension": "notional_usd",
             },
             {
                 "mutation_type": "deal_award",
-                "required_approver_roles": json.dumps(["risk_manager"]),
-                "fallback_when_requester_is": json.dumps({}),
+                "required_approver_roles": ["risk_manager"],
+                "fallback_when_requester_is": {},
                 "threshold_dimension": "notional_usd",
             },
             {
                 "mutation_type": "hedge_contract_settle",
-                "required_approver_roles": json.dumps(["auditor"]),
-                "fallback_when_requester_is": json.dumps({}),
+                "required_approver_roles": ["auditor"],
+                "fallback_when_requester_is": {},
                 "threshold_dimension": "settlement_amount_usd",
             },
         ],
