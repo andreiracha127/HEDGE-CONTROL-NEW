@@ -442,7 +442,9 @@ def _step_risk_flags(db: Session, run_date: date, run: FinancePipelineRun) -> in
     # 2. unhedged_exposure_over_guardrail — sum unhedged exposure per counterparty,
     #    flag any that crosses the operational guardrail
     #    (configured via FINANCE_PIPELINE_UNHEDGED_GUARDRAIL_TONNES env, default 1000).
-    unhedged = _query_unhedged_exposure_over_guardrail(db, run_date)
+    #    Passes run.id so the helper anti-joins against already-emitted flags
+    #    for this run (idempotency on resume per the §5.3 UNIQUE constraint).
+    unhedged = _query_unhedged_exposure_over_guardrail(db, run_date, run.id)
     for entry in unhedged:
         FinancePipelineService._emit_risk_flag(
             db, run_id=run.id,
@@ -461,7 +463,7 @@ def _step_risk_flags(db: Session, run_date: date, run: FinancePipelineRun) -> in
     #    not 'approved' but who have at least one active Deal. Per HB-1 amendment,
     #    this is operationally important because the HB-1 KYC gate prevents NEW
     #    RFQs but does not retroactively close existing positions.
-    regressions = _query_kyc_regressions_with_active_deals(db)
+    regressions = _query_kyc_regressions_with_active_deals(db, run.id)
     for entry in regressions:
         FinancePipelineService._emit_risk_flag(
             db, run_id=run.id,
@@ -480,7 +482,7 @@ def _step_risk_flags(db: Session, run_date: date, run: FinancePipelineRun) -> in
     #    background sweeper transitions pending/approved past expires_at to
     #    expired, but if the sweeper has not yet fired (or has fallen behind),
     #    HB-3 surfaces the staleness here as a risk_flag.
-    stale_approvals = _query_workflow_approvals_pending_past_expiry(db)
+    stale_approvals = _query_workflow_approvals_pending_past_expiry(db, run.id)
     for approval in stale_approvals:
         FinancePipelineService._emit_risk_flag(
             db, run_id=run.id,
@@ -571,9 +573,29 @@ class _KycRegressionRow:
     active_deal_count: int
 
 
+def _already_flagged_subject_subquery(
+    run_id: uuid.UUID,
+    flag_type: PipelineRiskFlagType,
+    subject_entity_type: str,
+):
+    """Returns a scalar EXISTS subquery: True when a FinancePipelineRiskFlag
+    row already exists for the given (run_id, subject_entity_id, flag_type)
+    triple AND subject_entity_type. Used by routines 2/3/4 to anti-join
+    against rows already committed by a prior partial execution of this run
+    (idempotency on resume — the §5.3 UNIQUE constraint would otherwise turn
+    a single partial failure into a permanent retry loop). Routine 1's
+    equivalent guard lives inside `_query_active_contracts_without_price_for`.
+    The correlation column is supplied by each helper's outer FROM clause
+    (Counterparty.id or WorkflowApprovalRequest.id).
+    """
+    # The actual subquery is composed inside each helper because the outer
+    # correlation column differs; this docstring is the binding spec.
+
+
 def _query_unhedged_exposure_over_guardrail(
     db: Session,
     run_date: date,
+    run_id: uuid.UUID,
 ) -> list[_UnhedgedRow]:
     """Counterparties whose net unhedged exposure (in tonnes) for run_date
     exceeds the operational guardrail. Guardrail is the env var
@@ -584,14 +606,33 @@ def _query_unhedged_exposure_over_guardrail(
     aggregation follows the existing `exposure_engine.compute_global_exposure`
     primitive — the helper SHOULD delegate to that primitive to avoid
     duplicating the exposure math, then filter the result by guardrail.
+
+    Idempotency on resume: excludes counterparties already flagged
+    `unhedged_exposure_over_guardrail` for this run_id (Python-level set
+    membership; the data volume is small enough that the round-trip is
+    cheaper than a SQL anti-join over a separately-materialized list).
     """
     from app.services.exposure_engine import compute_global_exposure
     guardrail = Decimal(
         os.getenv("FINANCE_PIPELINE_UNHEDGED_GUARDRAIL_TONNES", "1000")
     )
+    already_flagged_ids: set[uuid.UUID] = {
+        row[0]
+        for row in db.execute(
+            select(FinancePipelineRiskFlag.subject_entity_id).where(
+                and_(
+                    FinancePipelineRiskFlag.run_id == run_id,
+                    FinancePipelineRiskFlag.flag_type
+                        == PipelineRiskFlagType.unhedged_exposure_over_guardrail,
+                    FinancePipelineRiskFlag.subject_entity_type == "counterparty",
+                    FinancePipelineRiskFlag.subject_entity_id.is_not(None),
+                )
+            )
+        )
+    }
     rows: list[_UnhedgedRow] = []
     for entry in compute_global_exposure(db, as_of_date=run_date):
-        if entry.unhedged_tonnes > guardrail:
+        if entry.unhedged_tonnes > guardrail and entry.counterparty_id not in already_flagged_ids:
             rows.append(
                 _UnhedgedRow(
                     counterparty_id=entry.counterparty_id,
@@ -604,11 +645,16 @@ def _query_unhedged_exposure_over_guardrail(
 
 def _query_kyc_regressions_with_active_deals(
     db: Session,
+    run_id: uuid.UUID,
 ) -> list[_KycRegressionRow]:
     """Counterparties whose kyc_status is anything OTHER than 'approved' but
     who have at least one active Deal. Per HB-1 amendment, the KYC gate
     prevents NEW RFQs but does not retroactively close existing positions;
     HB-3 surfaces this lag as a `kyc_regression_with_active_deals` flag.
+
+    Idempotency on resume: excludes counterparties already flagged
+    `kyc_regression_with_active_deals` for this run_id via a SQL
+    `WHERE NOT EXISTS` anti-join correlated on Counterparty.id.
     """
     active_deal_count = (
         select(func.count(Deal.id))
@@ -620,6 +666,15 @@ def _query_kyc_regressions_with_active_deals(
         )
         .scalar_subquery()
     )
+    already_flagged = select(FinancePipelineRiskFlag.id).where(
+        and_(
+            FinancePipelineRiskFlag.run_id == run_id,
+            FinancePipelineRiskFlag.flag_type
+                == PipelineRiskFlagType.kyc_regression_with_active_deals,
+            FinancePipelineRiskFlag.subject_entity_type == "counterparty",
+            FinancePipelineRiskFlag.subject_entity_id == Counterparty.id,
+        )
+    ).exists()
     stmt = (
         select(
             Counterparty.id.label("counterparty_id"),
@@ -628,6 +683,7 @@ def _query_kyc_regressions_with_active_deals(
         )
         .where(Counterparty.kyc_status != "approved")
         .where(active_deal_count > 0)
+        .where(~already_flagged)
         .order_by(Counterparty.id)
     )
     return [
@@ -642,6 +698,7 @@ def _query_kyc_regressions_with_active_deals(
 
 def _query_workflow_approvals_pending_past_expiry(
     db: Session,
+    run_id: uuid.UUID,
 ) -> list[WorkflowApprovalRequest]:
     """WorkflowApprovalRequest rows whose status is `pending` or `approved`
     AND `expires_at < now()`. The HB-2 background sweeper SHOULD transition
@@ -650,7 +707,20 @@ def _query_workflow_approvals_pending_past_expiry(
     flag. Both `pending` and `approved` are in scope because either status
     crossing `expires_at` represents an operational gap the auditor needs
     to see.
+
+    Idempotency on resume: excludes approval requests already flagged
+    `workflow_approval_pending_past_expiry` for this run_id via a SQL
+    `WHERE NOT EXISTS` anti-join correlated on WorkflowApprovalRequest.id.
     """
+    already_flagged = select(FinancePipelineRiskFlag.id).where(
+        and_(
+            FinancePipelineRiskFlag.run_id == run_id,
+            FinancePipelineRiskFlag.flag_type
+                == PipelineRiskFlagType.workflow_approval_pending_past_expiry,
+            FinancePipelineRiskFlag.subject_entity_type == "workflow_approval_request",
+            FinancePipelineRiskFlag.subject_entity_id == WorkflowApprovalRequest.id,
+        )
+    ).exists()
     stmt = (
         select(WorkflowApprovalRequest)
         .where(
@@ -662,6 +732,7 @@ def _query_workflow_approvals_pending_past_expiry(
             )
         )
         .where(WorkflowApprovalRequest.expires_at < func.now())
+        .where(~already_flagged)
         .order_by(WorkflowApprovalRequest.id)
     )
     return list(db.execute(stmt).scalars())
@@ -1094,6 +1165,7 @@ Required cases (at least one test function per bullet):
 - `test_risk_flags_step_emits_all_four_flag_types` — fixture seeds (a) a contract without a PriceQuote for run_date → `missing_mtm_price`, (b) a counterparty with unhedged tonnes above guardrail → `unhedged_exposure_over_guardrail`, (c) a counterparty with `kyc_status != approved` + an active Deal → `kyc_regression_with_active_deals`, (d) a `pending` workflow_approval past `expires_at` → `workflow_approval_pending_past_expiry`. Assert four `FinancePipelineRiskFlag` rows with matching `flag_type` enum values.
 - `test_risk_flags_step_zero_flags_is_valid` — fixture seeds a clean state; assert step completes, returns 0, step status `completed`.
 - `test_unique_constraint_blocks_duplicate_flag_emission` — directly insert two `FinancePipelineRiskFlag` rows with the same `(run_id, subject_entity_id, flag_type)` triple (non-null subject_entity_id); assert the second insert raises `IntegrityError`. Confirms the DB-level defense from §5.3 is shipped, not just declared. The application-level anti-join in §4.7 is a fast-path; the constraint is the authoritative invariant.
+- `test_risk_flags_step_idempotent_on_partial_resume` — fixture seeds (a) a counterparty above the unhedged guardrail, (b) a counterparty with KYC regression + active deal, (c) a stale workflow approval. Run the pipeline; assert three flag rows written. Patch `_step_summary` (the step AFTER `risk_flags`) to raise an exception so the run lands in `partial` status, then resume by calling `run_daily_pipeline` again with the same `run_date`. Assert the `risk_flags` step re-executes and writes ZERO additional rows (each of routines 1/2/3/4 anti-joined out via its `already_flagged` guard); assert the total count in `finance_pipeline_risk_flags` for the run is still 3, NOT 6. Confirms the §5.3 UNIQUE constraint never fires (no `IntegrityError`) and the run successfully transitions to `completed` on the second pass. Without the anti-joins in routines 2/3/4, this test would observe a permanent `IntegrityError` failure loop.
 - `test_no_double_flagging_of_missing_mtm_price_per_contract` — fixture seeds an active contract with no `PriceQuote` row for `run_date` (so both §4.4 per-contract handler AND §4.7 routine 1 would otherwise emit). Run the full pipeline. Assert EXACTLY ONE `FinancePipelineRiskFlag` row exists with `(run_id=run.id, flag_type=missing_mtm_price, subject_entity_id=contract.id)` — NOT two. The dedup invariant is on the triple itself. Separately, assert the `flags_count` field of the `finance_pipeline_step_completed` event for the `risk_flags` step equals `0` (the return value of `_step_risk_flags`, which anti-joined the only candidate out per §4.7 routine 1) — `flags_count` is bound to "flags written BY this step" per §4.8, NOT to the total run row count.
 - `test_pipeline_steps_is_tuple` — `assert isinstance(PIPELINE_STEPS, tuple)`; static check that mutability was removed.
 - `test_six_audit_events_emitted_per_full_run` — assert exactly 1×`run_started` + 6×`step_started` + 6×`step_completed` + 1×`run_completed` events emitted; check the common payload fields (`run_id`, `run_date`, `inputs_hash`, `trigger_source`, `step_name`/`step_number` for step events) are populated correctly.
