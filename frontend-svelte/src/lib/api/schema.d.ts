@@ -2706,7 +2706,8 @@ export interface components {
         KycStatus: "pending" | "approved" | "expired" | "rejected";
         /** KycStatusTransitionRequest */
         KycStatusTransitionRequest: {
-            status: components["schemas"]["KycStatus"];
+            new_status: components["schemas"]["KycStatus"];
+            reason: string;
         };
         /**
          * LedgerDirection

@@ -27,13 +27,27 @@
 		}
 	}
 
-	async function updateKycStatus(status: string) {
+	async function updateKycStatus(newStatus: string, selectEl: HTMLSelectElement) {
+		const previousStatus = cp?.kyc_status ?? '';
+		const reason = window.prompt(
+			`Justificativa para alterar status KYC para "${newStatus}" (mínimo 8 caracteres, obrigatório para auditoria):`
+		);
+		if (reason === null) {
+			selectEl.value = previousStatus;
+			return;
+		}
+		const trimmed = reason.trim();
+		if (trimmed.length < 8) {
+			notifications.error('Justificativa deve ter no mínimo 8 caracteres');
+			selectEl.value = previousStatus;
+			return;
+		}
 		isSubmitting = true;
 		try {
 			const res = await apiFetch(`/counterparties/${cpId}/kyc-status`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ status })
+				body: JSON.stringify({ new_status: newStatus, reason: trimmed })
 			});
 			if (res.ok) {
 				cp = await res.json();
@@ -41,9 +55,11 @@
 			} else {
 				const err = await res.json();
 				notifications.error(err.detail || 'Erro ao atualizar status KYC');
+				selectEl.value = previousStatus;
 			}
 		} catch (e) {
 			notifications.error('Erro de conexão ao atualizar status KYC');
+			selectEl.value = previousStatus;
 		} finally {
 			isSubmitting = false;
 		}
@@ -91,7 +107,10 @@
 							id="kyc-status-select"
 							value={cp.kyc_status}
 							disabled={isSubmitting}
-							onchange={(e) => updateKycStatus((e.target as HTMLSelectElement).value)}
+							onchange={(e) => {
+								const target = e.target as HTMLSelectElement;
+								updateKycStatus(target.value, target);
+							}}
 							class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300 w-full max-w-[200px]"
 						>
 							<option value="pending">pending</option>

@@ -1,16 +1,16 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from fastapi import HTTPException
 
 from app.models.counterparty import (
     Counterparty,
     CounterpartyType,
     KycStatus,
-    SanctionsStatus,
     RiskRating,
+    SanctionsStatus,
 )
 
 
@@ -63,9 +63,7 @@ class CounterpartyService:
         if type_filter:
             query = query.filter(Counterparty.type == CounterpartyType(type_filter))
         if kyc_status_filter:
-            query = query.filter(
-                Counterparty.kyc_status == KycStatus(kyc_status_filter)
-            )
+            query = query.filter(Counterparty.kyc_status == KycStatus(kyc_status_filter))
         if is_active_filter is not None:
             query = query.filter(Counterparty.is_active == is_active_filter)
         return query
@@ -75,12 +73,13 @@ class CounterpartyService:
         session: Session, cp: Counterparty, data: dict, *, commit: bool = True
     ) -> Counterparty:
         if "kyc_status" in data:
-            raise HTTPException(status_code=403, detail="kyc_status mutations require the dedicated risk_manager transition endpoint (POST /counterparties/{id}/kyc-status). Generic update path cannot mutate kyc_status.")
+            raise HTTPException(
+                status_code=403,
+                detail="kyc_status mutations require the dedicated risk_manager transition endpoint (POST /counterparties/{id}/kyc-status). Generic update path cannot mutate kyc_status.",
+            )
         for key, value in data.items():
             if value is not None:
-                if key == "kyc_status":
-                    setattr(cp, key, KycStatus(value))
-                elif key == "sanctions_status":
+                if key == "sanctions_status":
                     setattr(cp, key, SanctionsStatus(value))
                 elif key == "risk_rating":
                     setattr(cp, key, RiskRating(value))
@@ -113,11 +112,9 @@ class CounterpartyService:
         return cp, previous_status
 
     @staticmethod
-    def soft_delete(
-        session: Session, cp: Counterparty, *, commit: bool = True
-    ) -> Counterparty:
+    def soft_delete(session: Session, cp: Counterparty, *, commit: bool = True) -> Counterparty:
         cp.is_deleted = True
-        cp.deleted_at = datetime.now(timezone.utc)
+        cp.deleted_at = datetime.now(UTC)
         cp.is_active = False
         session.flush()
         if commit:
@@ -126,9 +123,7 @@ class CounterpartyService:
         return cp
 
     @staticmethod
-    def check_tax_id_unique(
-        session: Session, tax_id: str, exclude_id: UUID | None = None
-    ) -> bool:
+    def check_tax_id_unique(session: Session, tax_id: str, exclude_id: UUID | None = None) -> bool:
         query = session.query(Counterparty).filter(
             Counterparty.tax_id == tax_id,
             Counterparty.is_deleted == False,
