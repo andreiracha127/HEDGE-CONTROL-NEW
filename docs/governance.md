@@ -950,8 +950,25 @@ Common payload fields (binding for ALL six events):
                                      # requester-initiated, no
                                      # approver actor)
   approver_ip: <string> | null,      # populated on granted /
-                                     # rejected / consumed
+                                     # rejected (captured from the
+                                     # co-signer's request context
+                                     # at transition time AND
+                                     # persisted on the
+                                     # workflow_approval_requests
+                                     # row as the column of the
+                                     # same name) / consumed (read
+                                     # back from the persisted
+                                     # column — denormalized from
+                                     # the grant-time capture, so
+                                     # the consumed event carries
+                                     # the original co-signer's IP
+                                     # not the consumer's).
   approver_session_id: <string> | null,
+                                     # populated identically to
+                                     # approver_ip (granted /
+                                     # rejected capture + consumed
+                                     # read-back); persisted on
+                                     # the row at grant-time.
   rejection_reason: {                # populated on rejected only;
     code: <enum>,                    # null on superseded (cancel
                                      # is not a rejection reason).
@@ -1040,7 +1057,15 @@ Schema (binding):
     partial-index syntax, so no variant fallback needed for this
     constraint), `created_at`/`updated_at` (timestamps),
     `expires_at` (timestamp), `consumed_at` (timestamp,
-    nullable), `rejection_reason_code` (enum, nullable;
+    nullable), `approver_ip` (string, nullable; populated at
+    the `pending → approved` (or `pending → rejected`) transition
+    from the co-signer's request context — captured alongside
+    `approved_by` so the later `consumed` audit event has a
+    denormalized read path to the original co-signer's IP
+    without joining the AuditEvent table; same applies to
+    `rejected` events), `approver_session_id` (string,
+    nullable; populated identically to `approver_ip`),
+    `rejection_reason_code` (enum, nullable;
     EXHAUSTIVE values binding for the alembic
     `CREATE TYPE rejection_reason_code AS ENUM (...)`:
     `policy_violation`, `counterparty_risk`, `payload_concern`,
