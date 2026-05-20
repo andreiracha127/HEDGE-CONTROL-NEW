@@ -336,7 +336,7 @@ Current handler at HEAD `7c0588a8d` (verified by dispatch author): `create_deal(
 
 1. Iterate `body.links` filtering for entries where `linked_type == DealLinkedType.contract`.
 2. For each filtered link, load the `HedgeContract` row from the DB by `linked_id`.
-3. Compute `notional_usd = sum(contract.fixed_price_value * contract.quantity_t for each contract)` — Decimal × Decimal, summed in Decimal precision.
+3. Compute `notional_usd = sum(contract.fixed_price_value * contract.quantity_mt for each contract)` — Decimal × Decimal, summed in Decimal precision. (Column name `quantity_mt` per `backend/app/models/contracts.py:93`; same column carried verbatim in the §4.3.2 deal_award notional from RFQ-quote pairs.)
 4. Pass the resulting `Decimal` as `threshold_value` to `evaluate_and_maybe_create`.
 
 **Edge cases (binding):**
@@ -436,24 +436,27 @@ def _compute_deal_notional_from_links(
         select(HedgeContract).where(HedgeContract.id.in_(contract_ids))
     ).scalars().all()
     return sum(
-        (c.fixed_price_value * c.quantity_t for c in contracts),
+        (c.fixed_price_value * c.quantity_mt for c in contracts),
         start=Decimal(0),
     )
 ```
 
 The handler's response model annotation widens to `DealRead | dict` to accommodate the 202 body. The OpenAPI schema regen (§6.1) MUST surface this dual return shape — `frontend-svelte/src/lib/api/schema.d.ts` will type the endpoint as a discriminated union; the typed client must branch on status code.
 
-**Import directive (binding for `backend/app/api/routes/deals.py`):** the current HEAD imports at lines 7-29 cover `APIRouter, Depends, HTTPException, Query, Request, Response, status` from `fastapi`, `get_current_actor_sub, require_any_role, require_role` from `app.core.auth`, plus `audit_event, mark_audit_success, unit_of_work` and the deal schemas. The gate addition introduces THREE new identifiers the file does not currently import: `get_current_actor_roles` (from `app.core.auth`), `Header` (from `fastapi`), and a uuid generator. The executor MUST extend the existing import lines (binding):
+**Import directive (binding for `backend/app/api/routes/deals.py`):** the current HEAD imports at lines 7-29 cover `APIRouter, Depends, HTTPException, Query, Request, Response, status` from `fastapi`, `get_current_actor_sub, require_any_role, require_role` from `app.core.auth`, plus `audit_event, mark_audit_success, unit_of_work` and the deal schemas. The gate addition introduces several new identifiers the file does not currently import; the executor MUST extend the existing import lines (binding):
 
 ```python
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse  # used by the gate's 202 + sync paths
 from app.core.auth import get_current_actor_roles, get_current_actor_sub, require_any_role, require_role
 import uuid as _uuid  # for correlation_id=_uuid.uuid4() at the gate site
 from app.models.workflow_approval import MutationType
 from app.services import workflow_approval_service
+from app.api.routes.workflow_approvals import approval_response_body  # §4.4.7 helper
+from app.schemas.workflow_approval import ApprovalPendingResponseBody  # decorator responses= type
 ```
 
-Plus the `approval_response_body` helper import from the new approval router module (§4.4.7). Per `feedback_dispatch_verify_imports`: a silent NameError at module load is a P1 dispatch defect; this directive is enforced by §10 acceptance #29.
+Per `feedback_dispatch_verify_imports`: a silent NameError at module load (e.g. missing `ApprovalPendingResponseBody` on the `responses={202: {"model": ApprovalPendingResponseBody}}` decorator argument; missing `JSONResponse` on the return shape) is a P1 dispatch defect; this directive is enforced by §10 acceptance #29.
 
 **`unit_of_work` scope (binding for all three gate sites in §4.3):** the WHOLE handler body lives inside a single `unit_of_work(session, request=request)` block — both the 202 (approval-row creation) path AND the synchronous-mutation path. The §4.1 binding requires the row creation + `workflow_approval_requested` audit event to commit atomically on the route's request session; placing the `evaluate_and_maybe_create` call OUTSIDE `unit_of_work` would leave the row uncommitted under the existing session DI pattern (`backend/app/api/dependencies/session.py` provides a session with no auto-commit; the `unit_of_work` context is what triggers commit per `backend/app/api/dependencies/uow.py:19-29`). The same wrapping pattern repeats verbatim in §4.3.2 + §4.3.3.
 
@@ -543,7 +546,20 @@ def award_rfq(
 
 **Awarded-quote selection helper signature (binding):** `RFQService.resolve_awarded_quote(session: Session, rfq_id: UUID) -> tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]`. The first element is the RFQ intent (so the gate site can branch payload-shape on spread vs single without re-reading the RFQ row); the second is the ordered list of `(quote, quantity_mt)` pairs the awarded contracts will use. For spread, the order is `[(buy_quote, buy_trade_rfq.quantity_mt), (sell_quote, sell_trade_rfq.quantity_mt)]` mirroring the existing iteration order at `rfq_service.py:1441-1444`. For non-spread, the list contains exactly one element `[(top_quote, rfq.quantity_mt)]`. `RFQService.award` then calls `intent, legs = self.resolve_awarded_quote(...)` as its first executable line after the existing `get_live_for_update` + state assertions; every existing test that exercises `RFQService.award` continues to pass unchanged because the refactor is a pure extract-method (the ranking logic moves, the contract-creation loop reads from `legs` instead of re-computing).
 
-**Import directive (binding for `backend/app/api/routes/rfqs.py`):** the current HEAD imports cover `Depends, Request, status, get_current_actor_sub, require_role, audit_event, mark_audit_success, unit_of_work, RFQService, RFQAwardRequest, _build_rfq_read`. The gate addition introduces the same new identifiers as deals.py: `get_current_actor_roles`, `Header`, `Response`, `import uuid as _uuid`, `from app.models.workflow_approval import MutationType`, `from app.services import workflow_approval_service`, plus `approval_response_body` from the approval router module. The executor MUST extend the existing import lines accordingly. Per `feedback_dispatch_verify_imports`: enforced by §10 acceptance #29.
+**Import directive (binding for `backend/app/api/routes/rfqs.py`):** the current HEAD imports cover `Depends, Request, status, get_current_actor_sub, require_role, audit_event, mark_audit_success, unit_of_work, RFQService, RFQAwardRequest, _build_rfq_read`. The gate addition introduces the same new identifiers as `deals.py`:
+
+```python
+from fastapi import Header  # plus existing fastapi imports
+from fastapi.responses import JSONResponse  # used by the gate's 202 + sync paths
+from app.core.auth import get_current_actor_roles  # plus existing auth imports
+import uuid as _uuid  # for correlation_id=_uuid.uuid4() at the gate site
+from app.models.workflow_approval import MutationType
+from app.services import workflow_approval_service
+from app.api.routes.workflow_approvals import approval_response_body  # §4.4.7 helper
+from app.schemas.workflow_approval import ApprovalPendingResponseBody  # decorator responses= type
+```
+
+Per `feedback_dispatch_verify_imports`: a silent NameError at module load (e.g. missing `ApprovalPendingResponseBody` on the decorator argument; missing `JSONResponse` on the return shape) is a P1 dispatch defect; this directive is enforced by §10 acceptance #29.
 
 **Payload shape contract (binding for §4.3.1 / §4.3.2 / §4.3.3):** each gate site passes a `payload_obj` (dict) into `evaluate_and_maybe_create` that:
 - contains EVERY field the consume endpoint needs to reconstruct the mutation deterministically (NOT a denormalized snapshot of unrelated request state),
@@ -553,7 +569,7 @@ def award_rfq(
 The three resulting shapes — `body.model_dump(mode="json")` for deal_create, `{rfq_id, intent, awarded_quote_id}` (single-trade) or `{rfq_id, intent, buy_quote_id, sell_quote_id}` (spread) for deal_award, `{contract_id, ...payload.model_dump(mode="json")}` for hedge_contract_settle — share the property that `_compute_payload_hash` on the same logical mutation always produces the same hash (the canonical form is order-stable per `normalize_payload_raw`). The consume endpoint (§4.4 #6) submits the same shape, so hash recomputation matches by construction unless the caller actually changed a field.
 
 **Threshold-computation contract (binding — all server-side):** all three gate sites compute `threshold_value` server-side from persisted-entity primitives — NEVER from client-supplied scalars. The derivation path differs by route per the existing request schema, but the trust boundary is uniform: client cannot supply the threshold value. The three derivations:
-- **§4.3.1 deal_create**: the `DealCreate` body has only `name`, `commodity`, and polymorphic `links`. The gate computes `notional_usd` server-side by loading the `HedgeContract` rows referenced by `body.links` (filtering for `linked_type == DealLinkedType.contract`) and summing `fixed_price_value * quantity_t`. The threshold value is NEVER read from a client-supplied field per the Greptile iter 3 security catch — trusting a client scalar on a security-boundary gate would let any deal-create-authorized actor evade the gate by lying about notional.
+- **§4.3.1 deal_create**: the `DealCreate` body has only `name`, `commodity`, and polymorphic `links`. The gate computes `notional_usd` server-side by loading the `HedgeContract` rows referenced by `body.links` (filtering for `linked_type == DealLinkedType.contract`) and summing `fixed_price_value * quantity_mt` (the `HedgeContract` quantity column is `quantity_mt` per `backend/app/models/contracts.py:93`, NOT `quantity_t`). The threshold value is NEVER read from a client-supplied field per the Greptile iter 3 security catch — trusting a client scalar on a security-boundary gate would let any deal-create-authorized actor evade the gate by lying about notional.
 - **§4.3.2 deal_award**: the route loads the awarded `(intent, [(quote, quantity_mt), ...])` shape via the `resolve_awarded_quote` helper (now a binding refactor); each quote carries `fixed_price_value: Decimal` (verified at `models/quotes.py:41-45`) and each pair's quantity comes from the parent or child `RFQ.quantity_mt: Decimal` (`models/rfqs.py:46`). The gate computes `notional_usd = max(quote.fixed_price_value * quantity_mt for quote, quantity_mt in legs)` server-side from these primitives, never from a frontend-supplied value. The frontend never sees the per-leg notional until it polls the resulting 202 response.
 - **§4.3.3 hedge_contract_settle**: the `HedgeContractSettlementCreate` body has `legs: list[HedgeContractSettlementLeg]` with `leg.amount: Decimal`; `settlement_amount_usd = max(leg.amount)` is a direct server-side compute from the payload.
 
