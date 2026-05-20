@@ -842,18 +842,6 @@ class RFQService:
 
         rfq = RFQService.get_live(session, rfq_id)
         
-        # Constitutional Gate: RFQ quote ingestion
-        assert_kyc_approved(
-            session,
-            counterparty_id=payload.counterparty_id,
-            gate_point="rfq_quote",
-            requesting_actor_sub=actor_sub,
-            rfq_id=rfq_id,
-            extra_payload={
-                "inbound_message_id": str(inbound_message_id) if inbound_message_id else None,
-                "rejection_path": "rfq_quote_rejected_kyc_not_approved",
-            },
-        )
 
         if rfq.intent == RFQIntent.spread:
             raise HTTPException(
