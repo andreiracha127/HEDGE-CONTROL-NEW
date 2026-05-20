@@ -198,7 +198,7 @@ Add new schema `PipelineRiskFlagRead` (Pydantic v2) mirroring the model columns 
 
 ### §4.3 `backend/app/services/finance_pipeline_service.py` — holiday guard + audit emission + idempotency tightening
 
-**Domain signal (NOT an HTTP exception).** Per the canonical task pattern in `backend/app/tasks/westmetall_task.py` (which catches domain classes `WestmetallLayoutError` / `CircuitOpenError`, never HTTP framework types), the service layer MUST NOT raise `fastapi.HTTPException`. The HB-3 holiday-skip signal is a domain exception defined at module top of `finance_pipeline_service.py`, above the `FinancePipelineService` class:
+**Domain signals (NOT HTTP exceptions).** Per the canonical task pattern in `backend/app/tasks/westmetall_task.py` (which catches domain classes `WestmetallLayoutError` / `CircuitOpenError`, never HTTP framework types), the service layer MUST NOT raise `fastapi.HTTPException`. Two HB-3 domain exceptions are defined at module top of `finance_pipeline_service.py`, above the `FinancePipelineService` class:
 
 ```python
 class HolidaySkipSignal(Exception):
@@ -206,6 +206,18 @@ class HolidaySkipSignal(Exception):
     not an LME trading day. The route layer translates this to HTTP 409; the
     scheduler task catches the class directly and logs as a skipped run.
     No row, no event, no run — per HB-3 holiday-exempt invariant.
+    """
+
+
+class RunAlreadyInProgressSignal(Exception):
+    """Raised by FinancePipelineService.run_daily_pipeline when a row with
+    status='running' already exists for the same run_date AND was created
+    within the FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS window. The route layer
+    translates this to HTTP 409; the scheduler task catches the class
+    directly and logs at INFO level (NOT a failure — overlapping firings are
+    a normal operational case, not a stop-condition signal). Distinct class
+    from HolidaySkipSignal so the task can disambiguate skip-reasons in
+    structured logs.
     """
 ```
 
@@ -228,7 +240,7 @@ if not cal.is_business_day(run_date):
 After the existing existing-row check at lines 41–53, tighten the idempotency anchor against the new UNIQUE constraint (§5.2):
 
 - If a row exists with `status = completed`: return as today (line 49 unchanged).
-- If a row exists with `status = running` and was created within the last `FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS` (new env var; default 1800 = 30 min): raise HTTP 409 with detail `"finance pipeline run already in progress for {run_date}"`. This prevents two concurrent scheduler firings from overlapping execution against the new UNIQUE constraint (which would otherwise produce an `IntegrityError` mid-execution).
+- If a row exists with `status = running` and was created within the last `FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS` (new env var; default 1800 = 30 min): `raise RunAlreadyInProgressSignal(f"finance pipeline run already in progress for {run_date.isoformat()}")` — the route layer translates this to HTTP 409 (§4.11), the task layer catches it and logs at INFO without rolling back the scheduler (§4.9). This prevents two concurrent scheduler firings from overlapping execution against the new UNIQUE constraint (which would otherwise produce an `IntegrityError` mid-execution). The service layer MUST NOT `import fastapi`.
 - Otherwise (existing `running` row past the lock timeout, OR `partial`/`failed`): resume as today (lines 50–53 unchanged).
 
 ### §4.4 Silent-exception removal: `_step_mtm_computation` (lines 161–180)
@@ -264,36 +276,61 @@ If `compute_mtm_for_contract` does not currently expose a distinct exception cla
 
 ### §4.5 Silent-exception removal: `_step_pl_snapshot` (lines 183–206)
 
-Same pattern as §4.4, applied to the `try ... except Exception: pass` at lines 193–205:
+Replace the `try ... except Exception: pass` at lines 193–205. The semantics differ from §4.4 — `SnapshotPrerequisiteMissing` here is NOT semantically `missing_mtm_price` (a P&L prerequisite gap is a distinct failure mode from a missing price quote), and §4.6 already rejects the parallel pattern for cashflow_baseline with the same rationale. Beyond the semantic mismatch, the typical cause of `SnapshotPrerequisiteMissing` is the absence of the upstream MTM snapshot — which means §4.4 has ALREADY emitted a `missing_mtm_price` flag for the same contract earlier in this run. Emitting another flag here would corrupt the `(run_id, subject_entity_id, flag_type)` audit count for the run.
+
+The dispatch resolves this by (a) pre-querying the set of contracts §4.4 already flagged with `missing_mtm_price` for `run.id`, (b) explicitly skipping those contracts (the skip is auditable via the pre-existing flag row — NOT a silent fallback), and (c) letting `SnapshotPrerequisiteMissing` raised for any contract NOT in that set propagate as a structural step failure (matches the §4.6 cashflow pattern: "structural failures propagate to whole-step `failed`").
 
 ```python
+from sqlalchemy import select, and_
+
+# Pre-query contracts already flagged by §4.4 in this run.
+flagged_contract_ids: set[uuid.UUID] = {
+    row[0]
+    for row in db.execute(
+        select(FinancePipelineRiskFlag.subject_entity_id).where(
+            and_(
+                FinancePipelineRiskFlag.run_id == run.id,
+                FinancePipelineRiskFlag.flag_type
+                    == PipelineRiskFlagType.missing_mtm_price,
+                FinancePipelineRiskFlag.subject_entity_type == "hedge_contract",
+                FinancePipelineRiskFlag.subject_entity_id.is_not(None),
+            )
+        )
+    )
+}
+
 processed = 0
+skipped_due_to_upstream_flag = 0
 for contract in contracts:
-    try:
-        create_pl_snapshot(
-            db,
-            entity_type="hedge_contract",
-            entity_id=contract.id,
-            period_start=run_date,
-            period_end=run_date,
-            commit=False,
-        )
-        processed += 1
-    except SnapshotPrerequisiteMissing as exc:
-        # Recoverable: contract lacks a prerequisite (e.g. no prior MTM) on this date.
-        _emit_risk_flag(
-            db,
-            run_id=run.id,
-            flag_type=PipelineRiskFlagType.missing_mtm_price,
-            severity=PipelineRiskFlagSeverity.warning,
-            subject_entity_type="hedge_contract",
-            subject_entity_id=contract.id,
-            payload={"reason": str(exc)[:500], "step": "pl_snapshot"},
-        )
+    if contract.id in flagged_contract_ids:
+        # Upstream §4.4 already wrote a missing_mtm_price flag for this
+        # contract — P&L snapshot cannot proceed without an MTM and
+        # double-flagging would corrupt the audit count. Skip is correlated
+        # to the existing flag row (auditable, NOT a silent fallback).
+        skipped_due_to_upstream_flag += 1
+        continue
+    create_pl_snapshot(
+        db,
+        entity_type="hedge_contract",
+        entity_id=contract.id,
+        period_start=run_date,
+        period_end=run_date,
+        commit=False,
+    )
+    processed += 1
+# SnapshotPrerequisiteMissing raised for a contract NOT pre-flagged by
+# §4.4 indicates a structural prerequisite gap not caught upstream —
+# propagates to the service-level handler at lines 94–101, which marks
+# the step `failed` and halts the run. The dispatch deliberately does NOT
+# emit a `missing_mtm_price` flag here (semantic mismatch — see §4.6 for
+# the parallel rationale) and does NOT add a new enum value (Phase 2 per
+# the amendment's deferral list).
 return processed
 ```
 
-Same concrete-exception discipline as §4.4. `SnapshotPrerequisiteMissing` is the executor's preferred name for the P&L-side recoverable; if the existing P&L service exposes a different name, the executor uses that and notes it in the PR description.
+The concrete-exception discipline of §4.4 still applies: `except Exception` is FORBIDDEN. The only `SnapshotPrerequisiteMissing` paths through this step body are (a) silently filtered out via the upstream-flag pre-check (auditable), or (b) propagated as a step failure. The `skipped_due_to_upstream_flag` counter is for the step's audit metadata (the `records_processed` field carries `processed`; the `audit_metadata` payload extension carries `skipped_due_to_upstream_flag` so the audit row reconstructs the per-contract decision tree).
+
+If the existing P&L service exposes a different concrete-exception name for the prerequisite-missing failure mode, the executor uses that name and annotates it in the PR description — `SnapshotPrerequisiteMissing` is the binding contract name for this dispatch.
 
 ### §4.6 Silent-exception removal: `_step_cashflow_baseline` (lines 208–226)
 
@@ -738,6 +775,7 @@ from app.models.finance_pipeline import PipelineTriggerSource
 from app.services.finance_pipeline_service import (
     FinancePipelineService,
     HolidaySkipSignal,
+    RunAlreadyInProgressSignal,
 )
 
 logger = get_logger()
@@ -776,6 +814,15 @@ def run_finance_pipeline_daily() -> None:
         )
     except HolidaySkipSignal:
         logger.info("finance_pipeline_task_skipped_holiday", run_date=str(today))
+    except RunAlreadyInProgressSignal as exc:
+        # Overlapping firings are a normal operational case (e.g. APScheduler
+        # misfire grace + manual run racing) — INFO log, NOT a failure, so
+        # the absence-of-completion stop-condition signal isn't false-tripped.
+        logger.info(
+            "finance_pipeline_task_skipped_already_running",
+            run_date=str(today),
+            detail=str(exc)[:200],
+        )
     except Exception as exc:  # noqa: BLE001 — task boundary, NEVER crash the scheduler
         logger.exception(
             "finance_pipeline_task_failure",
@@ -837,6 +884,11 @@ except HolidaySkipSignal as exc:
         status_code=status.HTTP_409_CONFLICT,
         detail=f"{exc}; pipeline skipped per HB-3 holiday-exempt invariant.",
     ) from exc
+except RunAlreadyInProgressSignal as exc:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=str(exc),
+    ) from exc
 ```
 
 The existing `Depends(audit_event(...))` at lines 31–36 (the `manual_run_triggered` route-level event) is preserved unchanged — this dispatch does NOT remove the route-layer audit event. The HB-3 holiday-skip translation is the only behavioral change at this route; the existing 200/200-with-resumed-run response shape is untouched on business days.
@@ -844,7 +896,7 @@ The existing `Depends(audit_event(...))` at lines 31–36 (the `manual_run_trigg
 Verify imports at top of the route module — the new import directives are:
 
 - `from app.models.finance_pipeline import PipelineTriggerSource`
-- `from app.services.finance_pipeline_service import HolidaySkipSignal`
+- `from app.services.finance_pipeline_service import HolidaySkipSignal, RunAlreadyInProgressSignal`
 - `from fastapi import HTTPException, status` (already imported per current HEAD; confirm — if absent, add)
 
 ### §4.12 Service-identity binding documentation (NO matrix edit)
@@ -993,12 +1045,15 @@ Required cases (at least one test function per bullet):
 - `test_holiday_skip_route_returns_409` — POST `/finance/pipeline/run` with `risk_manager` JWT and a Saturday `run_date` body; assert HTTP 409 response with `detail` containing `"not an LME trading day"`. Confirms the route layer translates the domain signal correctly; the assertion lives in `backend/tests/test_finance_pipeline_routes.py` if the project's route-test convention puts it there — otherwise inline in the same HB-3 test file.
 - `test_holiday_skip_task_logs_skipped_no_exception` — see §7.3 (`test_task_holiday_logs_skipped_no_exception`). The task catches `HolidaySkipSignal` directly (no `HTTPException` / no string match).
 - `test_business_day_completes_all_six_steps` — happy path; assert `run.status == completed`, `run.steps_completed == 6`, six `finance_pipeline_step_completed` audit events + one `finance_pipeline_run_started` + one `finance_pipeline_run_completed`.
-- `test_unique_run_date_constraint` — two concurrent `SessionLocal()` instances both call `run_daily_pipeline` for the same `run_date`; assert the second raises an `IntegrityError` OR HTTP 409 (depending on the lock-timeout branch in §4.3); assert only ONE row in `finance_pipeline_runs` post-test.
+- `test_unique_run_date_constraint` — two concurrent `SessionLocal()` instances both call `run_daily_pipeline` for the same `run_date`; assert the second raises `RunAlreadyInProgressSignal` (lock-timeout branch in §4.3) OR `IntegrityError` (race past the lock check), NEVER `fastapi.HTTPException`; assert only ONE row in `finance_pipeline_runs` post-test.
+- `test_concurrent_run_lock_route_returns_409` — POST `/finance/pipeline/run` twice for the same `run_date` against a fixture that holds the first run open in `running` status; assert second POST returns HTTP 409. Confirms route layer translates the `RunAlreadyInProgressSignal` domain exception.
+- `test_concurrent_run_lock_task_logs_info_not_failure` — patch the service to raise `RunAlreadyInProgressSignal`; call `run_finance_pipeline_daily()`; assert log line `"finance_pipeline_task_skipped_already_running"` recorded at INFO level and `"finance_pipeline_task_failure"` is NOT recorded. Confirms the operational distinction between skip and failure (no false stop-condition signal).
 - `test_idempotency_completed_run_returns_existing` — call `run_daily_pipeline` twice for the same `run_date` sequentially; assert second call returns the same `run.id` as the first; assert ONE row in `finance_pipeline_runs`; assert exactly 6 step rows; assert no duplicate audit events.
 - `test_resume_from_partial` — simulate a `partial` run (set status manually + one step to `failed`); call `run_daily_pipeline` again; assert the failed step retried, run transitions to `completed`; assert `finance_pipeline_run_started` event with `previous_status="partial"` emitted.
 - `test_mtm_step_recoverable_emits_risk_flag` — patch `compute_mtm_for_contract` to raise the recoverable exception class for one contract out of three; assert two contracts processed, one `FinancePipelineRiskFlag` row with `flag_type=missing_mtm_price` + `subject_entity_id=<the failed contract>`; assert step status `completed`, not `failed`.
 - `test_cashflow_baseline_prerequisite_failure_halts_step` — patch `create_cashflow_baseline_snapshot` to raise `CashflowBaselinePrerequisiteMissing`; assert the `cashflow_baseline` step transitions to `failed`; assert the run transitions to `partial`; assert `finance_pipeline_step_failed` + `finance_pipeline_run_failed_partial` audit events emitted; assert NO `FinancePipelineRiskFlag` row written for this run (the prerequisite failure does NOT surface as a flag — see §4.6 rationale: the binding `flag_type` enum has no semantically correct member for this failure mode, and reusing `missing_mtm_price` would corrupt the audit trail). Subsequent steps (`risk_flags`, `summary`) MUST NOT execute.
-- `test_pl_snapshot_recoverable_emits_risk_flag` — same pattern, applied to `_step_pl_snapshot`.
+- `test_pl_step_skips_contracts_flagged_by_mtm_step_without_double_flagging` — fixture seeds three active contracts: one with no `PriceQuote` (so §4.4 emits one `missing_mtm_price` flag), two with prices. Run the pipeline. Assert §4.5 reads exactly ONE row in `finance_pipeline_risk_flags` for the contract (NOT two), and that `_step_pl_snapshot.processed == 2`. The skipped contract has NO additional flag row written; the existing §4.4 flag is the canonical record.
+- `test_pl_step_propagates_unexplained_prerequisite_missing_to_step_failed` — fixture seeds an active contract that has a `PriceQuote` but for which `create_pl_snapshot` is patched to raise `SnapshotPrerequisiteMissing` (simulating a prerequisite gap that §4.4 did NOT catch — i.e. NOT pre-flagged). Assert the `pl_snapshot` step transitions to `failed`; assert the run transitions to `partial`; assert `finance_pipeline_step_failed` + `finance_pipeline_run_failed_partial` audit events emitted; assert NO `FinancePipelineRiskFlag` row is written for this run (the structural failure surfaces only through step status + audit events, NOT through a misattributed flag).
 - `test_mtm_step_structural_failure_halts_run` — patch `compute_mtm_for_contract` to raise a non-recoverable exception (e.g. `sqlalchemy.exc.DatabaseError`); assert run transitions to `partial`, the failed step has status `failed`, `finance_pipeline_step_failed` audit event emitted, subsequent steps NOT executed.
 - `test_risk_flags_step_emits_all_four_flag_types` — fixture seeds (a) a contract without a PriceQuote for run_date → `missing_mtm_price`, (b) a counterparty with unhedged tonnes above guardrail → `unhedged_exposure_over_guardrail`, (c) a counterparty with `kyc_status != approved` + an active Deal → `kyc_regression_with_active_deals`, (d) a `pending` workflow_approval past `expires_at` → `workflow_approval_pending_past_expiry`. Assert four `FinancePipelineRiskFlag` rows with matching `flag_type` enum values.
 - `test_risk_flags_step_zero_flags_is_valid` — fixture seeds a clean state; assert step completes, returns 0, step status `completed`.
