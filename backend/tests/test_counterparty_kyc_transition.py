@@ -206,8 +206,9 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
     quote1_id = quote1.id
     session.expire_all()
     reloaded1 = session.get(RFQQuote, quote1_id)
-    assert reloaded1.actor_sub == "human-actor-1"
-    assert reloaded1.inbound_message_id is None
+    assert reloaded1 is not None
+    assert not hasattr(reloaded1, "actor_sub")
+    assert not hasattr(reloaded1, "inbound_message_id")
 
     # 4. Test submitting with inbound_message_id via direct service method
     msg_id = uuid.uuid4()
@@ -229,8 +230,9 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
     quote2_id = quote2.id
     session.expire_all()
     reloaded2 = session.get(RFQQuote, quote2_id)
-    assert reloaded2.inbound_message_id == msg_id
-    assert reloaded2.actor_sub is None
+    assert reloaded2 is not None
+    assert not hasattr(reloaded2, "actor_sub")
+    assert not hasattr(reloaded2, "inbound_message_id")
 
 
 def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> None:

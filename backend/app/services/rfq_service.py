@@ -870,8 +870,6 @@ class RFQService:
             fixed_price_unit=payload.fixed_price_unit,
             float_pricing_convention=payload.float_pricing_convention.value,
             received_at=payload.received_at,
-            actor_sub=actor_sub,
-            inbound_message_id=inbound_message_id,
         )
         session.add(quote)
         session.flush()

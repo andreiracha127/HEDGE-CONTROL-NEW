@@ -57,5 +57,3 @@ class RFQQuote(Base):
     rejected_at: Mapped[DateTime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     rejected_reason: Mapped[str | None] = mapped_column(String(length=128), nullable=True)
     rejected_by: Mapped[str | None] = mapped_column(String(length=64), nullable=True)
-    actor_sub: Mapped[str | None] = mapped_column(String(length=128), nullable=True)
-    inbound_message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)

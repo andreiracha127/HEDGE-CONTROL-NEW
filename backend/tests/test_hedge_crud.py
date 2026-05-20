@@ -28,6 +28,7 @@ def _create_counterparty(session: Session) -> uuid.UUID:
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
+    # test fixture only — sets kyc_status to APPROVED so the gate does not block this test.
     CounterpartyService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
     session.commit()
     session.refresh(cp)
