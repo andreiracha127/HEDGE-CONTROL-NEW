@@ -551,6 +551,396 @@ violation that the HB-1 implementation PR closes; once that PR is
 merged, removal or weakening of any of the rules above requires a
 new amendment to this section, not a code change.
 
+Workflow Approval gate (binding, Pilot Hard Blocker 2):
+
+The platform admits three institutionally consequential mutations
+that can cross thresholds where single-role authorization is
+constitutionally insufficient: Deal creation, Deal award, and
+HedgeContract settlement. Above the per-mutation USD threshold
+defined below, every such mutation requires a two-signatory
+approval cycle (requester + co-signer) before the mutation commits.
+Below threshold, mutations proceed through the existing RBAC matrix
+unchanged. This subsection binds the gate constitutionally.
+
+Gate scope (binding):
+
+- Deal create: `POST /deals` (the institutional Deal creation route
+  after RFQ award materializes into a Deal — see PR #75 / Cluster 1
+  for the Deal lifecycle binding). If the Deal's `notional_usd`
+  (computed at create-time from `fixed_price_value * quantity_t`,
+  Decimal-precision, in the canonical USD/MT unit per the
+  MARKET-DATA GOVERNANCE appendix) exceeds the configured threshold,
+  the route MUST refuse the synchronous mutation and instead return
+  HTTP 202 Accepted with a `WorkflowApprovalRequest` row (pending
+  state) — see Pending-mutation behavior below.
+
+- Deal award: `POST /rfqs/{rfq_id}/actions/award` (the existing
+  award route which also creates the Deal in the same transaction).
+  Same threshold dimension and same notional_usd evaluation as Deal
+  create. If above threshold, the award path defers — the Deal is
+  NOT created on this request; instead the `WorkflowApprovalRequest`
+  references the awarded `RFQQuote.id` so the eventual
+  consume-on-approval can reconstruct the Deal-create payload
+  deterministically.
+
+- HedgeContract settle: the canonical settlement path defined by
+  PR #76 (Cluster 1) at `POST /cashflow/contracts/{contract_id}/
+  settle`. If the settlement amount (the cash-leg
+  `settlement_amount_usd`, Decimal) exceeds the settlement
+  threshold, the route returns 202 with the
+  `WorkflowApprovalRequest`. Generic status-patch settlement remains
+  forbidden per PR #76 §4 acceptance criteria — that closure
+  persists through this amendment.
+
+The gate dimension is USD per-trade for all three mutations. The
+140,000 t/year aggregate volume cap (pilot brief §4) is a SEPARATE
+aggregate circuit breaker monitored at the analytics layer; it is
+NOT in this gate's scope and remains a future amendment if it needs
+to be constitutionally bound (currently an operational guardrail
+per brief §5 stop-conditions).
+
+Threshold values (binding for pilot, pending risk_committee
+ratification):
+
+- Deal create / Deal award: `WORKFLOW_APPROVAL_DEAL_THRESHOLD_USD`,
+  default **USD 500,000** notional.
+- HedgeContract settle: `WORKFLOW_APPROVAL_SETTLE_THRESHOLD_USD`,
+  default **USD 250,000** settlement amount.
+
+Both thresholds are environment-variable-configurable (Settings
+binding via `app/core/config.py`). The pilot defaults above are
+technical placeholders pending risk_committee ratification
+pre-production; the implementation MUST surface them in a clearly
+flagged operational note (e.g. a banner in the approval-pending
+panel or a startup log line on the backend) until the ratification
+authority confirms or revises them. Ratification authority and
+revised values become part of the brief §7 sign-off record at pilot
+launch.
+
+Approval policy table (binding):
+
+- A new persistent table `approval_policy` maps each gated
+  mutation_type to its required-approver roles and fallback role
+  for the requester-is-co-signer-role edge case. Schema (logical):
+
+  ```
+  mutation_type (PK)         : enum {deal_create, deal_award,
+                                     hedge_contract_settle}
+  required_approver_roles    : list[role]
+  fallback_when_requester_is : map[role → fallback_role]
+  threshold_dimension        : enum {notional_usd,
+                                     settlement_amount_usd}
+  ```
+
+- Pilot seed defaults (committed via the HB-2 implementation
+  alembic 046 data migration):
+  - `deal_create` → required_approver_roles=`["risk_manager"]`,
+    fallback_when_requester_is=`{}`. Trader cannot create deals;
+    risk_manager requesters need a second risk_manager co-signer
+    enforced by the global `requested_by != approved_by` DB
+    constraint.
+  - `deal_award` → required_approver_roles=`["risk_manager"]`,
+    fallback=`{}` (same logic — risk_manager co-signs).
+  - `hedge_contract_settle` → required_approver_roles=`["auditor"]`,
+    fallback_when_requester_is=`{"auditor": "compliance_officer"}`.
+    The `compliance_officer` role is a NEW role introduced by this
+    amendment; see Role additions below.
+
+- The `approval_policy` table is configurable post-pilot through a
+  governance amendment (NOT a silent UPDATE). Pilot-window changes
+  to required_approver_roles require risk_committee sign-off + this
+  amendment update + alembic data migration. There is NO admin
+  route to mutate `approval_policy` at runtime — this is
+  intentional.
+
+- A global non-configurable DB constraint enforces
+  `requested_by != approved_by` across the lifecycle. Even if the
+  policy table is misconfigured to allow it, the DB will reject the
+  approval write.
+
+Role additions (binding):
+
+- `compliance_officer` — a new institutional role added by this
+  amendment to handle the auditor-self-approval edge case on
+  settlement (when an auditor requests a settlement above
+  threshold, another auditor is structurally rare, so
+  `compliance_officer` co-signs instead). Initial seeded membership
+  during pilot is empty (operational pre-condition: at least one
+  compliance_officer identity provisioned in Clerk before any
+  auditor-requested settlement above threshold can be approved); if
+  no compliance_officer is provisioned and an auditor requests a
+  threshold-crossing settle, the approval cannot complete and the
+  mutation cannot proceed — fail-closed by design.
+
+- `compliance_officer` has NO write scope on Deals, HedgeContracts,
+  Counterparties, Orders, MTM, P&L, Audit log, or any other
+  institutional surface. The role exists SOLELY for the
+  HedgeContract-settle auditor-fallback co-sign function above.
+  Authorization matrix extension: read access to
+  `WorkflowApprovalRequest` (to inspect pending approvals) + write
+  access to approve/reject `WorkflowApprovalRequest` rows where
+  they are the configured fallback. No other route accepts a
+  `compliance_officer` JWT for any mutation.
+
+Approval lifecycle states (binding):
+
+A `WorkflowApprovalRequest` row transitions through the following
+state machine. Each transition emits an HMAC-signed audit event
+(see Audit events below).
+
+```
+                ┌───────────┐
+                │  pending  │  <─── created on threshold-crossing
+                └─────┬─────┘       mutation request (HTTP 202)
+                      │
+      ┌───────────────┼────────────────┐
+      │               │                │
+      v               v                v
+ ┌──────────┐  ┌─────────────┐  ┌────────────┐
+ │ approved │  │  rejected   │  │  expired   │
+ └────┬─────┘  └─────────────┘  └────────────┘
+      │              terminal         terminal
+      │
+      v
+ ┌────────────┐
+ │ consumed   │  <─── mutation actually applied via
+ └────────────┘       /approval/{id}/consume on success
+                      (terminal)
+
+ ┌─────────────┐
+ │ superseded  │  <─── requester-initiated cancel (e.g. to
+ └─────────────┘       reissue with adjusted payload); only
+                       valid from `pending`. Terminal.
+```
+
+- `pending`: initial state on creation. Co-signer can `approve` or
+  `reject`. Requester (or anyone with requester's role) can mark
+  `superseded` to cancel and reissue. Expires automatically per
+  per-mutation-type expiry config (see below).
+- `approved`: co-signer signed off; the request is ratified but the
+  mutation has NOT yet committed. Caller (frontend or background)
+  must POST `/workflow-approvals/{id}/consume` with the same
+  idempotency key as the original 202 response to actually apply
+  the mutation. This separation is intentional — it allows the
+  approval to be granted asynchronously and consumed only when the
+  caller is ready, while preserving the payload-hash invariant
+  (see below).
+- `consumed`: mutation applied. Terminal.
+- `rejected`: co-signer refused. Terminal. Rejection requires a
+  reason (enum + optional free text — see Audit events below).
+- `expired`: time-based terminal state. Per-mutation-type defaults
+  (configurable via env vars at startup):
+  - `deal_create`: **48h**
+  - `deal_award`: **24h**
+  - `hedge_contract_settle`: **2h** (settlement amounts are
+    time-sensitive; stale approvals risk price drift).
+- `superseded`: requester explicitly cancelled the pending approval
+  (e.g. to reissue with adjusted payload). Terminal. The reissue
+  is a NEW `WorkflowApprovalRequest`, not a state transition on
+  the superseded one.
+
+`mutation_payload_hash` invariant (binding):
+
+When a `WorkflowApprovalRequest` is created, the original mutation
+payload (the exact request body that would have been the
+synchronous mutation) is canonicalized and SHA-256-hashed. The hash
+is stored on the request row. When the caller invokes
+`/workflow-approvals/{id}/consume` to apply the now-approved
+mutation, the caller MUST resubmit the SAME canonical payload; the
+consume endpoint recomputes the hash and rejects with HTTP 422 if
+the hashes do not match (payload drift between request-time and
+consume-time invalidates the approval — this prevents a malicious
+or careless caller from approving a small deal and then consuming
+a large one). The rejection reason is `payload_drift_detected`;
+the request stays in `approved` state (NOT consumed; NOT
+superseded) so the caller can either resubmit with the correct
+payload or supersede and reissue. Canonicalization MUST reuse the
+existing canonical-form helper that drives audit-trail signing
+(`normalize_payload_raw` per `audit_trail_service`) — no new
+canonicalization is introduced by this amendment.
+
+Pending-mutation behavior (binding):
+
+When a threshold-crossing mutation request is received:
+
+1. The route returns HTTP 202 Accepted (NOT 422 — this is "needs
+   ratification", not "refused").
+2. A `WorkflowApprovalRequest` row is created with status
+   `pending`, `mutation_payload_hash` populated, `requested_by`
+   populated with the JWT actor_sub, `threshold_at_request`
+   populated with the numeric value that triggered the gate
+   (notional_usd or settlement_amount_usd), and `expires_at`
+   populated per the per-mutation-type expiry config.
+3. The 202 response body MUST include:
+
+   ```json
+   {
+     "approval_id": "<uuid>",
+     "status": "pending",
+     "expires_at": "<iso8601>",
+     "required_approvers": ["<role1>", "<role2>", ...],
+     "polling_url": "/workflow-approvals/{approval_id}",
+     "consume_url": "/workflow-approvals/{approval_id}/consume"
+   }
+   ```
+
+4. The idempotency key the original request carried (if any — RFQ
+   actions already use idempotency-key headers per existing
+   conventions) persists on the `WorkflowApprovalRequest` row and
+   is honored across the entire approval lifecycle —
+   re-submitting the same mutation request with the same
+   idempotency key returns the existing `WorkflowApprovalRequest`
+   (whatever its current state) rather than creating a new one.
+   This prevents double-spend of approvals.
+5. State changes (granted, rejected, expired, consumed,
+   superseded) MUST be broadcast via the existing SSE channel
+   (`/events` or equivalent backend-events stream) so the frontend
+   approval panel updates without polling. The SSE event_type for
+   these state changes is `workflow_approval_state_changed` with
+   payload `{approval_id, old_status, new_status,
+   transitioned_at}`. Polling the
+   `GET /workflow-approvals/{approval_id}` endpoint remains a
+   valid fallback for non-frontend clients.
+
+Audit events (binding):
+
+Every state transition emits an HMAC-signed audit event via
+`AuditTrailService.record(...)`. Five event types:
+
+1. `workflow_approval_requested` — on `pending` creation.
+2. `workflow_approval_granted` — on `pending → approved`
+   transition.
+3. `workflow_approval_rejected` — on `pending → rejected`
+   transition.
+4. `workflow_approval_expired` — on automated expiry by background
+   task (the task scans for `pending` rows past `expires_at` and
+   transitions them; see Phase 2 deferral note for the scheduling
+   model).
+5. `workflow_approval_consumed` — on `approved → consumed`
+   transition (the mutation actually applied).
+
+Common payload fields (binding for ALL five events):
+
+```
+{
+  approval_id: <uuid>,
+  mutation_type: <enum>,
+  correlation_id: <uuid>,            # request correlation across
+                                     # the request → approval →
+                                     # consume chain
+  threshold_dimension_used: <enum>,  # notional_usd |
+                                     # settlement_amount_usd
+  threshold_value_at_request: <Decimal>,
+  threshold_config_value: <Decimal>, # the configured threshold the
+                                     # value crossed
+  requested_by: <actor_sub>,
+  approver_sub: <actor_sub> | null,  # populated on granted /
+                                     # rejected / consumed; null on
+                                     # requested / expired
+  approver_ip: <string> | null,      # populated on granted /
+                                     # rejected / consumed
+  approver_session_id: <string> | null,
+  rejection_reason: {                # populated on rejected only
+    code: <enum>,                    # e.g. policy_violation,
+                                     # counterparty_risk,
+                                     # payload_concern, other
+    free_text: <string>              # mandatory; min 8 chars
+  } | null,
+  time_to_approval_ms: <int> | null, # populated on granted /
+                                     # rejected / expired /
+                                     # consumed (delta from
+                                     # requested_at to
+                                     # transition_at)
+  mutation_payload_hash: <sha256>    # always populated, ties the
+                                     # audit event back to the
+                                     # canonical payload
+}
+```
+
+Sink invariant: the audit-trail sink MUST be append-only / WORM
+(write-once-read-many). The existing `AuditEvent` table satisfies
+this by construction (no UPDATE or DELETE routes; soft-delete is
+not applicable to audit rows). The HB-2 implementation MUST verify
+this invariant is preserved (no new admin route that mutates
+AuditEvent rows) as part of the dispatch's acceptance criteria.
+
+Bypass risk for trader (defense-in-depth, binding):
+
+The RBAC matrix already denies trader any write scope on Deals,
+HedgeContracts, or any of the three gated mutations. The HB-2
+implementation MUST add a REDUNDANT assertion at the approval
+gate: when a `WorkflowApprovalRequest` is created, if the
+requesting JWT's role is `trader`, raise HTTP 403 explicitly with
+detail="trader role cannot trigger institutional-threshold
+mutations", independent of the upstream RBAC layer. This is
+institutional defense-in-depth — a regression in route-decorator
+wiring that admitted trader to a gated route would otherwise
+propagate silently to an approval row that should never have
+existed.
+
+Schema (binding):
+
+- New alembic revision `046` (continues from
+  `045_market_data_governance_columns`). The revision creates:
+  - `workflow_approval_requests` table (the main lifecycle row):
+    columns `id` (uuid PK), `mutation_type` (enum), `status`
+    (enum, default `pending`), `requested_by` (string, JWT
+    actor_sub), `approved_by` (string, nullable),
+    `threshold_at_request` (Decimal), `threshold_config_value`
+    (Decimal), `threshold_dimension` (enum),
+    `mutation_payload_canonical` (jsonb in postgres / TEXT in
+    sqlite), `mutation_payload_hash` (string, SHA-256),
+    `correlation_id` (uuid, indexed), `idempotency_key` (string,
+    nullable, indexed), `created_at`/`updated_at` (timestamps),
+    `expires_at` (timestamp), `consumed_at` (timestamp,
+    nullable). Composite index on `(status, expires_at)` for the
+    expiry sweeper.
+  - `approval_policy` table (the policy map): columns
+    `mutation_type` (enum PK), `required_approver_roles` (jsonb /
+    TEXT), `fallback_when_requester_is` (jsonb / TEXT),
+    `threshold_dimension` (enum). Seeded by the migration with
+    the pilot defaults above.
+  - DB constraint on `workflow_approval_requests`:
+    `requested_by != approved_by` enforced via CHECK (postgres) /
+    trigger (sqlite test variant).
+  - `compliance_officer` role addition: this is a string-value
+    addition to the role membership set; no schema change needed
+    at the DB layer (roles are JWT claims), but the matrix must
+    list `compliance_officer` in the AUTHORIZATION MATRIX section
+    above when this amendment lands.
+
+- Variant constraints (postgres + sqlite parity): every column
+  above uses the `with_variant` pattern established by Cluster 4 —
+  UUID columns via `UUID(as_uuid=True).with_variant(sa.String
+  (length=36), "sqlite")`; jsonb columns via
+  `JSONB.with_variant(sa.JSON(), "sqlite")`. Chain hygiene: never
+  rewrite an applied migration's `down_revision`.
+
+Phase 2 deferral (binding, NOT in HB-2 scope):
+
+- Daily cumulative per-counterparty exposure gate (cumulative
+  notional across all open Deals for a single counterparty crossing
+  a configurable USD threshold) is REGISTERED here as a known
+  institutional gap to be addressed in a future amendment. It is
+  NOT blocking for HB-2 pilot launch. The HB-2 implementation does
+  NOT prescribe this gate; the cumulative exposure data is already
+  observable via the existing exposure engine and analytics
+  surfaces, so the operational compensating control during pilot
+  is risk_manager's daily review per brief §5.
+
+- The expired-approvals sweeper background task is REQUIRED for
+  HB-2 closure (the `expired` state cannot remain hypothetical)
+  and runs on the existing Railway `scheduler` service. Specific
+  scheduling cadence (recommended: every 15 minutes) is an
+  implementation decision for the HB-2 dispatch, not a
+  constitutional binding.
+
+This invariant takes precedence over any silent-default behavior.
+The current absence of the gate in code is a known constitutional
+violation that the HB-2 implementation PR closes; once that PR is
+merged, removal or weakening of any of the rules above requires a
+new amendment to this section, not a code change.
+
 Anomalies to be retired upon Cluster 3 implementation closure
 (current pre-CL3 route gates that violate the target matrix above;
 PR-CL3-1 dispatch §3 MUST sweep every backend route against this
