@@ -406,7 +406,11 @@ Current handler (verified): `award_rfq(rfq_id: UUID, payload: RFQAwardRequest, .
 
 **Awarded-quote reference (binding for the 202 path):** when above threshold, the `WorkflowApprovalRequest` row's `mutation_payload_canonical` MUST include the awarded `RFQQuote.id` so the consume path (§4.4.5) can reconstruct the award call deterministically. The payload obj is `{"rfq_id": str(rfq_id), "awarded_quote_id": str(quote.id)}` — a small, deterministic shape that the consume endpoint can verify the hash of and then thread through `RFQService.award`. The Deal is NOT created on the 202 path; it materializes only when the consume endpoint fires `RFQService.award`.
 
-**Awarded-quote selection (binding, no new helper required):** the existing `RFQService.award` method at branch HEAD already contains the awarded-quote selection logic in its first stanza (typically a sort by ranking score + tie-break by submission time). The dispatch does NOT prescribe a new `resolve_awarded_quote` helper; instead, the executor REFACTORS the existing selection logic from `RFQService.award` into a pure read-only helper named `RFQService.resolve_awarded_quote(session, rfq_id) -> RFQQuote`. The refactor is purely mechanical (extract method) — the helper does not mutate state, it only reads the ranked quotes and returns the winner. `RFQService.award` then calls `quote = self.resolve_awarded_quote(...)` as its first line. The executor MUST verify by `grep -n "def award" backend/app/services/rfq_service.py` that the current method contains a selection block; if it does not (e.g. the award path receives an explicit `quote_id` payload), the gate site instead reads `quote_id` from the payload directly with no refactor needed.
+**Awarded-quote selection (binding, REFACTOR path):** dispatch author verified at HEAD `7c0588a8d`: `RFQService.award` at `backend/app/services/rfq_service.py:1393` takes `(session, rfq_id, actor_sub)` and computes the awarded quotes internally via an inline ranking step that produces `top.buy_quote` + `top.sell_quote` (verified at lines 1426-1443: `top.buy_quote.id`, `top.sell_quote.id`). `RFQAwardRequest` (`backend/app/schemas/rfq.py:233`) is an empty marker class — it does NOT carry a `quote_id` payload. The selection is purely inline.
+
+The dispatch binds the REFACTOR path: extract the existing ranking + top-quote selection block from `RFQService.award` into a new read-only helper named `RFQService.resolve_awarded_quote(session: Session, rfq_id: UUID) -> tuple[RFQQuote, RFQQuote]` returning the `(buy_quote, sell_quote)` pair. The helper does NOT mutate state, does NOT change RFQ.state, does NOT create contracts — it only reads the ranking and returns the winners. `RFQService.award` then calls `buy_quote, sell_quote = self.resolve_awarded_quote(session, rfq_id)` as its first executable line after the existing `get_live_for_update` + state assertions. The refactor is purely mechanical (extract method) — every test that exercises `RFQService.award` continues to pass unchanged.
+
+**Notional computation for two-quote awards (binding):** the threshold dimension `notional_usd` is `max(buy_quote.fixed_price * buy_quote.quantity, sell_quote.fixed_price * sell_quote.quantity)` — the larger of the two legs. This is the conservative measure (above threshold for the worst case) and matches the §4.3.3 settle convention of `max(leg.amount)`. The gate fires if either leg's notional crosses the threshold. The `mutation_payload_canonical` for the 202 path stores both `buy_quote_id` and `sell_quote_id` so the consume endpoint reconstructs both legs.
 
 **Gate insertion shape:**
 
@@ -426,14 +430,18 @@ def award_rfq(
     session: Session = Depends(get_session),
 ) -> RFQRead | dict:
     with unit_of_work(session, request=request):
-        quote = RFQService.resolve_awarded_quote(session, rfq_id)
-        notional_usd = quote.fixed_price * quote.quantity  # Decimal × Decimal
+        buy_quote, sell_quote = RFQService.resolve_awarded_quote(session, rfq_id)
+        notional_usd = max(
+            buy_quote.fixed_price * buy_quote.quantity,
+            sell_quote.fixed_price * sell_quote.quantity,
+        )
         approval = workflow_approval_service.evaluate_and_maybe_create(
             session,
             mutation_type=MutationType.deal_award,
             payload_obj={
                 "rfq_id": str(rfq_id),
-                "awarded_quote_id": str(quote.id),
+                "buy_quote_id": str(buy_quote.id),
+                "sell_quote_id": str(sell_quote.id),
             },
             threshold_value=notional_usd,
             requesting_actor_sub=actor_sub,
