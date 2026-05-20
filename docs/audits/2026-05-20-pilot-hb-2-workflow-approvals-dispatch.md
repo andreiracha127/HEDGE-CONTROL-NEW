@@ -6,7 +6,7 @@ Constitutional anchor: `docs/governance.md` "Workflow Approval gate (binding, Pi
 Pilot brief anchor: `docs/2026-05-tech-lead-executive-analysis.md` §2 HB-2 (landed via PR #89, scope-bound via PR #92)
 Prior precedent: HB-1 implementation dispatch (`docs/audits/2026-05-18-pilot-hb-1-kyc-gate-dispatch.md`, PR #94 → executor PR #95)
 Findings closed by this wave: HB-2 (sole)
-Status: DRAFT
+Status: READY
 
 ---
 
@@ -114,7 +114,7 @@ _THRESHOLD_DIMENSION_BY_MUTATION_TYPE = {
 | `grant_request(session, approval_id, approver_actor_sub, approver_role_set, approver_ip, approver_session_id)` | §4.4.2 POST /workflow-approvals/{id}/grant | Loads the row; asserts current status is `pending`; asserts `approver_actor_sub != requested_by` (DB constraint also enforces; this is the application-layer pre-check for a 422 with a useful detail); asserts the approver's role intersects `approval_policy.required_approver_roles`; transitions to `approved`, populates `approved_by`, `approver_ip`, `approver_session_id`; emits `workflow_approval_granted`; broadcasts SSE; returns the row. |
 | `reject_request(session, approval_id, approver_actor_sub, approver_role_set, approver_ip, approver_session_id, reason_code, reason_text)` | §4.4.3 POST /workflow-approvals/{id}/reject | Same shape as grant, but transitions to `rejected`, persists `rejection_reason_code` + `rejection_reason_text` (CHECK constraint enforces both NULL or both set with text length ≥ 8); emits `workflow_approval_rejected`. |
 | `supersede_request(session, approval_id, requesting_actor_sub)` | §4.4.4 POST /workflow-approvals/{id}/supersede | Loads the row; asserts current status is `pending` OR `approved`; asserts `requesting_actor_sub == row.requested_by` (the amendment binds actor-level scope at lines 742-750: "Only the original requester ... can mark `superseded`"); transitions to `superseded` with `previous_status` captured for the audit event; emits `workflow_approval_superseded`; broadcasts SSE. Returns the row. Reissue is a SEPARATE call (the caller submits the original mutation again, which goes through `evaluate_and_maybe_create` and creates a new row). |
-| `consume_request(session, approval_id, consume_payload_obj, executor)` | §4.4.5 POST /workflow-approvals/{id}/consume | Loads the row WITH `SELECT FOR UPDATE` (postgres) / equivalent row-locking semantics (sqlite tests rely on the transaction-level lock; postgres production relies on the explicit `with_for_update()` per the concurrency guard below); asserts current status is `approved`; recomputes `_compute_payload_hash(consume_payload_obj)` and compares against `row.mutation_payload_hash` — if mismatch, raises HTTP 422 with `detail={"code": "payload_drift_detected", ...}` and the row stays `approved` (per amendment lines 794-807); on match, calls `executor(consume_payload_obj)` which is a callable provided by the consume route that wires through to `DealEngine.create_deal` / `RFQService.award` / `HedgeContractSettlementService.settle`; on executor success, transitions the row to `consumed` (the row was loaded `FOR UPDATE` so this atomic transition is guarded against concurrent double-consume — a second consume attempt sees the row already in `consumed` and 409s), populates `consumed_at`, emits `workflow_approval_consumed`; broadcasts SSE; returns `(row, executor_result)`. On executor failure (uncaught exception during the wrapped mutation), the outer `unit_of_work` rolls back; the row stays `approved` and the failure is surfaced to the caller. |
+| `consume_request(session, approval_id, requesting_actor_sub, consume_payload_obj, executor)` | §4.4.5 POST /workflow-approvals/{id}/consume | Loads the row WITH `SELECT FOR UPDATE` (postgres) / equivalent row-locking semantics (sqlite tests rely on the transaction-level lock; postgres production relies on the explicit `with_for_update()` per the concurrency guard below); asserts `requesting_actor_sub == row.requested_by` (actor-level authorization; raises HTTPException(403) "consume restricted to the original requester" on mismatch — same actor-level scope as `supersede_request` per amendment lines 742-750, which the §4.4 #6 endpoint table extends to consume); asserts current status is `approved`; recomputes `_compute_payload_hash(consume_payload_obj)` and compares against `row.mutation_payload_hash` — if mismatch, raises HTTP 422 with `detail={"code": "payload_drift_detected", ...}` and the row stays `approved` (per amendment lines 794-807); on match, calls `executor(consume_payload_obj)` which is a callable provided by the consume route that wires through to the HEAD-verified write paths — `DealEngineService.create_deal(session, data)` for deal_create, `RFQService.award(session, rfq_id, actor_sub)` for deal_award, `ingest_hedge_contract_settlement(session, contract_id, payload, commit=False)` (module-level function in `app.services.cashflow_ledger_service`) for hedge_contract_settle; on executor success, transitions the row to `consumed` (the row was loaded `FOR UPDATE` so this atomic transition is guarded against concurrent double-consume — a second consume attempt sees the row already in `consumed` and 409s), populates `consumed_at`, emits `workflow_approval_consumed`; broadcasts SSE; returns `(row, executor_result)`. On executor failure (uncaught exception during the wrapped mutation), the outer `unit_of_work` rolls back; the row stays `approved` and the failure is surfaced to the caller. |
 | `sweep_expired(session)` | §4.5 scheduler task | Selects rows where `status IN (pending, approved) AND expires_at < now()` using the composite index `(status, expires_at)`; for each, captures `previous_status` and transitions to `expired`; emits one `workflow_approval_expired` audit event per row; broadcasts SSE for each. Returns the count. Pure background job — no HTTPException, just structured logging on errors per the existing `app/tasks/` patterns. |
 
 **Concurrency guard on `consume_request` (binding):** the row load inside `consume_request` MUST use `session.execute(select(WorkflowApprovalRequest).where(id == approval_id).with_for_update())` on postgres. Under SQLAlchemy 2.x, `with_for_update()` emits `SELECT ... FOR UPDATE` on postgres, locking the row for the duration of the transaction; concurrent consume attempts on the same row will block on the lock and, when they acquire it, will observe the status as `consumed` (after the first transaction commits) and raise HTTP 409 Conflict from the status check. On SQLite (test env), `with_for_update()` is a no-op — but the SQLite test driver serializes write transactions globally, so the same double-consume race is structurally impossible in tests. The §7.2 test `test_consume_concurrent_double_consume` verifies the postgres lock behavior by spawning two threads against a shared connection pool. The guard makes the `approved → consumed` transition atomic with respect to the status check, closing the consume-double-spend window the application-layer check alone would leave open.
@@ -326,7 +326,7 @@ class ApprovalPolicy(Base):
 
 #### §4.3.1 `POST /deals` (`backend/app/api/routes/deals.py:94`)
 
-Current handler at HEAD `7c0588a8d` (verified): `create_deal(body: DealCreate, request: Request, ...)`. The handler currently calls `DealEngine.create_deal(session, body.model_dump())` synchronously.
+Current handler at HEAD `7c0588a8d` (verified by dispatch author): `create_deal(body: DealCreate, request: Request, ...)` at lines 94-117. The handler currently calls `DealEngineService.create_deal(session, data)` synchronously (verified at `backend/app/api/routes/deals.py:115`; the service name is `DealEngineService`, NOT `DealEngine`).
 
 **Notional computation contract (binding):** the amendment binds `notional_usd` as the threshold dimension for deal_create, computed at gate-evaluation time from `fixed_price_value * quantity_t` (Decimal precision). The current `DealCreate` schema (`backend/app/schemas/deal.py:38-42`) carries ONLY `name`, `commodity`, and `links` — there is no direct `notional_usd`, `fixed_price_value`, or `quantity_t` field. The dispatch binds the following resolution: **extend `DealCreate` with an explicit `notional_usd: Decimal = Field(ge=0)` field; the gate reads it directly from `body.notional_usd`.** The frontend (§6) computes the notional from the user's selected links (HedgeContracts) and submits it explicitly so the request contract is self-describing.
 
@@ -388,21 +388,41 @@ def create_deal(
             })
             response.status_code = status.HTTP_202_ACCEPTED
             return _approval_response_body(approval)  # §4.4.7 helper
-        # Below threshold — synchronous path
-        deal = DealEngine.create_deal(session, body.model_dump())
+        # Below threshold — synchronous path. The current HEAD handler
+        # at backend/app/api/routes/deals.py:108-117 normalises link enum
+        # values BEFORE calling DealEngineService.create_deal. The gate's
+        # synchronous path MUST preserve that normalization (binding):
+        data = body.model_dump()
+        if data.get("links"):
+            for link in data["links"]:
+                if hasattr(link.get("linked_type"), "value"):
+                    link["linked_type"] = link["linked_type"].value
+        deal = DealEngineService.create_deal(session, data)
         mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
-    return DealRead.model_validate(deal)
+    return deal
 ```
 
 The handler's response model annotation widens to `DealRead | dict` to accommodate the 202 body. The OpenAPI schema regen (§6.1) MUST surface this dual return shape — `frontend-svelte/src/lib/api/schema.d.ts` will type the endpoint as a discriminated union; the typed client must branch on status code.
+
+**Import directive (binding for `backend/app/api/routes/deals.py`):** the current HEAD imports at lines 7-29 cover `APIRouter, Depends, HTTPException, Query, Request, Response, status` from `fastapi`, `get_current_actor_sub, require_any_role, require_role` from `app.core.auth`, plus `audit_event, mark_audit_success, unit_of_work` and the deal schemas. The gate addition introduces THREE new identifiers the file does not currently import: `get_current_actor_roles` (from `app.core.auth`), `Header` (from `fastapi`), and a uuid generator. The executor MUST extend the existing import lines (binding):
+
+```python
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from app.core.auth import get_current_actor_roles, get_current_actor_sub, require_any_role, require_role
+import uuid as _uuid  # for correlation_id=_uuid.uuid4() at the gate site
+from app.models.workflow_approval import MutationType
+from app.services import workflow_approval_service
+```
+
+Plus the `_approval_response_body` helper import from the new approval router module (§4.4.7). Per `feedback_dispatch_verify_imports`: a silent NameError at module load is a P1 dispatch defect; this directive is enforced by §10 acceptance #29.
 
 **`unit_of_work` scope (binding for all three gate sites in §4.3):** the WHOLE handler body lives inside a single `unit_of_work(session, request=request)` block — both the 202 (approval-row creation) path AND the synchronous-mutation path. The §4.1 binding requires the row creation + `workflow_approval_requested` audit event to commit atomically on the route's request session; placing the `evaluate_and_maybe_create` call OUTSIDE `unit_of_work` would leave the row uncommitted under the existing session DI pattern (`backend/app/api/dependencies/session.py` provides a session with no auto-commit; the `unit_of_work` context is what triggers commit per `backend/app/api/dependencies/uow.py:19-29`). The same wrapping pattern repeats verbatim in §4.3.2 + §4.3.3.
 
 #### §4.3.2 `POST /rfqs/{rfq_id}/actions/award` (`backend/app/api/routes/rfqs.py:474`)
 
-Current handler (verified): `award_rfq(rfq_id: UUID, payload: RFQAwardRequest, ...)`. The award path materializes the awarded `RFQQuote` into a Deal in the same transaction via `RFQService.award` (which calls `DealEngine.create_deal` internally).
+Current handler (verified at HEAD `7c0588a8d`): `award_rfq(rfq_id: UUID, payload: RFQAwardRequest, ...)` at lines 474-493. The award path materializes one or two `HedgeContract` rows (single-trade vs spread) in the same transaction via `RFQService.award`. There is NO synchronous Deal creation in the current `RFQService.award` flow — the route's existing `entity_type="rfq", event_type="awarded"` audit event represents the RFQ state transition, not a Deal mutation. The HB-2 gate frames `deal_award` because the awarded RFQ is the institutional point at which a deal becomes a binding obligation; the gate label is `MutationType.deal_award` per the amendment.
 
-**Notional computation (binding):** the awarded `RFQQuote.fixed_price * RFQQuote.quantity` (Decimal precision). The gate runs AFTER the awarded quote is loaded but BEFORE any state mutation on `RFQ` or `HedgeContract` or `Deal`. The executor MUST verify the exact Decimal-typed price/quantity fields on the current `RFQQuote` model at branch HEAD (`grep -nE "fixed_price|quantity|Numeric" backend/app/models/rfqs.py`); if the columns are named differently, the executor reads them by their HEAD names but the binding remains `price × quantity → notional_usd` in Decimal precision.
+**Notional computation (binding, verified field names):** the awarded `RFQQuote` exposes `fixed_price_value: Decimal` (column-mapped as `price_value`; verified at `backend/app/models/quotes.py:41-45`). The `RFQQuote` model does NOT carry a `quantity` field — quantity lives on the parent `RFQ` row as `quantity_mt: Decimal` (verified at `backend/app/models/rfqs.py:46-48`). For spread RFQs, each leg's quantity lives on the corresponding child `RFQ.quantity_mt`. The gate runs AFTER the awarded quotes are loaded but BEFORE any state mutation on `RFQ` or `HedgeContract`. The notional dimension is computed in Decimal precision per the platform contract.
 
 **Awarded-quote reference (binding for the 202 path):** when above threshold, the `WorkflowApprovalRequest` row's `mutation_payload_canonical` MUST include the awarded `RFQQuote.id` so the consume path (§4.4.5) can reconstruct the award call deterministically. The payload obj is `{"rfq_id": str(rfq_id), "awarded_quote_id": str(quote.id)}` — a small, deterministic shape that the consume endpoint can verify the hash of and then thread through `RFQService.award`. The Deal is NOT created on the 202 path; it materializes only when the consume endpoint fires `RFQService.award`.
 
@@ -410,7 +430,7 @@ Current handler (verified): `award_rfq(rfq_id: UUID, payload: RFQAwardRequest, .
 
 The dispatch binds the executor PR to take the REFACTOR path (consistent with the dispatch-vs-executor-PR scope convention from §1: this markdown is documentation-only; every §4 prescription is work the executor PR performs). Concretely the executor extracts the existing ranking + top-quote selection block from `RFQService.award` into a new read-only helper named `RFQService.resolve_awarded_quote(session: Session, rfq_id: UUID) -> tuple[RFQQuote, RFQQuote]` returning the `(buy_quote, sell_quote)` pair. The helper does NOT mutate state, does NOT change RFQ.state, does NOT create contracts — it only reads the ranking and returns the winners. `RFQService.award` then calls `buy_quote, sell_quote = self.resolve_awarded_quote(session, rfq_id)` as its first executable line after the existing `get_live_for_update` + state assertions. The refactor is purely mechanical (extract method) — every test that exercises `RFQService.award` continues to pass unchanged. The §10 acceptance criteria include a grep-based assertion that `resolve_awarded_quote` exists at the merged HEAD of the executor PR.
 
-**Notional computation for two-quote awards (binding):** the threshold dimension `notional_usd` is `max(buy_quote.fixed_price * buy_quote.quantity, sell_quote.fixed_price * sell_quote.quantity)` — the larger of the two legs. This is the conservative measure (above threshold for the worst case) and matches the §4.3.3 settle convention of `max(leg.amount)`. The gate fires if either leg's notional crosses the threshold. The `mutation_payload_canonical` for the 202 path stores both `buy_quote_id` and `sell_quote_id` so the consume endpoint reconstructs both legs.
+**Notional computation for two-quote awards (binding, spread case):** for `rfq.intent == RFQIntent.spread`, the awarded pair is `(top.buy_quote, top.sell_quote)` against the two child trade RFQs `(rfq.buy_trade_id, rfq.sell_trade_id)` (verified at `rfq_service.py:1441-1444`). Each child's quantity is read from `trade_rfq.quantity_mt` (verified at `rfq_service.py:1491`). The threshold dimension `notional_usd` is `max(buy_quote.fixed_price_value * buy_trade_rfq.quantity_mt, sell_quote.fixed_price_value * sell_trade_rfq.quantity_mt)` — the larger of the two legs. For non-spread (`RFQIntent.commercial_hedge` / `RFQIntent.standalone`), only one quote+RFQ pair exists, the notional is `top_quote.fixed_price_value * rfq.quantity_mt`, and the `sell_*` fields in the payload are absent. The gate fires if the resulting notional crosses the threshold. The `mutation_payload_canonical` for the 202 path stores `{"rfq_id", "intent", "buy_quote_id", "sell_quote_id"?}` (last key only present for spread) so the consume endpoint reconstructs the same selection deterministically.
 
 **Gate insertion shape:**
 
@@ -430,19 +450,23 @@ def award_rfq(
     session: Session = Depends(get_session),
 ) -> RFQRead | dict:
     with unit_of_work(session, request=request):
-        buy_quote, sell_quote = RFQService.resolve_awarded_quote(session, rfq_id)
+        # resolve_awarded_quote returns the institutional notional shape:
+        # (intent, [(quote, quantity_mt), ...]) — a list of (quote, qty)
+        # pairs covering single-trade (1-tuple) and spread (2-tuple).
+        intent, legs = RFQService.resolve_awarded_quote(session, rfq_id)
         notional_usd = max(
-            buy_quote.fixed_price * buy_quote.quantity,
-            sell_quote.fixed_price * sell_quote.quantity,
+            quote.fixed_price_value * quantity_mt for quote, quantity_mt in legs
         )
+        payload_obj: dict = {"rfq_id": str(rfq_id), "intent": intent.value}
+        if len(legs) == 2:
+            payload_obj["buy_quote_id"] = str(legs[0][0].id)
+            payload_obj["sell_quote_id"] = str(legs[1][0].id)
+        else:
+            payload_obj["awarded_quote_id"] = str(legs[0][0].id)
         approval = workflow_approval_service.evaluate_and_maybe_create(
             session,
             mutation_type=MutationType.deal_award,
-            payload_obj={
-                "rfq_id": str(rfq_id),
-                "buy_quote_id": str(buy_quote.id),
-                "sell_quote_id": str(sell_quote.id),
-            },
+            payload_obj=payload_obj,
             threshold_value=notional_usd,
             requesting_actor_sub=actor_sub,
             requesting_actor_ip=request.client.host if request.client else None,
@@ -458,31 +482,41 @@ def award_rfq(
             })
             response.status_code = status.HTTP_202_ACCEPTED
             return _approval_response_body(approval)
-        # Below threshold — synchronous award
-        rfq = RFQService.award(session, rfq_id, actor_sub=actor_sub)
-        mark_audit_success(request, rfq.id, metadata={"actor_sub": actor_sub})
-    return RFQRead.model_validate(rfq)
+        # Below threshold — synchronous award. Note: RFQService.award at
+        # rfq_service.py:1393 takes (session, rfq_id, actor_sub) and
+        # mutates rfq state internally. The current HEAD route returns
+        # _build_rfq_read(session, rfq_id) (rfqs.py:493), so the gate
+        # variant MUST preserve that response shape (binding):
+        RFQService.award(session, rfq_id, actor_sub)
+        mark_audit_success(request, rfq_id, metadata={"actor_sub": actor_sub})
+    return _build_rfq_read(session, rfq_id)
 ```
+
+**Awarded-quote selection helper signature (binding):** `RFQService.resolve_awarded_quote(session: Session, rfq_id: UUID) -> tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]`. The first element is the RFQ intent (so the gate site can branch payload-shape on spread vs single without re-reading the RFQ row); the second is the ordered list of `(quote, quantity_mt)` pairs the awarded contracts will use. For spread, the order is `[(buy_quote, buy_trade_rfq.quantity_mt), (sell_quote, sell_trade_rfq.quantity_mt)]` mirroring the existing iteration order at `rfq_service.py:1441-1444`. For non-spread, the list contains exactly one element `[(top_quote, rfq.quantity_mt)]`. `RFQService.award` then calls `intent, legs = self.resolve_awarded_quote(...)` as its first executable line after the existing `get_live_for_update` + state assertions; every existing test that exercises `RFQService.award` continues to pass unchanged because the refactor is a pure extract-method (the ranking logic moves, the contract-creation loop reads from `legs` instead of re-computing).
+
+**Import directive (binding for `backend/app/api/routes/rfqs.py`):** the current HEAD imports cover `Depends, Request, status, get_current_actor_sub, require_role, audit_event, mark_audit_success, unit_of_work, RFQService, RFQAwardRequest, _build_rfq_read`. The gate addition introduces the same new identifiers as deals.py: `get_current_actor_roles`, `Header`, `Response`, `import uuid as _uuid`, `from app.models.workflow_approval import MutationType`, `from app.services import workflow_approval_service`, plus `_approval_response_body` from the approval router module. The executor MUST extend the existing import lines accordingly. Per `feedback_dispatch_verify_imports`: enforced by §10 acceptance #29.
 
 **Payload shape contract (binding for §4.3.1 / §4.3.2 / §4.3.3):** each gate site passes a `payload_obj` (dict) into `evaluate_and_maybe_create` that:
 - contains EVERY field the consume endpoint needs to reconstruct the mutation deterministically (NOT a denormalized snapshot of unrelated request state),
 - is stable under JSON canonicalization (UUIDs serialized as `str`, Decimals serialized via Pydantic's `mode="json"`, no embedded Python objects),
 - excludes ephemeral fields that change between request and consume time (e.g. timestamps, idempotency keys — those live on the row's own columns, not in `mutation_payload_canonical`).
 
-The three resulting shapes — `body.model_dump(mode="json")` for deal_create, `{rfq_id, buy_quote_id, sell_quote_id}` for deal_award, `{contract_id, ...payload.model_dump(mode="json")}` for hedge_contract_settle — share the property that `_compute_payload_hash` on the same logical mutation always produces the same hash (the canonical form is order-stable per `normalize_payload_raw`). The consume endpoint (§4.4 #6) submits the same shape, so hash recomputation matches by construction unless the caller actually changed a field.
+The three resulting shapes — `body.model_dump(mode="json")` for deal_create, `{rfq_id, intent, awarded_quote_id}` (single-trade) or `{rfq_id, intent, buy_quote_id, sell_quote_id}` (spread) for deal_award, `{contract_id, ...payload.model_dump(mode="json")}` for hedge_contract_settle — share the property that `_compute_payload_hash` on the same logical mutation always produces the same hash (the canonical form is order-stable per `normalize_payload_raw`). The consume endpoint (§4.4 #6) submits the same shape, so hash recomputation matches by construction unless the caller actually changed a field.
 
 **Threshold-computation asymmetry (binding rationale):** the three gate sites read `threshold_value` differently — §4.3.1 reads `body.notional_usd` directly (frontend-supplied), §4.3.2 computes server-side from the resolved `(buy_quote, sell_quote)` pair, §4.3.3 computes server-side from `payload.legs`. The asymmetry is intentional and reflects what each route can derive deterministically at gate-eval time:
 - **§4.3.1 deal_create**: the `DealCreate` body has only `name`, `commodity`, and polymorphic `links` — the gate cannot derive notional from primitives in the request alone. The §4.3.1 binding extends `DealCreate` with an explicit `notional_usd: Decimal = Field(ge=0)` field so the frontend (which knows the user's selection) submits the computed value. Per the Path A / Path B decision earlier in §4.3.1, this is the chosen institutional path.
-- **§4.3.2 deal_award**: the route loads the `(buy_quote, sell_quote)` pair via the `resolve_awarded_quote` helper (now a binding refactor); each quote carries `fixed_price` + `quantity` (Decimal). The gate computes `notional_usd = max(buy.notional, sell.notional)` server-side from these primitives, never from a frontend-supplied value. The frontend never sees the per-leg notional until it polls the resulting 202 response.
+- **§4.3.2 deal_award**: the route loads the awarded `(intent, [(quote, quantity_mt), ...])` shape via the `resolve_awarded_quote` helper (now a binding refactor); each quote carries `fixed_price_value: Decimal` (verified at `models/quotes.py:41-45`) and each pair's quantity comes from the parent or child `RFQ.quantity_mt: Decimal` (`models/rfqs.py:46`). The gate computes `notional_usd = max(quote.fixed_price_value * quantity_mt for quote, quantity_mt in legs)` server-side from these primitives, never from a frontend-supplied value. The frontend never sees the per-leg notional until it polls the resulting 202 response.
 - **§4.3.3 hedge_contract_settle**: the `HedgeContractSettlementCreate` body has `legs: list[HedgeContractSettlementLeg]` with `leg.amount: Decimal`; `settlement_amount_usd = max(leg.amount)` is a direct server-side compute from the payload.
 
 The shared invariant across all three: `threshold_value` is a `Decimal` computed at the gate site BEFORE `evaluate_and_maybe_create` is called, and gets persisted onto `WorkflowApprovalRequest.threshold_at_request` exactly as observed. The asymmetry is in HOW each route computes its `threshold_value` — driven by what each route's existing request schema makes derivable — not in what the gate does with it.
 
 #### §4.3.3 `POST /cashflow/contracts/{contract_id}/settle` (`backend/app/api/routes/cashflow_ledger.py:28`)
 
-Current handler (verified): `settle_hedge_contract(contract_id: UUID, payload: HedgeContractSettlementCreate, ...)`. The settlement creates a 2-leg cashflow (FIXED + FLOAT, IN/OUT directions) per `backend/app/schemas/cashflow.py:91-106`.
+Current handler (verified at HEAD `7c0588a8d`): `settle_hedge_contract(contract_id: UUID, payload: HedgeContractSettlementCreate, ...)` at lines 28-58 of `cashflow_ledger.py`. The settlement creates a 2-leg cashflow (FIXED + FLOAT, IN/OUT directions) per `backend/app/schemas/cashflow.py:91-106` (which enforces `len(legs) == 2`, leg ids `{FIXED, FLOAT}`, and `currency == "USD"`). The write path calls `ingest_hedge_contract_settlement(session, contract_id, payload, commit=False)` (a module-level function imported from `app.services.cashflow_ledger_service` — verified at `cashflow_ledger.py:17-22, 49-51`). The function returns `(event, ledger_entries)`; the route then composes `HedgeContractSettlementResponse(event=event, ledger_entries=[CashFlowLedgerEntryRead.model_validate(e) for e in ledger_entries])`. There is NO `HedgeContractSettlementService` class.
 
-**Settlement-amount computation (binding):** the gate computes `settlement_amount_usd = max(leg.amount for leg in payload.legs)` — the larger of the FIXED and FLOAT leg amounts, representing the institutional notional exposure of the settlement. The validator at `cashflow.py:84-88` already enforces `leg.amount > 0` for each leg, so the max is well-defined. The executor MUST verify this is the institutional convention by reviewing the `HedgeContractSettlementService` (or equivalent) write path; if the codebase already exposes a `total_settlement_usd` computation, prefer that helper. If not, the `max(leg.amount)` binding is the conservative measure (above threshold for the worst case).
+**Settle route current audit decorator (verified at `cashflow_ledger.py:38-43`):** `audit_event(entity_type="hedge_contract_settlement", event_type="settled")`. The HB-2 gate MUST preserve this exact `entity_type` string — changing it would break audit-event correlation against historical rows already emitted under that name. Per `feedback_dispatch_verify_imports`: silently renaming entity_type is a P1 dispatch defect.
+
+**Settlement-amount computation (binding):** the gate computes `settlement_amount_usd = max(leg.amount for leg in payload.legs)` — the larger of the FIXED and FLOAT leg amounts, representing the institutional notional exposure of the settlement. The validator at `cashflow.py:84-88` already enforces `leg.amount > 0` for each leg, so the max is well-defined. The `max(leg.amount)` binding is the conservative measure (above threshold for the worst case). The dispatch deliberately does NOT introduce a new `total_settlement_usd` helper — the institutional convention `max(leg.amount)` is the binding here.
 
 **Gate insertion shape:**
 
@@ -501,7 +535,9 @@ def settle_hedge_contract(
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: set[str] = Depends(get_current_actor_roles),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
-    _: None = Depends(audit_event(entity_type="hedge_contract", event_type="settled")),
+    _: None = Depends(
+        audit_event(entity_type="hedge_contract_settlement", event_type="settled")
+    ),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> HedgeContractSettlementResponse | dict:
@@ -529,13 +565,22 @@ def settle_hedge_contract(
             })
             response.status_code = status.HTTP_202_ACCEPTED
             return _approval_response_body(approval)
-        # Below threshold — synchronous settlement
-        result = HedgeContractSettlementService.settle(session, contract_id, payload)
-        mark_audit_success(
-            request, contract_id, metadata={"actor_sub": actor_sub}
+        # Below threshold — synchronous settlement. Verified at
+        # cashflow_ledger.py:49-51: the write path returns
+        # (event, ledger_entries) and the route composes the response.
+        event, ledger_entries = ingest_hedge_contract_settlement(
+            session, contract_id, payload, commit=False
         )
-    return result
+        mark_audit_success(request, event.id, metadata={"actor_sub": actor_sub})
+    return HedgeContractSettlementResponse(
+        event=event,
+        ledger_entries=[
+            CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries
+        ],
+    )
 ```
+
+**Import directive (binding for `backend/app/api/routes/cashflow_ledger.py`):** the current HEAD already imports `ingest_hedge_contract_settlement`, `HedgeContractSettlementResponse`, `HedgeContractSettlementCreate`, `CashFlowLedgerEntryRead`, `get_current_actor_sub`, `require_role`, `audit_event`, `mark_audit_success`, `unit_of_work`. The gate adds: `get_current_actor_roles` (from `app.core.auth`), `Header, Response` (from `fastapi`; `Response` is NOT yet imported on the existing line 4), `import uuid as _uuid`, `from app.models.workflow_approval import MutationType`, `from app.services import workflow_approval_service`, plus `_approval_response_body`. Per `feedback_dispatch_verify_imports`: enforced by §10 acceptance #29.
 
 PR #76 / Cluster 1 settlement path is the institutional canonical route. Generic status-patch settlement remains forbidden per PR #76 §4 closure (the amendment's lines 590-593 reproduce this).
 
@@ -554,7 +599,7 @@ Create a new module `backend/app/api/routes/workflow_approvals.py` and register 
 | 3 | `POST /workflow-approvals/{approval_id}/grant` | role intersects `approval_policy.required_approver_roles` for the row's `mutation_type` | Calls `workflow_approval_service.grant_request`. Returns the transitioned row. | `WorkflowApprovalRequestRead` |
 | 4 | `POST /workflow-approvals/{approval_id}/reject` | same as grant | Calls `workflow_approval_service.reject_request`. Body: `RejectRequest` with `code: RejectionReasonCode` + `text: str = Field(min_length=8, max_length=2048)`. | `WorkflowApprovalRequestRead` |
 | 5 | `POST /workflow-approvals/{approval_id}/supersede` | original requester only (actor-level check inside the service per amendment lines 742-750) | Calls `workflow_approval_service.supersede_request`. Empty body. Route layer only verifies the JWT is valid; the actor-level check (`actor_sub == row.requested_by`) lives in the service to keep authorization centralized. | `WorkflowApprovalRequestRead` |
-| 6 | `POST /workflow-approvals/{approval_id}/consume` | original requester only (same actor-level scoping as supersede) | Calls `workflow_approval_service.consume_request` with an executor callback that dispatches per `row.mutation_type` to the underlying mutation service (Deal create / RFQ award / settle). Body: the canonical mutation payload that was originally submitted (the hash recheck validates parity). | `DealRead` / `RFQRead` / `HedgeContractSettlementResponse` — discriminated by `mutation_type` |
+| 6 | `POST /workflow-approvals/{approval_id}/consume` | original requester only (same actor-level scoping as supersede) | Calls `workflow_approval_service.consume_request(session, approval_id, requesting_actor_sub=actor_sub, consume_payload_obj=body, executor=...)` — the `actor_sub` Depends from `get_current_actor_sub` is threaded as `requesting_actor_sub` so the service can enforce the `actor_sub == row.requested_by` check centrally. The executor callback dispatches per `row.mutation_type` to the underlying mutation service (Deal create / RFQ award / settle). Body: the canonical mutation payload that was originally submitted (the hash recheck validates parity). | `DealRead` / `RFQRead` / `HedgeContractSettlementResponse` — discriminated by `mutation_type` |
 
 **Route-handler audit pattern (binding for ALL six routes):** every transitioning route (#3-6) wires through the institutional `audit_event` Depends + `mark_audit_success` pattern (per HB-1 §4.3.3 precedent and `backend/app/api/dependencies/audit.py:50-112`). The `audit_event` Depends's `entity_type` is `"workflow_approval_request"`; the `event_type` is the COMPOSED form (`"workflow_approval_granted"`, `"workflow_approval_rejected"`, `"workflow_approval_superseded"`, `"workflow_approval_consumed"`) per the amendment Audit events clause lines 862-891. The route handler calls the service method, then calls `mark_audit_success(request, row.id, metadata={...})` with the audit-payload fields (per §8 below).
 
@@ -631,6 +676,53 @@ class ApprovalPendingResponseBody(BaseModel):
 ```
 
 The `ApprovalPendingResponseBody` shape MUST match the amendment's Pending-mutation behavior clause line 833 verbatim. The `polling_url` and `consume_url` are absolute-path strings (e.g. `/workflow-approvals/{approval_id}`); the frontend prepends the API base URL.
+
+### §4.4.7 `_approval_response_body` helper
+
+The three gated routes (§4.3.1 / §4.3.2 / §4.3.3) reference a single shared helper that constructs the HTTP 202 response body from a `WorkflowApprovalRequest` row. The helper lives in the new approval router module (`backend/app/api/routes/workflow_approvals.py`) and is exported as a module-level function so the three gate handlers can import it. Binding shape:
+
+```python
+# backend/app/api/routes/workflow_approvals.py (module-level)
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.workflow_approval import (
+    ApprovalPolicy, WorkflowApprovalRequest,
+)
+
+
+def _approval_response_body(
+    session: Session, row: WorkflowApprovalRequest
+) -> dict:
+    """Construct the HTTP 202 body for a pending approval row.
+
+    `required_approvers` is loaded from the `approval_policy` table —
+    NOT hardcoded — so the body reflects the persisted policy seed.
+    Per amendment lines 660-665: post-pilot policy changes happen via
+    alembic data migration, and the body MUST reflect the current
+    persisted policy not a stale code constant.
+    """
+    policy = session.execute(
+        select(ApprovalPolicy).where(
+            ApprovalPolicy.mutation_type == row.mutation_type
+        )
+    ).scalar_one()
+    return {
+        "approval_id": str(row.id),
+        "status": row.status.value,
+        "expires_at": row.expires_at.isoformat(),
+        "required_approvers": policy.required_approver_roles,  # list[str]
+        "polling_url": f"/workflow-approvals/{row.id}",
+        "consume_url": f"/workflow-approvals/{row.id}/consume",
+    }
+```
+
+**Why a separate helper (binding rationale):** the three gate handlers in §4.3 each return the same shape; centralizing the construction prevents drift between routes. The helper is imported by each gate handler (per §4.3 import-directive note line 417); a silent NameError at module load if the import is missed is a P1 dispatch defect.
+
+**Why load `required_approvers` from `approval_policy` (binding):** the persisted seed is the source of truth (per amendment lines 660-665). Hardcoding `["risk_manager"]` / `["auditor"]` into the response body would diverge from the policy table if a future amendment ever ships a data migration revising the seed — the 202 body would advertise stale required approvers while the grant route rejects the wrong role. Reading the policy at every 202 keeps the body source-of-truth-consistent at the cost of one indexed PK lookup per 202.
+
+**Why the call happens inside `unit_of_work` (binding):** the route handlers in §4.3.1/4.3.2/4.3.3 invoke `_approval_response_body(session, approval)` inside the route's `unit_of_work(session, request=request)` block — the session is still alive at that point. Per the §4.3 unit_of_work scope binding, the WHOLE handler body lives inside one unit_of_work; the response-body construction is no exception.
 
 ### §4.5 Expiry sweeper background task
 
@@ -1023,6 +1115,8 @@ Per `feedback_dispatch_transport_partner_clause`: §4.3 + §4.4 ship new backend
 
 `cd frontend-svelte && npm run api:types` — picks up the new `/workflow-approvals/*` routes + the dual-return-shape on the three gated mutations (`DealRead | dict`, `RFQRead | dict`, `HedgeContractSettlementResponse | dict`). The executor MUST verify the regenerated `schema.d.ts` correctly discriminates the 202 path; if openapi-typescript produces an opaque union, the typed client wrapper in `src/lib/api/client.ts` MAY need a manual response-narrowing helper (the executor adds it inline with a `// @ts-expect-error` comment cleared by the next regen, OR submits a follow-up issue per `feedback_pydantic_field_constraints_drift`).
 
+**Field-constraint drift callout (binding per `feedback_pydantic_field_constraints_drift`):** `RejectRequest.text` ships with `Field(min_length=8, max_length=2048)`. Adding a constrained `Field()` surfaces a `title` in OpenAPI, which openapi-typescript renders as a `/** Title */` JSDoc on the generated TS type. The executor MUST regenerate `frontend-svelte/src/lib/api/schema.d.ts` in the SAME commit that introduces the schema field — calibrated on PR #95 E2E `Check schema drift` failure. Similarly: `DealCreate.notional_usd` (`Field(ge=0)`), `WorkflowApprovalRequestRead.mutation_payload_hash` (`String(length=64)` reflected as bounded string), and `ApprovalPendingResponseBody` all add new TS types that must land in the same commit. §10 #23 enforces this via `git diff --exit-code`.
+
 CI guard `npm run api:types:check` MUST pass on push.
 
 ### §6.2 Pending-approvals panel (minimum viable)
@@ -1087,6 +1181,7 @@ Comprehensive coverage for the lifecycle service primitives. Minimum suite:
 - `test_audit_events_use_composed_event_type` — for each of the 6 events, the AuditEvent row's `event_type` column value is the composed string (`workflow_approval_requested`, etc.), NOT the verb-only form.
 - `test_audit_events_carry_previous_status_on_transitions` — granted/rejected/expired/consumed/superseded events have `previous_status` field populated in the payload; `requested` event has `previous_status=null`.
 - `test_audit_events_carry_threshold_dimension_used_and_threshold_at_request` — payload field names match amendment lines 902-911 (`threshold_dimension_used`, `threshold_at_request`) with values matching the row's columns.
+- `test_approval_policy_seed` — after `alembic upgrade head` runs, the `approval_policy` table contains exactly 3 rows matching the amendment seed: `deal_create → required_approver_roles=["risk_manager"], fallback_when_requester_is={}, threshold_dimension=notional_usd`; `deal_award → required_approver_roles=["risk_manager"], fallback_when_requester_is={}, threshold_dimension=notional_usd`; `hedge_contract_settle → required_approver_roles=["auditor"], fallback_when_requester_is={}, threshold_dimension=settlement_amount_usd`. (Enforces amendment lines 635-658 + §10 acceptance #7.)
 
 ### §7.2 New test file `backend/tests/test_workflow_approval_routes.py`
 
@@ -1183,7 +1278,7 @@ Every item below is verifiable post-merge by running the cited command against t
 7. **`approval_policy` seeded with three rows.** `cd backend && python -m pytest backend/tests/test_workflow_approval_service.py::test_approval_policy_seed -v` passes; asserts: `deal_create → ["risk_manager"], {}`, `deal_award → ["risk_manager"], {}`, `hedge_contract_settle → ["auditor"], {}`. (Enforces amendment lines 635-658.)
 8. **Service module exists.** `grep -n "def evaluate_and_maybe_create\|def grant_request\|def reject_request\|def supersede_request\|def consume_request\|def sweep_expired" backend/app/services/workflow_approval_service.py` returns 6 matches — one per public lifecycle function. (Enforces §4.1.)
 9. **All three gated routes invoke the gate.** `grep -nB2 "evaluate_and_maybe_create" backend/app/api/routes/deals.py backend/app/api/routes/rfqs.py backend/app/api/routes/cashflow_ledger.py` returns 3 matches, one per gated route, with the call preceding the synchronous mutation path. (Enforces §4.3.)
-9a. **`RFQService.resolve_awarded_quote` refactor landed.** `grep -n "def resolve_awarded_quote" backend/app/services/rfq_service.py` returns exactly 1 match. `grep -nA3 "def award" backend/app/services/rfq_service.py | grep "resolve_awarded_quote"` returns ≥1 match (the existing `award` method now calls the helper as its first executable step after `get_live_for_update`). The helper signature returns `tuple[RFQQuote, RFQQuote]` per §4.3.2 binding. (Enforces §4.3.2 REFACTOR path.)
+9a. **`RFQService.resolve_awarded_quote` refactor landed.** `grep -n "def resolve_awarded_quote" backend/app/services/rfq_service.py` returns exactly 1 match. `grep -nA3 "def award" backend/app/services/rfq_service.py | grep "resolve_awarded_quote"` returns ≥1 match (the existing `award` method now calls the helper as its first executable step after `get_live_for_update`). The helper signature returns `tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]` per §4.3.2 binding — a list of `(quote, quantity_mt)` pairs of length 1 (single-trade) or 2 (spread). (Enforces §4.3.2 REFACTOR path.)
 9b. **`DealCreate.notional_usd` field exists.** `grep -nA10 "class DealCreate" backend/app/schemas/deal.py | grep "notional_usd"` returns 1 match showing the `Decimal` type and `Field(ge=0)` validator. (Enforces §4.3.1 Path B binding.)
 10. **Approval router registered.** `grep -n "workflow_approvals\|workflow_approval" backend/app/main.py` returns matches showing the router import + `app.include_router(workflow_approvals.router, prefix="/workflow-approvals", tags=["WorkflowApprovals"])`. (Enforces §4.4 router registration.)
 11. **All six approval-router endpoints exist.** `grep -nE "@router\.(post|get).*\"/?\\{approval_id\\}/(grant|reject|supersede|consume)\"|@router\\.get.*\"/?(\\{approval_id\\}|\"\")" backend/app/api/routes/workflow_approvals.py` returns ≥6 distinct decorator lines (1 GET single, 1 GET list, 4 POST actions). (Enforces §4.4 endpoint table.)
@@ -1204,12 +1299,16 @@ Every item below is verifiable post-merge by running the cited command against t
 26. **Pre-push hook v2 clean.** The hook run on the final implementation push produces 0 P1 findings.
 27. **AugmentCode + Greptile gates green.** Per `reference-review-gates-2026-05-17`: Greptile +1 reaction on the implementation PR + all inline comments resolved + `Greptile Review` CI check green + AugmentCode catches absorbed.
 28. **Threshold ratification recorded (operational, NOT a code gate).** Verifiable by Andrei post-merge: if risk_committee ratifies values different from the defaults (USD 500k deal / USD 250k settle), Railway dashboard env-var overrides set per §3 #1. This is recorded in the pilot brief §7 sign-off notes, NOT in the PR.
+29. **Import directive sweep clean.** All three gated route modules import `get_current_actor_roles` and `Header` plus the new approval-service identifiers. `grep -n "get_current_actor_roles\|Header\|workflow_approval_service\|MutationType" backend/app/api/routes/deals.py backend/app/api/routes/rfqs.py backend/app/api/routes/cashflow_ledger.py` returns ≥4 matches per file. `cd backend && python -c "import app.api.routes.deals, app.api.routes.rfqs, app.api.routes.cashflow_ledger"` exits 0 (no `NameError` at module load). (Enforces `feedback_dispatch_verify_imports` across all three gate sites.)
+30. **Settle entity_type preserved.** `grep -n 'entity_type="hedge_contract_settlement"' backend/app/api/routes/cashflow_ledger.py` returns ≥1 match — the audit decorator on `settle_hedge_contract` retains the existing `entity_type="hedge_contract_settlement"` (NOT renamed to `"hedge_contract"`). (Enforces §4.3.3 audit-correlation invariant.)
+31. **Settle write-path identity preserved.** `grep -n "ingest_hedge_contract_settlement\|HedgeContractSettlementService" backend/app/api/routes/cashflow_ledger.py backend/app/services/` shows the route calls `ingest_hedge_contract_settlement` (NOT a `HedgeContractSettlementService.settle` class method) and no `HedgeContractSettlementService` class is introduced. (Enforces §4.3.3 write-path identity.)
+32. **Deal write-path identity preserved.** `grep -n "DealEngineService\|DealEngine\b" backend/app/api/routes/deals.py backend/app/services/deal_engine.py` shows the route calls `DealEngineService.create_deal` (the existing class name; NOT a non-existent `DealEngine`). (Enforces §4.3.1 write-path identity.)
 
 ## §11 Workflow
 
 1. Executor session opens isolated branch from current main HEAD `7c0588a8d` (or whatever main is at session-start; executor verifies with `git fetch origin && git log origin/main -1`).
 2. Executor reads this dispatch end-to-end, reads `docs/governance.md` "Workflow Approval gate" subsection in full (lines 554-1128), reads the cited code excerpts in `backend/app/api/routes/deals.py:94`, `backend/app/api/routes/rfqs.py:474`, `backend/app/api/routes/cashflow_ledger.py:28`, `backend/app/services/audit_trail_service.py:74-216`, `backend/app/api/dependencies/audit.py:50-112`, `backend/app/api/dependencies/uow.py`, `backend/app/tasks/scheduler.py`, `backend/app/core/config.py`, `backend/app/models/deal.py`, `backend/app/schemas/cashflow.py:91-106`, `backend/app/schemas/rfq.py:221-247` to verify identifiers and offsets at branch HEAD.
-3. Executor verifies the notional-computation path (§4.3.1 Path A vs Path B) by reading `backend/app/schemas/deal.py:38-42` (current `DealCreate`), `backend/app/models/deal.py:131-158` (current `Deal`), and the HedgeContract model. Documents the chosen path in the PR description before any code change.
+3. Executor verifies the notional-computation contract for §4.3.1 by reading the current `DealCreate` at `backend/app/schemas/deal.py:38-41` and the `Deal` ORM model. The dispatch BINDS the explicit `notional_usd: Decimal` field path (§4.3.1 "Path B" — link-derivation was rejected in the dispatch's earlier draft). The executor confirms by reading §4.3.1 in this dispatch that no Path-A/Path-B re-litigation is open; documents in the PR description that the explicit-field path is the bound contract.
 4. Executor implements alembic 046 first (§5), runs `cd backend && python -m alembic upgrade head` against a clean SQLite test DB, then runs a downgrade + upgrade cycle to verify reversibility. Confirms enum types are created/dropped correctly on postgres via a quick local-docker postgres run.
 5. Executor implements §4.2 (ORM models) + §4.1 (lifecycle service) + §4.8 (Settings fields). Runs `cd backend && python -m pytest tests/test_workflow_approval_service.py -x -q` after each major milestone.
 6. Executor implements §4.5 (sweeper task + scheduler registration) + §4.6 (SSE broadcast helper).
