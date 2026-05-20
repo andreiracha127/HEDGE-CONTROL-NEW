@@ -863,7 +863,7 @@ to the state machine):
    reissue linkage (correlation across the pair is via
    `correlation_id` if the caller threads it).
 
-Common payload fields (binding for ALL five events):
+Common payload fields (binding for ALL six events):
 
 ```
 {
