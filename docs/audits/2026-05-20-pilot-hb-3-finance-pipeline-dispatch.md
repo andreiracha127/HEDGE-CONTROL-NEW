@@ -689,7 +689,7 @@ Emission sites in `run_daily_pipeline`:
 | After the `if not failed:` block sets `run.status = PipelineRunStatus.completed` (line 105) | `finance_pipeline_run_completed`, `previous_status="running"`, `records_processed=<sum across steps>` |
 | Inside the failed-path early-break, after setting `run.status = PipelineRunStatus.partial` (line 98–99) | `finance_pipeline_run_failed_partial`, `previous_status="running"`, `error_message=run.error_message` |
 
-The `actor` and `trigger_source` values are passed into `run_daily_pipeline` as new keyword-only parameters with defaults that preserve the current manual-route call shape:
+The `actor` and `trigger_source` values are passed into `run_daily_pipeline` as new REQUIRED keyword-only parameters — there is no default for `actor`, and the call site MUST supply a non-empty string. This enforces the binding "`actor` is always populated in the audit payload" invariant at the type-system layer (no silent `null` actor possible):
 
 ```python
 @staticmethod
@@ -699,11 +699,18 @@ def run_daily_pipeline(
     *,
     commit: bool = True,
     trigger_source: PipelineTriggerSource = PipelineTriggerSource.manual,
-    actor: str | None = None,  # if None, caller MUST set on the new FinancePipelineRun via run.triggered_by
+    actor: str,  # REQUIRED — see actor-validation guard below
 ) -> FinancePipelineRun:
+    if not actor:
+        raise ValueError(
+            "run_daily_pipeline requires a non-empty actor (service identity "
+            "or human actor_sub). Audit-payload integrity invariant per HB-3."
+        )
 ```
 
-The route layer (§4.10) sets `actor` from `Depends(get_current_actor_sub)`; the scheduler task (§4.9) sets `actor="service:cashflow_pipeline"` and `trigger_source=PipelineTriggerSource.scheduler`.
+The route layer (§4.11) sets `actor` from `Depends(get_current_actor_sub)` (already non-empty by JWT-validator invariant); the scheduler task (§4.9) sets `actor="service:cashflow_pipeline"` and `trigger_source=PipelineTriggerSource.scheduler`. The `trigger_source` default is `PipelineTriggerSource.manual` so the existing in-tree call sites that already pass through the manual route remain source-compatible when this dispatch is implemented (the route call site updates `trigger_source` explicitly in §4.11). The `actor` parameter has NO default — every caller, including future test fixtures, must pass it explicitly. Tests that call `run_daily_pipeline` directly use a sentinel like `actor="test:fixture"`.
+
+Audit-query path note: with `record_worker_event` semantics (§4.8 above), the binding payload fields live at `payload.metadata.<field>` at runtime, while `payload.actor` and `payload.source` are top-level meta fields produced by the helper. Auditor JSONB queries against the constitutional schema must therefore use `payload -> 'metadata' ->> 'trigger_source'` and `payload -> 'metadata' ->> 'run_id'` (NOT `payload ->> 'trigger_source'`). Acceptance criterion §10.24 implicitly carries this through (the grep over emission sites confirms the helper is the right one; the runtime shape follows from the helper choice).
 
 ### §4.9 New task module: `backend/app/tasks/finance_pipeline_task.py`
 

@@ -1372,12 +1372,30 @@ Service-identity attribution (binding):
 Audit events (binding):
 
 Every state transition on a `FinancePipelineRun` or
-`FinancePipelineStep` row emits an HMAC-signed audit event via
-`AuditTrailService.record(...)`
-(`app/services/audit_trail_service.py:76`). Six event types (one
-per transition the state machine admits — the "every state
-transition" invariant binds the enumeration to the existing run /
-step status enums at `app/models/finance_pipeline.py:26-38`):
+`FinancePipelineStep` row emits an HMAC-signed audit event. The
+emission path differs by trigger source — both paths terminate at
+the same WORM sink and produce the same canonical row shape:
+
+- Scheduler-triggered runs (`service:cashflow_pipeline` actor)
+  emit via `AuditTrailService.record_worker_event(...)`
+  (`app/services/audit_trail_service.py:122`), the canonical
+  worker-event helper used elsewhere by the Westmetall ingest
+  task. This helper produces a `payload` of shape
+  `{actor, source, metadata: {…}}` (the "binding payload fields"
+  block below lives under the `metadata` key at runtime — see
+  that block for the exact path).
+- Manually-invoked runs (human actor crossing
+  `POST /finance/pipeline/run`) emit through the existing
+  route-layer `audit_event` dependency, which itself routes to
+  `AuditTrailService.record(...)`
+  (`app/services/audit_trail_service.py:76`); the binding fields
+  below are carried in the same `metadata` shape so an auditor's
+  JSONB query is uniform across trigger sources.
+
+Six event types (one per transition the state machine admits —
+the "every state transition" invariant binds the enumeration to
+the existing run / step status enums at
+`app/models/finance_pipeline.py:26-38`):
 
 1. `finance_pipeline_run_started` — on `FinancePipelineRun` row
    creation OR on resume of a `partial` run back to `running`.
@@ -1404,10 +1422,17 @@ transitions. Both surfaces persist; the route-level event remains
 the human-intent record, the six lifecycle events remain the
 state-machine record.
 
-Common payload fields (binding for ALL six lifecycle events):
+Common payload fields (binding for ALL six lifecycle events).
+Under `record_worker_event` semantics these fields live at
+`payload.metadata.<field>` (NOT at `payload.<field>`). An
+auditor's Postgres JSONB query for `trigger_source` is therefore
+`payload -> 'metadata' ->> 'trigger_source'`. The top-level
+`payload.actor` / `payload.source` fields are the runtime meta
+fields produced by `record_worker_event` and are NOT counted in
+the binding set below:
 
 ```
-{
+payload.metadata = {
   run_id: <uuid>,                    # the FinancePipelineRun.id;
                                      # for step-level events this
                                      # is the parent run id
@@ -1415,10 +1440,12 @@ Common payload fields (binding for ALL six lifecycle events):
   inputs_hash: <sha256>,             # the canonical inputs hash
                                      # bound by
                                      # FinancePipelineRun.compute_hash
-  actor: <string>,                   # "service:cashflow_pipeline"
+                                     # (top-level payload.actor =
+                                     # "service:cashflow_pipeline"
                                      # for scheduled runs, or the
                                      # human actor_sub for manual
-                                     # invocation
+                                     # invocation — runtime meta,
+                                     # NOT part of this binding set)
   trigger_source: <enum>,            # "scheduler" | "manual"
                                      # (mirrors the new
                                      # `triggered_by` column on
