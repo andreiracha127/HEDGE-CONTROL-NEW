@@ -12,7 +12,7 @@ Status: DRAFT
 
 ## §1 Scope
 
-This dispatch prescribes the implementation contract for the follow-on executor PR that will close Pilot Hard Blocker 2 (Workflow Approval gate, constitutionally bound via PR #96 merge commit `7c0588a8d`). The executor PR will land: one new alembic revision `046` creating `workflow_approval_requests` + `approval_policy` tables with all binding columns/indexes/constraints per the amendment Schema clause (§5); one new service module `backend/app/services/workflow_approval_service.py` holding the lifecycle primitives (create-request, grant, reject, supersede, consume, sweep-expired) plus the `mutation_payload_hash` invariant enforcement via `normalize_payload_raw`; gate insertions at the THREE gated route handlers (`POST /deals` in `backend/app/api/routes/deals.py:94`, `POST /rfqs/{rfq_id}/actions/award` in `backend/app/api/routes/rfqs.py:474`, `POST /cashflow/contracts/{contract_id}/settle` in `backend/app/api/routes/cashflow_ledger.py:28`) that route threshold-crossing requests through the approval cycle and return HTTP 202 + `WorkflowApprovalRequest` per the Pending-mutation behavior clause; one new approval router under `/workflow-approvals` exposing the grant/reject/supersede/consume/polling endpoints with `require_role` decorators per the approval_policy seed; SIX HMAC-signed audit event types emitted via the route-level `audit_event` Depends pattern (events 1-6 per amendment Audit events clause); one expiry sweeper background task registered on the existing Railway scheduler service per the amendment's Phase 2 deferral clause (sweeper IS required for HB-2 closure); SSE broadcast wiring on each state transition; the defense-in-depth "lacks risk_manager" HTTP 403 assertion at the gate; two new Settings fields (`WORKFLOW_APPROVAL_DEAL_THRESHOLD_USD`, `WORKFLOW_APPROVAL_SETTLE_THRESHOLD_USD`) plus the three per-mutation-type expiry env vars; and a minimum-viable frontend consumer (typed-client regeneration + risk_manager/auditor pending-approval panel) per `feedback_dispatch_transport_partner_clause` to keep the contract end-to-end testable in the same PR.
+This dispatch prescribes the implementation contract for the follow-on executor PR that will close Pilot Hard Blocker 2 (Workflow Approval gate, constitutionally bound via PR #96 merge commit `7c0588a8d`). The executor PR will land: one new alembic revision `046` creating `workflow_approval_requests` + `approval_policy` tables with all binding columns/indexes/constraints per the amendment Schema clause (§5); one new service module `backend/app/services/workflow_approval_service.py` holding the lifecycle primitives (`evaluate_and_maybe_create`, `grant_request`, `reject_request`, `supersede_request`, `consume_request`, `sweep_expired`) plus the `mutation_payload_hash` invariant enforcement via `normalize_payload_raw`; gate insertions at the THREE gated route handlers (`POST /deals` in `backend/app/api/routes/deals.py:94`, `POST /rfqs/{rfq_id}/actions/award` in `backend/app/api/routes/rfqs.py:474`, `POST /cashflow/contracts/{contract_id}/settle` in `backend/app/api/routes/cashflow_ledger.py:28`) that route threshold-crossing requests through the approval cycle and return HTTP 202 + `WorkflowApprovalRequest` per the Pending-mutation behavior clause; one new approval router under `/workflow-approvals` exposing the grant/reject/supersede/consume/polling endpoints with `require_role` decorators per the approval_policy seed; SIX HMAC-signed audit event types emitted across three layers (event 1 `workflow_approval_requested` from the service module inside the gated route's `unit_of_work`; events 2/3/5/6 from the approval-router route-level `audit_event` Depends; event 4 `workflow_approval_expired` from the sweeper task — see §8 for the binding emission-source-by-event table); one expiry sweeper background task registered on the existing Railway scheduler service per the amendment's Phase 2 deferral clause (sweeper IS required for HB-2 closure); SSE broadcast wiring on each state transition; the defense-in-depth "lacks risk_manager" HTTP 403 assertion at the gate; THREE new Settings fields (`WORKFLOW_APPROVAL_DEAL_THRESHOLD_USD`, `WORKFLOW_APPROVAL_SETTLE_THRESHOLD_USD`, `WORKFLOW_APPROVAL_SWEEPER_INTERVAL_MINUTES`) with binding pilot defaults; and a minimum-viable frontend consumer (typed-client regeneration + risk_manager/auditor pending-approval panel) per `feedback_dispatch_transport_partner_clause` to keep the contract end-to-end testable in the same PR.
 
 This dispatch itself is documentation-only — no code change lands via the PR shipping this file. The executor PR is the next task in the orchestrator's HB-2 sequence and starts after this dispatch PR merges.
 
@@ -45,7 +45,7 @@ Two operational pre-conditions exist BUT they belong to pilot launch operations,
 
 ### §4.1 New module: `backend/app/services/workflow_approval_service.py`
 
-Create a new service module centralizing the workflow-approval lifecycle. Every gate site (§4.3) calls a single `create_pending_request` entry; every approval-router endpoint (§4.4) calls one of `grant_request`, `reject_request`, `supersede_request`, `consume_request`; the sweeper task (§4.5) calls `sweep_expired`. Centralizing the helpers means every state transition emits a uniform audit shape and applies the `mutation_payload_hash` invariant identically — no per-site drift.
+Create a new service module centralizing the workflow-approval lifecycle. Every gate site (§4.3) calls a single `evaluate_and_maybe_create` entry; every approval-router endpoint (§4.4) calls one of `grant_request`, `reject_request`, `supersede_request`, `consume_request`; the sweeper task (§4.5) calls `sweep_expired`. Centralizing the helpers means every state transition emits a uniform audit shape and applies the `mutation_payload_hash` invariant identically — no per-site drift.
 
 **Module structure (binding):**
 
@@ -114,8 +114,10 @@ _THRESHOLD_DIMENSION_BY_MUTATION_TYPE = {
 | `grant_request(session, approval_id, approver_actor_sub, approver_role_set, approver_ip, approver_session_id)` | §4.4.2 POST /workflow-approvals/{id}/grant | Loads the row; asserts current status is `pending`; asserts `approver_actor_sub != requested_by` (DB constraint also enforces; this is the application-layer pre-check for a 422 with a useful detail); asserts the approver's role intersects `approval_policy.required_approver_roles`; transitions to `approved`, populates `approved_by`, `approver_ip`, `approver_session_id`; emits `workflow_approval_granted`; broadcasts SSE; returns the row. |
 | `reject_request(session, approval_id, approver_actor_sub, approver_role_set, approver_ip, approver_session_id, reason_code, reason_text)` | §4.4.3 POST /workflow-approvals/{id}/reject | Same shape as grant, but transitions to `rejected`, persists `rejection_reason_code` + `rejection_reason_text` (CHECK constraint enforces both NULL or both set with text length ≥ 8); emits `workflow_approval_rejected`. |
 | `supersede_request(session, approval_id, requesting_actor_sub)` | §4.4.4 POST /workflow-approvals/{id}/supersede | Loads the row; asserts current status is `pending` OR `approved`; asserts `requesting_actor_sub == row.requested_by` (the amendment binds actor-level scope at lines 742-750: "Only the original requester ... can mark `superseded`"); transitions to `superseded` with `previous_status` captured for the audit event; emits `workflow_approval_superseded`; broadcasts SSE. Returns the row. Reissue is a SEPARATE call (the caller submits the original mutation again, which goes through `evaluate_and_maybe_create` and creates a new row). |
-| `consume_request(session, approval_id, consume_payload_obj, executor)` | §4.4.5 POST /workflow-approvals/{id}/consume | Loads the row; asserts current status is `approved`; recomputes `_compute_payload_hash(consume_payload_obj)` and compares against `row.mutation_payload_hash` — if mismatch, raises HTTP 422 with `detail={"code": "payload_drift_detected", ...}` and the row stays `approved` (per amendment lines 794-807); on match, calls `executor(consume_payload_obj)` which is a callable provided by the consume route that wires through to `DealEngine.create_deal` / `RFQService.award` / `HedgeContractSettlementService.settle`; on executor success, transitions to `consumed`, populates `consumed_at`, emits `workflow_approval_consumed`; broadcasts SSE; returns `(row, executor_result)`. On executor failure (uncaught exception during the wrapped mutation), the outer `unit_of_work` rolls back; the row stays `approved` and the failure is surfaced to the caller. |
+| `consume_request(session, approval_id, consume_payload_obj, executor)` | §4.4.5 POST /workflow-approvals/{id}/consume | Loads the row WITH `SELECT FOR UPDATE` (postgres) / equivalent row-locking semantics (sqlite tests rely on the transaction-level lock; postgres production relies on the explicit `with_for_update()` per the concurrency guard below); asserts current status is `approved`; recomputes `_compute_payload_hash(consume_payload_obj)` and compares against `row.mutation_payload_hash` — if mismatch, raises HTTP 422 with `detail={"code": "payload_drift_detected", ...}` and the row stays `approved` (per amendment lines 794-807); on match, calls `executor(consume_payload_obj)` which is a callable provided by the consume route that wires through to `DealEngine.create_deal` / `RFQService.award` / `HedgeContractSettlementService.settle`; on executor success, transitions the row to `consumed` (the row was loaded `FOR UPDATE` so this atomic transition is guarded against concurrent double-consume — a second consume attempt sees the row already in `consumed` and 409s), populates `consumed_at`, emits `workflow_approval_consumed`; broadcasts SSE; returns `(row, executor_result)`. On executor failure (uncaught exception during the wrapped mutation), the outer `unit_of_work` rolls back; the row stays `approved` and the failure is surfaced to the caller. |
 | `sweep_expired(session)` | §4.5 scheduler task | Selects rows where `status IN (pending, approved) AND expires_at < now()` using the composite index `(status, expires_at)`; for each, captures `previous_status` and transitions to `expired`; emits one `workflow_approval_expired` audit event per row; broadcasts SSE for each. Returns the count. Pure background job — no HTTPException, just structured logging on errors per the existing `app/tasks/` patterns. |
+
+**Concurrency guard on `consume_request` (binding):** the row load inside `consume_request` MUST use `session.execute(select(WorkflowApprovalRequest).where(id == approval_id).with_for_update())` on postgres. Under SQLAlchemy 2.x, `with_for_update()` emits `SELECT ... FOR UPDATE` on postgres, locking the row for the duration of the transaction; concurrent consume attempts on the same row will block on the lock and, when they acquire it, will observe the status as `consumed` (after the first transaction commits) and raise HTTP 409 Conflict from the status check. On SQLite (test env), `with_for_update()` is a no-op — but the SQLite test driver serializes write transactions globally, so the same double-consume race is structurally impossible in tests. The §7.2 test `test_consume_concurrent_double_consume` verifies the postgres lock behavior by spawning two threads against a shared connection pool. The guard makes the `approved → consumed` transition atomic with respect to the status check, closing the consume-double-spend window the application-layer check alone would leave open.
 
 **`mutation_payload_hash` computation (binding):** the helper MUST use `normalize_payload_raw` per the amendment's binding clause at lines 808-811:
 
@@ -366,29 +368,35 @@ def create_deal(
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> DealRead | dict:
-    approval = workflow_approval_service.evaluate_and_maybe_create(
-        session,
-        mutation_type=MutationType.deal_create,
-        payload_obj=body.model_dump(mode="json"),
-        threshold_value=body.notional_usd,
-        requesting_actor_sub=actor_sub,
-        requesting_actor_ip=request.client.host if request.client else None,
-        requesting_actor_session_id=request.headers.get("X-Session-ID"),
-        correlation_id=_uuid.uuid4(),
-        idempotency_key=idempotency_key,
-        request_role_set=actor_roles,
-    )
-    if approval is not None:
-        response.status_code = status.HTTP_202_ACCEPTED
-        return _approval_response_body(approval)  # §4.4.7 helper
-    # Below threshold — synchronous path
     with unit_of_work(session, request=request):
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            mutation_type=MutationType.deal_create,
+            payload_obj=body.model_dump(mode="json"),
+            threshold_value=body.notional_usd,
+            requesting_actor_sub=actor_sub,
+            requesting_actor_ip=request.client.host if request.client else None,
+            requesting_actor_session_id=request.headers.get("X-Session-ID"),
+            correlation_id=_uuid.uuid4(),
+            idempotency_key=idempotency_key,
+            request_role_set=actor_roles,
+        )
+        if approval is not None:
+            mark_audit_success(request, approval.id, metadata={
+                "actor_sub": actor_sub,
+                "approval_path": "pending",
+            })
+            response.status_code = status.HTTP_202_ACCEPTED
+            return _approval_response_body(approval)  # §4.4.7 helper
+        # Below threshold — synchronous path
         deal = DealEngine.create_deal(session, body.model_dump())
         mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
     return DealRead.model_validate(deal)
 ```
 
 The handler's response model annotation widens to `DealRead | dict` to accommodate the 202 body. The OpenAPI schema regen (§6.1) MUST surface this dual return shape — `frontend-svelte/src/lib/api/schema.d.ts` will type the endpoint as a discriminated union; the typed client must branch on status code.
+
+**`unit_of_work` scope (binding for all three gate sites in §4.3):** the WHOLE handler body lives inside a single `unit_of_work(session, request=request)` block — both the 202 (approval-row creation) path AND the synchronous-mutation path. The §4.1 binding requires the row creation + `workflow_approval_requested` audit event to commit atomically on the route's request session; placing the `evaluate_and_maybe_create` call OUTSIDE `unit_of_work` would leave the row uncommitted under the existing session DI pattern (`backend/app/api/dependencies/session.py` provides a session with no auto-commit; the `unit_of_work` context is what triggers commit per `backend/app/api/dependencies/uow.py:19-29`). The same wrapping pattern repeats verbatim in §4.3.2 + §4.3.3.
 
 #### §4.3.2 `POST /rfqs/{rfq_id}/actions/award` (`backend/app/api/routes/rfqs.py:474`)
 
@@ -417,28 +425,32 @@ def award_rfq(
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> RFQRead | dict:
-    quote = RFQService.resolve_awarded_quote(session, rfq_id)
-    notional_usd = quote.fixed_price * quote.quantity  # Decimal × Decimal
-    approval = workflow_approval_service.evaluate_and_maybe_create(
-        session,
-        mutation_type=MutationType.deal_award,
-        payload_obj={
-            "rfq_id": str(rfq_id),
-            "awarded_quote_id": str(quote.id),
-        },
-        threshold_value=notional_usd,
-        requesting_actor_sub=actor_sub,
-        requesting_actor_ip=request.client.host if request.client else None,
-        requesting_actor_session_id=request.headers.get("X-Session-ID"),
-        correlation_id=_uuid.uuid4(),
-        idempotency_key=idempotency_key,
-        request_role_set=actor_roles,
-    )
-    if approval is not None:
-        response.status_code = status.HTTP_202_ACCEPTED
-        return _approval_response_body(approval)
-    # Below threshold — synchronous award
     with unit_of_work(session, request=request):
+        quote = RFQService.resolve_awarded_quote(session, rfq_id)
+        notional_usd = quote.fixed_price * quote.quantity  # Decimal × Decimal
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            mutation_type=MutationType.deal_award,
+            payload_obj={
+                "rfq_id": str(rfq_id),
+                "awarded_quote_id": str(quote.id),
+            },
+            threshold_value=notional_usd,
+            requesting_actor_sub=actor_sub,
+            requesting_actor_ip=request.client.host if request.client else None,
+            requesting_actor_session_id=request.headers.get("X-Session-ID"),
+            correlation_id=_uuid.uuid4(),
+            idempotency_key=idempotency_key,
+            request_role_set=actor_roles,
+        )
+        if approval is not None:
+            mark_audit_success(request, approval.id, metadata={
+                "actor_sub": actor_sub,
+                "approval_path": "pending",
+            })
+            response.status_code = status.HTTP_202_ACCEPTED
+            return _approval_response_body(approval)
+        # Below threshold — synchronous award
         rfq = RFQService.award(session, rfq_id, actor_sub=actor_sub)
         mark_audit_success(request, rfq.id, metadata={"actor_sub": actor_sub})
     return RFQRead.model_validate(rfq)
@@ -479,26 +491,30 @@ def settle_hedge_contract(
     session: Session = Depends(get_session),
 ) -> HedgeContractSettlementResponse | dict:
     settlement_amount_usd = max(leg.amount for leg in payload.legs)
-    approval = workflow_approval_service.evaluate_and_maybe_create(
-        session,
-        mutation_type=MutationType.hedge_contract_settle,
-        payload_obj={
-            "contract_id": str(contract_id),
-            **payload.model_dump(mode="json"),
-        },
-        threshold_value=settlement_amount_usd,
-        requesting_actor_sub=actor_sub,
-        requesting_actor_ip=request.client.host if request.client else None,
-        requesting_actor_session_id=request.headers.get("X-Session-ID"),
-        correlation_id=_uuid.uuid4(),
-        idempotency_key=idempotency_key,
-        request_role_set=actor_roles,
-    )
-    if approval is not None:
-        response.status_code = status.HTTP_202_ACCEPTED
-        return _approval_response_body(approval)
-    # Below threshold — synchronous settlement
     with unit_of_work(session, request=request):
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            mutation_type=MutationType.hedge_contract_settle,
+            payload_obj={
+                "contract_id": str(contract_id),
+                **payload.model_dump(mode="json"),
+            },
+            threshold_value=settlement_amount_usd,
+            requesting_actor_sub=actor_sub,
+            requesting_actor_ip=request.client.host if request.client else None,
+            requesting_actor_session_id=request.headers.get("X-Session-ID"),
+            correlation_id=_uuid.uuid4(),
+            idempotency_key=idempotency_key,
+            request_role_set=actor_roles,
+        )
+        if approval is not None:
+            mark_audit_success(request, approval.id, metadata={
+                "actor_sub": actor_sub,
+                "approval_path": "pending",
+            })
+            response.status_code = status.HTTP_202_ACCEPTED
+            return _approval_response_body(approval)
+        # Below threshold — synchronous settlement
         result = HedgeContractSettlementService.settle(session, contract_id, payload)
         mark_audit_success(
             request, contract_id, metadata={"actor_sub": actor_sub}
@@ -529,7 +545,7 @@ Create a new module `backend/app/api/routes/workflow_approvals.py` and register 
 
 **Composed `event_type` form (binding asymmetry vs HB-1's verb-only convention):** HB-1 §8 documented an asymmetric naming convention — gate-rejection events use descriptive composed strings (`rfq_invitation_rejected_kyc_not_approved`), entity-internal CRUD events use verb-only (`kyc_status_changed`). HB-2's six audit events take the COMPOSED form because they describe a lifecycle on the approval row itself, where "entity" is the approval and "event" is the lifecycle transition. Composing them into a single `event_type` string keeps cross-event correlation simple: audit consumers filtering on `event_type LIKE 'workflow_approval_%'` find the entire HB-2 lifecycle without joining columns. The `audit_event(...)` Depends at `backend/app/api/dependencies/audit.py:101` stores `entity_type` and `event_type` as separate columns without composing them — the executor passes the already-composed string literal (e.g. `event_type="workflow_approval_granted"`). The §7 tests assert the database row's `event_type` column value matches the composed form for all six events.
 
-**Service-layer audit emission for `workflow_approval_requested` (binding asymmetry):** event 1 (`workflow_approval_requested`) is emitted from inside `workflow_approval_service.evaluate_and_maybe_create` because the row creation happens at the gate site, NOT in a dedicated route handler. The other five events (granted/rejected/superseded/consumed/expired) emit from route-level `audit_event` Depends (events 2-5) or from the sweeper task (event 4 only — expired). This asymmetry is documented in §8.
+**Service-layer audit emission for `workflow_approval_requested` (binding asymmetry):** event 1 (`workflow_approval_requested`) is emitted from inside `workflow_approval_service.evaluate_and_maybe_create` because the row creation happens at the gate site, NOT in a dedicated route handler. Events 2/3/5/6 (granted/rejected/consumed/superseded) emit from route-level `audit_event` Depends on the corresponding approval-router endpoint. Event 4 (`workflow_approval_expired`) emits from the sweeper task only (no route surface — expiry is background-only). This asymmetry is documented in §8.
 
 #### §4.4.1 New schemas in `backend/app/schemas/workflow_approval.py`
 
@@ -710,7 +726,7 @@ The `{trader, risk_manager}` combinability case passes via the `risk_manager` me
 
 ### §4.8 Settings additions (env vars)
 
-Extend `backend/app/core/config.py` `Settings` class with FOUR new fields:
+Extend `backend/app/core/config.py` `Settings` class with THREE new fields:
 
 ```python
 # In Settings:
@@ -1046,6 +1062,7 @@ Comprehensive coverage for the lifecycle service primitives. Minimum suite:
 - `test_supersede_by_non_requester_rejected` — `actor_sub != row.requested_by` → HTTPException(403). Same-role peer cannot supersede another's request per amendment actor-level scope.
 - `test_consume_matching_hash_transitions_to_consumed` — payload-hash recomputes to the stored value → executor callback invoked; row transitions to `consumed`; `consumed_at` populated; emits `workflow_approval_consumed`.
 - `test_consume_mismatched_hash_returns_422_and_keeps_approved` — payload-hash differs from stored → HTTPException(422) with `detail.code == "payload_drift_detected"`; row stays `approved` (NOT superseded); NO `workflow_approval_consumed` event emitted; NO `workflow_approval_superseded` event emitted (the row's state is unchanged).
+- `test_consume_concurrent_double_consume` — two concurrent threads (or two async tasks) attempt `consume_request` against the same `approved` row with matching payload hashes. Only ONE thread's executor callback fires; the second observes the row as `consumed` after the first transaction commits and raises HTTP 409 Conflict from the status check. The `with_for_update()` lock serializes the two attempts on postgres; on sqlite the test driver's global write serialization produces the same outcome. Assertion: exactly ONE `workflow_approval_consumed` audit event row, and exactly ONE downstream mutation row (deal / settlement) created.
 - `test_consume_executor_failure_keeps_approved` — executor callback raises an uncaught exception → outer `unit_of_work` rolls back; row state in DB stays `approved` (the consume audit event was not committed); failure is surfaced to the caller as an HTTP 5xx.
 - `test_consume_non_requester_rejected` — supersede authorization is actor-level; consume MUST be the same (the user submitting the consume payload is necessarily the same actor that originally requested, per the institutional flow). If a peer with the same role tries to consume, the actor-level check raises 403.
 - `test_sweep_expired_transitions_pending_past_expiry` — `pending` row with `expires_at < now()` transitions to `expired`; emits `workflow_approval_expired` with `previous_status="pending"`; broadcasts SSE.
