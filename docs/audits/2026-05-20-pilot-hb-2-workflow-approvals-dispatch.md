@@ -1169,9 +1169,9 @@ Per `feedback_dispatch_transport_partner_clause`: §4.3 + §4.4 ship new backend
 
 ### §6.1 Regenerate API types
 
-`cd frontend-svelte && npm run api:types` — picks up the new `/workflow-approvals/*` routes + the dual-return-shape on the three gated mutations (`DealRead | dict`, `RFQRead | dict`, `HedgeContractSettlementResponse | dict`). The executor MUST verify the regenerated `schema.d.ts` correctly discriminates the 202 path; if openapi-typescript produces an opaque union, the typed client wrapper in `src/lib/api/client.ts` MAY need a manual response-narrowing helper (the executor adds it inline with a `// @ts-expect-error` comment cleared by the next regen, OR submits a follow-up issue per `feedback_pydantic_field_constraints_drift`).
+`cd frontend-svelte && npm run api:types` — picks up the new `/workflow-approvals/*` routes + the dual-response-shape on the three gated mutations. The dual shape is declared via the `responses={201: {"model": DealRead}, 202: {"model": ApprovalPendingResponseBody}}` pattern (§4.3 handler shape); openapi-typescript renders this as a per-status-code discriminated type on each path. The typed client wrapper in `src/lib/api/client.ts` MUST branch on response status code to select the correct return shape — a 202 carries `ApprovalPendingResponseBody`, a 201/200 carries the original mutation read shape.
 
-**Field-constraint drift callout (binding per `feedback_pydantic_field_constraints_drift`):** `RejectRequest.text` ships with `Field(min_length=8, max_length=2048)`. Adding a constrained `Field()` surfaces a `title` in OpenAPI, which openapi-typescript renders as a `/** Title */` JSDoc on the generated TS type. The executor MUST regenerate `frontend-svelte/src/lib/api/schema.d.ts` in the SAME commit that introduces the schema field — calibrated on PR #95 E2E `Check schema drift` failure. Similarly: `DealCreate.notional_usd` (`Field(ge=0)`), `WorkflowApprovalRequestRead.mutation_payload_hash` (`String(length=64)` reflected as bounded string), and `ApprovalPendingResponseBody` all add new TS types that must land in the same commit. §10 #23 enforces this via `git diff --exit-code`.
+**Field-constraint drift callout (binding per `feedback_pydantic_field_constraints_drift`):** `RejectRequest.text` ships with `Field(min_length=8, max_length=2048)`. Adding a constrained `Field()` surfaces a `title` in OpenAPI, which openapi-typescript renders as a `/** Title */` JSDoc on the generated TS type. The executor MUST regenerate `frontend-svelte/src/lib/api/schema.d.ts` in the SAME commit that introduces the schema field — calibrated on PR #95 E2E `Check schema drift` failure. Similarly: `WorkflowApprovalRequestRead.mutation_payload_hash` (`String(length=64)` reflected as bounded string) and `ApprovalPendingResponseBody` add new TS types that must land in the same commit. §10 #23 enforces this via `git diff --exit-code`. (`DealCreate` is UNCHANGED per §4.3.1 server-compute binding — no new field added to its TS type.)
 
 CI guard `npm run api:types:check` MUST pass on push.
 
@@ -1275,7 +1275,7 @@ Append entries for the new approval-router routes:
 
 ### §7.5 Settings tests
 
-In `backend/tests/test_config.py` (or wherever Settings is tested at HEAD — executor verifies), assert the four new fields default to the binding values: `workflow_approval_deal_threshold_usd == Decimal("500000")`, `workflow_approval_settle_threshold_usd == Decimal("250000")`, `workflow_approval_sweeper_interval_minutes == 15`. Assert env-var override works (`WORKFLOW_APPROVAL_DEAL_THRESHOLD_USD=750000` → `Decimal("750000")`).
+In `backend/tests/test_config.py` (or wherever Settings is tested at HEAD — executor verifies), assert the three new fields default to the binding values: `workflow_approval_deal_threshold_usd == Decimal("500000")`, `workflow_approval_settle_threshold_usd == Decimal("250000")`, `workflow_approval_sweeper_interval_minutes == 15`. Assert env-var override works (`WORKFLOW_APPROVAL_DEAL_THRESHOLD_USD=750000` → `Decimal("750000")`).
 
 ### §7.6 Frontend tests
 
