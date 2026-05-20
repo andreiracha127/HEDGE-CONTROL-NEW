@@ -352,18 +352,26 @@ Current handler at HEAD `7c0588a8d` (verified by dispatch author): `create_deal(
 **Gate insertion (binding shape):**
 
 ```python
-@router.post("", response_model=DealRead, status_code=status.HTTP_201_CREATED)
+from fastapi.responses import JSONResponse
+
+@router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {"model": DealRead},
+        202: {"model": ApprovalPendingResponseBody},
+    },
+)
 def create_deal(
     body: DealCreate,
     request: Request,
-    response: Response,
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: set[str] = Depends(get_current_actor_roles),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     _: None = Depends(audit_event(entity_type="deal", event_type="created")),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
-) -> DealRead | dict:
+) -> JSONResponse:
     with unit_of_work(session, request=request):
         notional_usd = _compute_deal_notional_from_links(session, body.links)
         approval = workflow_approval_service.evaluate_and_maybe_create(
@@ -383,8 +391,10 @@ def create_deal(
                 "actor_sub": actor_sub,
                 "approval_path": "pending",
             })
-            response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(session, approval)  # §4.4.7 helper
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=_approval_response_body(session, approval),  # §4.4.7 helper
+            )
         # Below threshold — synchronous path. The current HEAD handler
         # at backend/app/api/routes/deals.py:108-117 normalises link enum
         # values BEFORE calling DealEngineService.create_deal. The gate's
@@ -396,7 +406,10 @@ def create_deal(
                     link["linked_type"] = link["linked_type"].value
         deal = DealEngineService.create_deal(session, data)
         mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
-    return deal
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=DealRead.model_validate(deal).model_dump(mode="json"),
+    )
 ```
 
 The `_compute_deal_notional_from_links` helper lives in `backend/app/api/routes/deals.py` as a module-level function (or in a small `backend/app/services/deal_notional.py` module — executor's choice; importing convenience matters more than placement):
@@ -459,20 +472,25 @@ The dispatch binds the executor PR to take the REFACTOR path (consistent with th
 **Gate insertion shape:**
 
 ```python
-@router.post("/{rfq_id}/actions/award", response_model=RFQRead)
+@router.post(
+    "/{rfq_id}/actions/award",
+    responses={
+        200: {"model": RFQRead},
+        202: {"model": ApprovalPendingResponseBody},
+    },
+)
 @limiter.limit(RATE_LIMIT_MUTATION)
 def award_rfq(
     rfq_id: UUID,
     payload: RFQAwardRequest,
     request: Request,
-    response: Response,
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: set[str] = Depends(get_current_actor_roles),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     _: None = Depends(audit_event(entity_type="rfq", event_type="awarded")),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
-) -> RFQRead | dict:
+) -> JSONResponse:
     with unit_of_work(session, request=request):
         # resolve_awarded_quote returns the institutional notional shape:
         # (intent, [(quote, quantity_mt), ...]) — a list of (quote, qty)
@@ -504,8 +522,10 @@ def award_rfq(
                 "actor_sub": actor_sub,
                 "approval_path": "pending",
             })
-            response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(session, approval)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=_approval_response_body(session, approval),
+            )
         # Below threshold — synchronous award. Note: RFQService.award at
         # rfq_service.py:1393 takes (session, rfq_id, actor_sub) and
         # mutates rfq state internally. The current HEAD route returns
@@ -513,7 +533,10 @@ def award_rfq(
         # variant MUST preserve that response shape (binding):
         RFQService.award(session, rfq_id, actor_sub)
         mark_audit_success(request, rfq_id, metadata={"actor_sub": actor_sub})
-    return _build_rfq_read(session, rfq_id)
+    return JSONResponse(
+        status_code=status.HTTP_200_OK,
+        content=_build_rfq_read(session, rfq_id).model_dump(mode="json"),
+    )
 ```
 
 **Awarded-quote selection helper signature (binding):** `RFQService.resolve_awarded_quote(session: Session, rfq_id: UUID) -> tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]`. The first element is the RFQ intent (so the gate site can branch payload-shape on spread vs single without re-reading the RFQ row); the second is the ordered list of `(quote, quantity_mt)` pairs the awarded contracts will use. For spread, the order is `[(buy_quote, buy_trade_rfq.quantity_mt), (sell_quote, sell_trade_rfq.quantity_mt)]` mirroring the existing iteration order at `rfq_service.py:1441-1444`. For non-spread, the list contains exactly one element `[(top_quote, rfq.quantity_mt)]`. `RFQService.award` then calls `intent, legs = self.resolve_awarded_quote(...)` as its first executable line after the existing `get_live_for_update` + state assertions; every existing test that exercises `RFQService.award` continues to pass unchanged because the refactor is a pure extract-method (the ranking logic moves, the contract-creation loop reads from `legs` instead of re-computing).
@@ -547,15 +570,17 @@ Current handler (verified at HEAD `7c0588a8d`): `settle_hedge_contract(contract_
 ```python
 @router.post(
     "/contracts/{contract_id}/settle",
-    response_model=HedgeContractSettlementResponse,
     status_code=status.HTTP_201_CREATED,
+    responses={
+        201: {"model": HedgeContractSettlementResponse},
+        202: {"model": ApprovalPendingResponseBody},
+    },
 )
 @limiter.limit(RATE_LIMIT_MUTATION)
 def settle_hedge_contract(
     contract_id: UUID,
     payload: HedgeContractSettlementCreate,
     request: Request,
-    response: Response,
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: set[str] = Depends(get_current_actor_roles),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
@@ -564,7 +589,7 @@ def settle_hedge_contract(
     ),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
-) -> HedgeContractSettlementResponse | dict:
+) -> JSONResponse:
     settlement_amount_usd = max(leg.amount for leg in payload.legs)
     with unit_of_work(session, request=request):
         approval = workflow_approval_service.evaluate_and_maybe_create(
@@ -587,8 +612,10 @@ def settle_hedge_contract(
                 "actor_sub": actor_sub,
                 "approval_path": "pending",
             })
-            response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(session, approval)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=_approval_response_body(session, approval),
+            )
         # Below threshold — synchronous settlement. Verified at
         # cashflow_ledger.py:49-51: the write path returns
         # (event, ledger_entries) and the route composes the response.
@@ -596,15 +623,18 @@ def settle_hedge_contract(
             session, contract_id, payload, commit=False
         )
         mark_audit_success(request, event.id, metadata={"actor_sub": actor_sub})
-    return HedgeContractSettlementResponse(
-        event=event,
-        ledger_entries=[
-            CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries
-        ],
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=HedgeContractSettlementResponse(
+            event=event,
+            ledger_entries=[
+                CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries
+            ],
+        ).model_dump(mode="json"),
     )
 ```
 
-**Import directive (binding for `backend/app/api/routes/cashflow_ledger.py`):** the current HEAD already imports `ingest_hedge_contract_settlement`, `HedgeContractSettlementResponse`, `HedgeContractSettlementCreate`, `CashFlowLedgerEntryRead`, `get_current_actor_sub`, `require_role`, `audit_event`, `mark_audit_success`, `unit_of_work`. The gate adds: `get_current_actor_roles` (from `app.core.auth`), `Header, Response` (from `fastapi`; `Response` is NOT yet imported on the existing line 4), `import uuid as _uuid`, `from app.models.workflow_approval import MutationType`, `from app.services import workflow_approval_service`, plus `_approval_response_body`. Per `feedback_dispatch_verify_imports`: enforced by §10 acceptance #29.
+**Import directive (binding for `backend/app/api/routes/cashflow_ledger.py`):** the current HEAD already imports `ingest_hedge_contract_settlement`, `HedgeContractSettlementResponse`, `HedgeContractSettlementCreate`, `CashFlowLedgerEntryRead`, `get_current_actor_sub`, `require_role`, `audit_event`, `mark_audit_success`, `unit_of_work`. The gate adds: `get_current_actor_roles` (from `app.core.auth`), `Header` (from `fastapi`), `JSONResponse` (from `fastapi.responses`), `import uuid as _uuid`, `from app.models.workflow_approval import MutationType`, `from app.services import workflow_approval_service`, plus `_approval_response_body` and `ApprovalPendingResponseBody`. Per `feedback_dispatch_verify_imports`: enforced by §10 acceptance #29.
 
 PR #76 / Cluster 1 settlement path is the institutional canonical route. Generic status-patch settlement remains forbidden per PR #76 §4 closure (the amendment's lines 590-593 reproduce this).
 
@@ -1270,7 +1300,7 @@ The composed-string convention (NOT verb-only) applies to all six per the amendm
 | 5 | `workflow_approval_consumed` | route-level (§4.4 #6) | `workflow_approval_request` | each `approved → consumed` transition (only after successful executor callback) | common payload; `previous_status="approved"`; `approver_sub`/`approver_ip`/`approver_session_id` read back from the row (denormalized from the grant-time capture per amendment lines 928-947 — the consumed event carries the original co-signer's IP, NOT the consumer's); `rejection_reason=null`; `time_to_approval_ms` populated |
 | 6 | `workflow_approval_superseded` | route-level (§4.4 #5) | `workflow_approval_request` | each `(pending|approved) → superseded` transition (requester-initiated only) | common payload; `previous_status="pending"` or `"approved"`; `approver_*=null` (no approver actor on supersede); `rejection_reason=null`; `time_to_approval_ms` populated |
 
-**`time_to_approval_ms` computation (binding per amendment lines 969-989):** the value is `(audit_event.created_at - workflow_approval_requests.created_at).total_milliseconds()` — using the AUDIT EVENT'S timestamp, NOT `workflow_approval_requests.updated_at`. This is critical: `updated_at` shifts on every state mutation, so reading it back at a later read would retroactively change past audit records' computed delta. The audit-event row's `created_at` is the canonical transition timestamp; the implementation MUST compute this delta server-side at emission time and persist it in the audit payload.
+**`time_to_approval_ms` computation (binding per amendment lines 969-989):** the value is `int((audit_event.created_at - workflow_approval_requests.created_at).total_seconds() * 1000)` — using the AUDIT EVENT'S timestamp, NOT `workflow_approval_requests.updated_at`. Python's `datetime.timedelta` exposes `.total_seconds()` (float) but NO `.total_milliseconds()` method; the `* 1000` multiplication on the float result followed by `int()` cast yields the integer millisecond delta. `updated_at` is excluded from the formula because it shifts on every state mutation; reading it back at a later read would retroactively change past audit records' computed delta. The audit-event row's `created_at` is the canonical transition timestamp; the implementation MUST compute this delta server-side at emission time and persist it in the audit payload.
 
 **`approver_ip` / `approver_session_id` persistence (binding per amendment lines 928-947):** captured from the co-signer's request context at `pending → approved` (or `pending → rejected`) and persisted onto the `workflow_approval_requests.approver_ip` / `.approver_session_id` columns. On `approved → consumed`, the consumed event reads these columns back — does NOT re-capture from the consumer's request context. This is the "denormalized read path" the amendment binds; ensures the consumed-event's approver attribution stays consistent with the grant-time record.
 
