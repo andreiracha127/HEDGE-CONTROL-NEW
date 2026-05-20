@@ -324,3 +324,113 @@ def test_outbox_notifications_fire_despite_post_event_kyc_revocation(client: Tes
     reject_invitation = next((inv for inv in invitations if inv["purpose"] == "reject_quote"), None)
     assert reject_invitation is not None, "reject_quote outbox invitation was not created!"
     assert reject_invitation["counterparty_id"] == cp_id
+
+def test_quote_ingestion_rejects_degraded_kyc_human_path(client: TestClient, session: Session) -> None:
+    # 1. Create counterparty & approve
+    cp = _create_counterparty(client, "Degraded Human Quoter")
+    cp_id = cp["id"]
+    r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Initial setup"})
+    assert r_kyc.status_code == 200
+
+    # 2. Create RFQ
+    so_id = _create_sales_order(client)
+    r_rfq = client.post(
+        "/rfqs",
+        json={
+            "intent": "COMMERCIAL_HEDGE", "commodity": "ALUMINUM", "quantity_mt": 100.0,
+            "delivery_window_start": "2026-03-01", "delivery_window_end": "2026-03-31",
+            "direction": "SELL", "order_id": so_id, "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    assert r_rfq.status_code == 201
+    rfq_id = r_rfq.json()["id"]
+
+    # 3. Degrade KYC to expired
+    r_revoke = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "expired", "reason": "Degraded"})
+    assert r_revoke.status_code == 200
+
+    # 4. Attempt to ingest quote (Human REST path)
+    r_quote = client.post(
+        f"/rfqs/{rfq_id}/quotes",
+        json={
+            "rfq_id": rfq_id, "counterparty_id": cp_id,
+            "fixed_price_value": 1500.0, "fixed_price_unit": "USD/MT",
+            "float_pricing_convention": "avg", "received_at": "2026-02-01T00:00:00Z",
+        },
+    )
+    assert r_quote.status_code == 422
+    
+    detail = r_quote.json()["detail"]
+    assert detail["code"] == "rfq_quote_rejected_kyc_not_approved"
+    assert detail["counterparty_id"] == cp_id
+    assert detail["kyc_status_observed"] == "expired"
+
+    # 5. Verify audit event
+    db_fresh = SessionLocal()
+    try:
+        audit = (
+            db_fresh.query(AuditEvent)
+            .filter(AuditEvent.entity_id == UUID(cp_id))
+            .filter(AuditEvent.event_type == "rfq_quote_rejected_kyc_not_approved")
+            .first()
+        )
+        assert audit is not None
+        assert audit.payload["rfq_id"] == rfq_id
+    finally:
+        db_fresh.close()
+
+def test_quote_ingestion_rejects_degraded_kyc_llm_path(client: TestClient, session: Session) -> None:
+    # 1. Create counterparty & approve
+    cp = _create_counterparty(client, "Degraded LLM Quoter")
+    cp_id = cp["id"]
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Initial setup"})
+
+    # 2. Create RFQ
+    so_id = _create_sales_order(client)
+    r_rfq = client.post(
+        "/rfqs",
+        json={
+            "intent": "COMMERCIAL_HEDGE", "commodity": "ALUMINUM", "quantity_mt": 100.0,
+            "delivery_window_start": "2026-03-01", "delivery_window_end": "2026-03-31",
+            "direction": "SELL", "order_id": so_id, "invitations": [{"counterparty_id": cp_id}],
+        },
+    )
+    rfq_id = r_rfq.json()["id"]
+
+    # 3. Degrade KYC
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "rejected", "reason": "Risk threshold"})
+
+    # 4. Attempt quote ingestion directly via service to simulate LLM inbound message without actor_sub
+    inbound_msg_id = uuid.uuid4()
+    with pytest.raises(HTTPException) as exc_info:
+        RFQService.submit_quote(
+            session,
+            UUID(rfq_id),
+            RFQQuoteCreate(
+                rfq_id=UUID(rfq_id),
+                counterparty_id=UUID(cp_id),
+                fixed_price_value=1500.0,
+                fixed_price_unit="USD/MT",
+                float_pricing_convention="avg",
+                received_at="2026-02-01T00:00:00Z",
+            ),
+            actor_sub=None,  # Nullable for inbound/LLM path
+            inbound_message_id=inbound_msg_id
+        )
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "rfq_quote_rejected_kyc_not_approved"
+
+    # 5. Verify audit event
+    db_fresh = SessionLocal()
+    try:
+        audit = (
+            db_fresh.query(AuditEvent)
+            .filter(AuditEvent.entity_id == UUID(cp_id))
+            .filter(AuditEvent.event_type == "rfq_quote_rejected_kyc_not_approved")
+            .first()
+        )
+        assert audit is not None
+        assert audit.payload["inbound_message_id"] == str(inbound_msg_id)
+        assert audit.payload["requesting_actor_sub"] is None
+    finally:
+        db_fresh.close()
