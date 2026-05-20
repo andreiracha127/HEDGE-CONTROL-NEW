@@ -919,13 +919,22 @@ The RBAC matrix already denies trader any write scope on Deals,
 HedgeContracts, or any of the three gated mutations. The HB-2
 implementation MUST add a REDUNDANT assertion at the approval
 gate: when a `WorkflowApprovalRequest` is created, if the
-requesting JWT's role is `trader`, raise HTTP 403 explicitly with
-detail="trader role cannot trigger institutional-threshold
-mutations", independent of the upstream RBAC layer. This is
-institutional defense-in-depth — a regression in route-decorator
-wiring that admitted trader to a gated route would otherwise
-propagate silently to an approval row that should never have
-existed.
+requesting JWT's role set LACKS `risk_manager` (i.e. the actor is
+trader-only — combined `{trader, risk_manager}` actors are an
+explicitly permitted operational composite per the combinability
+rule above and MUST pass this assertion via their `risk_manager`
+scope), raise HTTP 403 explicitly with detail="role lacks
+risk_manager — institutional-threshold mutations require
+risk_manager scope", independent of the upstream RBAC layer. The
+"lacks risk_manager" formulation matches the canonical convention
+in the AUTHORIZATION MATRIX combinability section ("'lacks
+risk_manager' check in mutation invariants is therefore
+equivalent to 'is trader-only'") — same trigger condition, same
+intended scope, no false-positive on combined-role actors. This
+is institutional defense-in-depth — a regression in
+route-decorator wiring that admitted a trader-only actor to a
+gated route would otherwise propagate silently to an approval row
+that should never have existed.
 
 Schema (binding):
 
