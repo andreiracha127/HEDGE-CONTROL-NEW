@@ -250,6 +250,19 @@ if not cal.is_business_day(run_date):
 
 (Imports: add `from app.services.lme_calendar import Calendar` at module top. The service module MUST NOT `import fastapi` — the HTTP boundary is the route layer's responsibility per §4.11. `HolidaySkipSignal` is defined in this same module per the block above; no additional import directive is needed inside the service.)
 
+**Wire `trigger_source` into the new-row constructor.** At the existing `FinancePipelineRun(...)` creation site (`backend/app/services/finance_pipeline_service.py:55-59`, today reads `FinancePipelineRun(run_date=run_date, status=PipelineRunStatus.running, inputs_hash=inputs_hash)`), the executor MUST add `triggered_by=trigger_source` as a constructor kwarg. The §4.1 ORM default (`PipelineTriggerSource.manual`) is a safety floor for any legacy code path that bypasses `run_daily_pipeline` entirely — it MUST NOT be the actual value persisted by the constitutional creation path, because the governance amendment binds `triggered_by` as the authoritative provenance column for reconstructability. Without this wire-up, scheduler-invoked runs silently store `triggered_by = "manual"` and the constitutional invariant is violated at runtime even though the audit-event payload is correct (the audit and DB-column provenance MUST agree).
+
+Resulting constructor:
+
+```python
+run = FinancePipelineRun(
+    run_date=run_date,
+    status=PipelineRunStatus.running,
+    inputs_hash=inputs_hash,
+    triggered_by=trigger_source,
+)
+```
+
 After the existing existing-row check at lines 41–53, tighten the idempotency anchor against the new UNIQUE constraint (§5.2):
 
 - If a row exists with `status = completed`: return as today (line 49 unchanged).
@@ -1173,7 +1186,8 @@ Required cases (at least one test function per bullet):
 - `test_no_double_flagging_of_missing_mtm_price_per_contract` — fixture seeds an active contract with no `PriceQuote` row for `run_date` (so both §4.4 per-contract handler AND §4.7 routine 1 would otherwise emit). Run the full pipeline. Assert EXACTLY ONE `FinancePipelineRiskFlag` row exists with `(run_id=run.id, flag_type=missing_mtm_price, subject_entity_id=contract.id)` — NOT two. The dedup invariant is on the triple itself. Separately, assert the `flags_count` field of the `finance_pipeline_step_completed` event for the `risk_flags` step equals `0` (the return value of `_step_risk_flags`, which anti-joined the only candidate out per §4.7 routine 1) — `flags_count` is bound to "flags written BY this step" per §4.8, NOT to the total run row count.
 - `test_pipeline_steps_is_tuple` — `assert isinstance(PIPELINE_STEPS, tuple)`; static check that mutability was removed.
 - `test_six_audit_events_emitted_per_full_run` — assert exactly 1×`run_started` + 6×`step_started` + 6×`step_completed` + 1×`run_completed` events emitted; check the common payload fields (`run_id`, `run_date`, `inputs_hash`, `trigger_source`, `step_name`/`step_number` for step events) are populated correctly.
-- `test_scheduled_run_attributes_to_service_cashflow_pipeline` — call `run_daily_pipeline` with `trigger_source=scheduler` and `actor="service:cashflow_pipeline"`; assert the emitted audit-event payload has `"actor": "service:cashflow_pipeline"` and `"trigger_source": "scheduler"`.
+- `test_scheduled_run_attributes_to_service_cashflow_pipeline` — call `run_daily_pipeline` with `trigger_source=scheduler` and `actor="service:cashflow_pipeline"`; assert the emitted audit-event payload has `"actor": "service:cashflow_pipeline"` and `"trigger_source": "scheduler"`; ALSO assert `db.refresh(run); run.triggered_by == PipelineTriggerSource.scheduler` (the §4.3 constructor wire-up is verified at the DB level, not just the audit payload — the two provenance surfaces must agree).
+- `test_manual_run_sets_triggered_by_manual_in_db` — call `run_daily_pipeline` with `trigger_source=manual`; `db.refresh(run); assert run.triggered_by == PipelineTriggerSource.manual`. Defends against accidental flip of the §4.1 ORM default or a missing constructor wire-up.
 - `test_manual_run_attributes_to_human_actor` — call via the route layer with a `risk_manager` JWT fixture; assert audit event payload has `"actor": "<actor_sub>"` and `"trigger_source": "manual"` (plus the existing route-level `manual_run_triggered` event is also present, distinguishable by `event_type`).
 
 ### §7.2 Reconstruction test — same file
@@ -1279,6 +1293,7 @@ Each criterion is a verifiable command against the merged HEAD. The PR is accept
 27. Reconstruction test (`test_reconstruct_past_run_from_four_tables_alone`) explicitly asserts that ONLY the four tables (`finance_pipeline_runs`, `finance_pipeline_steps`, `finance_pipeline_risk_flags`, `audit_events`) are queried during reconstruction. The test fails if any other table is touched.
 28. `ruff check backend/` and `ruff format --check backend/` both pass.
 29. `grep -n "uq_finance_pipeline_risk_flags_run_subject_type" backend/alembic/versions/*.py` returns ≥ 1 match (the dedup UNIQUE constraint on `(run_id, subject_entity_id, flag_type)` is present in the §5.3 alembic block). The DB-level defense against duplicate-flag emission is shipped, not just the application-level anti-join in §4.7.
+30. `grep -n "triggered_by=trigger_source" backend/app/services/finance_pipeline_service.py` returns ≥ 1 match (the §4.3 constructor wire-up is in place; the `triggered_by` column reflects the actual trigger source, not the ORM default).
 
 ## §11 Workflow
 
