@@ -727,23 +727,24 @@ state machine. Each transition emits an HMAC-signed audit event
           │              │          │         │             │
           v              v          v         v             v
     ┌──────────┐   ┌──────────┐  ┌─────────┐  ┌─────────────┐
-    │ approved │──>│ rejected │  │ expired │<─│ superseded  │
-    └────┬─────┘   └──────────┘  └────▲────┘  └──────▲──────┘
-         │           terminal         │ (also from   │ (also from
-         │                            │  `approved`  │  `approved`
-         │                            │  via         │  via
-         │                            │  sweeper)    │  requester
-         v                            │              │  cancel)
-    ┌────────────┐                    │              │
+    │ approved │   │ rejected │  │ expired │  │ superseded  │
+    └────┬─────┘   └──────────┘  └─────────┘  └─────────────┘
+         │           terminal     terminal       terminal
+         v
+    ┌────────────┐
     │ consumed   │  <── /workflow-approvals/{id}/consume on success
     └────────────┘
        terminal
 ```
 
-(The two arrows from `approved` to `expired` and `superseded` are
-drawn as inbound arrows on those terminal boxes — the canonical
-enumeration below is the binding source of truth for the
-state-machine edges; the diagram is a primary-path sketch.)
+(The diagram shows the primary lifecycle paths from `pending` and
+`approved → consumed`. Two additional `approved`-source transitions
+(`approved → expired` via the sweeper, `approved → superseded` via
+requester cancel) are NOT drawn here — adding them in ASCII would
+make the diagram illegible at this width. The
+"Valid transitions (binding enumeration)" block below is the
+canonical source of truth for the complete state-machine edges;
+the diagram is a primary-path sketch only.)
 
 Valid transitions (binding enumeration — this list is exhaustive):
 
