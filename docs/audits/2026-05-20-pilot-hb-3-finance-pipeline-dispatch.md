@@ -198,6 +198,17 @@ Add new schema `PipelineRiskFlagRead` (Pydantic v2) mirroring the model columns 
 
 ### §4.3 `backend/app/services/finance_pipeline_service.py` — holiday guard + audit emission + idempotency tightening
 
+**Domain signal (NOT an HTTP exception).** Per the canonical task pattern in `backend/app/tasks/westmetall_task.py` (which catches domain classes `WestmetallLayoutError` / `CircuitOpenError`, never HTTP framework types), the service layer MUST NOT raise `fastapi.HTTPException`. The HB-3 holiday-skip signal is a domain exception defined at module top of `finance_pipeline_service.py`, above the `FinancePipelineService` class:
+
+```python
+class HolidaySkipSignal(Exception):
+    """Raised by FinancePipelineService.run_daily_pipeline when run_date is
+    not an LME trading day. The route layer translates this to HTTP 409; the
+    scheduler task catches the class directly and logs as a skipped run.
+    No row, no event, no run — per HB-3 holiday-exempt invariant.
+    """
+```
+
 Insert at the top of `run_daily_pipeline` (before line 39's `inputs_hash` computation):
 
 ```python
@@ -207,14 +218,12 @@ from app.services.lme_calendar import Calendar  # at module top
 cal = Calendar()
 if not cal.is_business_day(run_date):
     # Holiday-skip: constitutional invariant — no row, no event, no run.
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=f"run_date {run_date.isoformat()} is not an LME trading day; "
-               "pipeline skipped per HB-3 holiday-exempt invariant.",
+    raise HolidaySkipSignal(
+        f"run_date {run_date.isoformat()} is not an LME trading day"
     )
 ```
 
-(Imports: add `HTTPException`, `status` from `fastapi` at module top.)
+(Imports: add `from app.services.lme_calendar import Calendar` at module top. The service module MUST NOT `import fastapi` — the HTTP boundary is the route layer's responsibility per §4.11. `HolidaySkipSignal` is defined in this same module per the block above; no additional import directive is needed inside the service.)
 
 After the existing existing-row check at lines 41–53, tighten the idempotency anchor against the new UNIQUE constraint (§5.2):
 
@@ -288,7 +297,9 @@ Same concrete-exception discipline as §4.4. `SnapshotPrerequisiteMissing` is th
 
 ### §4.6 Silent-exception removal: `_step_cashflow_baseline` (lines 208–226)
 
-The cashflow_baseline step is single-op (one snapshot for the whole day, not per-contract). The failure semantics differ from §4.4/§4.5 — a structural failure here halts the step (whole-step propagation per the HB-3 amendment's failure-semantics binding). Replace lines 216–226:
+The cashflow_baseline step is single-op (one snapshot for the whole day, not per-contract). Its failure semantics differ structurally from §4.4 / §4.5 — there is no per-record dimension to surface as a recoverable flag. Per the HB-3 amendment's failure-semantics binding ("structural failures propagate to whole-step `failed` status"), a `CashflowBaselinePrerequisiteMissing` raise here MUST propagate to whole-step `failed` and halt the run. **The dispatch deliberately does NOT emit a `FinancePipelineRiskFlag` from this step**: the binding `flag_type` enum (§4.1) has no value that semantically corresponds to a cashflow-baseline prerequisite failure, and reusing `missing_mtm_price` would corrupt the audit trail (an auditor querying `flag_type='missing_mtm_price'` must see only MTM-related rows). Adding a fifth `flag_type` enum member is explicit Phase 2 deferral per §2 and the amendment's deferral list.
+
+Replace lines 216–226:
 
 ```python
 try:
@@ -299,22 +310,19 @@ try:
         commit=False,
     )
     return 1
-except CashflowBaselinePrerequisiteMissing as exc:
-    # Recoverable: surface as risk_flag and continue (step still "completed", 0 records).
-    _emit_risk_flag(
-        db,
-        run_id=run.id,
-        flag_type=PipelineRiskFlagType.missing_mtm_price,
-        severity=PipelineRiskFlagSeverity.warning,
-        subject_entity_type="finance_pipeline_run",
-        subject_entity_id=run.id,
-        payload={"reason": str(exc)[:500], "step": "cashflow_baseline"},
-    )
-    return 0
-# Structural exceptions (DB errors, config missing) propagate naturally —
-# the service-level handler at lines 94–101 catches them, marks the step failed,
-# and halts the run.
+# CashflowBaselinePrerequisiteMissing is a structural prerequisite failure —
+# it propagates to the service-level handler at lines 94–101, which marks the
+# step `failed` and halts the run. The run-level audit event
+# `finance_pipeline_run_failed_partial` (§4.8) and the step-level
+# `finance_pipeline_step_failed` event together carry the full failure record;
+# no risk_flag row is written because the binding `flag_type` enum (§4.1) does
+# not define a value for this failure mode and the dispatch refuses to reuse
+# `missing_mtm_price` (which would semantically corrupt the audit trail).
+# Other structural exceptions (DB errors, config missing) propagate via the
+# same path — bare `except Exception` is FORBIDDEN here.
 ```
+
+The concrete-exception discipline of §4.4 / §4.5 (catch the documented domain class only) still applies: catching `Exception` and falling back is prohibited. The difference is that for cashflow_baseline, NO recoverable class is caught at the step body — every raise propagates and halts the step.
 
 ### §4.7 `_emit_risk_flag` helper + implement `_step_risk_flags` body (lines 228–232)
 
@@ -353,11 +361,23 @@ def _step_risk_flags(db: Session, run_date: date, run: FinancePipelineRun) -> in
     """HB-3 risk_flags step — 4 detection routines per HB-3 amendment binding."""
     flag_count = 0
 
-    # 1. missing_mtm_price flags already emitted by §4.4/§4.5/§4.6 during their
-    #    respective steps. This routine ADDITIONALLY scans for active contracts
-    #    that have no PriceQuote row for run_date at all (a structural gap, not
-    #    a per-contract recoverable from MTM step).
-    contracts_without_price = _query_active_contracts_without_price_for(db, run_date)
+    # 1. missing_mtm_price gap-scan — DEDUPLICATED against per-contract flags
+    #    already written by §4.4 (`_step_mtm_computation`) earlier in this run.
+    #    The MTM step emits `missing_mtm_price` per-contract when
+    #    `compute_mtm_for_contract` raises `PriceProvenanceMissing`. This routine
+    #    ADDITIONALLY scans for active contracts that have no `PriceQuote` row
+    #    for `run_date` at all (a structural-gap class), but EXCLUDES any
+    #    `contract_id` that already has a `missing_mtm_price` flag row for
+    #    `run_id == run.id`. The exclusion is enforced inside the SQL of
+    #    `_query_active_contracts_without_price_for` (anti-join against
+    #    `finance_pipeline_risk_flags` — see §4.7-helpers below). This keeps the
+    #    `(run_id, subject_entity_id, flag_type)` triple unique within a run
+    #    and keeps the `flags_count` field of the `finance_pipeline_step_completed`
+    #    audit event consistent with the row count in `finance_pipeline_risk_flags`
+    #    (acceptance criterion §10.27 reconstructability invariant).
+    contracts_without_price = _query_active_contracts_without_price_for(
+        db, run_date, run.id
+    )
     for contract in contracts_without_price:
         FinancePipelineService._emit_risk_flag(
             db, run_id=run.id,
@@ -428,7 +448,188 @@ def _step_risk_flags(db: Session, run_date: date, run: FinancePipelineRun) -> in
     return flag_count
 ```
 
-The four `_query_*` helpers are module-level (NOT class methods) in `finance_pipeline_service.py`, defined below the `FinancePipelineService` class. Each is a thin SQLAlchemy query — the executor writes them following the existing query-style patterns elsewhere in the service module. Names are binding (used in tests below).
+The four `_query_*` helpers are module-level functions (NOT class methods) in `finance_pipeline_service.py`, defined below the `FinancePipelineService` class. Names + signatures are binding (used in tests below). Bodies are specified inline so the executor has a binding spec to write and test against (acceptance criterion §10.14 requires the `_step_risk_flags` body to be non-trivial; that binding extends transitively to these helpers):
+
+```python
+from sqlalchemy import and_, exists, func, select
+from sqlalchemy.orm import Session
+
+from app.models.audit import AuditEvent  # pre-existing model
+from app.models.counterparty import Counterparty  # pre-existing model
+from app.models.deal import Deal  # pre-existing model
+from app.models.finance_pipeline import (
+    FinancePipelineRiskFlag,
+    PipelineRiskFlagType,
+)
+from app.models.hedge_contract import HedgeContract  # pre-existing model
+from app.models.price_quote import PriceQuote  # pre-existing model
+from app.models.workflow_approval import (  # pre-existing model (HB-2)
+    WorkflowApprovalRequest,
+    WorkflowApprovalStatus,
+)
+
+
+def _query_active_contracts_without_price_for(
+    db: Session,
+    run_date: date,
+    run_id: uuid.UUID,
+) -> list[HedgeContract]:
+    """Active hedge contracts that have NO PriceQuote row for run_date AND
+    do NOT yet have a missing_mtm_price flag for this run (P1 #3 dedup —
+    routine 1 of `_step_risk_flags` MUST NOT double-flag contracts the MTM
+    step already flagged per-record).
+    """
+    has_price = select(PriceQuote.id).where(
+        and_(
+            PriceQuote.contract_id == HedgeContract.id,
+            PriceQuote.quote_date == run_date,
+        )
+    ).exists()
+    already_flagged = select(FinancePipelineRiskFlag.id).where(
+        and_(
+            FinancePipelineRiskFlag.run_id == run_id,
+            FinancePipelineRiskFlag.flag_type
+                == PipelineRiskFlagType.missing_mtm_price,
+            FinancePipelineRiskFlag.subject_entity_type == "hedge_contract",
+            FinancePipelineRiskFlag.subject_entity_id == HedgeContract.id,
+        )
+    ).exists()
+    stmt = (
+        select(HedgeContract)
+        .where(HedgeContract.status == "active")  # match existing enum literal
+        .where(~has_price)
+        .where(~already_flagged)
+        .order_by(HedgeContract.id)
+    )
+    return list(db.execute(stmt).scalars())
+
+
+# Lightweight row shapes returned by the next three helpers. The executor MAY
+# replace these with `typing.NamedTuple` or dataclasses depending on local
+# style; the field names below are binding (consumed in §4.7 payload dicts).
+@dataclass(frozen=True)
+class _UnhedgedRow:
+    counterparty_id: uuid.UUID
+    tonnes: Decimal
+    guardrail: Decimal
+
+
+@dataclass(frozen=True)
+class _KycRegressionRow:
+    counterparty_id: uuid.UUID
+    kyc_status: str
+    active_deal_count: int
+
+
+def _query_unhedged_exposure_over_guardrail(
+    db: Session,
+    run_date: date,
+) -> list[_UnhedgedRow]:
+    """Counterparties whose net unhedged exposure (in tonnes) for run_date
+    exceeds the operational guardrail. Guardrail is the env var
+    FINANCE_PIPELINE_UNHEDGED_GUARDRAIL_TONNES (default 1000).
+
+    Net unhedged exposure per counterparty := sum(open commercial order tonnes)
+    minus sum(active hedge contract tonnes) for the same metal class. The
+    aggregation follows the existing `exposure_engine.compute_global_exposure`
+    primitive — the helper SHOULD delegate to that primitive to avoid
+    duplicating the exposure math, then filter the result by guardrail.
+    """
+    from app.services.exposure_engine import compute_global_exposure
+    guardrail = Decimal(
+        os.getenv("FINANCE_PIPELINE_UNHEDGED_GUARDRAIL_TONNES", "1000")
+    )
+    rows: list[_UnhedgedRow] = []
+    for entry in compute_global_exposure(db, as_of_date=run_date):
+        if entry.unhedged_tonnes > guardrail:
+            rows.append(
+                _UnhedgedRow(
+                    counterparty_id=entry.counterparty_id,
+                    tonnes=entry.unhedged_tonnes,
+                    guardrail=guardrail,
+                )
+            )
+    return rows
+
+
+def _query_kyc_regressions_with_active_deals(
+    db: Session,
+) -> list[_KycRegressionRow]:
+    """Counterparties whose kyc_status is anything OTHER than 'approved' but
+    who have at least one active Deal. Per HB-1 amendment, the KYC gate
+    prevents NEW RFQs but does not retroactively close existing positions;
+    HB-3 surfaces this lag as a `kyc_regression_with_active_deals` flag.
+    """
+    active_deal_count = (
+        select(func.count(Deal.id))
+        .where(
+            and_(
+                Deal.counterparty_id == Counterparty.id,
+                Deal.status == "active",  # match existing enum literal
+            )
+        )
+        .scalar_subquery()
+    )
+    stmt = (
+        select(
+            Counterparty.id.label("counterparty_id"),
+            Counterparty.kyc_status.label("kyc_status"),
+            active_deal_count.label("active_deal_count"),
+        )
+        .where(Counterparty.kyc_status != "approved")
+        .where(active_deal_count > 0)
+        .order_by(Counterparty.id)
+    )
+    return [
+        _KycRegressionRow(
+            counterparty_id=row.counterparty_id,
+            kyc_status=row.kyc_status,
+            active_deal_count=row.active_deal_count,
+        )
+        for row in db.execute(stmt)
+    ]
+
+
+def _query_workflow_approvals_pending_past_expiry(
+    db: Session,
+) -> list[WorkflowApprovalRequest]:
+    """WorkflowApprovalRequest rows whose status is `pending` or `approved`
+    AND `expires_at < now()`. The HB-2 background sweeper SHOULD transition
+    these to `expired`, but if it has not yet fired (or has fallen behind),
+    HB-3 surfaces the staleness as a `workflow_approval_pending_past_expiry`
+    flag. Both `pending` and `approved` are in scope because either status
+    crossing `expires_at` represents an operational gap the auditor needs
+    to see.
+    """
+    stmt = (
+        select(WorkflowApprovalRequest)
+        .where(
+            WorkflowApprovalRequest.status.in_(
+                (
+                    WorkflowApprovalStatus.pending,
+                    WorkflowApprovalStatus.approved,
+                )
+            )
+        )
+        .where(WorkflowApprovalRequest.expires_at < func.now())
+        .order_by(WorkflowApprovalRequest.id)
+    )
+    return list(db.execute(stmt).scalars())
+```
+
+Imports to add at top of `finance_pipeline_service.py`:
+
+```python
+import os
+import uuid
+from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
+```
+
+(Most are already imported per current HEAD — confirm and only add the missing ones. `dataclass`, `Decimal`, and `os` are the most likely additions.)
+
+**Symbol-not-line discipline:** if the column or enum names cited above (e.g. `HedgeContract.status == "active"`, `Counterparty.kyc_status`, `WorkflowApprovalStatus.pending`) drift from the names actually present at the executor's HEAD, the executor follows the SYMBOL (resolves to the current name) — NOT the literal string above. The query semantics (anti-join on already-flagged, sum-of-tonnes vs guardrail, kyc != approved AND active_deal_count > 0, status in {pending, approved} AND expires_at < now) are the binding contract.
 
 ### §4.8 Service-layer audit-event emission (six lifecycle events)
 
@@ -524,12 +725,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import HTTPException
-
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.finance_pipeline import PipelineTriggerSource
-from app.services.finance_pipeline_service import FinancePipelineService
+from app.services.finance_pipeline_service import (
+    FinancePipelineService,
+    HolidaySkipSignal,
+)
 
 logger = get_logger()
 
@@ -539,8 +741,11 @@ FINANCE_PIPELINE_SERVICE_ACTOR = "service:cashflow_pipeline"
 def run_finance_pipeline_daily() -> None:
     """Execute one daily Finance Pipeline cycle.
 
-    Holiday-skips raise HTTP 409 inside the service; this task catches that
-    specific signal and logs without alerting. Other exceptions are logged
+    Holiday-skips raise the `HolidaySkipSignal` domain exception inside the
+    service; this task catches that class DIRECTLY and logs without alerting
+    (matches the `WestmetallLayoutError` / `CircuitOpenError` precedent in
+    `westmetall_task.py` — no HTTP framework types crossing layer boundaries,
+    no fragile string match on `exc.detail`). Other exceptions are logged
     as failures and surface via the audit-event absence-of-completion signal.
     """
     today = datetime.now(timezone.utc).date()
@@ -562,17 +767,8 @@ def run_finance_pipeline_daily() -> None:
             status=run.status.value,
             steps_completed=run.steps_completed,
         )
-    except HTTPException as exc:
-        if exc.status_code == 409 and "not an LME trading day" in (exc.detail or ""):
-            logger.info("finance_pipeline_task_skipped_holiday", run_date=str(today))
-        else:
-            logger.error(
-                "finance_pipeline_task_http_error",
-                status_code=exc.status_code,
-                detail=str(exc.detail),
-                run_date=str(today),
-            )
-            session.rollback()
+    except HolidaySkipSignal:
+        logger.info("finance_pipeline_task_skipped_holiday", run_date=str(today))
     except Exception as exc:  # noqa: BLE001 — task boundary, NEVER crash the scheduler
         logger.exception(
             "finance_pipeline_task_failure",
@@ -584,7 +780,7 @@ def run_finance_pipeline_daily() -> None:
         session.close()
 ```
 
-Note: the bare `except Exception` AT THE TASK BOUNDARY is permitted (matches the existing `westmetall_task.py` pattern at lines 92–97); the constitutional "no silent fallback" applies INSIDE step bodies, where errors must surface as audit events / risk flags / step-level failure. The task boundary's role is to keep the scheduler process alive across one bad day; the run-level audit event for the failure already fired inside the service layer (per §4.8), so the audit trail is not silent.
+Note: the bare `except Exception` AT THE TASK BOUNDARY is permitted (matches the existing `westmetall_task.py` pattern at lines 92–97); the constitutional "no silent fallback" applies INSIDE step bodies, where errors must surface as audit events / risk flags / step-level failure. The task boundary's role is to keep the scheduler process alive across one bad day; the run-level audit event for the failure already fired inside the service layer (per §4.8), so the audit trail is not silent. **`fastapi` is NOT imported in this module** — domain class `HolidaySkipSignal` is the holiday-skip control signal per §4.3.
 
 ### §4.10 Scheduler registration in `backend/app/tasks/scheduler.py`
 
@@ -610,9 +806,9 @@ Default 19:00 UTC is intentional — 1h after Westmetall's 18:00 UTC ingest so t
 
 The existing `logger.info("scheduler_started", jobs=[j.id for j in _scheduler.get_jobs()])` at lines 65–68 surfaces the new job id in the startup log without further changes.
 
-### §4.11 Route layer: `backend/app/api/routes/finance_pipeline.py` — set `triggered_by="manual"`
+### §4.11 Route layer: `backend/app/api/routes/finance_pipeline.py` — set `triggered_by="manual"` + translate `HolidaySkipSignal` → HTTP 409
 
-Pass `trigger_source=PipelineTriggerSource.manual` and `actor=actor_sub` into the service call at line 42–43:
+Pass `trigger_source=PipelineTriggerSource.manual` and `actor=actor_sub` into the service call at line 42–43, AND wrap the service call so the new domain exception is translated to HTTP 409 at the route boundary (the only layer permitted to emit HTTP framework types):
 
 ```python
 # BEFORE
@@ -621,18 +817,28 @@ run = FinancePipelineService.run_daily_pipeline(
 )
 
 # AFTER
-run = FinancePipelineService.run_daily_pipeline(
-    db,
-    body.run_date,
-    commit=False,
-    trigger_source=PipelineTriggerSource.manual,
-    actor=actor_sub,
-)
+try:
+    run = FinancePipelineService.run_daily_pipeline(
+        db,
+        body.run_date,
+        commit=False,
+        trigger_source=PipelineTriggerSource.manual,
+        actor=actor_sub,
+    )
+except HolidaySkipSignal as exc:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=f"{exc}; pipeline skipped per HB-3 holiday-exempt invariant.",
+    ) from exc
 ```
 
-The existing `Depends(audit_event(...))` at lines 31–36 (the `manual_run_triggered` route-level event) is preserved unchanged — this dispatch does NOT remove the route-layer audit event.
+The existing `Depends(audit_event(...))` at lines 31–36 (the `manual_run_triggered` route-level event) is preserved unchanged — this dispatch does NOT remove the route-layer audit event. The HB-3 holiday-skip translation is the only behavioral change at this route; the existing 200/200-with-resumed-run response shape is untouched on business days.
 
-Verify imports at top of the route module — `PipelineTriggerSource` from `app.models.finance_pipeline` is the new import directive.
+Verify imports at top of the route module — the new import directives are:
+
+- `from app.models.finance_pipeline import PipelineTriggerSource`
+- `from app.services.finance_pipeline_service import HolidaySkipSignal`
+- `from fastapi import HTTPException, status` (already imported per current HEAD; confirm — if absent, add)
 
 ### §4.12 Service-identity binding documentation (NO matrix edit)
 
@@ -776,17 +982,20 @@ All backend tests run via `python -m pytest -x -q` (SQLite in-memory per `backen
 
 Required cases (at least one test function per bullet):
 
-- `test_holiday_skip_raises_409` — pass a Saturday `run_date`; assert HTTPException(409, "not an LME trading day") raised; assert NO row inserted into `finance_pipeline_runs`; assert NO audit event emitted (query `AuditEvent` by `entity_type IN ("finance_pipeline_run", "finance_pipeline_step")` → zero rows).
+- `test_holiday_skip_service_raises_signal` — pass a Saturday `run_date` directly to `FinancePipelineService.run_daily_pipeline`; assert `HolidaySkipSignal` raised; assert NO row inserted into `finance_pipeline_runs`; assert NO audit event emitted (query `AuditEvent` by `entity_type IN ("finance_pipeline_run", "finance_pipeline_step")` → zero rows). Confirms the service layer raises a DOMAIN exception, NOT `fastapi.HTTPException`.
+- `test_holiday_skip_route_returns_409` — POST `/finance/pipeline/run` with `risk_manager` JWT and a Saturday `run_date` body; assert HTTP 409 response with `detail` containing `"not an LME trading day"`. Confirms the route layer translates the domain signal correctly; the assertion lives in `backend/tests/test_finance_pipeline_routes.py` if the project's route-test convention puts it there — otherwise inline in the same HB-3 test file.
+- `test_holiday_skip_task_logs_skipped_no_exception` — see §7.3 (`test_task_holiday_logs_skipped_no_exception`). The task catches `HolidaySkipSignal` directly (no `HTTPException` / no string match).
 - `test_business_day_completes_all_six_steps` — happy path; assert `run.status == completed`, `run.steps_completed == 6`, six `finance_pipeline_step_completed` audit events + one `finance_pipeline_run_started` + one `finance_pipeline_run_completed`.
 - `test_unique_run_date_constraint` — two concurrent `SessionLocal()` instances both call `run_daily_pipeline` for the same `run_date`; assert the second raises an `IntegrityError` OR HTTP 409 (depending on the lock-timeout branch in §4.3); assert only ONE row in `finance_pipeline_runs` post-test.
 - `test_idempotency_completed_run_returns_existing` — call `run_daily_pipeline` twice for the same `run_date` sequentially; assert second call returns the same `run.id` as the first; assert ONE row in `finance_pipeline_runs`; assert exactly 6 step rows; assert no duplicate audit events.
 - `test_resume_from_partial` — simulate a `partial` run (set status manually + one step to `failed`); call `run_daily_pipeline` again; assert the failed step retried, run transitions to `completed`; assert `finance_pipeline_run_started` event with `previous_status="partial"` emitted.
 - `test_mtm_step_recoverable_emits_risk_flag` — patch `compute_mtm_for_contract` to raise the recoverable exception class for one contract out of three; assert two contracts processed, one `FinancePipelineRiskFlag` row with `flag_type=missing_mtm_price` + `subject_entity_id=<the failed contract>`; assert step status `completed`, not `failed`.
-- `test_cashflow_baseline_recoverable_emits_risk_flag` — same pattern as the MTM test, applied to `_step_cashflow_baseline`.
+- `test_cashflow_baseline_prerequisite_failure_halts_step` — patch `create_cashflow_baseline_snapshot` to raise `CashflowBaselinePrerequisiteMissing`; assert the `cashflow_baseline` step transitions to `failed`; assert the run transitions to `partial`; assert `finance_pipeline_step_failed` + `finance_pipeline_run_failed_partial` audit events emitted; assert NO `FinancePipelineRiskFlag` row written for this run (the prerequisite failure does NOT surface as a flag — see §4.6 rationale: the binding `flag_type` enum has no semantically correct member for this failure mode, and reusing `missing_mtm_price` would corrupt the audit trail). Subsequent steps (`risk_flags`, `summary`) MUST NOT execute.
 - `test_pl_snapshot_recoverable_emits_risk_flag` — same pattern, applied to `_step_pl_snapshot`.
 - `test_mtm_step_structural_failure_halts_run` — patch `compute_mtm_for_contract` to raise a non-recoverable exception (e.g. `sqlalchemy.exc.DatabaseError`); assert run transitions to `partial`, the failed step has status `failed`, `finance_pipeline_step_failed` audit event emitted, subsequent steps NOT executed.
 - `test_risk_flags_step_emits_all_four_flag_types` — fixture seeds (a) a contract without a PriceQuote for run_date → `missing_mtm_price`, (b) a counterparty with unhedged tonnes above guardrail → `unhedged_exposure_over_guardrail`, (c) a counterparty with `kyc_status != approved` + an active Deal → `kyc_regression_with_active_deals`, (d) a `pending` workflow_approval past `expires_at` → `workflow_approval_pending_past_expiry`. Assert four `FinancePipelineRiskFlag` rows with matching `flag_type` enum values.
 - `test_risk_flags_step_zero_flags_is_valid` — fixture seeds a clean state; assert step completes, returns 0, step status `completed`.
+- `test_no_double_flagging_of_missing_mtm_price_per_contract` — fixture seeds an active contract with no `PriceQuote` row for `run_date` (so both §4.4 per-contract handler AND §4.7 routine 1 would otherwise emit). Run the full pipeline. Assert EXACTLY ONE `FinancePipelineRiskFlag` row exists with `(run_id=run.id, flag_type=missing_mtm_price, subject_entity_id=contract.id)` — NOT two. Assert the `flags_count` field of the `finance_pipeline_step_completed` event for the `risk_flags` step equals the actual row count in `finance_pipeline_risk_flags` for that run (reconstructability consistency).
 - `test_pipeline_steps_is_tuple` — `assert isinstance(PIPELINE_STEPS, tuple)`; static check that mutability was removed.
 - `test_six_audit_events_emitted_per_full_run` — assert exactly 1×`run_started` + 6×`step_started` + 6×`step_completed` + 1×`run_completed` events emitted; check the common payload fields (`run_id`, `run_date`, `inputs_hash`, `trigger_source`, `step_name`/`step_number` for step events) are populated correctly.
 - `test_scheduled_run_attributes_to_service_cashflow_pipeline` — call `run_daily_pipeline` with `trigger_source=scheduler` and `actor="service:cashflow_pipeline"`; assert the emitted audit-event payload has `"actor": "service:cashflow_pipeline"` and `"trigger_source": "scheduler"`.
