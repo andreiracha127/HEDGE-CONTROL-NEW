@@ -2707,6 +2707,7 @@ export interface components {
         /** KycStatusTransitionRequest */
         KycStatusTransitionRequest: {
             new_status: components["schemas"]["KycStatus"];
+            /** Reason */
             reason: string;
         };
         /**

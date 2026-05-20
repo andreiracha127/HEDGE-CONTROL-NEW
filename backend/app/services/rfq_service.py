@@ -810,7 +810,10 @@ class RFQService:
         The caller must ``session.commit()`` afterwards.
         """
         if actor_sub is None and inbound_message_id is None:
-            raise ValueError("Quote ingestion must have either actor_sub or inbound_message_id")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quote ingestion must have either actor_sub or inbound_message_id",
+            )
 
         rfq = RFQService.get_live(session, rfq_id)
 
