@@ -193,7 +193,7 @@ The RBAC target contract for the platform. Per-route gates MUST conform to
 this matrix by Cluster 3 implementation closure; after that closure, any
 deviation requires constitutional amendment, not silent override.
 
-Human roles (3, no admin/viewer):
+Human roles (4, no admin/viewer):
 
 - `trader` (commercial team)
   - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier},
@@ -222,6 +222,24 @@ Human roles (3, no admin/viewer):
   - **Cannot be combined with any other human role** — separation-of-duties
     invariant (see Role combinability below)
 
+- `compliance_officer` (HedgeContract-settle auditor-fallback co-signer;
+  added by the HB-2 Workflow Approval gate amendment below)
+  - Read access to `WorkflowApprovalRequest` rows (to inspect pending
+    approvals)
+  - Write access limited to approve/reject `WorkflowApprovalRequest`
+    rows where they are the configured fallback co-signer
+    (`hedge_contract_settle` when the requester is `auditor`)
+  - Cannot: Deals, HedgeContracts, Counterparties, Orders, RFQs,
+    Scenario, MTM/P&L, Audit log, or any other institutional surface
+    — no other route accepts a `compliance_officer` JWT for any
+    mutation
+  - **Cannot be combined with any other human role** — separation-of-duties
+    invariant (see Role combinability below). A `{compliance_officer,
+    auditor}` actor would create a settlement self-approval loophole
+    (auditor requests, then approves as compliance_officer via the
+    fallback rule); this is the very scenario the role exists to
+    prevent.
+
 Role combinability (binding):
 
 - `auditor` is exclusive: an actor's effective human-role set MUST NOT
@@ -233,6 +251,18 @@ Role combinability (binding):
   route gate is evaluated. This closes the multi-role escape where
   an `{trader, auditor}` actor would pass the mutation route gate
   via trader and reach the handler.
+- `compliance_officer` is exclusive: an actor's effective human-role
+  set MUST NOT contain `compliance_officer` together with any other
+  human role. Mixed sets like `{compliance_officer, auditor}`,
+  `{compliance_officer, risk_manager}`, or `{compliance_officer,
+  trader}` violate the same separation-of-duties invariant. The
+  `{compliance_officer, auditor}` case in particular would defeat
+  the settlement auditor-fallback design (the actor could request a
+  settle as auditor and then self-approve as compliance_officer via
+  the fallback rule). The JWT validator MUST reject any mixed set
+  containing `compliance_officer` at validation time with HTTP 401,
+  BEFORE any route gate is evaluated — same enforcement layer and
+  precedence as the `auditor`-exclusive rule above.
 - `trader` and `risk_manager` MAY be combined in a single actor
   (operational reality: risk_manager often performs trader work too).
   An actor with `{trader, risk_manager}` has the union of both roles'
@@ -584,8 +614,8 @@ Gate scope (binding):
   deterministically.
 
 - HedgeContract settle: the canonical settlement path defined by
-  PR #76 (Cluster 1) at `POST /cashflow/contracts/{contract_id}/
-  settle`. If the settlement amount (the cash-leg
+  PR #76 (Cluster 1) at `POST /cashflow/contracts/{contract_id}/settle`.
+  If the settlement amount (the cash-leg
   `settlement_amount_usd`, Decimal) exceeds the settlement
   threshold, the route returns 202 with the
   `WorkflowApprovalRequest`. Generic status-patch settlement remains
@@ -689,28 +719,24 @@ state machine. Each transition emits an HMAC-signed audit event
 (see Audit events below).
 
 ```
-                ┌───────────┐
-                │  pending  │  <─── created on threshold-crossing
-                └─────┬─────┘       mutation request (HTTP 202)
-                      │
-      ┌───────────────┼────────────────┐
-      │               │                │
-      v               v                v
- ┌──────────┐  ┌─────────────┐  ┌────────────┐
- │ approved │  │  rejected   │  │  expired   │
- └────┬─────┘  └─────────────┘  └────────────┘
-      │              terminal         terminal
-      │
-      v
- ┌────────────┐
- │ consumed   │  <─── mutation actually applied via
- └────────────┘       /approval/{id}/consume on success
-                      (terminal)
-
- ┌─────────────┐
- │ superseded  │  <─── requester-initiated cancel (e.g. to
- └─────────────┘       reissue with adjusted payload); only
-                       valid from `pending`. Terminal.
+                                 ┌───────────┐
+                                 │  pending  │  <─── created on threshold-crossing
+                                 └─────┬─────┘       mutation request (HTTP 202)
+                                       │
+          ┌──────────────┬──────────┬──┴──────┬─────────────┐
+          │              │          │         │             │
+          v              v          v         v             v
+    ┌──────────┐   ┌──────────┐  ┌─────────┐  ┌─────────────┐
+    │ approved │   │ rejected │  │ expired │  │ superseded  │
+    └────┬─────┘   └──────────┘  └─────────┘  └─────────────┘
+         │           terminal     terminal       terminal
+         │                                       (requester-initiated
+         v                                       cancel; reissue is a
+    ┌────────────┐                               new request, not a
+    │ consumed   │  <─── mutation actually      state transition)
+    └────────────┘       applied via
+                         /workflow-approvals/{id}/consume
+                         on success (terminal)
 ```
 
 - `pending`: initial state on creation. Co-signer can `approve` or
@@ -727,7 +753,9 @@ state machine. Each transition emits an HMAC-signed audit event
   (see below).
 - `consumed`: mutation applied. Terminal.
 - `rejected`: co-signer refused. Terminal. Rejection requires a
-  reason (enum + optional free text — see Audit events below).
+  reason (enum code + mandatory free text, min 8 chars — see
+  Audit events below for the canonical schema; the same shape
+  binds the request-time API contract).
 - `expired`: time-based terminal state. Per-mutation-type defaults
   (configurable via env vars at startup):
   - `deal_create`: **48h**
@@ -769,8 +797,14 @@ When a threshold-crossing mutation request is received:
    `pending`, `mutation_payload_hash` populated, `requested_by`
    populated with the JWT actor_sub, `threshold_at_request`
    populated with the numeric value that triggered the gate
-   (notional_usd or settlement_amount_usd), and `expires_at`
-   populated per the per-mutation-type expiry config.
+   (notional_usd or settlement_amount_usd),
+   `threshold_config_value` populated with the configured
+   threshold the value crossed (mirrors the audit-payload field
+   of the same name — both MUST be persisted at request-time so
+   later granted/rejected/expired/consumed/superseded events
+   carry the originally-applicable threshold even if the env
+   var is rotated mid-lifecycle), and `expires_at` populated
+   per the per-mutation-type expiry config.
 3. The 202 response body MUST include:
 
    ```json
@@ -805,7 +839,10 @@ When a threshold-crossing mutation request is received:
 Audit events (binding):
 
 Every state transition emits an HMAC-signed audit event via
-`AuditTrailService.record(...)`. Five event types:
+`AuditTrailService.record(...)`. Six event types (one per
+transition defined by the state machine above — the
+`Every state transition emits` invariant binds the enumeration
+to the state machine):
 
 1. `workflow_approval_requested` — on `pending` creation.
 2. `workflow_approval_granted` — on `pending → approved`
@@ -818,6 +855,13 @@ Every state transition emits an HMAC-signed audit event via
    model).
 5. `workflow_approval_consumed` — on `approved → consumed`
    transition (the mutation actually applied).
+6. `workflow_approval_superseded` — on `pending → superseded`
+   transition (requester-initiated cancel; see state machine
+   above). The reissue creates a new
+   `workflow_approval_requested` event on its own row; the
+   superseded event captures only the cancel itself, NOT the
+   reissue linkage (correlation across the pair is via
+   `correlation_id` if the caller threads it).
 
 Common payload fields (binding for ALL five events):
 
@@ -836,20 +880,25 @@ Common payload fields (binding for ALL five events):
   requested_by: <actor_sub>,
   approver_sub: <actor_sub> | null,  # populated on granted /
                                      # rejected / consumed; null on
-                                     # requested / expired
+                                     # requested / expired /
+                                     # superseded (superseded is
+                                     # requester-initiated, no
+                                     # approver actor)
   approver_ip: <string> | null,      # populated on granted /
                                      # rejected / consumed
   approver_session_id: <string> | null,
-  rejection_reason: {                # populated on rejected only
-    code: <enum>,                    # e.g. policy_violation,
+  rejection_reason: {                # populated on rejected only;
+    code: <enum>,                    # null on superseded (cancel
+                                     # is not a rejection reason).
+                                     # e.g. policy_violation,
                                      # counterparty_risk,
                                      # payload_concern, other
     free_text: <string>              # mandatory; min 8 chars
   } | null,
   time_to_approval_ms: <int> | null, # populated on granted /
                                      # rejected / expired /
-                                     # consumed (delta from
-                                     # requested_at to
+                                     # consumed / superseded
+                                     # (delta from requested_at to
                                      # transition_at)
   mutation_payload_hash: <sha256>    # always populated, ties the
                                      # audit event back to the
@@ -905,9 +954,14 @@ Schema (binding):
     trigger (sqlite test variant).
   - `compliance_officer` role addition: this is a string-value
     addition to the role membership set; no schema change needed
-    at the DB layer (roles are JWT claims), but the matrix must
-    list `compliance_officer` in the AUTHORIZATION MATRIX section
-    above when this amendment lands.
+    at the DB layer (roles are JWT claims). The AUTHORIZATION
+    MATRIX section above is updated in lockstep by this
+    amendment to enumerate `compliance_officer` (now 4 human
+    roles) and to bind its exclusive role-combinability rule
+    (no mixing with `auditor`, `trader`, or `risk_manager`);
+    the JWT validator MUST reject mixed sets containing
+    `compliance_officer` with HTTP 401, same enforcement layer
+    as the `auditor`-exclusive rule.
 
 - Variant constraints (postgres + sqlite parity): every column
   above uses the `with_variant` pattern established by Cluster 4 —
