@@ -193,7 +193,7 @@ The RBAC target contract for the platform. Per-route gates MUST conform to
 this matrix by Cluster 3 implementation closure; after that closure, any
 deviation requires constitutional amendment, not silent override.
 
-Human roles (4, no admin/viewer):
+Human roles (3, no admin/viewer):
 
 - `trader` (commercial team)
   - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier},
@@ -222,24 +222,6 @@ Human roles (4, no admin/viewer):
   - **Cannot be combined with any other human role** — separation-of-duties
     invariant (see Role combinability below)
 
-- `compliance_officer` (HedgeContract-settle auditor-fallback co-signer;
-  added by the HB-2 Workflow Approval gate amendment below)
-  - Read access to `WorkflowApprovalRequest` rows (to inspect pending
-    approvals)
-  - Write access limited to approve/reject `WorkflowApprovalRequest`
-    rows where they are the configured fallback co-signer
-    (`hedge_contract_settle` when the requester is `auditor`)
-  - Cannot: Deals, HedgeContracts, Counterparties, Orders, RFQs,
-    Scenario, MTM/P&L, Audit log, or any other institutional surface
-    — no other route accepts a `compliance_officer` JWT for any
-    mutation
-  - **Cannot be combined with any other human role** — separation-of-duties
-    invariant (see Role combinability below). A `{compliance_officer,
-    auditor}` actor would create a settlement self-approval loophole
-    (auditor requests, then approves as compliance_officer via the
-    fallback rule); this is the very scenario the role exists to
-    prevent.
-
 Role combinability (binding):
 
 - `auditor` is exclusive: an actor's effective human-role set MUST NOT
@@ -251,18 +233,6 @@ Role combinability (binding):
   route gate is evaluated. This closes the multi-role escape where
   an `{trader, auditor}` actor would pass the mutation route gate
   via trader and reach the handler.
-- `compliance_officer` is exclusive: an actor's effective human-role
-  set MUST NOT contain `compliance_officer` together with any other
-  human role. Mixed sets like `{compliance_officer, auditor}`,
-  `{compliance_officer, risk_manager}`, or `{compliance_officer,
-  trader}` violate the same separation-of-duties invariant. The
-  `{compliance_officer, auditor}` case in particular would defeat
-  the settlement auditor-fallback design (the actor could request a
-  settle as auditor and then self-approve as compliance_officer via
-  the fallback rule). The JWT validator MUST reject any mixed set
-  containing `compliance_officer` at validation time with HTTP 401,
-  BEFORE any route gate is evaluated — same enforcement layer and
-  precedence as the `auditor`-exclusive rule above.
 - `trader` and `risk_manager` MAY be combined in a single actor
   (operational reality: risk_manager often performs trader work too).
   An actor with `{trader, risk_manager}` has the union of both roles'
@@ -672,9 +642,20 @@ Approval policy table (binding):
   - `deal_award` → required_approver_roles=`["risk_manager"]`,
     fallback=`{}` (same logic — risk_manager co-signs).
   - `hedge_contract_settle` → required_approver_roles=`["auditor"]`,
-    fallback_when_requester_is=`{"auditor": "compliance_officer"}`.
-    The `compliance_officer` role is a NEW role introduced by this
-    amendment; see Role additions below.
+    fallback_when_requester_is=`{}`. No fallback role is needed:
+    per the AUTHORIZATION MATRIX, `auditor` has no write scope and
+    therefore cannot request a settle in the first place (the only
+    role that can submit a HedgeContract-settle request is
+    `risk_manager` per HedgeContract full-lifecycle scope), so the
+    auditor-as-requester edge case is unreachable by construction
+    at the RBAC layer. The global `requested_by != approved_by`
+    DB constraint enforces "second auditor co-signs" when the
+    auditor count is ≥ 2; if only a single auditor is provisioned
+    in production, threshold-crossing settles cannot complete
+    until a second auditor identity is added (known operational
+    pre-condition, not an HB-2 design defect — same constraint
+    applies pre-amendment to any auditor-signed institutional
+    action).
 
 - The `approval_policy` table is configurable post-pilot through a
   governance amendment (NOT a silent UPDATE). Pilot-window changes
@@ -690,27 +671,17 @@ Approval policy table (binding):
 
 Role additions (binding):
 
-- `compliance_officer` — a new institutional role added by this
-  amendment to handle the auditor-self-approval edge case on
-  settlement (when an auditor requests a settlement above
-  threshold, another auditor is structurally rare, so
-  `compliance_officer` co-signs instead). Initial seeded membership
-  during pilot is empty (operational pre-condition: at least one
-  compliance_officer identity provisioned in Clerk before any
-  auditor-requested settlement above threshold can be approved); if
-  no compliance_officer is provisioned and an auditor requests a
-  threshold-crossing settle, the approval cannot complete and the
-  mutation cannot proceed — fail-closed by design.
-
-- `compliance_officer` has NO write scope on Deals, HedgeContracts,
-  Counterparties, Orders, MTM, P&L, Audit log, or any other
-  institutional surface. The role exists SOLELY for the
-  HedgeContract-settle auditor-fallback co-sign function above.
-  Authorization matrix extension: read access to
-  `WorkflowApprovalRequest` (to inspect pending approvals) + write
-  access to approve/reject `WorkflowApprovalRequest` rows where
-  they are the configured fallback. No other route accepts a
-  `compliance_officer` JWT for any mutation.
+- None. The HB-2 Workflow Approval gate introduces no new
+  institutional roles. The auditor-as-settle-requester edge case
+  (which an earlier draft of this amendment proposed to handle
+  with a `compliance_officer` fallback role) is unreachable by
+  construction: `auditor` has no write scope per the AUTHORIZATION
+  MATRIX, so the only role that can request a HedgeContract
+  settle is `risk_manager`. The single-auditor operational
+  constraint (a system with only one auditor identity cannot
+  process threshold-crossing settles until a second auditor is
+  provisioned) is a known pre-condition shared with any other
+  auditor-signed institutional action, not an HB-2 design defect.
 
 Approval lifecycle states (binding):
 
@@ -1113,17 +1084,16 @@ Schema (binding):
     the pilot defaults above.
   - DB constraint on `workflow_approval_requests`:
     `requested_by != approved_by` enforced via CHECK (postgres) /
-    trigger (sqlite test variant).
-  - `compliance_officer` role addition: this is a string-value
-    addition to the role membership set; no schema change needed
-    at the DB layer (roles are JWT claims). The AUTHORIZATION
-    MATRIX section above is updated in lockstep by this
-    amendment to enumerate `compliance_officer` (now 4 human
-    roles) and to bind its exclusive role-combinability rule
-    (no mixing with `auditor`, `trader`, or `risk_manager`);
-    the JWT validator MUST reject mixed sets containing
-    `compliance_officer` with HTTP 401, same enforcement layer
-    as the `auditor`-exclusive rule.
+    trigger (sqlite test variant). For `deal_create`/`deal_award`
+    this binds the "second risk_manager co-signs" invariant
+    (both requester and approver have `risk_manager` scope; the
+    constraint forces distinct identities). For
+    `hedge_contract_settle` the constraint is trivially satisfied
+    by construction (requester is `risk_manager` per RBAC,
+    approver is `auditor` per approval_policy — different
+    identities by role definition); it remains in place as a
+    defense-in-depth invariant against any future policy
+    misconfiguration.
 
 - Variant constraints (postgres + sqlite parity): every column
   above uses the `with_variant` pattern established by Cluster 4 —
