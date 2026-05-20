@@ -1,7 +1,9 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+from fastapi import HTTPException
 
 from app.models.counterparty import (
     Counterparty,
@@ -29,7 +31,7 @@ class CounterpartyService:
             whatsapp_phone=data.get("whatsapp_phone"),
             payment_terms_days=data.get("payment_terms_days") or 30,
             credit_limit_usd=data.get("credit_limit_usd"),
-            kyc_status=KycStatus(data.get("kyc_status", "pending")),
+            kyc_status=KycStatus.pending,
             sanctions_status=SanctionsStatus(data.get("sanctions_status", "clear")),
             risk_rating=RiskRating(data.get("risk_rating", "medium")),
             is_active=data.get("is_active", True),
@@ -72,6 +74,8 @@ class CounterpartyService:
     def update(
         session: Session, cp: Counterparty, data: dict, *, commit: bool = True
     ) -> Counterparty:
+        if "kyc_status" in data:
+            raise HTTPException(status_code=403, detail="kyc_status mutations require the dedicated risk_manager transition endpoint (POST /counterparties/{id}/kyc-status). Generic update path cannot mutate kyc_status.")
         for key, value in data.items():
             if value is not None:
                 if key == "kyc_status":
@@ -87,6 +91,26 @@ class CounterpartyService:
             session.commit()
             session.refresh(cp)
         return cp
+
+    @staticmethod
+    def set_kyc_status(
+        session: Session,
+        cp_id: UUID,
+        *,
+        new_status: KycStatus,
+    ) -> tuple[Counterparty, KycStatus]:
+        stmt = (
+            select(Counterparty)
+            .where(Counterparty.id == cp_id, Counterparty.is_deleted == False)
+            .with_for_update()
+        )
+        cp = session.execute(stmt).scalar_one_or_none()
+        if not cp:
+            raise HTTPException(status_code=404, detail="Counterparty not found")
+        previous_status = cp.kyc_status
+        cp.kyc_status = new_status
+        session.flush()
+        return cp, previous_status
 
     @staticmethod
     def soft_delete(

@@ -109,6 +109,12 @@ def _create_invitation(
         )
         session.add(cp)
         session.flush()
+        from app.services.counterparty_service import CounterpartyService
+        from app.models.counterparty import KycStatus
+        # Test fixture: directly approve via service to set up the test scenario.
+        # Production code path (POST /counterparties/{id}/kyc-status) is covered
+        # by tests/test_counterparty_kyc_transition.py.
+        CounterpartyService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
         counterparty_id = cp.id
     inv = RFQInvitation(
         id=uuid.uuid4(),

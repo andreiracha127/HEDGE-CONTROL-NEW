@@ -52,6 +52,7 @@ from app.services.exposure_service import ExposureService
 from app.services.linkage_service import LinkageService
 from app.services.price_lookup_service import canonical_commodity
 from app.services.whatsapp_service import WhatsAppService
+from app.services.kyc_gate import assert_kyc_approved
 from app.core.logging import get_logger
 from app.core.utils import now_utc
 
@@ -600,6 +601,14 @@ class RFQService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Counterparty {invitation.counterparty_id} not found",
                 )
+            assert_kyc_approved(
+                session,
+                invitation.counterparty_id,
+                gate_point="rfq_invitation",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"attempted_purpose": "rfq_invite"},
+            )
             if not cp.whatsapp_phone:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -816,12 +825,21 @@ class RFQService:
 
     @staticmethod
     def submit_quote(
-        session: Session, rfq_id: UUID, payload: RFQQuoteCreate
+        session: Session,
+        rfq_id: UUID,
+        payload: RFQQuoteCreate,
+        actor_sub: str | None = None,
+        inbound_message_id: UUID | None = None,
     ) -> RFQQuote:
         """Persist a quote and handle state transitions.
 
         The caller must ``session.commit()`` afterwards.
         """
+        if actor_sub is None and inbound_message_id is None:
+            raise ValueError(
+                "Quote ingestion must have either actor_sub or inbound_message_id"
+            )
+
         rfq = RFQService.get_live(session, rfq_id)
 
         if rfq.intent == RFQIntent.spread:
@@ -859,6 +877,18 @@ class RFQService:
                 detail=f"Counterparty {payload.counterparty_id} not found",
             )
 
+        assert_kyc_approved(
+            session,
+            payload.counterparty_id,
+            gate_point="rfq_quote",
+            requesting_actor_sub=actor_sub,
+            rfq_id=rfq_id,
+            extra_payload={
+                "rejection_path": "webhook_inbound_llm" if inbound_message_id is not None else "human_post",
+                "inbound_message_id": str(inbound_message_id) if inbound_message_id is not None else None,
+            },
+        )
+
         quote = RFQQuote(
             rfq_id=rfq_id,
             counterparty_id=payload.counterparty_id,
@@ -867,6 +897,8 @@ class RFQService:
             float_pricing_convention=payload.float_pricing_convention.value,
             received_at=payload.received_at,
         )
+        quote.actor_sub = actor_sub
+        quote.inbound_message_id = inbound_message_id
         session.add(quote)
         session.flush()
 
@@ -1025,6 +1057,14 @@ class RFQService:
             current_phone = recipient.recipient_phone
             cp = None
             if recipient.counterparty_id:
+                assert_kyc_approved(
+                    session,
+                    recipient.counterparty_id,
+                    gate_point="rfq_invitation",
+                    requesting_actor_sub=actor_sub,
+                    rfq_id=rfq.id,
+                    extra_payload={"attempted_purpose": "refresh"},
+                )
                 cp = session.get(Counterparty, recipient.counterparty_id)
                 if cp and cp.whatsapp_phone:
                     current_phone = cp.whatsapp_phone
@@ -1295,6 +1335,14 @@ class RFQService:
             if isinstance(counterparty_id, str)
             else counterparty_id
         )
+        assert_kyc_approved(
+            session,
+            cp_uuid,
+            gate_point="rfq_invitation",
+            requesting_actor_sub=actor_sub,
+            rfq_id=rfq.id,
+            extra_payload={"attempted_purpose": "refresh"},
+        )
         existing = (
             session.query(RFQInvitation)
             .filter(
@@ -1410,6 +1458,14 @@ class RFQService:
                 )
 
             top = ranking_payload.ranking[0]
+            assert_kyc_approved(
+                session,
+                top.counterparty_id,
+                gate_point="rfq_award",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"quote_id": str(top.buy_quote.id)},
+            )
             winning_counterparty_ids = [str(top.counterparty_id)]
             winning_quote_ids = [str(top.buy_quote.id), str(top.sell_quote.id)]
             ranking_snapshot = ranking_payload.model_dump(mode="json")
@@ -1516,6 +1572,14 @@ class RFQService:
                 )
 
             top_quote = trade_ranking.ranking[0].quote
+            assert_kyc_approved(
+                session,
+                top_quote.counterparty_id,
+                gate_point="rfq_award",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"quote_id": str(top_quote.id)},
+            )
             winning_counterparty_ids = [str(top_quote.counterparty_id)]
             winning_quote_ids = [str(top_quote.id)]
             ranking_snapshot = trade_ranking.model_dump(mode="json")

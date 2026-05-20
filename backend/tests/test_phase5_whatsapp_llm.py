@@ -697,6 +697,10 @@ class TestRFQOrchestrator:
         )
         assert cp_resp.status_code == 201
         cp_id = cp_resp.json()["id"]
+        # Test fixture: directly approve via service to set up the test scenario.
+        # Production code path (POST /counterparties/{id}/kyc-status) is covered
+        # by tests/test_counterparty_kyc_transition.py.
+        client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
 
         payload = {
             "intent": "GLOBAL_POSITION",

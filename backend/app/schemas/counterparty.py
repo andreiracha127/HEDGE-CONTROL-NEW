@@ -49,7 +49,6 @@ class CounterpartyCreate(BaseModel):
     )
     payment_terms_days: int = 30
     credit_limit_usd: float | None = None
-    kyc_status: KycStatus = KycStatus.pending
     sanctions_status: SanctionsStatus = SanctionsStatus.clear
     risk_rating: RiskRating = RiskRating.medium
     is_active: bool = True
@@ -68,11 +67,15 @@ class CounterpartyUpdate(BaseModel):
     contact_phone: str | None = Field(None, max_length=50)
     whatsapp_phone: str | None = Field(None, max_length=50)
     credit_limit_usd: float | None = None
-    kyc_status: KycStatus | None = None
     sanctions_status: SanctionsStatus | None = None
     risk_rating: RiskRating | None = None
     is_active: bool | None = None
     notes: str | None = None
+
+
+class KycStatusTransitionRequest(BaseModel):
+    new_status: KycStatus
+    reason: str = Field(min_length=8, max_length=512)
 
 
 class CounterpartyRead(BaseModel):

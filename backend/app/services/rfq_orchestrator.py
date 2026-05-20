@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import uuid
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -1659,7 +1660,10 @@ class RFQOrchestrator:
 
         rfq_id_str = str(rfq.id)
         try:
-            quote = RFQService.submit_quote(session, rfq.id, quote_payload)
+            inbound_msg_id = durable.id if durable is not None else uuid.uuid4()
+            quote = RFQService.submit_quote(
+                session, rfq.id, quote_payload, inbound_message_id=inbound_msg_id
+            )
             # Codex P2 (PR-8 round): capture scalar attributes BEFORE
             # `session.commit()` because SQLAlchemy default
             # `expire_on_commit=True` (`backend/app/core/database.py`)

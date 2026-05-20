@@ -48,7 +48,12 @@ def _create_counterparty(client, name: str = "CP-A", phone: str = "+551199999000
         },
     )
     assert response.status_code == 201, response.text
-    return response.json()["id"]
+    cp_id = response.json()["id"]
+    # Test fixture: directly approve via service to set up the test scenario.
+    # Production code path (POST /counterparties/{id}/kyc-status) is covered
+    # by tests/test_counterparty_kyc_transition.py.
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
+    return cp_id
 
 
 def _create_rfq(client, cp_ids: list[str]) -> dict:

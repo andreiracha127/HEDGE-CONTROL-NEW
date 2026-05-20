@@ -282,7 +282,7 @@ def create_quote(
     session: Session = Depends(get_session),
 ) -> RFQQuoteRead:
     with unit_of_work(session, request=request):
-        quote = RFQService.submit_quote(session, rfq_id, payload)
+        quote = RFQService.submit_quote(session, rfq_id, payload, actor_sub=actor_sub)
         mark_audit_success(request, quote.id, metadata={"actor_sub": actor_sub})
     return RFQQuoteRead.model_validate(quote)
 

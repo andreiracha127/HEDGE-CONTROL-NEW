@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_actor_roles, get_current_actor_sub, require_any_role
+from app.core.auth import get_current_actor_roles, get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -14,6 +14,7 @@ from app.schemas.counterparty import (
     CounterpartyListResponse,
     CounterpartyRead,
     CounterpartyUpdate,
+    KycStatusTransitionRequest,
 )
 from app.services.counterparty_service import CounterpartyService
 
@@ -187,4 +188,37 @@ def delete_counterparty(
     with unit_of_work(session, request=request):
         cp = CounterpartyService.soft_delete(session, cp, commit=False)
         mark_audit_success(request, cp.id, metadata={"actor_sub": actor_sub})
+    return CounterpartyRead.model_validate(cp)
+
+
+@router.post(
+    "/{counterparty_id}/kyc-status",
+    response_model=CounterpartyRead,
+    status_code=status.HTTP_200_OK,
+)
+def transition_kyc_status(
+    counterparty_id: UUID,
+    payload: KycStatusTransitionRequest,
+    request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(
+        audit_event(entity_type="counterparty", event_type="kyc_status_changed")
+    ),
+    __: None = Depends(require_role("risk_manager")),
+    session: Session = Depends(get_session),
+) -> CounterpartyRead:
+    with unit_of_work(session, request=request):
+        cp, previous_status = CounterpartyService.set_kyc_status(
+            session, counterparty_id, new_status=payload.new_status
+        )
+        mark_audit_success(
+            request,
+            cp.id,
+            metadata={
+                "actor_sub": actor_sub,
+                "previous_status": previous_status.value,
+                "new_status": payload.new_status.value,
+                "reason": payload.reason,
+            },
+        )
     return CounterpartyRead.model_validate(cp)
