@@ -336,27 +336,27 @@ If the existing P&L service exposes a different concrete-exception name for the 
 
 The cashflow_baseline step is single-op (one snapshot for the whole day, not per-contract). Its failure semantics differ structurally from §4.4 / §4.5 — there is no per-record dimension to surface as a recoverable flag. Per the HB-3 amendment's failure-semantics binding ("structural failures propagate to whole-step `failed` status"), a `CashflowBaselinePrerequisiteMissing` raise here MUST propagate to whole-step `failed` and halt the run. **The dispatch deliberately does NOT emit a `FinancePipelineRiskFlag` from this step**: the binding `flag_type` enum (§4.1) has no value that semantically corresponds to a cashflow-baseline prerequisite failure, and reusing `missing_mtm_price` would corrupt the audit trail (an auditor querying `flag_type='missing_mtm_price'` must see only MTM-related rows). Adding a fifth `flag_type` enum member is explicit Phase 2 deferral per §2 and the amendment's deferral list.
 
-Replace lines 216–226:
+Replace lines 216–226 (no `try:` wrapper — the step body deliberately catches nothing, so every raise propagates to the service-level handler at lines 94–101 which marks the step `failed` and halts the run):
 
 ```python
-try:
-    create_cashflow_baseline_snapshot(
-        db,
-        as_of_date=run_date,
-        correlation_id=str(run.id),
-        commit=False,
-    )
-    return 1
-# CashflowBaselinePrerequisiteMissing is a structural prerequisite failure —
-# it propagates to the service-level handler at lines 94–101, which marks the
-# step `failed` and halts the run. The run-level audit event
-# `finance_pipeline_run_failed_partial` (§4.8) and the step-level
-# `finance_pipeline_step_failed` event together carry the full failure record;
-# no risk_flag row is written because the binding `flag_type` enum (§4.1) does
-# not define a value for this failure mode and the dispatch refuses to reuse
-# `missing_mtm_price` (which would semantically corrupt the audit trail).
-# Other structural exceptions (DB errors, config missing) propagate via the
-# same path — bare `except Exception` is FORBIDDEN here.
+# Single-op step body — no try: wrapper. CashflowBaselinePrerequisiteMissing
+# and any other raise propagate to the service-level handler at lines
+# 94–101, which marks the step `failed` and halts the run. The run-level
+# audit event `finance_pipeline_run_failed_partial` (§4.8) and the
+# step-level `finance_pipeline_step_failed` event together carry the
+# full failure record; no risk_flag row is written because the binding
+# `flag_type` enum (§4.1) does not define a value for this failure mode
+# and the dispatch refuses to reuse `missing_mtm_price` (which would
+# semantically corrupt the audit trail). Bare `except Exception` is
+# FORBIDDEN here — adding any `try/except` to this step body would
+# re-introduce silent fallback.
+create_cashflow_baseline_snapshot(
+    db,
+    as_of_date=run_date,
+    correlation_id=str(run.id),
+    commit=False,
+)
+return 1
 ```
 
 The concrete-exception discipline of §4.4 / §4.5 (catch the documented domain class only) still applies: catching `Exception` and falling back is prohibited. The difference is that for cashflow_baseline, NO recoverable class is caught at the step body — every raise propagates and halts the step.
