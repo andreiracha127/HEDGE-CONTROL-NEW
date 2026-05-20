@@ -727,17 +727,45 @@ state machine. Each transition emits an HMAC-signed audit event
           │              │          │         │             │
           v              v          v         v             v
     ┌──────────┐   ┌──────────┐  ┌─────────┐  ┌─────────────┐
-    │ approved │   │ rejected │  │ expired │  │ superseded  │
-    └────┬─────┘   └──────────┘  └─────────┘  └─────────────┘
-         │           terminal     terminal       terminal
-         │                                       (requester-initiated
-         v                                       cancel; reissue is a
-    ┌────────────┐                               new request, not a
-    │ consumed   │  <─── mutation actually      state transition)
-    └────────────┘       applied via
-                         /workflow-approvals/{id}/consume
-                         on success (terminal)
+    │ approved │──>│ rejected │  │ expired │<─│ superseded  │
+    └────┬─────┘   └──────────┘  └────▲────┘  └──────▲──────┘
+         │           terminal         │ (also from   │ (also from
+         │                            │  `approved`  │  `approved`
+         │                            │  via         │  via
+         │                            │  sweeper)    │  requester
+         v                            │              │  cancel)
+    ┌────────────┐                    │              │
+    │ consumed   │  <── /workflow-approvals/{id}/consume on success
+    └────────────┘
+       terminal
 ```
+
+(The two arrows from `approved` to `expired` and `superseded` are
+drawn as inbound arrows on those terminal boxes — the canonical
+enumeration below is the binding source of truth for the
+state-machine edges; the diagram is a primary-path sketch.)
+
+Valid transitions (binding enumeration — this list is exhaustive):
+
+- `→ pending` (creation on threshold-crossing mutation request).
+- `pending → approved`.
+- `pending → rejected`.
+- `pending → expired` (background sweeper after `expires_at`).
+- `pending → superseded` (requester-initiated cancel).
+- `approved → consumed` (caller invokes the consume endpoint with
+  a payload whose canonical hash matches `mutation_payload_hash`).
+- `approved → expired` (background sweeper after `expires_at` — an
+  `approved` row that is never consumed is swept on the same cadence
+  as `pending` rows; see `mutation_payload_hash` invariant and the
+  expiry sweeper notes below).
+- `approved → superseded` (requester-initiated cancel after the
+  approval is granted but before it is consumed — typically used
+  to clean up after a `payload_drift_detected` HTTP 422 on consume).
+
+No other transitions are valid; the implementation MUST reject any
+unlisted (from, to) pair at the service layer. `consumed`,
+`rejected`, `expired`, and `superseded` are all terminal — no
+transitions out of them.
 
 - `pending`: initial state on creation. Co-signer can `approve` or
   `reject`. Requester (or anyone with requester's role) can mark
@@ -750,22 +778,29 @@ state machine. Each transition emits an HMAC-signed audit event
   the mutation. This separation is intentional — it allows the
   approval to be granted asynchronously and consumed only when the
   caller is ready, while preserving the payload-hash invariant
-  (see below).
+  (see below). An `approved` row that is never consumed remains
+  bounded: the requester can `supersede` it explicitly (e.g. after
+  a `payload_drift_detected` 422 on consume), and the same
+  background expiry sweeper that handles `pending` will transition
+  it to `expired` once `expires_at` passes — no `approved` row can
+  outlive its expiry window.
 - `consumed`: mutation applied. Terminal.
 - `rejected`: co-signer refused. Terminal. Rejection requires a
   reason (enum code + mandatory free text, min 8 chars — see
   Audit events below for the canonical schema; the same shape
   binds the request-time API contract).
-- `expired`: time-based terminal state. Per-mutation-type defaults
+- `expired`: time-based terminal state, reached from `pending` OR
+  `approved` past `expires_at`. Per-mutation-type defaults
   (configurable via env vars at startup):
   - `deal_create`: **48h**
   - `deal_award`: **24h**
   - `hedge_contract_settle`: **2h** (settlement amounts are
     time-sensitive; stale approvals risk price drift).
-- `superseded`: requester explicitly cancelled the pending approval
-  (e.g. to reissue with adjusted payload). Terminal. The reissue
-  is a NEW `WorkflowApprovalRequest`, not a state transition on
-  the superseded one.
+- `superseded`: requester explicitly cancelled the request,
+  reached from `pending` OR `approved` (e.g. to reissue with
+  adjusted payload, or to clean up after a payload-drift 422 on
+  consume). Terminal. The reissue is a NEW `WorkflowApprovalRequest`,
+  not a state transition on the superseded one.
 
 `mutation_payload_hash` invariant (binding):
 
@@ -780,12 +815,23 @@ the hashes do not match (payload drift between request-time and
 consume-time invalidates the approval — this prevents a malicious
 or careless caller from approving a small deal and then consuming
 a large one). The rejection reason is `payload_drift_detected`;
-the request stays in `approved` state (NOT consumed; NOT
-superseded) so the caller can either resubmit with the correct
-payload or supersede and reissue. Canonicalization MUST reuse the
-existing canonical-form helper that drives audit-trail signing
-(`normalize_payload_raw` per `audit_trail_service`) — no new
-canonicalization is introduced by this amendment.
+the request stays in `approved` state (NOT consumed) so the
+caller has three options: (a) resubmit consume with the correct
+canonical payload (the row remains `approved`), (b) explicitly
+supersede the approval via the supersede endpoint and reissue
+the original mutation request to start a new approval cycle
+(transitions `approved → superseded`; the reissue creates a new
+`pending` row), or (c) do nothing — the background expiry sweeper
+will eventually transition the `approved` row to `expired` once
+`expires_at` passes, after which the caller MUST start a fresh
+approval cycle. The `approved → superseded` and `approved →
+expired` transitions both close the lifecycle of an unconsumed
+approval; neither bypasses the audit-trail invariant (both emit
+their respective HMAC-signed events per Audit events below).
+Canonicalization MUST reuse the existing canonical-form helper
+that drives audit-trail signing (`normalize_payload_raw` per
+`audit_trail_service`) — no new canonicalization is introduced
+by this amendment.
 
 Pending-mutation behavior (binding):
 
@@ -850,14 +896,18 @@ to the state machine):
 3. `workflow_approval_rejected` — on `pending → rejected`
    transition.
 4. `workflow_approval_expired` — on automated expiry by background
-   task (the task scans for `pending` rows past `expires_at` and
-   transitions them; see Phase 2 deferral note for the scheduling
-   model).
+   task. The task scans for BOTH `pending` AND `approved` rows past
+   their `expires_at` (the composite index `(status, expires_at)`
+   defined in the schema below covers both lookups) and transitions
+   each to `expired`. The event payload's `previous_status` field
+   distinguishes which source state the row was in. See Phase 2
+   deferral note for the scheduling model.
 5. `workflow_approval_consumed` — on `approved → consumed`
    transition (the mutation actually applied).
-6. `workflow_approval_superseded` — on `pending → superseded`
-   transition (requester-initiated cancel; see state machine
-   above). The reissue creates a new
+6. `workflow_approval_superseded` — on requester-initiated cancel
+   from either `pending` OR `approved` (see state machine above).
+   The event payload's `previous_status` field distinguishes which
+   source state the row was in. The reissue creates a new
    `workflow_approval_requested` event on its own row; the
    superseded event captures only the cancel itself, NOT the
    reissue linkage (correlation across the pair is via
@@ -878,6 +928,14 @@ Common payload fields (binding for ALL six events):
   threshold_config_value: <Decimal>, # the configured threshold the
                                      # value crossed
   requested_by: <actor_sub>,
+  previous_status: <enum> | null,    # source state for transition
+                                     # events; null on `requested`
+                                     # creation. Required on
+                                     # `expired` (pending|approved)
+                                     # and `superseded`
+                                     # (pending|approved) to
+                                     # disambiguate the source row
+                                     # state.
   approver_sub: <actor_sub> | null,  # populated on granted /
                                      # rejected / consumed; null on
                                      # requested / expired /
@@ -951,8 +1009,19 @@ Schema (binding):
     `correlation_id` (uuid, indexed), `idempotency_key` (string,
     nullable, indexed), `created_at`/`updated_at` (timestamps),
     `expires_at` (timestamp), `consumed_at` (timestamp,
-    nullable). Composite index on `(status, expires_at)` for the
-    expiry sweeper.
+    nullable), `rejection_reason_code` (enum from the rejection
+    `code` enumeration above, nullable), `rejection_reason_text`
+    (string, nullable). Composite index on `(status, expires_at)`
+    for the expiry sweeper (covers both `pending` and `approved`
+    lookups — both source states are eligible for time-based
+    expiry per the state-machine binding above).
+    CHECK constraint on the rejection fields: either both
+    `rejection_reason_code` and `rejection_reason_text` are NULL
+    (request not rejected) OR both are NOT NULL with
+    `LENGTH(rejection_reason_text) >= 8` (mandatory free text
+    min 8 chars per the rejection-reason schema binding above).
+    Variant constraints (postgres CHECK / sqlite trigger) per
+    Cluster 4 pattern.
   - `approval_policy` table (the policy map): columns
     `mutation_type` (enum PK), `required_approver_roles` (jsonb /
     TEXT), `fallback_when_requester_is` (jsonb / TEXT),
