@@ -993,8 +993,24 @@ Common payload fields (binding for ALL six events):
   time_to_approval_ms: <int> | null, # populated on granted /
                                      # rejected / expired /
                                      # consumed / superseded
-                                     # (delta from requested_at to
-                                     # transition_at)
+                                     # (delta from
+                                     # workflow_approval_requests.
+                                     # created_at to the audit
+                                     # event's own emission
+                                     # timestamp — the
+                                     # `created_at`/`updated_at`
+                                     # pair in the schema below
+                                     # tracks row state, while the
+                                     # AuditEvent row carries the
+                                     # transition timestamp; this
+                                     # delta SHOULD use the audit
+                                     # event timestamp, not
+                                     # workflow_approval_requests.
+                                     # updated_at, so that
+                                     # subsequent state changes
+                                     # do not retroactively
+                                     # shift past audit records'
+                                     # computed delta)
   mutation_payload_hash: <sha256>    # always populated, ties the
                                      # audit event back to the
                                      # canonical payload
