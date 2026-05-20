@@ -769,9 +769,14 @@ unlisted (from, to) pair at the service layer. `consumed`,
 transitions out of them.
 
 - `pending`: initial state on creation. Co-signer can `approve` or
-  `reject`. Requester (or anyone with requester's role) can mark
-  `superseded` to cancel and reissue. Expires automatically per
-  per-mutation-type expiry config (see below).
+  `reject`. Only the original requester (the actor whose
+  `actor_sub` equals `requested_by` on the row) can mark
+  `superseded` to cancel and reissue — same actor-level scope as
+  the `approved → superseded` transition below, so the supersede
+  authorization is uniform across the lifecycle and another actor
+  with the same role cannot cancel a peer's pending or approved
+  request. Expires automatically per per-mutation-type expiry
+  config (see below).
 - `approved`: co-signer signed off; the request is ratified but the
   mutation has NOT yet committed. Caller (frontend or background)
   must POST `/workflow-approvals/{id}/consume` with the same
