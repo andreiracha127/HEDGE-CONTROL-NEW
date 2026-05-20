@@ -268,7 +268,11 @@ for contract in contracts:
         processed += 1
     except PriceProvenanceMissing as exc:
         # Per-contract recoverable failure → surface as risk_flag, continue.
-        _emit_risk_flag(
+        # NB: _emit_risk_flag is a @staticmethod on FinancePipelineService,
+        # so it MUST be called via class-prefixed form inside any other
+        # @staticmethod on the same class (bare-name lookup would raise
+        # NameError).
+        FinancePipelineService._emit_risk_flag(
             db,
             run_id=run.id,
             flag_type=PipelineRiskFlagType.missing_mtm_price,
