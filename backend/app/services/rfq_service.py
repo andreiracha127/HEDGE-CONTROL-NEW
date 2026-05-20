@@ -9,21 +9,22 @@ from __future__ import annotations
 
 import json
 import uuid as _uuid
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
+from app.core.logging import get_logger
 from app.core.precision import DECIMAL_ZERO, quantize_mt, quantize_price
 from app.core.pricing import CANONICAL_PRICE_UNITS
-
+from app.core.utils import now_utc
 from app.models.contracts import HedgeClassification, HedgeContract, HedgeLegSide
 from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.orders import Order, OrderType, PriceType
-from app.core.database import SessionLocal
 from app.models.quotes import QuoteState, RFQQuote
 from app.models.rfqs import (
     RFQ,
@@ -49,11 +50,10 @@ from app.schemas.rfq import (
     TradeRankingRead,
 )
 from app.services.exposure_service import ExposureService
+from app.services.kyc_gate import assert_kyc_approved
 from app.services.linkage_service import LinkageService
 from app.services.price_lookup_service import canonical_commodity
 from app.services.whatsapp_service import WhatsAppService
-from app.core.logging import get_logger
-from app.core.utils import now_utc
 
 _logger = get_logger()
 
@@ -154,9 +154,7 @@ class RFQService:
     @staticmethod
     def canonicalize_fixed_price_unit(unit: str) -> str | None:
         """Return ``'USD/MT'`` when *unit* is a known variant, else ``None``."""
-        normalized = (
-            unit.strip().upper().replace("/", "").replace("-", "").replace(" ", "")
-        )
+        normalized = unit.strip().upper().replace("/", "").replace("-", "").replace(" ", "")
         if normalized == "USDMT":
             return "USD/MT"
         return None
@@ -232,9 +230,7 @@ class RFQService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def compute_trade_ranking(
-        rfq: RFQ, latest_quotes: dict[UUID, RFQQuote]
-    ) -> TradeRankingRead:
+    def compute_trade_ranking(rfq: RFQ, latest_quotes: dict[UUID, RFQQuote]) -> TradeRankingRead:
         if not latest_quotes:
             return TradeRankingRead(
                 rfq_id=rfq.id,
@@ -343,11 +339,7 @@ class RFQService:
         sell_keys = set(sell_latest.keys())
         all_counterparties = buy_keys | sell_keys
         incomplete = sorted(
-            (
-                cp
-                for cp in all_counterparties
-                if cp not in buy_keys or cp not in sell_keys
-            ),
+            (cp for cp in all_counterparties if cp not in buy_keys or cp not in sell_keys),
             key=str,
         )
         if incomplete:
@@ -379,12 +371,8 @@ class RFQService:
             buy_quote = buy_latest[cp]
             sell_quote = sell_latest[cp]
 
-            buy_unit = RFQService.canonicalize_fixed_price_unit(
-                buy_quote.fixed_price_unit
-            )
-            sell_unit = RFQService.canonicalize_fixed_price_unit(
-                sell_quote.fixed_price_unit
-            )
+            buy_unit = RFQService.canonicalize_fixed_price_unit(buy_quote.fixed_price_unit)
+            sell_unit = RFQService.canonicalize_fixed_price_unit(sell_quote.fixed_price_unit)
             if not buy_unit or not sell_unit:
                 return SpreadRankingRead(
                     rfq_id=rfq.id,
@@ -424,9 +412,7 @@ class RFQService:
         reverse = rfq.direction == RFQDirection.sell
         ordered = sorted(spreads, key=lambda s: s[1], reverse=reverse)
         ranking: list[SpreadRankingEntry] = []
-        for idx, (cp, spread_value, buy_quote, sell_quote) in enumerate(
-            ordered, start=1
-        ):
+        for idx, (cp, spread_value, buy_quote, sell_quote) in enumerate(ordered, start=1):
             ranking.append(
                 SpreadRankingEntry(
                     rank=idx,
@@ -506,30 +492,21 @@ class RFQService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Order must be variable-price",
                 )
-            expected_direction = (
-                "SELL" if order.order_type == OrderType.sales else "BUY"
-            )
+            expected_direction = "SELL" if order.order_type == OrderType.sales else "BUY"
             if payload.direction.value != expected_direction:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="RFQ direction mismatch for order type",
                 )
-            if canonical_commodity(payload.commodity) != canonical_commodity(
-                order.commodity
-            ):
+            if canonical_commodity(payload.commodity) != canonical_commodity(order.commodity):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "RFQ commodity must match order commodity for "
-                        "COMMERCIAL_HEDGE"
-                    ),
+                    detail=("RFQ commodity must match order commodity for COMMERCIAL_HEDGE"),
                 )
             snapshot = snapshot_for(order.commodity)
             post_active = quantize_mt(snapshot["commercial_active_mt"])
             post_passive = quantize_mt(snapshot["commercial_passive_mt"])
-            residual_side = (
-                post_active if order.order_type == OrderType.sales else post_passive
-            )
+            residual_side = post_active if order.order_type == OrderType.sales else post_passive
             if quantize_mt(payload.quantity_mt) > residual_side:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -600,6 +577,14 @@ class RFQService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Counterparty {invitation.counterparty_id} not found",
                 )
+            assert_kyc_approved(
+                session,
+                invitation.counterparty_id,
+                gate_point="rfq_invitation",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"attempted_purpose": "rfq_invite"},
+            )
             if not cp.whatsapp_phone:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -612,9 +597,7 @@ class RFQService:
             # Use the preview text matching the counterparty language:
             # bank_br → Portuguese, all others → English LME. Fallback only
             # when no preview text was supplied by the trader.
-            fallback_body = (
-                f"{rfq.commodity} {rfq.quantity_mt}MT {rfq.direction.value}"
-            )
+            fallback_body = f"{rfq.commodity} {rfq.quantity_mt}MT {rfq.direction.value}"
             if cp.type == CounterpartyType.bank_br and payload.text_pt:
                 raw_body = payload.text_pt
             elif payload.text_en:
@@ -816,12 +799,22 @@ class RFQService:
 
     @staticmethod
     def submit_quote(
-        session: Session, rfq_id: UUID, payload: RFQQuoteCreate
+        session: Session,
+        rfq_id: UUID,
+        payload: RFQQuoteCreate,
+        actor_sub: str | None = None,
+        inbound_message_id: UUID | None = None,
     ) -> RFQQuote:
         """Persist a quote and handle state transitions.
 
         The caller must ``session.commit()`` afterwards.
         """
+        if actor_sub is None and inbound_message_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Quote ingestion must have either actor_sub or inbound_message_id",
+            )
+
         rfq = RFQService.get_live(session, rfq_id)
 
         if rfq.intent == RFQIntent.spread:
@@ -839,9 +832,7 @@ class RFQService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="RFQ must be SENT before receiving quotes",
             )
-        if payload.fixed_price_value is None or payload.fixed_price_value <= Decimal(
-            "0"
-        ):
+        if payload.fixed_price_value is None or payload.fixed_price_value <= Decimal("0"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="fixed_price_value must be > 0",
@@ -858,6 +849,22 @@ class RFQService:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Counterparty {payload.counterparty_id} not found",
             )
+
+        assert_kyc_approved(
+            session,
+            payload.counterparty_id,
+            gate_point="rfq_quote",
+            requesting_actor_sub=actor_sub,
+            rfq_id=rfq_id,
+            extra_payload={
+                "rejection_path": "webhook_inbound_llm"
+                if inbound_message_id is not None
+                else "human_post",
+                "inbound_message_id": str(inbound_message_id)
+                if inbound_message_id is not None
+                else None,
+            },
+        )
 
         quote = RFQQuote(
             rfq_id=rfq_id,
@@ -897,12 +904,8 @@ class RFQService:
         for spread_rfq in parent_spreads:
             if spread_rfq.buy_trade_id is None or spread_rfq.sell_trade_id is None:
                 continue
-            buy_latest = RFQService.get_latest_trade_quotes(
-                session, spread_rfq.buy_trade_id
-            )
-            sell_latest = RFQService.get_latest_trade_quotes(
-                session, spread_rfq.sell_trade_id
-            )
+            buy_latest = RFQService.get_latest_trade_quotes(session, spread_rfq.buy_trade_id)
+            sell_latest = RFQService.get_latest_trade_quotes(session, spread_rfq.sell_trade_id)
             if set(buy_latest.keys()) & set(sell_latest.keys()):
                 spread_rfq.state = RFQState.quoted
                 session.add(
@@ -1004,9 +1007,7 @@ class RFQService:
         )
         recipients: dict[str, RFQInvitation] = {}
         for inv in existing:
-            cp_key = (
-                str(inv.counterparty_id) if inv.counterparty_id else inv.recipient_phone
-            )
+            cp_key = str(inv.counterparty_id) if inv.counterparty_id else inv.recipient_phone
             if cp_key not in recipients:
                 recipients[cp_key] = inv
 
@@ -1025,6 +1026,14 @@ class RFQService:
             current_phone = recipient.recipient_phone
             cp = None
             if recipient.counterparty_id:
+                assert_kyc_approved(
+                    session,
+                    recipient.counterparty_id,
+                    gate_point="rfq_invitation",
+                    requesting_actor_sub=actor_sub,
+                    rfq_id=rfq.id,
+                    extra_payload={"attempted_purpose": "refresh"},
+                )
                 cp = session.get(Counterparty, recipient.counterparty_id)
                 if cp and cp.whatsapp_phone:
                     current_phone = cp.whatsapp_phone
@@ -1136,11 +1145,7 @@ class RFQService:
                 detail="RFQ must be in SENT or QUOTED state",
             )
         quote = session.get(RFQQuote, quote_id)
-        if (
-            not quote
-            or str(quote.rfq_id) != str(rfq_id)
-            or quote.state != QuoteState.active
-        ):
+        if not quote or str(quote.rfq_id) != str(rfq_id) or quote.state != QuoteState.active:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Quote not found for this RFQ",
@@ -1240,9 +1245,7 @@ class RFQService:
 
         # ── (5) Send WhatsApp now that durable evidence exists.
         if outbox_row is not None and cp is not None and cp.whatsapp_phone:
-            result = WhatsAppService.send_text_message(
-                phone=cp.whatsapp_phone, text=message_body
-            )
+            result = WhatsAppService.send_text_message(phone=cp.whatsapp_phone, text=message_body)
             if result.success:
                 outbox_row.send_status = RFQInvitationStatus.sent
                 outbox_row.sent_at = now_utc()
@@ -1290,10 +1293,14 @@ class RFQService:
                 detail="RFQ must be in SENT or QUOTED state",
             )
 
-        cp_uuid = (
-            UUID(counterparty_id)
-            if isinstance(counterparty_id, str)
-            else counterparty_id
+        cp_uuid = UUID(counterparty_id) if isinstance(counterparty_id, str) else counterparty_id
+        assert_kyc_approved(
+            session,
+            cp_uuid,
+            gate_point="rfq_invitation",
+            requesting_actor_sub=actor_sub,
+            rfq_id=rfq.id,
+            extra_payload={"attempted_purpose": "refresh"},
         )
         existing = (
             session.query(RFQInvitation)
@@ -1410,6 +1417,14 @@ class RFQService:
                 )
 
             top = ranking_payload.ranking[0]
+            assert_kyc_approved(
+                session,
+                top.counterparty_id,
+                gate_point="rfq_award",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"quote_id": str(top.buy_quote.id)},
+            )
             winning_counterparty_ids = [str(top.counterparty_id)]
             winning_quote_ids = [str(top.buy_quote.id), str(top.sell_quote.id)]
             ranking_snapshot = ranking_payload.model_dump(mode="json")
@@ -1468,8 +1483,8 @@ class RFQService:
                         ),
                     )
 
-                fixed_side, variable_side, classification = (
-                    RFQService.determine_contract_legs(trade_rfq.direction)
+                fixed_side, variable_side, classification = RFQService.determine_contract_legs(
+                    trade_rfq.direction
                 )
                 contract = HedgeContract(
                     commodity=trade_rfq.commodity,
@@ -1516,12 +1531,20 @@ class RFQService:
                 )
 
             top_quote = trade_ranking.ranking[0].quote
+            assert_kyc_approved(
+                session,
+                top_quote.counterparty_id,
+                gate_point="rfq_award",
+                requesting_actor_sub=actor_sub,
+                rfq_id=rfq.id,
+                extra_payload={"quote_id": str(top_quote.id)},
+            )
             winning_counterparty_ids = [str(top_quote.counterparty_id)]
             winning_quote_ids = [str(top_quote.id)]
             ranking_snapshot = trade_ranking.model_dump(mode="json")
 
-            fixed_side, variable_side, classification = (
-                RFQService.determine_contract_legs(rfq.direction)
+            fixed_side, variable_side, classification = RFQService.determine_contract_legs(
+                rfq.direction
             )
             contract = HedgeContract(
                 commodity=rfq.commodity,
@@ -1547,9 +1570,7 @@ class RFQService:
             created_contract_ids.append(str(contract.id))
 
             if rfq.intent == RFQIntent.commercial_hedge and rfq.order_id is not None:
-                LinkageService.create(
-                    session, rfq.order_id, contract.id, rfq.quantity_mt
-                )
+                LinkageService.create(session, rfq.order_id, contract.id, rfq.quantity_mt)
 
         # State transitions: QUOTED → AWARDED → CLOSED
         rfq.state = RFQState.awarded
@@ -1560,9 +1581,7 @@ class RFQService:
                 to_state=RFQState.awarded,
                 user_id=actor_sub,
                 winning_quote_ids=json.dumps(winning_quote_ids, sort_keys=True),
-                winning_counterparty_ids=json.dumps(
-                    winning_counterparty_ids, sort_keys=True
-                ),
+                winning_counterparty_ids=json.dumps(winning_counterparty_ids, sort_keys=True),
                 ranking_snapshot=json.dumps(ranking_snapshot, sort_keys=True),
                 award_timestamp=award_time,
                 event_timestamp=award_time,

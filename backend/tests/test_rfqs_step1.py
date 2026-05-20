@@ -22,7 +22,12 @@ def _create_counterparty(
         },
     )
     assert resp.status_code == 201
-    return resp.json()["id"]
+    cp_id = resp.json()["id"]
+    # Test fixture: directly approve via service to set up the test scenario.
+    # Production code path (POST /counterparties/{id}/kyc-status) is covered
+    # by tests/test_counterparty_kyc_transition.py.
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
+    return cp_id
 
 
 def _create_sales_order(
@@ -410,6 +415,7 @@ def test_submit_quote_quantizes_price_before_persist(client) -> None:
                 float_pricing_convention=FloatPricingConvention.avg,
                 received_at=received_at,
             ),
+            actor_sub="test-actor-sub",
         )
         session.commit()
         quote_id = quote.id

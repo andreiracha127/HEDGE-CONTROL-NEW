@@ -352,8 +352,7 @@ def test_broadcast_to_subscriber(client):
             # event loop, but broadcast is async — call via the running loop.
             import asyncio
 
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(
+            asyncio.run(
                 manager.broadcast("rfq", rfq_id, "quote_received", {"price": 2450.0})
             )
 
@@ -380,12 +379,12 @@ def test_broadcast_not_received_by_unsubscribed(client):
             import asyncio
 
             # Broadcast to a different rfq — should NOT arrive
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 manager.broadcast("rfq", other_rfq_id, "quote_received", {"price": 99})
             )
 
             # Now broadcast to the subscribed rfq — this SHOULD arrive
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 manager.broadcast("rfq", rfq_id, "status_changed", {"status": "SENT"})
             )
 
@@ -409,7 +408,7 @@ def test_sequence_numbers_monotonic(client):
 
             seqs = []
             for i in range(5):
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     manager.broadcast("rfq", rfq_id, "quote_received", {"i": i})
                 )
                 resp = ws.receive_json()

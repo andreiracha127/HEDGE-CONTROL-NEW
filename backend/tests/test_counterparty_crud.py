@@ -27,8 +27,17 @@ def test_create_counterparty(client):
     body = r.json()
     assert body["name"] == "Aluminium Corp"
     assert body["type"] == "broker"
-    assert body["kyc_status"] == "approved"
+    assert body["kyc_status"] == "pending"
     assert body["is_deleted"] is False
+
+    # Now approve it via the transition endpoint
+    cp_id = body["id"]
+    # Test fixture: directly approve via service to set up the test scenario.
+    # Production code path (POST /counterparties/{id}/kyc-status) is covered
+    # by tests/test_counterparty_kyc_transition.py.
+    r_kyc = client.post(f"{ENDPOINT}/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "RM manually approved via API test"})
+    assert r_kyc.status_code == 200
+    assert r_kyc.json()["kyc_status"] == "approved"
 
 
 def test_create_counterparty_defaults(client):
@@ -61,22 +70,25 @@ def test_list_filter_by_type(client):
 
 
 def test_list_filter_by_kyc_status(client):
-    client.post(
+    r1 = client.post(
         ENDPOINT,
         json={
             "type": "broker",
             "name": "C1",
             "country": "USA",
-            "kyc_status": "approved",
         },
     )
+    assert r1.status_code == 201
+    cp1_id = r1.json()["id"]
+    r_kyc = client.post(f"{ENDPOINT}/{cp1_id}/kyc-status", json={"new_status": "approved", "reason": "RM manually approved via API test"})
+    assert r_kyc.status_code == 200
+
     client.post(
         ENDPOINT,
         json={
             "type": "broker",
             "name": "C2",
             "country": "USA",
-            "kyc_status": "pending",
         },
     )
     r = client.get(ENDPOINT, params={"kyc_status": "approved"})

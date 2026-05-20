@@ -22,7 +22,12 @@ def _create_counterparty(
         },
     )
     assert resp.status_code == 201
-    return resp.json()["id"]
+    cp_id = resp.json()["id"]
+    # Test fixture: directly approve via service to set up the test scenario.
+    # Production code path (POST /counterparties/{id}/kyc-status) is covered
+    # by tests/test_counterparty_kyc_transition.py.
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
+    return cp_id
 
 
 def _create_trade_rfq(client, direction: str, cp_id: str | None = None) -> str:

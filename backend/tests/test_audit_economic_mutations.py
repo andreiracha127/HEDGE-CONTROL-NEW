@@ -78,6 +78,14 @@ def _create_counterparty(session: Session) -> uuid.UUID:
         type="customer", name=f"Cpty-{uuid.uuid4().hex[:6]}", country="BRA"
     )
     session.add(cp)
+    session.flush()
+    from app.services.counterparty_service import CounterpartyService
+    from app.models.counterparty import KycStatus
+    # Test fixture: directly approve via service to set up the test scenario.
+    # Production code path (POST /counterparties/{id}/kyc-status) is covered
+    # by tests/test_counterparty_kyc_transition.py.
+    # test fixture only — sets kyc_status to APPROVED so the gate does not block this test.
+    CounterpartyService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
     session.commit()
     session.refresh(cp)
     return cp.id
@@ -671,6 +679,7 @@ class TestRouteCoverageStatic:
         ("POST", "/counterparties"): "covered institutional mutation",
         ("PATCH", "/counterparties/{counterparty_id}"): "covered institutional mutation",
         ("DELETE", "/counterparties/{counterparty_id}"): "covered institutional mutation",
+        ("POST", "/counterparties/{counterparty_id}/kyc-status"): "covered institutional mutation",
         ("POST", "/orders/sales"): "covered institutional mutation",
         ("POST", "/orders/purchase"): "covered institutional mutation",
         ("POST", "/orders/links"): "covered institutional mutation",
@@ -790,7 +799,9 @@ def _create_counterparty_via_api(
         },
     )
     assert resp.status_code == 201
-    return resp.json()["id"]
+    cp_id = resp.json()["id"]
+    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
+    return cp_id
 
 
 def _create_global_rfq(client, cp_ids: list[str]) -> dict:

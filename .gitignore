@@ -67,3 +67,5 @@ theming-base-content-master/
 
 # Local executor handoffs (orchestrator → external executor; ephemeral)
 .handoffs/
+
+backend/openapi.json

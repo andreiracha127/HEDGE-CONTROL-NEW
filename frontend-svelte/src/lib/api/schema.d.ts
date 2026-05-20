@@ -340,6 +340,23 @@ export interface paths {
         patch: operations["update_counterparty_counterparties__counterparty_id__patch"];
         trace?: never;
     };
+    "/counterparties/{counterparty_id}/kyc-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transition Kyc Status */
+        post: operations["transition_kyc_status_counterparties__counterparty_id__kyc_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/csp/report": {
         parameters: {
             query?: never;
@@ -1852,8 +1869,6 @@ export interface components {
              * @default true
              */
             is_active: boolean;
-            /** @default pending */
-            kyc_status: components["schemas"]["KycStatus"];
             /** Name */
             name: string;
             /** Notes */
@@ -1959,7 +1974,6 @@ export interface components {
             credit_limit_usd?: number | null;
             /** Is Active */
             is_active?: boolean | null;
-            kyc_status?: components["schemas"]["KycStatus"] | null;
             /** Name */
             name?: string | null;
             /** Notes */
@@ -2690,6 +2704,12 @@ export interface components {
          * @enum {string}
          */
         KycStatus: "pending" | "approved" | "expired" | "rejected";
+        /** KycStatusTransitionRequest */
+        KycStatusTransitionRequest: {
+            new_status: components["schemas"]["KycStatus"];
+            /** Reason */
+            reason: string;
+        };
         /**
          * LedgerDirection
          * @enum {string}
@@ -4930,6 +4950,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CounterpartyUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transition_kyc_status_counterparties__counterparty_id__kyc_status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KycStatusTransitionRequest"];
             };
         };
         responses: {
