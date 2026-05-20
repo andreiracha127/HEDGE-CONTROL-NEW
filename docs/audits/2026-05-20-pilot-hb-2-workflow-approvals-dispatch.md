@@ -328,30 +328,26 @@ class ApprovalPolicy(Base):
 
 Current handler at HEAD `7c0588a8d` (verified by dispatch author): `create_deal(body: DealCreate, request: Request, ...)` at lines 94-117. The handler currently calls `DealEngineService.create_deal(session, data)` synchronously (verified at `backend/app/api/routes/deals.py:115`; the service name is `DealEngineService`, NOT `DealEngine`).
 
-**Notional computation contract (binding):** the amendment binds `notional_usd` as the threshold dimension for deal_create, computed at gate-evaluation time from `fixed_price_value * quantity_t` (Decimal precision). The current `DealCreate` schema (`backend/app/schemas/deal.py:38-42`) carries ONLY `name`, `commodity`, and `links` — there is no direct `notional_usd`, `fixed_price_value`, or `quantity_t` field. The dispatch binds the following resolution: **extend `DealCreate` with an explicit `notional_usd: Decimal = Field(ge=0)` field; the gate reads it directly from `body.notional_usd`.** The frontend (§6) computes the notional from the user's selected links (HedgeContracts) and submits it explicitly so the request contract is self-describing.
+**Notional computation contract (binding — server-side, security-critical):** the amendment binds `notional_usd` as the threshold dimension for deal_create, computed at gate-evaluation time from `fixed_price_value * quantity_t` (Decimal precision). The current `DealCreate` schema (`backend/app/schemas/deal.py:38-42`) carries ONLY `name`, `commodity`, and `links` — no direct `notional_usd`, `fixed_price_value`, or `quantity_t` field. The dispatch binds the following resolution: **the gate computes `notional_usd` server-side from the `HedgeContract` rows referenced by `body.links` — NEVER from a client-supplied field**. `DealCreate` is NOT extended with a `notional_usd` field; trusting a frontend-supplied threshold value would create a constitutional bypass (any actor with deal-create scope could submit `notional_usd=0` with real HedgeContract links to evade the $500k gate; Greptile iter 3 P1 security catch).
 
-Rationale for binding the explicit-field path (vs link-derivation): (a) the request contract is self-describing — the OpenAPI schema surfaces the threshold dimension that triggers the gate, so the frontend and the API consumer agree on the value; (b) the gate's threshold-evaluation does not depend on resolving the (potentially polymorphic) link entities at gate-eval time, which would couple gate evaluation to HedgeContract model details and create a load order between link validation and threshold check; (c) the audit row's `mutation_payload_canonical` and `mutation_payload_hash` are exact functions of the request body, with no implicit dependency on the linked-entity state at request time. Link-derivation was considered (Path A in an earlier draft) but rejected for these reasons.
+**Server-side computation (binding):**
 
-**Schema change (binding):** `backend/app/schemas/deal.py` `DealCreate` adds:
+1. Iterate `body.links` filtering for entries where `linked_type == DealLinkedType.contract`.
+2. For each filtered link, load the `HedgeContract` row from the DB by `linked_id`.
+3. Compute `notional_usd = sum(contract.fixed_price_value * contract.quantity_t for each contract)` — Decimal × Decimal, summed in Decimal precision.
+4. Pass the resulting `Decimal` as `threshold_value` to `evaluate_and_maybe_create`.
 
-```python
-class DealCreate(BaseModel):
-    name: str
-    commodity: str
-    notional_usd: Decimal = Field(
-        ge=0,
-        description=(
-            "USD notional triggering the HB-2 approval gate above the "
-            "configured threshold (default USD 500,000). The caller MUST "
-            "supply this value; the gate evaluates against it directly."
-        ),
-    )
-    links: list["DealLinkCreate"] = []
-```
+**Edge cases (binding):**
 
-The `ge=0` validator forbids negative notionals; `Decimal` preserves precision per the platform precision contract (`backend/app/core/precision.py`). The frontend computes this from the user's selected HedgeContract link prices and quantities and submits the rounded Decimal.
+- **No HedgeContract links** (e.g. deal with only Order or RFQ links): `notional_usd = 0` (sum of empty iterable). Below threshold by construction → synchronous path proceeds. This is institutionally correct: a Deal without HedgeContract links has no committed market exposure to gate against; the gate exists to ratify the HedgeContract-bearing portion of the Deal's notional.
+- **Missing HedgeContract row** (link references a non-existent or soft-deleted contract): the existing link validator at the Deal create path already rejects this case before the gate fires (executor verifies by inspecting `DealEngine.create_deal` link resolution; if the validator doesn't reject missing/deleted contracts, the executor MUST add that check in this PR to close the gate-evasion vector).
+- **Negative or zero contract values**: `HedgeContract` columns are constitutionally non-negative (per the Phase A1 precision contract). The sum is non-negative by construction.
 
-**Backend gate consumes `body.notional_usd` directly** — see the §4.3.1 handler shape below.
+**Schema (binding):** `backend/app/schemas/deal.py` `DealCreate` is UNCHANGED — keeps the original 3 fields (`name`, `commodity`, `links`). The frontend (§6) computes notional from user-selected HedgeContracts using existing read endpoints for informational display (so the user knows whether their submission will trigger the approval gate) BUT the displayed value is not authoritative — only the server-side computation gates the mutation.
+
+**Why server-compute over client-supplied (binding rationale):** the threshold gate is a security boundary; trusting client input on a security boundary violates the institutional principle "the backend is authoritative for economics" (per CLAUDE.md). The earlier Path B (client-supplied `notional_usd` field) was rejected after Greptile iter 3 surfaced the bypass: an authenticated risk_manager with intent to evade two-signatory approval could submit `notional_usd=0` with $1M of HedgeContract links and the gate would not fire. Server-side computation closes this vector unconditionally — the gate evaluates against actual persisted entity state, not against client-asserted scalars.
+
+**Backend gate consumes the server-computed value** — see the §4.3.1 handler shape below.
 
 **Gate insertion (binding shape):**
 
@@ -369,11 +365,12 @@ def create_deal(
     session: Session = Depends(get_session),
 ) -> DealRead | dict:
     with unit_of_work(session, request=request):
+        notional_usd = _compute_deal_notional_from_links(session, body.links)
         approval = workflow_approval_service.evaluate_and_maybe_create(
             session,
             mutation_type=MutationType.deal_create,
             payload_obj=body.model_dump(mode="json"),
-            threshold_value=body.notional_usd,
+            threshold_value=notional_usd,
             requesting_actor_sub=actor_sub,
             requesting_actor_ip=request.client.host if request.client else None,
             requesting_actor_session_id=request.headers.get("X-Session-ID"),
@@ -387,7 +384,7 @@ def create_deal(
                 "approval_path": "pending",
             })
             response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(approval)  # §4.4.7 helper
+            return _approval_response_body(session, approval)  # §4.4.7 helper
         # Below threshold — synchronous path. The current HEAD handler
         # at backend/app/api/routes/deals.py:108-117 normalises link enum
         # values BEFORE calling DealEngineService.create_deal. The gate's
@@ -400,6 +397,33 @@ def create_deal(
         deal = DealEngineService.create_deal(session, data)
         mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
     return deal
+```
+
+The `_compute_deal_notional_from_links` helper lives in `backend/app/api/routes/deals.py` as a module-level function (or in a small `backend/app/services/deal_notional.py` module — executor's choice; importing convenience matters more than placement):
+
+```python
+def _compute_deal_notional_from_links(
+    session: Session, links: list[DealLinkCreate]
+) -> Decimal:
+    """Sum HedgeContract notionals across the deal's contract links.
+
+    Returns Decimal(0) if no HedgeContract links exist. Skips links of
+    other types (Order, RFQ); those entities are below-threshold
+    components of the deal that roll up through HedgeContracts.
+    """
+    contract_ids = [
+        link.linked_id for link in links
+        if link.linked_type == DealLinkedType.contract
+    ]
+    if not contract_ids:
+        return Decimal(0)
+    contracts = session.execute(
+        select(HedgeContract).where(HedgeContract.id.in_(contract_ids))
+    ).scalars().all()
+    return sum(
+        (c.fixed_price_value * c.quantity_t for c in contracts),
+        start=Decimal(0),
+    )
 ```
 
 The handler's response model annotation widens to `DealRead | dict` to accommodate the 202 body. The OpenAPI schema regen (§6.1) MUST surface this dual return shape — `frontend-svelte/src/lib/api/schema.d.ts` will type the endpoint as a discriminated union; the typed client must branch on status code.
@@ -481,7 +505,7 @@ def award_rfq(
                 "approval_path": "pending",
             })
             response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(approval)
+            return _approval_response_body(session, approval)
         # Below threshold — synchronous award. Note: RFQService.award at
         # rfq_service.py:1393 takes (session, rfq_id, actor_sub) and
         # mutates rfq state internally. The current HEAD route returns
@@ -504,7 +528,7 @@ def award_rfq(
 The three resulting shapes — `body.model_dump(mode="json")` for deal_create, `{rfq_id, intent, awarded_quote_id}` (single-trade) or `{rfq_id, intent, buy_quote_id, sell_quote_id}` (spread) for deal_award, `{contract_id, ...payload.model_dump(mode="json")}` for hedge_contract_settle — share the property that `_compute_payload_hash` on the same logical mutation always produces the same hash (the canonical form is order-stable per `normalize_payload_raw`). The consume endpoint (§4.4 #6) submits the same shape, so hash recomputation matches by construction unless the caller actually changed a field.
 
 **Threshold-computation asymmetry (binding rationale):** the three gate sites read `threshold_value` differently — §4.3.1 reads `body.notional_usd` directly (frontend-supplied), §4.3.2 computes server-side from the resolved `(buy_quote, sell_quote)` pair, §4.3.3 computes server-side from `payload.legs`. The asymmetry is intentional and reflects what each route can derive deterministically at gate-eval time:
-- **§4.3.1 deal_create**: the `DealCreate` body has only `name`, `commodity`, and polymorphic `links` — the gate cannot derive notional from primitives in the request alone. The §4.3.1 binding extends `DealCreate` with an explicit `notional_usd: Decimal = Field(ge=0)` field so the frontend (which knows the user's selection) submits the computed value. Per the Path A / Path B decision earlier in §4.3.1, this is the chosen institutional path.
+- **§4.3.1 deal_create**: the `DealCreate` body has only `name`, `commodity`, and polymorphic `links`. The gate computes `notional_usd` server-side by loading the `HedgeContract` rows referenced by `body.links` (filtering for `linked_type == DealLinkedType.contract`) and summing `fixed_price_value * quantity_t`. The threshold value is NEVER read from a client-supplied field per the Greptile iter 3 security catch — trusting a client scalar on a security-boundary gate would let any deal-create-authorized actor evade the gate by lying about notional.
 - **§4.3.2 deal_award**: the route loads the awarded `(intent, [(quote, quantity_mt), ...])` shape via the `resolve_awarded_quote` helper (now a binding refactor); each quote carries `fixed_price_value: Decimal` (verified at `models/quotes.py:41-45`) and each pair's quantity comes from the parent or child `RFQ.quantity_mt: Decimal` (`models/rfqs.py:46`). The gate computes `notional_usd = max(quote.fixed_price_value * quantity_mt for quote, quantity_mt in legs)` server-side from these primitives, never from a frontend-supplied value. The frontend never sees the per-leg notional until it polls the resulting 202 response.
 - **§4.3.3 hedge_contract_settle**: the `HedgeContractSettlementCreate` body has `legs: list[HedgeContractSettlementLeg]` with `leg.amount: Decimal`; `settlement_amount_usd = max(leg.amount)` is a direct server-side compute from the payload.
 
@@ -564,7 +588,7 @@ def settle_hedge_contract(
                 "approval_path": "pending",
             })
             response.status_code = status.HTTP_202_ACCEPTED
-            return _approval_response_body(approval)
+            return _approval_response_body(session, approval)
         # Below threshold — synchronous settlement. Verified at
         # cashflow_ledger.py:49-51: the write path returns
         # (event, ledger_entries) and the route composes the response.
@@ -1279,7 +1303,7 @@ Every item below is verifiable post-merge by running the cited command against t
 8. **Service module exists.** `grep -n "def evaluate_and_maybe_create\|def grant_request\|def reject_request\|def supersede_request\|def consume_request\|def sweep_expired" backend/app/services/workflow_approval_service.py` returns 6 matches — one per public lifecycle function. (Enforces §4.1.)
 9. **All three gated routes invoke the gate.** `grep -nB2 "evaluate_and_maybe_create" backend/app/api/routes/deals.py backend/app/api/routes/rfqs.py backend/app/api/routes/cashflow_ledger.py` returns 3 matches, one per gated route, with the call preceding the synchronous mutation path. (Enforces §4.3.)
 9a. **`RFQService.resolve_awarded_quote` refactor landed.** `grep -n "def resolve_awarded_quote" backend/app/services/rfq_service.py` returns exactly 1 match. `grep -nA3 "def award" backend/app/services/rfq_service.py | grep "resolve_awarded_quote"` returns ≥1 match (the existing `award` method now calls the helper as its first executable step after `get_live_for_update`). The helper signature returns `tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]` per §4.3.2 binding — a list of `(quote, quantity_mt)` pairs of length 1 (single-trade) or 2 (spread). (Enforces §4.3.2 REFACTOR path.)
-9b. **`DealCreate.notional_usd` field exists.** `grep -nA10 "class DealCreate" backend/app/schemas/deal.py | grep "notional_usd"` returns 1 match showing the `Decimal` type and `Field(ge=0)` validator. (Enforces §4.3.1 Path B binding.)
+9b. **`_compute_deal_notional_from_links` helper exists + `DealCreate` unchanged.** `grep -n "def _compute_deal_notional_from_links" backend/app/api/routes/deals.py backend/app/services/deal_notional.py 2>/dev/null` returns ≥1 match. `grep -nA10 "class DealCreate" backend/app/schemas/deal.py | grep "notional_usd"` returns 0 matches — confirming the schema is unchanged and the gate computes notional server-side from links per the §4.3.1 security binding. (Enforces the post-iter-3 security fix.)
 10. **Approval router registered.** `grep -n "workflow_approvals\|workflow_approval" backend/app/main.py` returns matches showing the router import + `app.include_router(workflow_approvals.router, prefix="/workflow-approvals", tags=["WorkflowApprovals"])`. (Enforces §4.4 router registration.)
 11. **All six approval-router endpoints exist.** `grep -nE "@router\.(post|get).*\"/?\\{approval_id\\}/(grant|reject|supersede|consume)\"|@router\\.get.*\"/?(\\{approval_id\\}|\"\")" backend/app/api/routes/workflow_approvals.py` returns ≥6 distinct decorator lines (1 GET single, 1 GET list, 4 POST actions). (Enforces §4.4 endpoint table.)
 12. **Defense-in-depth assertion exists.** `grep -n "lacks risk_manager" backend/app/services/workflow_approval_service.py` returns at least one match in the body of `evaluate_and_maybe_create`. (Enforces §4.7 + amendment lines 1003-1024.)
