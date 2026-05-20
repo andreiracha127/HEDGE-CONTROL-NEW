@@ -1,24 +1,23 @@
 # backend/tests/test_counterparty_kyc_transition.py
 import os
-import pytest
 import uuid
-from uuid import UUID
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from fastapi import status
+from uuid import UUID
+
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app.core.database import SessionLocal
-from app.models.counterparty import Counterparty, KycStatus
-from app.models.audit import AuditEvent
-from app.models.quotes import RFQQuote
-from app.core.auth import get_current_user, _ANONYMOUS_USER
+from app.core.auth import get_current_user
 from app.main import app
+from app.models.audit import AuditEvent
+from app.models.counterparty import Counterparty, KycStatus
+from app.models.quotes import RFQQuote
+from app.schemas.rfq import RFQQuoteCreate
 from app.services.audit_trail_service import _reset_signing_key_cache
 from app.services.rfq_service import RFQService
-from app.schemas.rfq import RFQQuoteCreate
+
 
 @contextmanager
 def _without_signing_key():
@@ -32,6 +31,7 @@ def _without_signing_key():
         else:
             os.environ["AUDIT_SIGNING_KEY"] = "test-signing-key-for-audit-hmac"
         _reset_signing_key_cache()
+
 
 def _create_counterparty(client: TestClient, name: str) -> dict:
     # Set fallback user role to risk_manager (since client usually defaults to anonymous having all roles,
@@ -48,14 +48,20 @@ def _create_counterparty(client: TestClient, name: str) -> dict:
     assert resp.status_code == 201
     return resp.json()
 
-def test_risk_manager_can_transition_pending_to_approved(client: TestClient, session: Session) -> None:
+
+def test_risk_manager_can_transition_pending_to_approved(
+    client: TestClient, session: Session
+) -> None:
     # 1. Create counterparty
     cp = _create_counterparty(client, "Cpty RM Approved")
     cp_id = cp["id"]
     assert cp["kyc_status"] == "pending"
 
     # 2. Mock risk_manager role explicitly
-    app.dependency_overrides[get_current_user] = lambda: {"sub": "rm-user", "roles": ["risk_manager"]}
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "rm-user",
+        "roles": ["risk_manager"],
+    }
     try:
         r = client.post(
             f"/counterparties/{cp_id}/kyc-status",
@@ -83,6 +89,7 @@ def test_risk_manager_can_transition_pending_to_approved(client: TestClient, ses
         assert audit_event.payload["metadata"]["actor_sub"] == "rm-user"
         assert audit_event.payload["metadata"]["reason"] == "KYC cleared via external provider"
 
+
 def test_trader_cannot_transition_kyc_status(client: TestClient) -> None:
     cp = _create_counterparty(client, "Cpty Trader Revoke")
     cp_id = cp["id"]
@@ -90,10 +97,14 @@ def test_trader_cannot_transition_kyc_status(client: TestClient) -> None:
     # Mock trader role
     app.dependency_overrides[get_current_user] = lambda: {"sub": "trader-user", "roles": ["trader"]}
     try:
-        r = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test transition reason"})
+        r = client.post(
+            f"/counterparties/{cp_id}/kyc-status",
+            json={"new_status": "approved", "reason": "Test transition reason"},
+        )
         assert r.status_code == 403
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
 
 def test_set_kyc_status_404_on_soft_deleted(client: TestClient) -> None:
     cp = _create_counterparty(client, "Soft Deleted Kyc")
@@ -104,21 +115,36 @@ def test_set_kyc_status_404_on_soft_deleted(client: TestClient) -> None:
     assert r_del.status_code == 200
 
     # Try to change status
-    app.dependency_overrides[get_current_user] = lambda: {"sub": "rm-user", "roles": ["risk_manager"]}
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "rm-user",
+        "roles": ["risk_manager"],
+    }
     try:
-        r = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test transition reason"})
+        r = client.post(
+            f"/counterparties/{cp_id}/kyc-status",
+            json={"new_status": "approved", "reason": "Test transition reason"},
+        )
         assert r.status_code == 404
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
-def test_kyc_transition_rolls_back_when_audit_signing_fails(client: TestClient, session: Session) -> None:
+
+def test_kyc_transition_rolls_back_when_audit_signing_fails(
+    client: TestClient, session: Session
+) -> None:
     cp = _create_counterparty(client, "Audit Failure Rollback")
     cp_id = cp["id"]
 
-    app.dependency_overrides[get_current_user] = lambda: {"sub": "rm-user", "roles": ["risk_manager"]}
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "rm-user",
+        "roles": ["risk_manager"],
+    }
     try:
         with _without_signing_key():
-            r = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test transition reason"})
+            r = client.post(
+                f"/counterparties/{cp_id}/kyc-status",
+                json={"new_status": "approved", "reason": "Test transition reason"},
+            )
             assert r.status_code >= 500
 
         # Assert counterparty KYC status is STILL pending (rolled back)
@@ -128,15 +154,22 @@ def test_kyc_transition_rolls_back_when_audit_signing_fails(client: TestClient, 
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
+
 def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
     # 1. Create and approve counterparty
     cp = _create_counterparty(client, "Attribution Corp")
     cp_id = cp["id"]
-    r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test transition reason"})
+    r_kyc = client.post(
+        f"/counterparties/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "Test transition reason"},
+    )
     assert r_kyc.status_code == 200
 
     # 2. Setup RFQ
-    so_resp = client.post("/orders/sales", json={"price_type": "variable", "quantity_mt": 100.0, "commodity": "ALUMINUM"})
+    so_resp = client.post(
+        "/orders/sales",
+        json={"price_type": "variable", "quantity_mt": 100.0, "commodity": "ALUMINUM"},
+    )
     so_id = so_resp.json()["id"]
     r_rfq = client.post(
         "/rfqs",
@@ -161,7 +194,7 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
         fixed_price_value=Decimal("1500.0"),
         fixed_price_unit="USD/MT",
         float_pricing_convention="avg",
-        received_at=datetime.now(timezone.utc),
+        received_at=datetime.now(UTC),
     )
     quote1 = RFQService.submit_quote(
         session=session,
@@ -170,8 +203,11 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
         actor_sub="human-actor-1",
     )
     session.commit()
-    assert quote1.actor_sub == "human-actor-1"
-    assert quote1.inbound_message_id is None
+    quote1_id = quote1.id
+    session.expire_all()
+    reloaded1 = session.get(RFQQuote, quote1_id)
+    assert reloaded1.actor_sub == "human-actor-1"
+    assert reloaded1.inbound_message_id is None
 
     # 4. Test submitting with inbound_message_id via direct service method
     msg_id = uuid.uuid4()
@@ -181,7 +217,7 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
         fixed_price_value=Decimal("1600.0"),
         fixed_price_unit="USD/MT",
         float_pricing_convention="avg",
-        received_at=datetime.now(timezone.utc),
+        received_at=datetime.now(UTC),
     )
     quote2 = RFQService.submit_quote(
         session=session,
@@ -190,8 +226,12 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
         inbound_message_id=msg_id,
     )
     session.commit()
-    assert quote2.inbound_message_id == msg_id
-    assert quote2.actor_sub is None
+    quote2_id = quote2.id
+    session.expire_all()
+    reloaded2 = session.get(RFQQuote, quote2_id)
+    assert reloaded2.inbound_message_id == msg_id
+    assert reloaded2.actor_sub is None
+
 
 def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> None:
     # Basic functional check of set_kyc_status service API locking
@@ -199,6 +239,7 @@ def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> Non
     cp_id = cp["id"]
 
     from app.services.counterparty_service import CounterpartyService
+
     # Call set_kyc_status directly which uses with_for_update() locking internally
     db_cp, _ = CounterpartyService.set_kyc_status(
         session=session,
