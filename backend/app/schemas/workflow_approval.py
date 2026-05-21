@@ -54,3 +54,7 @@ class WorkflowApprovalRejectRequest(BaseModel):
 class WorkflowApprovalConsumeRequest(BaseModel):
     payload: dict
 
+
+class WorkflowApprovalListResponse(BaseModel):
+    items: list[WorkflowApprovalRequestRead]
+    next_cursor: str | None = None

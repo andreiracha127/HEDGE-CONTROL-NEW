@@ -4244,6 +4244,13 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** WorkflowApprovalListResponse */
+        WorkflowApprovalListResponse: {
+            /** Items */
+            items: components["schemas"]["WorkflowApprovalRequestRead"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** WorkflowApprovalRejectRequest */
         WorkflowApprovalRejectRequest: {
             reason_code: components["schemas"]["RejectionReasonCode"];
@@ -7234,6 +7241,8 @@ export interface operations {
         parameters: {
             query?: {
                 status?: components["schemas"]["ApprovalStatus"] | null;
+                cursor?: string | null;
+                limit?: number;
             };
             header?: never;
             path?: never;
@@ -7247,7 +7256,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"][];
+                    "application/json": components["schemas"]["WorkflowApprovalListResponse"];
                 };
             };
             /** @description Validation Error */

@@ -59,9 +59,9 @@ def settle_hedge_contract(
     session: Session = Depends(get_session),
 ) -> HedgeContractSettlementResponse:
     with unit_of_work(session, request=request):
-        settlement_amount_usd = max(
+        settlement_amount_usd = sum(
             (Decimal(str(leg.amount)) for leg in payload.legs),
-            default=Decimal("0"),
+            Decimal("0"),
         )
         approval_payload = {
             "contract_id": str(contract_id),
@@ -88,9 +88,7 @@ def settle_hedge_contract(
                         "approval_id": approval.id,
                         "status": approval.status.value,
                         "expires_at": approval.expires_at,
-                        "required_approvers": (
-                            policy.required_approver_roles if policy else []
-                        ),
+                        "required_approvers": (policy.required_approver_roles if policy else []),
                         "polling_url": f"/workflow-approvals/{approval.id}",
                         "consume_url": f"/workflow-approvals/{approval.id}/consume",
                     }
@@ -102,9 +100,7 @@ def settle_hedge_contract(
         mark_audit_success(request, event.id, metadata={"actor_sub": actor_sub})
     return HedgeContractSettlementResponse(
         event=event,
-        ledger_entries=[
-            CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries
-        ],
+        ledger_entries=[CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries],
     )
 
 
@@ -119,9 +115,7 @@ def list_ledger_entries_for_contract(
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> list[CashFlowLedgerEntryRead]:
-    entries = list_entries_by_contract(
-        session, contract_id=contract_id, start=start, end=end
-    )
+    entries = list_entries_by_contract(session, contract_id=contract_id, start=start, end=end)
     return [CashFlowLedgerEntryRead.model_validate(entry) for entry in entries]
 
 

@@ -104,9 +104,7 @@ def _audit_payload(
         "approver_session_id": row.approver_session_id if approver_sub is not None else None,
         "rejection_reason": rejection_reason,
         "time_to_approval_ms": (
-            None
-            if previous_status is None
-            else _time_to_approval_ms(row, transition_time)
+            None if previous_status is None else _time_to_approval_ms(row, transition_time)
         ),
         "mutation_payload_hash": row.mutation_payload_hash,
     }
@@ -257,7 +255,9 @@ def grant_request(
         )
     policy = _get_policy(session, row.mutation_type)
     if not set(policy.required_approver_roles).intersection(approver_role_set):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Approver role not allowed")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Approver role not allowed"
+        )
 
     old_status = row.status
     row.status = ApprovalStatus.approved
@@ -265,6 +265,13 @@ def grant_request(
     row.approver_ip = approver_ip
     row.approver_session_id = approver_session_id
     session.flush()
+    _emit_audit_event(
+        session,
+        row,
+        WORKFLOW_APPROVAL_GRANTED,
+        previous_status=old_status,
+        approver_sub=approver_actor_sub,
+    )
     _broadcast_state_change(row, old_status, row.status)
     return row
 
@@ -294,7 +301,9 @@ def reject_request(
             detail="requested_by and approved_by must be distinct",
         )
     if not set(policy.required_approver_roles).intersection(approver_role_set):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Approver role not allowed")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Approver role not allowed"
+        )
 
     old_status = row.status
     row.status = ApprovalStatus.rejected
@@ -304,6 +313,17 @@ def reject_request(
     row.rejection_reason_code = reason_code
     row.rejection_reason_text = reason_text
     session.flush()
+    _emit_audit_event(
+        session,
+        row,
+        WORKFLOW_APPROVAL_REJECTED,
+        previous_status=old_status,
+        approver_sub=approver_actor_sub,
+        rejection_reason={
+            "code": reason_code.value,
+            "text": reason_text,
+        },
+    )
     _broadcast_state_change(row, old_status, row.status)
     return row
 
@@ -327,6 +347,12 @@ def supersede_request(
     old_status = row.status
     row.status = ApprovalStatus.superseded
     session.flush()
+    _emit_audit_event(
+        session,
+        row,
+        WORKFLOW_APPROVAL_SUPERSEDED,
+        previous_status=old_status,
+    )
     _broadcast_state_change(row, old_status, row.status)
     return row
 
@@ -360,6 +386,13 @@ def consume_request(
     row.status = ApprovalStatus.consumed
     row.consumed_at = _utcnow()
     session.flush()
+    _emit_audit_event(
+        session,
+        row,
+        WORKFLOW_APPROVAL_CONSUMED,
+        previous_status=old_status,
+        approver_sub=requesting_actor_sub,
+    )
     _broadcast_state_change(row, old_status, row.status)
     return row, result
 
@@ -369,9 +402,7 @@ def sweep_expired(session: Session) -> list[WorkflowApprovalRequest]:
     rows = (
         session.query(WorkflowApprovalRequest)
         .filter(
-            WorkflowApprovalRequest.status.in_(
-                [ApprovalStatus.pending, ApprovalStatus.approved]
-            ),
+            WorkflowApprovalRequest.status.in_([ApprovalStatus.pending, ApprovalStatus.approved]),
             WorkflowApprovalRequest.expires_at < now,
         )
         .with_for_update()

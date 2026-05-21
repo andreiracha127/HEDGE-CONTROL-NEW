@@ -46,11 +46,11 @@ rejection_reason_enum = sa.Enum(
 )
 
 
-def _uuid_type() -> sa.TypeEngine:
+def _uuid_type() -> sa.types.TypeEngine:
     return postgresql.UUID(as_uuid=True).with_variant(sa.String(length=36), "sqlite")
 
 
-def _json_type() -> sa.TypeEngine:
+def _json_type() -> sa.types.TypeEngine:
     return postgresql.JSONB(astext_type=sa.Text()).with_variant(sa.JSON(), "sqlite")
 
 
