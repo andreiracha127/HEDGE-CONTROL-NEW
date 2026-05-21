@@ -205,6 +205,7 @@ def evaluate_and_maybe_create(
             .filter(
                 WorkflowApprovalRequest.idempotency_key == idempotency_key,
                 WorkflowApprovalRequest.requested_by == requesting_actor_sub,
+                WorkflowApprovalRequest.mutation_type == mutation_type,
             )
             .one_or_none()
         )

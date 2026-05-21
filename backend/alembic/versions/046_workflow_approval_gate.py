@@ -174,3 +174,7 @@ def downgrade() -> None:
     )
     op.drop_table("workflow_approval_requests")
     op.drop_table("approval_policy")
+    rejection_reason_enum.drop(op.get_bind(), checkfirst=True)
+    threshold_dimension_enum.drop(op.get_bind(), checkfirst=True)
+    status_enum.drop(op.get_bind(), checkfirst=True)
+    mutation_type_enum.drop(op.get_bind(), checkfirst=True)
