@@ -7,6 +7,8 @@ runtime surprise.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -102,6 +104,18 @@ class Settings(BaseSettings):
     rfq_timeout_cron_minute: int = Field(0)
     rfq_timeout_hours: int = Field(24)
     rfq_reminder_threshold: float = Field(0.5)
+    workflow_approval_deal_threshold_usd: Decimal = Field(
+        Decimal("500000"),
+        description="Pilot HB-2 approval threshold for deal_create/deal_award.",
+    )
+    workflow_approval_settle_threshold_usd: Decimal = Field(
+        Decimal("250000"),
+        description="Pilot HB-2 approval threshold for hedge_contract_settle.",
+    )
+    workflow_approval_sweeper_interval_minutes: int = Field(
+        15,
+        description="Scheduler interval for expiring pending/approved workflow approvals.",
+    )
 
     # ── OpenAI ───────────────────────────────────────────────────
     openai_api_key: str = Field("")

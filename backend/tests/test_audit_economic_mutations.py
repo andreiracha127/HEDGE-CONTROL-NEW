@@ -709,6 +709,10 @@ class TestRouteCoverageStatic:
         ("PATCH", "/rfqs/{rfq_id}/archive"): "covered institutional mutation",
         ("POST", "/cashflow/baseline/snapshots"): "covered institutional mutation",
         ("POST", "/cashflow/contracts/{contract_id}/settle"): "covered institutional mutation",
+        ("POST", "/workflow-approvals/{approval_id}/grant"): "covered institutional mutation",
+        ("POST", "/workflow-approvals/{approval_id}/reject"): "covered institutional mutation",
+        ("POST", "/workflow-approvals/{approval_id}/supersede"): "covered institutional mutation",
+        ("POST", "/workflow-approvals/{approval_id}/consume"): "covered institutional mutation",
         ("POST", "/pl/snapshots"): "covered institutional mutation",
         ("POST", "/scenario/what-if/run"): "explicitly out of A5 mutation scope: analytical scenario",
         (

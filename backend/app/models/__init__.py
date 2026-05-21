@@ -74,6 +74,14 @@ from app.models.rfqs import (
     RFQState,
     RFQStateEvent,
 )
+from app.models.workflow_approval import (
+    ApprovalPolicy,
+    ApprovalStatus,
+    MutationType,
+    RejectionReasonCode,
+    ThresholdDimension,
+    WorkflowApprovalRequest,
+)
 
 __all__ = [
     "AuditEvent",
@@ -131,6 +139,12 @@ __all__ = [
     "RFQStateEvent",
     "FinancePipelineRun",
     "FinancePipelineStep",
+    "ApprovalPolicy",
+    "ApprovalStatus",
+    "MutationType",
+    "RejectionReasonCode",
+    "ThresholdDimension",
+    "WorkflowApprovalRequest",
     "PipelineRunStatus",
     "PipelineStepStatus",
 ]

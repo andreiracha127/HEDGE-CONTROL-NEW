@@ -1,18 +1,26 @@
 """Routes for Deal Engine (component 1.5)."""
 
+import uuid
 from datetime import date
-from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_actor_sub, require_any_role, require_role
-from app.core.database import get_session
-from app.core.pagination import paginate
 from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
+from app.core.auth import (
+    get_current_actor_roles,
+    get_current_actor_sub,
+    require_any_role,
+    require_role,
+)
+from app.core.database import get_session
+from app.core.pagination import paginate
 from app.models.deal import Deal, DealLink, DealLinkedType
+from app.models.workflow_approval import ApprovalPolicy, MutationType
 from app.schemas.deal import (
     DealCreate,
     DealDetailRead,
@@ -25,7 +33,9 @@ from app.schemas.deal import (
     PnlBreakdownRequest,
     PnlBreakdownResponse,
 )
+from app.services import workflow_approval_service
 from app.services.deal_engine import DealEngineService
+from app.services.deal_notional import _compute_deal_notional_from_links
 from app.services.price_lookup_service import PriceReferenceUnprovable
 
 router = APIRouter()
@@ -67,11 +77,11 @@ def find_deal_by_linked_entity(
     """Find the deal that contains a given linked entity (order or contract)."""
     try:
         resolved_type = DealLinkedType(linked_type)
-    except ValueError:
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid linked_type: {linked_type}",
-        )
+        ) from exc
     link = (
         session.query(DealLink)
         .filter(DealLink.linked_type == resolved_type, DealLink.linked_id == linked_id)
@@ -103,6 +113,9 @@ def create_deal(
     ),
     __: None = Depends(require_role("risk_manager")),
     actor_sub: str = Depends(get_current_actor_sub),
+    actor_roles: list[str] = Depends(get_current_actor_roles),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_session_id: str | None = Header(None, alias="X-Session-Id"),
     session: Session = Depends(get_session),
 ):
     data = body.model_dump()
@@ -112,6 +125,36 @@ def create_deal(
             if hasattr(link.get("linked_type"), "value"):
                 link["linked_type"] = link["linked_type"].value
     with unit_of_work(session, request=request):
+        notional_usd = _compute_deal_notional_from_links(session, data.get("links") or [])
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            MutationType.deal_create,
+            data,
+            notional_usd,
+            actor_sub,
+            request.client.host if request.client else None,
+            x_session_id,
+            uuid.uuid4(),
+            idempotency_key,
+            set(actor_roles),
+        )
+        if approval is not None:
+            policy = session.get(ApprovalPolicy, approval.mutation_type)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=jsonable_encoder(
+                    {
+                        "approval_id": approval.id,
+                        "status": approval.status.value,
+                        "expires_at": approval.expires_at,
+                        "required_approvers": (
+                            policy.required_approver_roles if policy else []
+                        ),
+                        "polling_url": f"/workflow-approvals/{approval.id}",
+                        "consume_url": f"/workflow-approvals/{approval.id}/consume",
+                    }
+                ),
+            )
         deal = DealEngineService.create_deal(session, data)
         mark_audit_success(request, deal.id, metadata={"actor_sub": actor_sub})
     return deal
@@ -119,9 +162,9 @@ def create_deal(
 
 @router.get("", response_model=DealListResponse)
 def list_deals(
-    commodity: Optional[str] = Query(None),
-    status_filter: Optional[str] = Query(None, alias="status"),
-    cursor: Optional[str] = Query(None),
+    commodity: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),

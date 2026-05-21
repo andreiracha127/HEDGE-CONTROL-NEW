@@ -139,6 +139,27 @@ export function auditEventVerifyPath(eventId: string): string {
 	return `/audit/events/${requireParam(eventId, 'event_id')}/verify`;
 }
 
+// ─── Workflow Approvals ────────────────────────────────────────────────
+
+export function workflowApprovalsPath(params: { status?: string | null } = {}): string {
+	const qs = new URLSearchParams();
+	if (params.status) qs.set('status', params.status);
+	const tail = qs.toString();
+	return tail ? `/workflow-approvals?${tail}` : '/workflow-approvals';
+}
+
+export function workflowApprovalDetailPath(approvalId: string): string {
+	return `/workflow-approvals/${requireParam(approvalId, 'approval_id')}`;
+}
+
+export function workflowApprovalGrantPath(approvalId: string): string {
+	return `/workflow-approvals/${requireParam(approvalId, 'approval_id')}/grant`;
+}
+
+export function workflowApprovalRejectPath(approvalId: string): string {
+	return `/workflow-approvals/${requireParam(approvalId, 'approval_id')}/reject`;
+}
+
 // ─── Drift guard literals ───────────────────────────────────────────────
 //
 // Stale path literals retired by PR-A6-1. The drift guard test
