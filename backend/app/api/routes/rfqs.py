@@ -1,35 +1,46 @@
 from __future__ import annotations
 
+import uuid
+from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.auth import get_current_actor_sub, require_any_role, require_role
-from app.core.database import get_session
-from app.core.pagination import paginate
-from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import (
     audit_event,
     mark_audit_success,
     record_audit_checkpoint,
 )
 from app.api.dependencies.uow import unit_of_work
+from app.api.routes.ws import manager as ws_manager
+from app.core.auth import (
+    get_current_actor_roles,
+    get_current_actor_sub,
+    require_any_role,
+    require_role,
+)
+from app.core.database import get_session
+from app.core.pagination import paginate
+from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.models.quotes import RFQQuote
 from app.models.rfqs import RFQ, RFQDirection, RFQIntent, RFQState, RFQStateEvent
+from app.models.workflow_approval import ApprovalPolicy, MutationType
 from app.schemas.rfq import (
-    RFQCreate,
     RFQAwardRequest,
     RFQCancelRequest,
+    RFQCreate,
+    RFQInvitationRead,
     RFQListResponse,
     RFQQuoteCreate,
     RFQQuoteRead,
-    RFQRefreshRequest,
-    RFQRefreshCounterpartyRequest,
-    RFQRejectRequest,
-    RFQRejectQuoteRequest,
     RFQRead,
-    RFQInvitationRead,
+    RFQRefreshCounterpartyRequest,
+    RFQRefreshRequest,
+    RFQRejectQuoteRequest,
+    RFQRejectRequest,
     RFQStateEventRead,
     RFQTextPreviewRequest,
     RFQTextPreviewResponse,
@@ -38,7 +49,7 @@ from app.schemas.rfq import (
     TradeRankingFailureCode,
     TradeRankingRead,
 )
-from app.api.routes.ws import manager as ws_manager
+from app.services import workflow_approval_service
 from app.services.rfq_service import RFQService
 
 router = APIRouter()
@@ -69,7 +80,6 @@ def list_rfqs(
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> RFQListResponse:
-    from app.models.rfqs import RFQInvitation
 
     query = session.query(RFQ).options(joinedload(RFQ.invitations))
     if not include_deleted:
@@ -92,9 +102,7 @@ def list_rfqs(
     rfq_reads = []
     for rfq in items:
         rfq_read = RFQRead.model_validate(rfq)
-        rfq_read.invitations = [
-            RFQInvitationRead.model_validate(i) for i in rfq.invitations
-        ]
+        rfq_read.invitations = [RFQInvitationRead.model_validate(i) for i in rfq.invitations]
         rfq_reads.append(rfq_read)
     return RFQListResponse(items=rfq_reads, next_cursor=next_cursor)
 
@@ -151,9 +159,9 @@ def preview_rfq_text(
         TradeType,
         compute_trade_ppt_dates,
     )
-    from app.services.rfq_message_builder import build_rfq_message, build_pt_summary
+    from app.services.rfq_message_builder import build_pt_summary, build_rfq_message
 
-    def _to_leg(inp: "RFQLegInput") -> Leg:  # noqa: F821
+    def _to_leg(inp: RFQLegInput) -> Leg:  # noqa: F821
         order = None
         if inp.order_type is not None:
             order = OrderInstruction(
@@ -230,9 +238,7 @@ def list_rfq_quotes(
     """List all quotes for a specific RFQ."""
     rfq = session.get(RFQ, rfq_id)
     if not rfq:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found")
     quotes = (
         session.query(RFQQuote)
         .filter(RFQQuote.rfq_id == rfq_id)
@@ -251,9 +257,7 @@ def list_rfq_state_events(
     """List all state-transition events for an RFQ (timeline)."""
     rfq = session.get(RFQ, rfq_id)
     if not rfq:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found")
     events = (
         session.query(RFQStateEvent)
         .filter(RFQStateEvent.rfq_id == rfq_id)
@@ -263,9 +267,7 @@ def list_rfq_state_events(
     return [RFQStateEventRead.model_validate(e) for e in events]
 
 
-@router.post(
-    "/{rfq_id}/quotes", response_model=RFQQuoteRead, status_code=status.HTTP_201_CREATED
-)
+@router.post("/{rfq_id}/quotes", response_model=RFQQuoteRead, status_code=status.HTTP_201_CREATED)
 @limiter.limit(RATE_LIMIT_MUTATION)
 def create_quote(
     rfq_id: UUID,
@@ -485,9 +487,61 @@ def award_rfq(
     ),
     __: None = Depends(require_role("risk_manager")),
     actor_sub: str = Depends(get_current_actor_sub),
+    actor_roles: list[str] = Depends(get_current_actor_roles),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_session_id: str | None = Header(None, alias="X-Session-Id"),
     session: Session = Depends(get_session),
 ) -> RFQRead:
     with unit_of_work(session, request=request):
+        rfq = RFQService.get_live(session, rfq_id)
+        _, awarded_pairs = RFQService.resolve_awarded_quote(session, rfq)
+        notional_usd = sum(
+            Decimal(str(quote.fixed_price_value)) * Decimal(str(quantity_mt))
+            for quote, quantity_mt in awarded_pairs
+        )
+        # Bind the awarded quote snapshot into the approval payload so the
+        # canonical hash detects post-grant price drift (e.g. a new quote
+        # supersedes the winning one between evaluate and consume). Sorted
+        # by quote_id keeps the hash deterministic regardless of ranking
+        # ordering.
+        awarded_snapshot = sorted(
+            (
+                {
+                    "quote_id": str(quote.id),
+                    "fixed_price_value": str(Decimal(str(quote.fixed_price_value))),
+                    "quantity_mt": str(Decimal(str(quantity_mt))),
+                }
+                for quote, quantity_mt in awarded_pairs
+            ),
+            key=lambda entry: entry["quote_id"],
+        )
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            MutationType.deal_award,
+            {"rfq_id": str(rfq_id), "awarded_quotes": awarded_snapshot},
+            notional_usd,
+            actor_sub,
+            request.client.host if request.client else None,
+            x_session_id,
+            uuid.uuid4(),
+            idempotency_key,
+            set(actor_roles),
+        )
+        if approval is not None:
+            policy = session.get(ApprovalPolicy, approval.mutation_type)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=jsonable_encoder(
+                    {
+                        "approval_id": approval.id,
+                        "status": approval.status.value,
+                        "expires_at": approval.expires_at,
+                        "required_approvers": (policy.required_approver_roles if policy else []),
+                        "polling_url": f"/workflow-approvals/{approval.id}",
+                        "consume_url": f"/workflow-approvals/{approval.id}/consume",
+                    }
+                ),
+            )
         RFQService.award(session, rfq_id, actor_sub)
         mark_audit_success(request, rfq_id, metadata={"actor_sub": actor_sub})
     return _build_rfq_read(session, rfq_id)

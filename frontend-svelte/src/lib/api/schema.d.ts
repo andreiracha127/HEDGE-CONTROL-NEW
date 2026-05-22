@@ -1368,6 +1368,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflow-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workflow Approvals */
+        get: operations["list_workflow_approvals_workflow_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Workflow Approval */
+        get: operations["get_workflow_approval_workflow_approvals__approval_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-approvals/{approval_id}/consume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Consume Workflow Approval */
+        post: operations["consume_workflow_approval_workflow_approvals__approval_id__consume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-approvals/{approval_id}/grant": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Grant Workflow Approval */
+        post: operations["grant_workflow_approval_workflow_approvals__approval_id__grant_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-approvals/{approval_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Workflow Approval */
+        post: operations["reject_workflow_approval_workflow_approvals__approval_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow-approvals/{approval_id}/supersede": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Supersede Workflow Approval */
+        post: operations["supersede_workflow_approval_workflow_approvals__approval_id__supersede_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1440,6 +1542,11 @@ export interface components {
              */
             order_id: string;
         };
+        /**
+         * ApprovalStatus
+         * @enum {string}
+         */
+        ApprovalStatus: "pending" | "approved" | "rejected" | "expired" | "consumed" | "superseded";
         /** AuditEventListResponse */
         AuditEventListResponse: {
             /** Events */
@@ -2842,6 +2949,11 @@ export interface components {
             /** Quantity Mt */
             quantity_mt: string;
         };
+        /**
+         * MutationType
+         * @enum {string}
+         */
+        MutationType: "deal_create" | "deal_award" | "hedge_contract_settle";
         /** NetExposureItem */
         NetExposureItem: {
             /** Commodity */
@@ -3827,6 +3939,11 @@ export interface components {
             updated: number;
         };
         /**
+         * RejectionReasonCode
+         * @enum {string}
+         */
+        RejectionReasonCode: "policy_violation" | "counterparty_risk" | "payload_concern" | "threshold_inappropriate" | "other";
+        /**
          * RiskRating
          * @enum {string}
          */
@@ -4068,6 +4185,11 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * ThresholdDimension
+         * @enum {string}
+         */
+        ThresholdDimension: "notional_usd" | "settlement_amount_usd";
         /** TradeRankingEntry */
         TradeRankingEntry: {
             quote: components["schemas"]["RFQQuoteRead"];
@@ -4114,6 +4236,73 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WorkflowApprovalConsumeRequest */
+        WorkflowApprovalConsumeRequest: {
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+        };
+        /** WorkflowApprovalListResponse */
+        WorkflowApprovalListResponse: {
+            /** Items */
+            items: components["schemas"]["WorkflowApprovalRequestRead"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** WorkflowApprovalRejectRequest */
+        WorkflowApprovalRejectRequest: {
+            reason_code: components["schemas"]["RejectionReasonCode"];
+            /** Reason Text */
+            reason_text: string;
+        };
+        /** WorkflowApprovalRequestRead */
+        WorkflowApprovalRequestRead: {
+            /** Approved By */
+            approved_by?: string | null;
+            /** Approver Ip */
+            approver_ip?: string | null;
+            /** Approver Session Id */
+            approver_session_id?: string | null;
+            /** Consumed At */
+            consumed_at?: string | null;
+            /**
+             * Correlation Id
+             * Format: uuid
+             */
+            correlation_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Idempotency Key */
+            idempotency_key?: string | null;
+            mutation_type: components["schemas"]["MutationType"];
+            rejection_reason_code?: components["schemas"]["RejectionReasonCode"] | null;
+            /** Rejection Reason Text */
+            rejection_reason_text?: string | null;
+            /** Requested By */
+            requested_by: string;
+            status: components["schemas"]["ApprovalStatus"];
+            /** Threshold At Request */
+            threshold_at_request: string;
+            /** Threshold Config Value */
+            threshold_config_value: string;
+            threshold_dimension: components["schemas"]["ThresholdDimension"];
+            /** Updated At */
+            updated_at?: string | null;
         };
     };
     responses: never;
@@ -4409,7 +4598,10 @@ export interface operations {
     settle_hedge_contract_cashflow_contracts__contract_id__settle_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+                "X-Session-Id"?: string | null;
+            };
             path: {
                 contract_id: string;
             };
@@ -5065,7 +5257,10 @@ export interface operations {
     create_deal_deals_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+                "X-Session-Id"?: string | null;
+            };
             path?: never;
             cookie?: never;
         };
@@ -6546,7 +6741,10 @@ export interface operations {
     award_rfq_rfqs__rfq_id__actions_award_post: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                "Idempotency-Key"?: string | null;
+                "X-Session-Id"?: string | null;
+            };
             path: {
                 rfq_id: string;
             };
@@ -7035,6 +7233,206 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_workflow_approvals_workflow_approvals_get: {
+        parameters: {
+            query?: {
+                status?: components["schemas"]["ApprovalStatus"] | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_workflow_approval_workflow_approvals__approval_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    consume_workflow_approval_workflow_approvals__approval_id__consume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowApprovalConsumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_workflow_approval_workflow_approvals__approval_id__grant_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Session-Id"?: string | null;
+            };
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_workflow_approval_workflow_approvals__approval_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Session-Id"?: string | null;
+            };
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkflowApprovalRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    supersede_workflow_approval_workflow_approvals__approval_id__supersede_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowApprovalRequestRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

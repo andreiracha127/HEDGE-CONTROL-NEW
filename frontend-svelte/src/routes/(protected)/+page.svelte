@@ -21,5 +21,10 @@
 			<div class="text-sm font-medium text-surface-300">Analytics</div>
 			<div class="mt-1 text-xs text-surface-500">P&L e cenários</div>
 		</a>
+
+		<a href="/workflow-approvals" class="rounded-lg border border-surface-800 bg-surface-900 p-4 hover:border-accent/50 transition-colors">
+			<div class="text-sm font-medium text-surface-300">Approvals</div>
+			<div class="mt-1 text-xs text-surface-500">Aprovações pendentes</div>
+		</a>
 	</div>
 </div>

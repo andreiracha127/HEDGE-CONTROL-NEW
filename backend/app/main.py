@@ -10,15 +10,6 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from slowapi.errors import RateLimitExceeded
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.core.auth import get_auth_settings, is_auth_enabled, validate_auth_config
-from app.core.config import get_settings
-from app.core.csrf import csrf_middleware
-from app.core.database import engine
-from app.core.logging import configure_logging, get_logger
-from app.core.metrics import request_latency_seconds
-from app.core.rate_limit import limiter, rate_limit_exceeded_handler
-from app.tasks.scheduler import start_scheduler, stop_scheduler
-
 from app.api.routes import (
     audit,
     auth,
@@ -26,6 +17,7 @@ from app.api.routes import (
     cashflow_ledger,
     contracts,
     counterparties,
+    csp_report,
     deals,
     exposures,
     finance_pipeline,
@@ -37,8 +29,17 @@ from app.api.routes import (
     scenario,
     webhooks,
     westmetall,
-    csp_report,
+    workflow_approvals,
 )
+from app.api.routes.ws import websocket_endpoint
+from app.core.auth import get_auth_settings, is_auth_enabled, validate_auth_config
+from app.core.config import get_settings
+from app.core.csrf import csrf_middleware
+from app.core.database import engine
+from app.core.logging import configure_logging, get_logger
+from app.core.metrics import request_latency_seconds
+from app.core.rate_limit import limiter, rate_limit_exceeded_handler
+from app.tasks.scheduler import start_scheduler, stop_scheduler
 
 configure_logging()
 logger = get_logger()
@@ -54,6 +55,12 @@ async def lifespan(app: FastAPI):
 
 
 _cfg = get_settings()
+logger.info(
+    "workflow_approval_thresholds",
+    deal_threshold_usd=str(_cfg.workflow_approval_deal_threshold_usd),
+    settle_threshold_usd=str(_cfg.workflow_approval_settle_threshold_usd),
+    sweeper_interval_minutes=_cfg.workflow_approval_sweeper_interval_minutes,
+)
 
 app = FastAPI(
     title="Hedge Control Platform",
@@ -218,6 +225,11 @@ app.include_router(
 app.include_router(orders.router, prefix="/orders", tags=["Orders"])
 app.include_router(exposures.router, prefix="/exposures", tags=["Exposures"])
 app.include_router(deals.router, prefix="/deals", tags=["Deals"])
+app.include_router(
+    workflow_approvals.router,
+    prefix="/workflow-approvals",
+    tags=["WorkflowApprovals"],
+)
 app.include_router(contracts.router, prefix="/contracts", tags=["Contracts"])
 app.include_router(linkages.router, prefix="/linkages", tags=["Linkages"])
 app.include_router(rfqs.router, prefix="/rfqs", tags=["RFQs"])
@@ -236,8 +248,5 @@ app.include_router(auth.router)
 app.include_router(
     finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
 )
-
-# WebSocket endpoint (no prefix — registered directly)
-from app.api.routes.ws import websocket_endpoint
 
 app.add_api_websocket_route("/ws", websocket_endpoint)

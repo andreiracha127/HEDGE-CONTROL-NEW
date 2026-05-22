@@ -21,7 +21,7 @@ from __future__ import annotations
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -74,13 +74,12 @@ def _westmetall_service_actor(monkeypatch):
 
 
 def _create_counterparty(session: Session) -> uuid.UUID:
-    cp = Counterparty(
-        type="customer", name=f"Cpty-{uuid.uuid4().hex[:6]}", country="BRA"
-    )
+    cp = Counterparty(type="customer", name=f"Cpty-{uuid.uuid4().hex[:6]}", country="BRA")
     session.add(cp)
     session.flush()
-    from app.services.counterparty_service import CounterpartyService
     from app.models.counterparty import KycStatus
+    from app.services.counterparty_service import CounterpartyService
+
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
@@ -136,9 +135,7 @@ def _create_hedge_via_orm(
     return contract.id
 
 
-def _audit_rows(
-    session: Session, *, entity_type: str, entity_id: uuid.UUID
-) -> list[AuditEvent]:
+def _audit_rows(session: Session, *, entity_type: str, entity_id: uuid.UUID) -> list[AuditEvent]:
     return (
         session.query(AuditEvent)
         .filter(
@@ -165,9 +162,7 @@ def _assert_signed(event: AuditEvent) -> None:
 
 class TestCreateDealAudit:
     def test_create_deal_emits_signed_audit(self, client, session) -> None:
-        resp = client.post(
-            "/deals", json={"name": "Audit Deal", "commodity": "ALUMINUM"}
-        )
+        resp = client.post("/deals", json={"name": "Audit Deal", "commodity": "ALUMINUM"})
         assert resp.status_code == 201
         deal_id = UUID(resp.json()["id"])
 
@@ -184,9 +179,7 @@ class TestCreateDealAudit:
 
 class TestDealLinksAudit:
     def _create_deal(self, client) -> UUID:
-        resp = client.post(
-            "/deals", json={"name": "Link Audit", "commodity": "ALUMINUM"}
-        )
+        resp = client.post("/deals", json={"name": "Link Audit", "commodity": "ALUMINUM"})
         assert resp.status_code == 201
         return UUID(resp.json()["id"])
 
@@ -206,9 +199,7 @@ class TestDealLinksAudit:
         _assert_signed(rows[0])
         assert rows[0].event_type == "created"
 
-    def test_remove_link_emits_signed_audit_anchored_on_path_param(
-        self, client, session
-    ) -> None:
+    def test_remove_link_emits_signed_audit_anchored_on_path_param(self, client, session) -> None:
         deal_id = self._create_deal(client)
         order_id = _create_order_via_orm(session, OrderType.sales)
         add = client.post(
@@ -239,9 +230,7 @@ class TestDealLinksAudit:
 
 class TestPNLSnapshotAudit:
     def test_pnl_snapshot_emits_signed_audit(self, client, session) -> None:
-        resp = client.post(
-            "/deals", json={"name": "PnL Audit", "commodity": "ALUMINUM"}
-        )
+        resp = client.post("/deals", json={"name": "PnL Audit", "commodity": "ALUMINUM"})
         deal_id = UUID(resp.json()["id"])
         order_id = _create_order_via_orm(session, OrderType.sales)
         link_resp = client.post(
@@ -254,9 +243,7 @@ class TestPNLSnapshotAudit:
         assert snap.status_code == 201
         snapshot_id = UUID(snap.json()["id"])
 
-        rows = _audit_rows(
-            session, entity_type="deal_pnl_snapshot", entity_id=snapshot_id
-        )
+        rows = _audit_rows(session, entity_type="deal_pnl_snapshot", entity_id=snapshot_id)
         assert len(rows) == 1
         _assert_signed(rows[0])
         assert rows[0].event_type == "created"
@@ -268,9 +255,7 @@ class TestPNLSnapshotAudit:
 
 
 class TestReconcileAudit:
-    def test_reconcile_emits_signed_audit_anchored_on_run(
-        self, client, session
-    ) -> None:
+    def test_reconcile_emits_signed_audit_anchored_on_run(self, client, session) -> None:
         resp = client.post("/exposures/reconcile")
         assert resp.status_code == 200
 
@@ -281,9 +266,7 @@ class TestReconcileAudit:
         assert run.status == ReconciliationRunStatus.succeeded
 
         # Audit row exists with entity_id == run.id.
-        rows = _audit_rows(
-            session, entity_type="exposure_reconciliation", entity_id=run.id
-        )
+        rows = _audit_rows(session, entity_type="exposure_reconciliation", entity_id=run.id)
         assert len(rows) == 1
         _assert_signed(rows[0])
         assert rows[0].event_type == "executed"
@@ -299,9 +282,7 @@ class TestExecuteHedgeTaskAudit:
         # Reconcile creates an exposure; create_hedge_tasks creates a
         # pending task. We invoke the service directly because there is
         # no public route that creates tasks.
-        order_id = _create_order_via_orm(
-            session, OrderType.sales, price_type=PriceType.variable
-        )
+        order_id = _create_order_via_orm(session, OrderType.sales, price_type=PriceType.variable)
         client.post("/exposures/reconcile")
         from app.services.exposure_engine import ExposureEngineService
 
@@ -328,9 +309,7 @@ class TestExecuteHedgeTaskAudit:
 
 
 class TestFailureInjection:
-    def test_audit_record_failure_rolls_back_deal(
-        self, client, session, monkeypatch
-    ) -> None:
+    def test_audit_record_failure_rolls_back_deal(self, client, session, monkeypatch) -> None:
         """If ``AuditTrailService.record`` raises, the entire mutation is
         rolled back: no Deal, no AuditEvent."""
 
@@ -339,23 +318,12 @@ class TestFailureInjection:
 
         monkeypatch.setattr(AuditTrailService, "record", fail_record)
 
-        resp = client.post(
-            "/deals", json={"name": "Should Roll Back", "commodity": "ALUMINUM"}
-        )
+        resp = client.post("/deals", json={"name": "Should Roll Back", "commodity": "ALUMINUM"})
         assert resp.status_code == 500
-        assert (
-            session.query(Deal).filter(Deal.name == "Should Roll Back").count() == 0
-        )
-        assert (
-            session.query(AuditEvent)
-            .filter(AuditEvent.entity_type == "deal")
-            .count()
-            == 0
-        )
+        assert session.query(Deal).filter(Deal.name == "Should Roll Back").count() == 0
+        assert session.query(AuditEvent).filter(AuditEvent.entity_type == "deal").count() == 0
 
-    def test_reconcile_audit_failure_rolls_back_run(
-        self, client, session, monkeypatch
-    ) -> None:
+    def test_reconcile_audit_failure_rolls_back_run(self, client, session, monkeypatch) -> None:
         """If audit emission fails, the ``ReconciliationRun`` row is rolled
         back together with any partial Exposure mutations — no orphan
         anchor."""
@@ -396,19 +364,9 @@ class TestFailClosedAtRoute:
             )
             assert resp.status_code >= 500
             # No deal persisted.
-            assert (
-                session.query(Deal)
-                .filter(Deal.name == "FailClosed Deal")
-                .count()
-                == 0
-            )
+            assert session.query(Deal).filter(Deal.name == "FailClosed Deal").count() == 0
             # No audit row either.
-            assert (
-                session.query(AuditEvent)
-                .filter(AuditEvent.entity_type == "deal")
-                .count()
-                == 0
-            )
+            assert session.query(AuditEvent).filter(AuditEvent.entity_type == "deal").count() == 0
         finally:
             if previous is not None:
                 os.environ["AUDIT_SIGNING_KEY"] = previous
@@ -418,9 +376,7 @@ class TestFailClosedAtRoute:
 
 
 class TestA5RouteWorkerCoverage:
-    def test_counterparty_create_update_delete_emit_signed_audit(
-        self, client, session
-    ) -> None:
+    def test_counterparty_create_update_delete_emit_signed_audit(self, client, session) -> None:
         created = client.post(
             "/counterparties",
             json={"type": "broker", "name": "A5 CP", "country": "BRA"},
@@ -439,9 +395,7 @@ class TestA5RouteWorkerCoverage:
         for row in rows:
             _assert_signed(row)
 
-    def test_counterparty_create_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_counterparty_create_rolls_back_when_signing_key_missing(self, client, session) -> None:
         with _without_signing_key():
             resp = client.post(
                 "/counterparties",
@@ -450,10 +404,7 @@ class TestA5RouteWorkerCoverage:
 
         assert resp.status_code >= 500
         assert (
-            session.query(Counterparty)
-            .filter(Counterparty.name == "A5 CP Rollback")
-            .count()
-            == 0
+            session.query(Counterparty).filter(Counterparty.name == "A5 CP Rollback").count() == 0
         )
 
     def test_counterparty_update_delete_roll_back_when_signing_key_missing(
@@ -519,10 +470,7 @@ class TestA5RouteWorkerCoverage:
         assert failed.status_code >= 500
         session.expire_all()
         assert (
-            session.query(SoPoLink)
-            .filter(SoPoLink.sales_order_id == UUID(so2["id"]))
-            .count()
-            == 0
+            session.query(SoPoLink).filter(SoPoLink.sales_order_id == UUID(so2["id"])).count() == 0
         )
 
     def test_finance_pipeline_manual_run_emits_audit_and_rolls_back_on_failure(
@@ -531,17 +479,13 @@ class TestA5RouteWorkerCoverage:
         ok = client.post("/finance/pipeline/run", json={"run_date": "2026-05-11"})
         assert ok.status_code == 201, ok.text
         run_id = UUID(ok.json()["id"])
-        rows = _audit_rows(
-            session, entity_type="finance_pipeline_run", entity_id=run_id
-        )
+        rows = _audit_rows(session, entity_type="finance_pipeline_run", entity_id=run_id)
         assert len(rows) == 1
         assert rows[0].event_type == "manual_run_triggered"
         _assert_signed(rows[0])
 
         with _without_signing_key():
-            failed = client.post(
-                "/finance/pipeline/run", json={"run_date": "2026-05-12"}
-            )
+            failed = client.post("/finance/pipeline/run", json={"run_date": "2026-05-12"})
         assert failed.status_code >= 500
         session.expire_all()
         assert (
@@ -569,9 +513,7 @@ class TestA5RouteWorkerCoverage:
         )
 
         with _without_signing_key():
-            failed = client.post(
-                "/finance/pipeline/run", json={"run_date": "2026-05-12"}
-            )
+            failed = client.post("/finance/pipeline/run", json={"run_date": "2026-05-12"})
 
         assert failed.status_code >= 500
         session.expire_all()
@@ -709,8 +651,27 @@ class TestRouteCoverageStatic:
         ("PATCH", "/rfqs/{rfq_id}/archive"): "covered institutional mutation",
         ("POST", "/cashflow/baseline/snapshots"): "covered institutional mutation",
         ("POST", "/cashflow/contracts/{contract_id}/settle"): "covered institutional mutation",
+        (
+            "POST",
+            "/workflow-approvals/{approval_id}/grant",
+        ): "service-layer audited lifecycle mutation",
+        (
+            "POST",
+            "/workflow-approvals/{approval_id}/reject",
+        ): "service-layer audited lifecycle mutation",
+        (
+            "POST",
+            "/workflow-approvals/{approval_id}/supersede",
+        ): "service-layer audited lifecycle mutation",
+        (
+            "POST",
+            "/workflow-approvals/{approval_id}/consume",
+        ): "service-layer audited lifecycle mutation",
         ("POST", "/pl/snapshots"): "covered institutional mutation",
-        ("POST", "/scenario/what-if/run"): "explicitly out of A5 mutation scope: analytical scenario",
+        (
+            "POST",
+            "/scenario/what-if/run",
+        ): "explicitly out of A5 mutation scope: analytical scenario",
         (
             "POST",
             "/market-data/westmetall/aluminum/cash-settlement/ingest",
@@ -720,12 +681,18 @@ class TestRouteCoverageStatic:
             "/market-data/westmetall/aluminum/cash-settlement/ingest-bulk",
         ): "covered institutional mutation",
         ("POST", "/mtm/snapshots"): "covered institutional mutation",
-        ("POST", "/webhooks/whatsapp"): "explicitly out of A5 route audit scope: inbound delivery evidence",
+        (
+            "POST",
+            "/webhooks/whatsapp",
+        ): "explicitly out of A5 route audit scope: inbound delivery evidence",
         (
             "POST",
             "/csp/report",
         ): "explicitly out of A5 route audit scope: CSP violation reports (unauth, CSRF-exempt)",
-        ("POST", "/auth/session"): "explicitly out of A5 route audit scope: auth session cookie exchange",
+        (
+            "POST",
+            "/auth/session",
+        ): "explicitly out of A5 route audit scope: auth session cookie exchange",
         ("POST", "/auth/refresh"): "explicitly out of A5 route audit scope: auth session refresh",
         ("POST", "/auth/logout"): "explicitly out of A5 route audit scope: auth session logout",
         ("POST", "/finance/pipeline/run"): "covered institutional mutation",
@@ -738,9 +705,7 @@ class TestRouteCoverageStatic:
         for route in app.routes:
             method_path_pairs = {(m, route.path) for m in getattr(route, "methods", []) or []}
             actual |= {
-                mp
-                for mp in method_path_pairs
-                if mp[0] in {"POST", "PUT", "PATCH", "DELETE"}
+                mp for mp in method_path_pairs if mp[0] in {"POST", "PUT", "PATCH", "DELETE"}
             }
 
         assert actual == set(self.CLASSIFICATION), (
@@ -767,6 +732,27 @@ class TestRouteCoverageStatic:
             assert "audit_event" in joined, (
                 f"Route {covered} missing audit_event dependency; deps={source_names}"
             )
+
+    def test_service_layer_audited_lifecycle_routes_emit_via_service(self) -> None:
+        # Routes classified as "service-layer audited lifecycle mutation"
+        # delegate audit emission to the service layer (mirrors sweep_expired).
+        # The service-layer module must reference _emit_audit_event so the audit
+        # trail invariant holds without duplicate route+service rows.
+        import inspect
+
+        from app.services import workflow_approval_service
+
+        service_source = inspect.getsource(workflow_approval_service)
+        lifecycle_routes = [
+            mp
+            for mp, c in self.CLASSIFICATION.items()
+            if c == "service-layer audited lifecycle mutation"
+        ]
+        assert lifecycle_routes, "expected workflow approval lifecycle routes"
+        assert "_emit_audit_event" in service_source, (
+            "workflow_approval_service must emit audit events via "
+            "_emit_audit_event for service-layer audited lifecycle routes"
+        )
 
 
 @contextmanager
@@ -800,7 +786,10 @@ def _create_counterparty_via_api(
     )
     assert resp.status_code == 201
     cp_id = resp.json()["id"]
-    client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
+    client.post(
+        f"/counterparties/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "Test approval"},
+    )
     return cp_id
 
 
@@ -837,7 +826,7 @@ def _create_quote_via_api(
             "fixed_price_value": price,
             "fixed_price_unit": "USD/MT",
             "float_pricing_convention": "avg",
-            "received_at": datetime(2026, 2, 1, tzinfo=timezone.utc).isoformat(),
+            "received_at": datetime(2026, 2, 1, tzinfo=UTC).isoformat(),
         },
     )
     assert resp.status_code == 201, resp.text
@@ -859,7 +848,7 @@ def _insert_price(
             price_usd=Decimal(str(price_usd)),
             source_url="https://example.test/source",
             html_sha256="0" * 64,
-            fetched_at=datetime(2026, 2, 1, tzinfo=timezone.utc),
+            fetched_at=datetime(2026, 2, 1, tzinfo=UTC),
         )
     )
     session.commit()
@@ -921,8 +910,7 @@ class _FakeWestmetallResponse:
 
 def _mock_westmetall_html(monkeypatch, rows: list[tuple[str, str]]) -> None:
     table_rows = "\n".join(
-        f"<tr><td>{settlement_date}</td><td>{price}</td></tr>"
-        for settlement_date, price in rows
+        f"<tr><td>{settlement_date}</td><td>{price}</td></tr>" for settlement_date, price in rows
     )
     html = (
         b"<html><body><table><tr><th>Date</th><th>Cash Settlement</th></tr>"
@@ -938,9 +926,7 @@ def _mock_westmetall_html(monkeypatch, rows: list[tuple[str, str]]) -> None:
 
 
 class TestA5FailClosedMutationFamilies:
-    def test_order_archive_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_order_archive_rolls_back_when_signing_key_missing(self, client, session) -> None:
         order = _create_variable_sales_order(client)
         order_id = UUID(order["id"])
 
@@ -953,9 +939,7 @@ class TestA5FailClosedMutationFamilies:
         assert persisted is not None
         assert persisted.deleted_at is None
 
-    def test_rfq_create_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_create_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
 
         with _without_signing_key():
@@ -978,9 +962,7 @@ class TestA5FailClosedMutationFamilies:
         assert session.query(RFQ).count() == 0
         assert session.query(RFQInvitation).count() == 0
 
-    def test_rfq_quote_submit_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_quote_submit_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
 
@@ -993,9 +975,7 @@ class TestA5FailClosedMutationFamilies:
                     "fixed_price_value": "100.000",
                     "fixed_price_unit": "USD/MT",
                     "float_pricing_convention": "avg",
-                    "received_at": datetime(
-                        2026, 2, 1, tzinfo=timezone.utc
-                    ).isoformat(),
+                    "received_at": datetime(2026, 2, 1, tzinfo=UTC).isoformat(),
                 },
             )
 
@@ -1004,9 +984,7 @@ class TestA5FailClosedMutationFamilies:
         assert session.query(RFQQuote).count() == 0
         assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.sent
 
-    def test_rfq_reject_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_reject_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
         _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
@@ -1021,9 +999,7 @@ class TestA5FailClosedMutationFamilies:
         session.expire_all()
         assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.quoted
 
-    def test_rfq_cancel_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_cancel_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
 
@@ -1037,9 +1013,7 @@ class TestA5FailClosedMutationFamilies:
         session.expire_all()
         assert session.get(RFQ, UUID(rfq["id"])).state == RFQState.sent
 
-    def test_rfq_reject_quote_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_reject_quote_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
         quote = _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
@@ -1084,9 +1058,7 @@ class TestA5FailClosedMutationFamilies:
         )
         assert refresh_rows == 0
 
-    def test_rfq_refresh_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_refresh_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
 
@@ -1105,9 +1077,7 @@ class TestA5FailClosedMutationFamilies:
         )
         assert refresh_rows == 0
 
-    def test_rfq_award_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_award_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
         _create_quote_via_api(client, rfq_id=rfq["id"], counterparty_id=cp_id)
@@ -1124,15 +1094,11 @@ class TestA5FailClosedMutationFamilies:
         assert persisted_rfq is not None
         assert persisted_rfq.state == RFQState.quoted
         assert (
-            session.query(HedgeContract)
-            .filter(HedgeContract.rfq_id == UUID(rfq["id"]))
-            .count()
+            session.query(HedgeContract).filter(HedgeContract.rfq_id == UUID(rfq["id"])).count()
             == 0
         )
 
-    def test_rfq_archive_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_rfq_archive_rolls_back_when_signing_key_missing(self, client, session) -> None:
         cp_id = _create_counterparty_via_api(client)
         rfq = _create_global_rfq(client, [cp_id])
         closed = client.post(f"/rfqs/{rfq['id']}/actions/cancel", json={})
@@ -1151,9 +1117,7 @@ class TestA5FailClosedMutationFamilies:
         assert persisted_rfq.deleted_at is None
         assert persisted_rfq.state == RFQState.closed
 
-    def test_mtm_snapshot_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_mtm_snapshot_rolls_back_when_signing_key_missing(self, client, session) -> None:
         _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
         contract_id = _create_hedge_contract_via_api(client)
 
@@ -1172,9 +1136,7 @@ class TestA5FailClosedMutationFamilies:
         session.expire_all()
         assert session.query(MTMSnapshot).count() == 0
 
-    def test_pl_snapshot_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_pl_snapshot_rolls_back_when_signing_key_missing(self, client, session) -> None:
         _insert_price(session, settlement_date=date(2026, 1, 14), price_usd="110")
         _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
         contract_id = _create_hedge_contract_via_api(client)
@@ -1199,9 +1161,7 @@ class TestA5FailClosedMutationFamilies:
         session.expire_all()
         assert session.query(PLSnapshot).count() == 0
 
-    def test_cashflow_baseline_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_cashflow_baseline_rolls_back_when_signing_key_missing(self, client, session) -> None:
         _insert_price(session, settlement_date=date(2026, 1, 30), price_usd="110")
         _create_variable_sales_order(client, avg_entry_price=100.0)
 
@@ -1215,9 +1175,7 @@ class TestA5FailClosedMutationFamilies:
         session.expire_all()
         assert session.query(CashFlowBaselineSnapshot).count() == 0
 
-    def test_cashflow_settlement_rolls_back_when_signing_key_missing(
-        self, client, session
-    ) -> None:
+    def test_cashflow_settlement_rolls_back_when_signing_key_missing(self, client, session) -> None:
         _insert_price(session, settlement_date=date(2026, 1, 14), price_usd="110")
         contract_id = _create_hedge_contract_via_api(client)
 

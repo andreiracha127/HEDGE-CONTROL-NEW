@@ -1390,6 +1390,55 @@ class RFQService:
         return rfq
 
     @staticmethod
+    def resolve_awarded_quote(
+        session: Session,
+        rfq: RFQ,
+    ) -> tuple[RFQIntent, list[tuple[RFQQuote, Decimal]]]:
+        if rfq.intent == RFQIntent.spread:
+            ranking_payload = RFQService.compute_spread_ranking(session, rfq)
+            if ranking_payload.status != "SUCCESS" or not ranking_payload.ranking:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Ranking is not awardable",
+                )
+            top = ranking_payload.ranking[0]
+            if rfq.buy_trade_id is None or rfq.sell_trade_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Referenced trade RFQ ID is None",
+                )
+            buy_trade = session.get(RFQ, rfq.buy_trade_id)
+            sell_trade = session.get(RFQ, rfq.sell_trade_id)
+            if buy_trade is None or sell_trade is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Referenced trade RFQ missing",
+                )
+            return (
+                RFQIntent.spread,
+                [
+                    (top.buy_quote, buy_trade.quantity_mt),
+                    (top.sell_quote, sell_trade.quantity_mt),
+                ],
+            )
+
+        latest = RFQService.get_latest_trade_quotes(session, rfq.id)
+        trade_ranking = RFQService.compute_trade_ranking(rfq, latest)
+        if trade_ranking.status != "SUCCESS" or not trade_ranking.ranking:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Ranking is not awardable",
+            )
+        top_quote = trade_ranking.ranking[0].quote
+        quote = session.get(RFQQuote, top_quote.id)
+        if quote is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Awarded quote missing",
+            )
+        return rfq.intent, [(quote, rfq.quantity_mt)]
+
+    @staticmethod
     def award(session: Session, rfq_id: UUID, actor_sub: str) -> RFQ:
         """Award an RFQ: create contracts, linkages and close.
 

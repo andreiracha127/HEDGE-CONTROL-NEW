@@ -6,10 +6,12 @@ import os
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.tasks.rfq_timeout_task import run_rfq_timeout_check
 from app.tasks.market_data_staleness_task import run_market_data_staleness_check
+from app.tasks.rfq_timeout_task import run_rfq_timeout_check
 from app.tasks.westmetall_task import run_westmetall_ingestion
+from app.tasks.workflow_approval_sweeper import workflow_approval_sweeper
 
 logger = get_logger()
 
@@ -58,6 +60,14 @@ def start_scheduler() -> None:
         trigger="interval",
         minutes=int(os.getenv("MARKET_DATA_STALENESS_CHECK_INTERVAL_MINUTES", "15")),
         id="market_data_staleness_check",
+        replace_existing=True,
+        misfire_grace_time=900,
+    )
+    _scheduler.add_job(
+        workflow_approval_sweeper,
+        trigger="interval",
+        minutes=get_settings().workflow_approval_sweeper_interval_minutes,
+        id="workflow_approval_sweeper",
         replace_existing=True,
         misfire_grace_time=900,
     )

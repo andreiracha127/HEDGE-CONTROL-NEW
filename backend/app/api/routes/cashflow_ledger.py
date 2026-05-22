@@ -1,26 +1,36 @@
+import uuid
 from datetime import date
+from decimal import Decimal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_actor_sub, require_any_role, require_role
-from app.core.database import get_session
-from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
+from app.core.auth import (
+    get_current_actor_roles,
+    get_current_actor_sub,
+    require_any_role,
+    require_role,
+)
+from app.core.database import get_session
+from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
+from app.models.workflow_approval import ApprovalPolicy, MutationType
 from app.schemas.cashflow import (
     CashFlowLedgerEntryRead,
     HedgeContractSettlementCreate,
     HedgeContractSettlementResponse,
 )
+from app.services import workflow_approval_service
 from app.services.cashflow_ledger_service import (
     SOURCE_EVENT_TYPE,
     ingest_hedge_contract_settlement,
     list_entries_by_contract,
     list_entries_by_event,
 )
-
 
 router = APIRouter()
 
@@ -43,18 +53,54 @@ def settle_hedge_contract(
     ),
     __: None = Depends(require_role("risk_manager")),
     actor_sub: str = Depends(get_current_actor_sub),
+    actor_roles: list[str] = Depends(get_current_actor_roles),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    x_session_id: str | None = Header(None, alias="X-Session-Id"),
     session: Session = Depends(get_session),
 ) -> HedgeContractSettlementResponse:
     with unit_of_work(session, request=request):
+        settlement_amount_usd = sum(
+            (Decimal(str(leg.amount)) for leg in payload.legs),
+            Decimal("0"),
+        )
+        approval_payload = {
+            "contract_id": str(contract_id),
+            "payload": payload.model_dump(mode="json"),
+        }
+        approval = workflow_approval_service.evaluate_and_maybe_create(
+            session,
+            MutationType.hedge_contract_settle,
+            approval_payload,
+            settlement_amount_usd,
+            actor_sub,
+            request.client.host if request.client else None,
+            x_session_id,
+            uuid.uuid4(),
+            idempotency_key,
+            set(actor_roles),
+        )
+        if approval is not None:
+            policy = session.get(ApprovalPolicy, approval.mutation_type)
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content=jsonable_encoder(
+                    {
+                        "approval_id": approval.id,
+                        "status": approval.status.value,
+                        "expires_at": approval.expires_at,
+                        "required_approvers": (policy.required_approver_roles if policy else []),
+                        "polling_url": f"/workflow-approvals/{approval.id}",
+                        "consume_url": f"/workflow-approvals/{approval.id}/consume",
+                    }
+                ),
+            )
         event, ledger_entries = ingest_hedge_contract_settlement(
             session, contract_id, payload, commit=False
         )
         mark_audit_success(request, event.id, metadata={"actor_sub": actor_sub})
     return HedgeContractSettlementResponse(
         event=event,
-        ledger_entries=[
-            CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries
-        ],
+        ledger_entries=[CashFlowLedgerEntryRead.model_validate(entry) for entry in ledger_entries],
     )
 
 
@@ -69,9 +115,7 @@ def list_ledger_entries_for_contract(
     _: None = Depends(require_any_role("risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> list[CashFlowLedgerEntryRead]:
-    entries = list_entries_by_contract(
-        session, contract_id=contract_id, start=start, end=end
-    )
+    entries = list_entries_by_contract(session, contract_id=contract_id, start=start, end=end)
     return [CashFlowLedgerEntryRead.model_validate(entry) for entry in entries]
 
 

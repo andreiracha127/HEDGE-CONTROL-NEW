@@ -15,6 +15,7 @@ from app.api.routes import (
     scenario,
     webhooks,
     westmetall,
+    workflow_approvals,
     csp_report,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "scenario",
     "webhooks",
     "westmetall",
+    "workflow_approvals",
     "csp_report",
 ]
