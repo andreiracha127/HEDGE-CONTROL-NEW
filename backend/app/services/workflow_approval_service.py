@@ -383,6 +383,19 @@ def consume_request(
         )
     if row.status != ApprovalStatus.approved:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is not approved")
+    # Runtime expires_at guard: the background sweeper transitions expired
+    # approvals to ApprovalStatus.expired asynchronously (15-min cadence),
+    # leaving a window where an approved row past its deadline is still in
+    # the approved state. Enforce the deadline synchronously so consume can
+    # never authorize a mutation past the stated expiry.
+    expires_at = row.expires_at
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    if expires_at < _utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approval has expired",
+        )
     if _compute_payload_hash(consume_payload_obj) != row.mutation_payload_hash:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

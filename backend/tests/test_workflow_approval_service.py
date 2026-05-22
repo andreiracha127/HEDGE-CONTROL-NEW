@@ -172,8 +172,7 @@ def test_gate_rejects_actor_lacking_risk_manager(session) -> None:
 
     assert exc.value.status_code == 403
     assert exc.value.detail == (
-        "role lacks risk_manager -- institutional-threshold mutations require "
-        "risk_manager scope"
+        "role lacks risk_manager -- institutional-threshold mutations require risk_manager scope"
     )
 
 
@@ -316,6 +315,54 @@ def test_consume_detects_payload_drift_and_preserves_approved_state(session) -> 
     assert session.get(WorkflowApprovalRequest, request.id).status == ApprovalStatus.approved
 
 
+def test_consume_rejects_expired_row_synchronously(session) -> None:
+    # Approved-but-expired rows must hard-fail consume even before the
+    # async sweeper transitions them to ApprovalStatus.expired.
+    from datetime import UTC, datetime, timedelta
+
+    payload = _payload()
+    request = evaluate_and_maybe_create(
+        session,
+        MutationType.deal_create,
+        payload,
+        Decimal("600000.00"),
+        "risk-requester",
+        "10.0.0.1",
+        "sess-1",
+        uuid4(),
+        "consume-expired",
+        {"risk_manager"},
+    )
+    grant_request(
+        session,
+        request.id,
+        "risk-approver",
+        {"risk_manager"},
+        "10.0.0.2",
+        "sess-approver",
+    )
+    # Reach into the row and backdate expires_at to simulate sweeper lag
+    # (real flow: row would be approved at T, expires_at < now, sweeper
+    # hasn't yet flipped status to expired).
+    row = session.get(WorkflowApprovalRequest, request.id)
+    row.expires_at = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=1)
+    session.flush()
+
+    with pytest.raises(HTTPException) as exp:
+        consume_request(
+            session,
+            request.id,
+            "risk-requester",
+            payload,
+            lambda _: {"created": True},
+        )
+    assert exp.value.status_code == 409
+    assert "expired" in exp.value.detail.lower()
+    # Row is unchanged (still approved); the deferred sweep is what will
+    # transition it to expired.
+    assert session.get(WorkflowApprovalRequest, request.id).status == ApprovalStatus.approved
+
+
 def test_consume_calls_executor_once_and_marks_consumed(session) -> None:
     payload = _payload()
     request = evaluate_and_maybe_create(
@@ -416,4 +463,3 @@ def test_sweep_expired_handles_pending_and_approved(session, source_status) -> N
 
     assert [row.id for row in expired] == [request.id]
     assert session.get(WorkflowApprovalRequest, request.id).status == ApprovalStatus.expired
-
