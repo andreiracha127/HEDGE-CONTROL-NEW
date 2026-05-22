@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -10,15 +9,15 @@ import pytest
 from fastapi import HTTPException
 
 from app.core.auth import (
-    get_current_actor_roles,
     get_auth_disabled_fallback_user,
+    get_current_actor_roles,
     get_current_user,
     require_service_identity,
 )
 from app.main import app
 from app.models.audit import AuditEvent
-from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.contracts import HedgeContract, HedgeContractStatus
+from app.models.counterparty import Counterparty, CounterpartyType
 from app.models.deal import Deal
 from app.models.inbound_webhook_message import InboundWebhookMessage
 from app.models.orders import Order, OrderType, PriceType
@@ -34,9 +33,7 @@ def _as_roles(*roles: str, sub: str = "test-user") -> dict:
 @pytest.fixture()
 def auth_as():
     def _set(*roles: str, sub: str = "test-user") -> None:
-        app.dependency_overrides[get_current_user] = lambda: _as_roles(
-            *roles, sub=sub
-        )
+        app.dependency_overrides[get_current_user] = lambda: _as_roles(*roles, sub=sub)
 
     yield _set
     app.dependency_overrides.clear()
@@ -138,7 +135,7 @@ def _insert_rfq(session) -> RFQ:
         commercial_passive_mt=Decimal("0"),
         commercial_net_mt=Decimal("0"),
         commercial_reduction_applied_mt=Decimal("0"),
-        exposure_snapshot_timestamp=datetime.now(timezone.utc),
+        exposure_snapshot_timestamp=datetime.now(UTC),
         state=RFQState.created,
     )
     session.add(rfq)
@@ -148,9 +145,7 @@ def _insert_rfq(session) -> RFQ:
 
 
 def test_get_current_actor_roles_filters_unknown_values() -> None:
-    assert get_current_actor_roles(_as_roles("trader", "garbage", "admin")) == [
-        "trader"
-    ]
+    assert get_current_actor_roles(_as_roles("trader", "garbage", "admin")) == ["trader"]
 
 
 @pytest.mark.parametrize("roles", [("auditor", "trader"), ("auditor", "risk_manager")])
@@ -177,9 +172,7 @@ def test_get_current_actor_roles_rejects_copied_anonymous_fallback() -> None:
 
 def test_get_current_actor_roles_rejects_signed_anonymous_broad_roles() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        get_current_actor_roles(
-            _as_roles("trader", "risk_manager", "auditor", sub="anonymous")
-        )
+        get_current_actor_roles(_as_roles("trader", "risk_manager", "auditor", sub="anonymous"))
     assert exc_info.value.status_code == 401
 
 
@@ -192,9 +185,7 @@ def test_get_current_actor_roles_accepts_trader_plus_risk_manager() -> None:
 
 def test_get_current_actor_roles_rejects_service_subject_human_roles() -> None:
     with pytest.raises(HTTPException) as exc_info:
-        get_current_actor_roles(
-            _as_roles("risk_manager", sub="service:westmetall_ingest")
-        )
+        get_current_actor_roles(_as_roles("risk_manager", sub="service:westmetall_ingest"))
     assert exc_info.value.status_code == 401
     assert "Service identities cannot carry human roles" in exc_info.value.detail
 
@@ -243,9 +234,7 @@ def test_counterparty_delete_trader_404s_broker(client, auth_as, session) -> Non
     assert response.status_code == 404
 
 
-def test_counterparty_get_list_trader_filters_broker_bank(
-    client, auth_as, session
-) -> None:
+def test_counterparty_get_list_trader_filters_broker_bank(client, auth_as, session) -> None:
     _insert_counterparty(session, CounterpartyType.customer, "customer list")
     _insert_counterparty(session, CounterpartyType.supplier, "supplier list")
     _insert_counterparty(session, CounterpartyType.broker, "broker list")
@@ -286,7 +275,7 @@ def test_westmetall_ingest_service_identity_accepts(client, auth_as, monkeypatch
     evidence = WestmetallFetchEvidence(
         source_url="https://example.test",
         html_sha256="abc123",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
     monkeypatch.setattr(
         "app.api.routes.westmetall.ingest_westmetall_cash_settlement_daily_for_date",
@@ -328,9 +317,7 @@ def test_service_subject_human_role_rejected_from_human_gate(client, auth_as) ->
     assert "Service identities cannot carry human roles" in response.json()["detail"]
 
 
-def test_westmetall_dev_service_override_rejects_human_actor(
-    client, auth_as, monkeypatch
-) -> None:
+def test_westmetall_dev_service_override_rejects_human_actor(client, auth_as, monkeypatch) -> None:
     monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
     auth_as("risk_manager", sub="human-user")
     response = client.post(
@@ -346,7 +333,7 @@ def test_westmetall_dev_service_override_accepts_auth_disabled_fallback(
     evidence = WestmetallFetchEvidence(
         source_url="https://example.test",
         html_sha256="abc123",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
     monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
     monkeypatch.setattr(
@@ -363,28 +350,36 @@ def test_westmetall_dev_service_override_accepts_auth_disabled_fallback(
 @pytest.mark.parametrize(
     ("method", "path", "json_body"),
     [
-        ("post", "/rfqs", {
-            "intent": "GLOBAL_POSITION",
-            "commodity": "ALUMINUM",
-            "quantity_mt": "10.000000",
-            "delivery_window_start": "2026-06-01",
-            "delivery_window_end": "2026-06-30",
-            "direction": "BUY",
-            "invitations": [],
-        }),
-        ("post", "/rfqs/preview-text", {
-            "channel_type": "whatsapp",
-            "trade_type": "outright",
-            "leg1": {
-                "side": "buy",
-                "price_type": "fixed",
-                "quantity_mt": "1.000000",
-                "month_name": "Jun",
-                "year": 2026,
+        (
+            "post",
+            "/rfqs",
+            {
+                "intent": "GLOBAL_POSITION",
+                "commodity": "ALUMINUM",
+                "quantity_mt": "10.000000",
+                "delivery_window_start": "2026-06-01",
+                "delivery_window_end": "2026-06-30",
+                "direction": "BUY",
+                "invitations": [],
             },
-            "company_header": "ACME",
-            "company_label_for_payoff": "ACME",
-        }),
+        ),
+        (
+            "post",
+            "/rfqs/preview-text",
+            {
+                "channel_type": "whatsapp",
+                "trade_type": "outright",
+                "leg1": {
+                    "side": "buy",
+                    "price_type": "fixed",
+                    "quantity_mt": "1.000000",
+                    "month_name": "Jun",
+                    "year": 2026,
+                },
+                "company_header": "ACME",
+                "company_label_for_payoff": "ACME",
+            },
+        ),
         ("post", "/contracts/hedge", _hedge_payload()),
         ("post", "/deals", {"name": "RBAC deal", "commodity": "ALUMINUM"}),
     ],
@@ -440,6 +435,18 @@ def test_finance_pipeline_trader_rejected(client, auth_as) -> None:
     assert response.status_code == 403
 
 
+def test_auditor_can_read_pipeline_runs(client, auth_as) -> None:
+    auth_as("auditor")
+    response = client.get("/finance/pipeline/runs")
+    assert response.status_code == 200
+
+
+def test_auditor_cannot_trigger_finance_pipeline_manual(client, auth_as) -> None:
+    auth_as("auditor")
+    response = client.post("/finance/pipeline/run", json={"run_date": "2026-05-11"})
+    assert response.status_code == 403
+
+
 @pytest.mark.parametrize("role", ["trader", "auditor"])
 def test_scenario_what_if_run_requires_risk_manager(client, auth_as, role) -> None:
     auth_as(role)
@@ -485,9 +492,7 @@ def test_scenario_what_if_run_requires_risk_manager(client, auth_as, role) -> No
         ),
     ],
 )
-def test_financial_snapshot_mutations_reject_trader(
-    client, auth_as, path, json_body
-) -> None:
+def test_financial_snapshot_mutations_reject_trader(client, auth_as, path, json_body) -> None:
     auth_as("trader")
     response = client.post(path, json=json_body)
     assert response.status_code == 403
@@ -542,16 +547,12 @@ def test_ws_rfq_subscription_accepts_risk_manager_or_auditor(client, role) -> No
             assert response["topic"] == "rfq"
 
 
-def test_webhook_post_attributes_to_service_webhook_inbound(
-    client, monkeypatch, session
-) -> None:
+def test_webhook_post_attributes_to_service_webhook_inbound(client, monkeypatch, session) -> None:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
     monkeypatch.setenv("AUDIT_SIGNING_KEY", "test-signing-key-for-audit-hmac")
     _reset_signing_key_cache()
-    monkeypatch.setattr(
-        "app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr("app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None)
     payload = {
         "entry": [
             {
@@ -591,9 +592,7 @@ def test_webhook_post_rolls_back_message_when_audit_signing_key_missing(
     monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
     monkeypatch.delenv("AUDIT_SIGNING_KEY", raising=False)
     _reset_signing_key_cache()
-    monkeypatch.setattr(
-        "app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None
-    )
+    monkeypatch.setattr("app.api.routes.webhooks._executor.submit", lambda *args, **kwargs: None)
     payload = {
         "entry": [
             {
@@ -631,7 +630,7 @@ def test_westmetall_scheduler_attributes_service_actor(monkeypatch, session) -> 
     evidence = WestmetallFetchEvidence(
         source_url="https://example.test",
         html_sha256="abc123",
-        fetched_at=datetime.now(timezone.utc),
+        fetched_at=datetime.now(UTC),
     )
 
     monkeypatch.setattr(
@@ -643,7 +642,6 @@ def test_westmetall_scheduler_attributes_service_actor(monkeypatch, session) -> 
 
     rows = session.query(AuditEvent).all()
     assert any(
-        row.payload.get("metadata", {}).get("actor_sub")
-        == "service:westmetall_ingest"
+        row.payload.get("metadata", {}).get("actor_sub") == "service:westmetall_ingest"
         for row in rows
     )

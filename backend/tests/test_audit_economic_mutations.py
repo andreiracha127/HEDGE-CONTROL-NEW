@@ -480,9 +480,9 @@ class TestA5RouteWorkerCoverage:
         assert ok.status_code == 201, ok.text
         run_id = UUID(ok.json()["id"])
         rows = _audit_rows(session, entity_type="finance_pipeline_run", entity_id=run_id)
-        assert len(rows) == 1
-        assert rows[0].event_type == "manual_run_triggered"
-        _assert_signed(rows[0])
+        manual_rows = [row for row in rows if row.event_type == "manual_run_triggered"]
+        assert len(manual_rows) == 1
+        _assert_signed(manual_rows[0])
 
         with _without_signing_key():
             failed = client.post("/finance/pipeline/run", json={"run_date": "2026-05-12"})

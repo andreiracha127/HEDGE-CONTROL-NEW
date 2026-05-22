@@ -250,6 +250,29 @@ Start commands and healthchecks were moved to the Railway dashboard because back
 
 The scheduler is a separate Railway service so scheduled work has a single production owner. The backend web service sets `SCHEDULER_DISABLED=true`, preventing duplicate background execution across gunicorn workers and keeping API request serving separate from scheduled processing.
 
+### Finance Pipeline (HB-3)
+
+The Finance Pipeline daily run is owned by the Railway `scheduler` service, the standalone process running `python -m app.scheduler_main`. It registers the `finance_pipeline_daily` APScheduler job and executes as `service:cashflow_pipeline`.
+
+Default cadence is daily at 19:00 UTC. Railway dashboard variables may override it with `FINANCE_PIPELINE_CRON_HOUR` and `FINANCE_PIPELINE_CRON_MINUTE`. The dashboard also owns `FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS` and `FINANCE_PIPELINE_UNHEDGED_GUARDRAIL_TONNES`; do not encode those operational knobs in `railway.json`.
+
+The absence-of-completion signal for a business day is zero completed run events in the audit ledger:
+
+```sql
+SELECT count(*)
+FROM audit_events
+WHERE entity_type = 'finance_pipeline_run'
+  AND event_type = 'finance_pipeline_run_completed'
+  AND timestamp_utc >= TIMESTAMPTZ '2026-05-22 00:00:00+00'
+  AND timestamp_utc <  TIMESTAMPTZ '2026-05-23 00:00:00+00';
+```
+
+Zero rows means the finance day did not close. First inspect `scheduler` logs for `finance_pipeline_task_failure`, `finance_pipeline_task_already_running`, or `finance_pipeline_task_skipped_holiday`.
+
+Failure recovery for a `partial` run is a resume, not a backfill rewrite. Either wait for the next scheduled 19:00 UTC tick on a business day, or use a `risk_manager` JWT to call `POST /finance/pipeline/run` for the affected `run_date`. The service resumes the first non-completed step and records HMAC-signed lifecycle audit events for the resumed run.
+
+Security/platform sign-off is required before HB-3 is closed for the pilot brief. Record the operator, production date, and the `finance_pipeline_run_completed` audit event evidence in the deployment or incident log.
+
 ### Manual Postgres template and volume setup
 
 The production database uses the Railway Postgres SSL template with an explicit volume at `/var/lib/postgresql/data`. CLI template and volume creation were unreliable in this workspace, so dashboard setup is the recorded operational path. Backup policy and restore drills remain operational responsibilities outside repository configuration.

@@ -14,7 +14,7 @@
 		"test:watch": "vitest",
 		"test:coverage": "vitest run --coverage",
 		"api:types": "node scripts/regen-schema.mjs",
-		"api:types:check": "node scripts/regen-schema.mjs /tmp/schema-check.d.ts && diff -q src/lib/api/schema.d.ts /tmp/schema-check.d.ts",
+		"api:types:check": "node scripts/check-schema-drift.mjs",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui"
 	},

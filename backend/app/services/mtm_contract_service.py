@@ -16,9 +16,17 @@ from app.services.price_lookup_service import (
 )
 
 
-def compute_mtm_for_contract(
-    db: Session, contract_id: UUID, as_of_date: date
-) -> MTMResultResponse:
+class PriceProvenanceMissing(HTTPException):
+    """Recoverable missing-price dependency for per-record pipeline handling."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=detail,
+        )
+
+
+def compute_mtm_for_contract(db: Session, contract_id: UUID, as_of_date: date) -> MTMResultResponse:
     contract = db.get(HedgeContract, contract_id)
     if not contract:
         raise HTTPException(
@@ -46,10 +54,7 @@ def compute_mtm_for_contract(
             db, symbol=symbol, as_of_date=as_of_date
         )
     except PriceReferenceUnprovable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_424_FAILED_DEPENDENCY,
-            detail=str(exc),
-        ) from exc
+        raise PriceProvenanceMissing(str(exc)) from exc
     price_d1 = price_quote.value
     entry_price = Decimal(str(contract.fixed_price_value))
     quantity_mt = Decimal(str(contract.quantity_mt))

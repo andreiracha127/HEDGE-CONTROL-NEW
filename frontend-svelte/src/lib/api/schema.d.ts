@@ -3176,6 +3176,44 @@ export interface components {
             /** Unrealized Mtm */
             unrealized_mtm: string;
         };
+        /** PipelineRiskFlagRead */
+        PipelineRiskFlagRead: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            flag_type: components["schemas"]["PipelineRiskFlagType"];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Payload */
+            payload: {
+                [key: string]: unknown;
+            };
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            severity: components["schemas"]["PipelineRiskFlagSeverity"];
+            /** Subject Entity Id */
+            subject_entity_id?: string | null;
+            /** Subject Entity Type */
+            subject_entity_type: string;
+        };
+        /**
+         * PipelineRiskFlagSeverity
+         * @enum {string}
+         */
+        PipelineRiskFlagSeverity: "informational" | "warning" | "critical";
+        /**
+         * PipelineRiskFlagType
+         * @enum {string}
+         */
+        PipelineRiskFlagType: "missing_mtm_price" | "unhedged_exposure_over_guardrail" | "kyc_regression_with_active_deals" | "workflow_approval_pending_past_expiry";
         /** PipelineRunDetailRead */
         PipelineRunDetailRead: {
             /**
@@ -3194,6 +3232,13 @@ export interface components {
             id: string;
             /** Inputs Hash */
             inputs_hash: string;
+            /**
+             * Risk Flags
+             * @default []
+             */
+            risk_flags: components["schemas"]["PipelineRiskFlagRead"][];
+            /** Risk Flags Count */
+            risk_flags_count: number;
             /**
              * Run Date
              * Format: date
@@ -3215,6 +3260,7 @@ export interface components {
             steps_completed: number;
             /** Steps Total */
             steps_total: number;
+            triggered_by: components["schemas"]["PipelineTriggerSource"];
         };
         /** PipelineRunListResponse */
         PipelineRunListResponse: {
@@ -3239,6 +3285,8 @@ export interface components {
             id: string;
             /** Inputs Hash */
             inputs_hash: string;
+            /** Risk Flags Count */
+            risk_flags_count: number;
             /**
              * Run Date
              * Format: date
@@ -3255,6 +3303,7 @@ export interface components {
             steps_completed: number;
             /** Steps Total */
             steps_total: number;
+            triggered_by: components["schemas"]["PipelineTriggerSource"];
         };
         /** PipelineStepRead */
         PipelineStepRead: {
@@ -3286,6 +3335,11 @@ export interface components {
             /** Step Number */
             step_number: number;
         };
+        /**
+         * PipelineTriggerSource
+         * @enum {string}
+         */
+        PipelineTriggerSource: "scheduler" | "manual";
         /** PnlBreakdownRequest */
         PnlBreakdownRequest: {
             /**
