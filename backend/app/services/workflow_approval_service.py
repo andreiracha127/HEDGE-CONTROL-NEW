@@ -170,6 +170,23 @@ def _load_for_update(session: Session, approval_id: uuid.UUID) -> WorkflowApprov
     return row
 
 
+def _reject_if_expired(row: WorkflowApprovalRequest) -> None:
+    """Synchronously enforce the expires_at deadline on every lifecycle
+    transition. The background sweeper transitions expired rows
+    asynchronously (15-min cadence); without this guard, grant / reject /
+    consume could mutate a row past its stated deadline within that
+    window. Sweeper still performs the deferred state transition.
+    """
+    expires_at = row.expires_at
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    if expires_at < _utcnow():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approval has expired",
+        )
+
+
 def _get_policy(session: Session, mutation_type: MutationType) -> ApprovalPolicy:
     policy = session.get(ApprovalPolicy, mutation_type)
     if policy is None:
@@ -259,6 +276,7 @@ def grant_request(
     row = _load_for_update(session, approval_id)
     if row.status != ApprovalStatus.pending:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is not pending")
+    _reject_if_expired(row)
     if approver_actor_sub == row.requested_by:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -300,6 +318,7 @@ def reject_request(
     row = _load_for_update(session, approval_id)
     if row.status != ApprovalStatus.pending:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is not pending")
+    _reject_if_expired(row)
     if len(reason_text.strip()) < 8:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -383,19 +402,7 @@ def consume_request(
         )
     if row.status != ApprovalStatus.approved:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Approval is not approved")
-    # Runtime expires_at guard: the background sweeper transitions expired
-    # approvals to ApprovalStatus.expired asynchronously (15-min cadence),
-    # leaving a window where an approved row past its deadline is still in
-    # the approved state. Enforce the deadline synchronously so consume can
-    # never authorize a mutation past the stated expiry.
-    expires_at = row.expires_at
-    if expires_at.tzinfo is not None:
-        expires_at = expires_at.replace(tzinfo=None)
-    if expires_at < _utcnow():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Approval has expired",
-        )
+    _reject_if_expired(row)
     if _compute_payload_hash(consume_payload_obj) != row.mutation_payload_hash:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -126,10 +126,16 @@ def create_deal(
                 link["linked_type"] = link["linked_type"].value
     with unit_of_work(session, request=request):
         notional_usd = _compute_deal_notional_from_links(session, data.get("links") or [])
+        # Approval payload must be JSON-canonicalizable: linked_id may be a
+        # native UUID at this point (model_dump() preserves Python types),
+        # but the payload is hashed and later resubmitted at consume time,
+        # so coerce via jsonable_encoder. data itself stays Python-typed
+        # for the downstream create_deal call.
+        approval_payload = jsonable_encoder(data)
         approval = workflow_approval_service.evaluate_and_maybe_create(
             session,
             MutationType.deal_create,
-            data,
+            approval_payload,
             notional_usd,
             actor_sub,
             request.client.host if request.client else None,
@@ -147,9 +153,7 @@ def create_deal(
                         "approval_id": approval.id,
                         "status": approval.status.value,
                         "expires_at": approval.expires_at,
-                        "required_approvers": (
-                            policy.required_approver_roles if policy else []
-                        ),
+                        "required_approvers": (policy.required_approver_roles if policy else []),
                         "polling_url": f"/workflow-approvals/{approval.id}",
                         "consume_url": f"/workflow-approvals/{approval.id}/consume",
                     }
@@ -192,9 +196,7 @@ def pnl_breakdown(
 ):
     """Compute P&L breakdown for one, many, or all deals."""
     try:
-        result = DealEngineService.compute_pnl_breakdown(
-            session, body.deal_ids, body.snapshot_date
-        )
+        result = DealEngineService.compute_pnl_breakdown(session, body.deal_ids, body.snapshot_date)
     except PriceReferenceUnprovable as exc:
         _raise_price_unprovable(exc)
     return result
@@ -214,9 +216,7 @@ def get_deal(
     return DealEngineService.get_detail(session, deal_id)
 
 
-@router.post(
-    "/{deal_id}/links", response_model=DealLinkRead, status_code=status.HTTP_201_CREATED
-)
+@router.post("/{deal_id}/links", response_model=DealLinkRead, status_code=status.HTTP_201_CREATED)
 def add_link(
     deal_id: UUID,
     body: DealLinkCreate,
@@ -232,9 +232,7 @@ def add_link(
     session: Session = Depends(get_session),
 ):
     with unit_of_work(session, request=request):
-        link = DealEngineService.add_link(
-            session, deal_id, body.linked_type.value, body.linked_id
-        )
+        link = DealEngineService.add_link(session, deal_id, body.linked_type.value, body.linked_id)
         mark_audit_success(request, link.id, metadata={"actor_sub": actor_sub})
     return link
 
@@ -286,9 +284,7 @@ def trigger_pnl_snapshot(
         snapshot_date = date.today()
     try:
         with unit_of_work(session, request=request):
-            snapshot = DealEngineService.compute_deal_pnl(
-                session, deal_id, snapshot_date
-            )
+            snapshot = DealEngineService.compute_deal_pnl(session, deal_id, snapshot_date)
             mark_audit_success(request, snapshot.id, metadata={"actor_sub": actor_sub})
     except PriceReferenceUnprovable as exc:
         _raise_price_unprovable(exc)
