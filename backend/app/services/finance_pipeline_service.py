@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models.audit import AuditEvent
 from app.models.contracts import HedgeContract, HedgeContractStatus
@@ -248,6 +248,7 @@ class FinancePipelineService:
     def list_runs(db: Session, limit: int = 50) -> list[FinancePipelineRun]:
         return (
             db.query(FinancePipelineRun)
+            .options(selectinload(FinancePipelineRun.risk_flags))
             .order_by(FinancePipelineRun.created_at.desc())
             .limit(limit)
             .all()

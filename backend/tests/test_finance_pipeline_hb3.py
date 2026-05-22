@@ -6,9 +6,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.exc import IntegrityError
 
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.models.audit import AuditEvent
 from app.models.contracts import (
     HedgeClassification,
@@ -376,6 +377,30 @@ def test_route_response_surfaces_triggered_by_and_risk_flags_count(client) -> No
     body = response.json()
     assert body["triggered_by"] == "manual"
     assert body["risk_flags_count"] == 0
+
+
+def test_list_runs_eager_loads_risk_flags_count(session) -> None:
+    for run_date in (date(2026, 5, 20), date(2026, 5, 21), date(2026, 5, 22)):
+        FinancePipelineService.run_daily_pipeline(session, run_date)
+
+    select_count = 0
+
+    def count_selects(conn, cursor, statement, parameters, context, executemany):
+        nonlocal select_count
+        if statement.lstrip().upper().startswith("SELECT"):
+            select_count += 1
+
+    sqlalchemy_event.listen(engine, "before_cursor_execute", count_selects)
+    try:
+        with SessionLocal() as fresh:
+            runs = FinancePipelineService.list_runs(fresh)
+            counts = [run.risk_flags_count for run in runs]
+    finally:
+        sqlalchemy_event.remove(engine, "before_cursor_execute", count_selects)
+
+    assert len(runs) == 3
+    assert counts == [0, 0, 0]
+    assert select_count <= 2
 
 
 def test_detail_response_includes_risk_flags(client, session) -> None:
