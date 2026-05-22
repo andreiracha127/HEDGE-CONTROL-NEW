@@ -88,6 +88,8 @@ def _audit_payload(
     approver_sub: str | None = None,
     rejection_reason: dict | None = None,
     transition_time: datetime | None = None,
+    requester_ip: str | None = None,
+    requester_session_id: str | None = None,
 ) -> dict:
     transition_time = transition_time or _utcnow()
     return {
@@ -98,6 +100,8 @@ def _audit_payload(
         "threshold_at_request": str(row.threshold_at_request),
         "threshold_config_value": str(row.threshold_config_value),
         "requested_by": row.requested_by,
+        "requester_ip": requester_ip,
+        "requester_session_id": requester_session_id,
         "previous_status": previous_status.value if previous_status is not None else None,
         "approver_sub": approver_sub,
         "approver_ip": row.approver_ip if approver_sub is not None else None,
@@ -118,6 +122,8 @@ def _emit_audit_event(
     previous_status: ApprovalStatus | None,
     approver_sub: str | None = None,
     rejection_reason: dict | None = None,
+    requester_ip: str | None = None,
+    requester_session_id: str | None = None,
 ) -> None:
     transition_time = _utcnow()
     payload = _audit_payload(
@@ -126,6 +132,8 @@ def _emit_audit_event(
         approver_sub=approver_sub,
         rejection_reason=rejection_reason,
         transition_time=transition_time,
+        requester_ip=requester_ip,
+        requester_session_id=requester_session_id,
     )
     payload_raw, payload_obj = normalize_payload_raw(payload)
     AuditTrailService.record(
@@ -233,6 +241,8 @@ def evaluate_and_maybe_create(
         row,
         WORKFLOW_APPROVAL_REQUESTED,
         previous_status=None,
+        requester_ip=requesting_actor_ip,
+        requester_session_id=requesting_actor_session_id,
     )
     _broadcast_state_change(row, None, ApprovalStatus.pending)
     return row

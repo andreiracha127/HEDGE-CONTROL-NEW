@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid as _uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
@@ -21,6 +22,7 @@ from app.schemas.workflow_approval import (
     WorkflowApprovalRejectRequest,
     WorkflowApprovalRequestRead,
 )
+from app.services.audit_trail_service import AuditTrailService, normalize_payload_raw
 from app.services.cashflow_ledger_service import ingest_hedge_contract_settlement
 from app.services.deal_engine import DealEngineService
 from app.services.rfq_service import RFQService
@@ -30,6 +32,23 @@ from app.services.workflow_approval_service import (
     reject_request,
     supersede_request,
 )
+
+
+def _emit_consumed_mutation_audit(
+    session: Session, *, entity_type: str, entity_id: UUID, event_type: str, data: dict
+) -> None:
+    payload_raw, payload_obj = normalize_payload_raw(data)
+    AuditTrailService.record(
+        session,
+        event_id=_uuid.uuid4(),
+        entity_type=entity_type,
+        entity_id=entity_id,
+        event_type=event_type,
+        payload_raw=payload_raw,
+        payload_obj=payload_obj,
+        commit=False,
+    )
+
 
 router = APIRouter()
 
@@ -146,15 +165,40 @@ def consume_workflow_approval(
             raise RuntimeError("approval row disappeared during consume")
         data = dict(consume_payload)
         if row.mutation_type.value == "deal_create":
-            return DealEngineService.create_deal(session, data)
+            deal = DealEngineService.create_deal(session, data)
+            _emit_consumed_mutation_audit(
+                session,
+                entity_type="deal",
+                entity_id=deal.id,
+                event_type="created",
+                data={"request": data, "consumed_via_approval": str(approval_id)},
+            )
+            return deal
         if row.mutation_type.value == "deal_award":
-            return RFQService.award(session, UUID(str(data["rfq_id"])), actor_sub)
+            rfq_id = UUID(str(data["rfq_id"]))
+            rfq = RFQService.award(session, rfq_id, actor_sub)
+            _emit_consumed_mutation_audit(
+                session,
+                entity_type="rfq",
+                entity_id=rfq.id,
+                event_type="awarded",
+                data={"request": data, "consumed_via_approval": str(approval_id)},
+            )
+            return rfq
         if row.mutation_type.value == "hedge_contract_settle":
             contract_id = UUID(str(data["contract_id"]))
             settle_payload = HedgeContractSettlementCreate.model_validate(data["payload"])
-            return ingest_hedge_contract_settlement(
+            event, ledger_entries = ingest_hedge_contract_settlement(
                 session, contract_id, settle_payload, commit=False
             )
+            _emit_consumed_mutation_audit(
+                session,
+                entity_type="hedge_contract_settlement",
+                entity_id=event.id,
+                event_type="settled",
+                data={"request": data, "consumed_via_approval": str(approval_id)},
+            )
+            return event, ledger_entries
         raise RuntimeError(f"Unsupported mutation_type {row.mutation_type.value}")
 
     with unit_of_work(session, request=request):

@@ -1450,7 +1450,6 @@ class RFQService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail="RFQ must be in QUOTED state",
             )
-        RFQService.resolve_awarded_quote(session, rfq)
 
         award_time = now_utc()
         created_contract_ids: list[str] = []
