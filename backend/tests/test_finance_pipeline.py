@@ -1,11 +1,7 @@
 """Tests for Finance Pipeline — component 1.6."""
 
 import uuid
-from datetime import date
 from unittest.mock import patch
-
-from app.models.finance_pipeline import PipelineRunStatus, PipelineStepStatus
-
 
 ENDPOINT = "/finance/pipeline"
 
@@ -70,15 +66,19 @@ class TestPipelineResume:
             "app.services.finance_pipeline_service.FinancePipelineService._step_mtm_computation",
             side_effect=RuntimeError("down"),
         ):
-            r1 = client.post(f"{ENDPOINT}/run", json={"run_date": "2025-08-02"})
+            r1 = client.post(f"{ENDPOINT}/run", json={"run_date": "2025-08-04"})
             assert r1.json()["status"] == "partial"
             run_id = r1.json()["id"]
 
         # Second run — no mocking, step 2 should succeed now
-        r2 = client.post(f"{ENDPOINT}/run", json={"run_date": "2025-08-02"})
+        r2 = client.post(f"{ENDPOINT}/run", json={"run_date": "2025-08-04"})
         assert r2.json()["id"] == run_id
         assert r2.json()["status"] == "completed"
         assert r2.json()["steps_completed"] == 6
+
+    def test_holiday_returns_409(self, client):
+        r = client.post(f"{ENDPOINT}/run", json={"run_date": "2025-08-02"})
+        assert r.status_code == 409
 
 
 class TestListRuns:

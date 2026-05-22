@@ -8,6 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.tasks.finance_pipeline_task import run_finance_pipeline_daily
 from app.tasks.market_data_staleness_task import run_market_data_staleness_check
 from app.tasks.rfq_timeout_task import run_rfq_timeout_check
 from app.tasks.westmetall_task import run_westmetall_ingestion
@@ -28,6 +29,9 @@ def start_scheduler() -> None:
 
     The Westmetall ingestion job is scheduled daily at 18:00 UTC by default.
     Override with ``WESTMETALL_CRON_HOUR`` / ``WESTMETALL_CRON_MINUTE`` env vars.
+    The finance pipeline job is scheduled daily at 19:00 UTC by default.
+    Override with ``FINANCE_PIPELINE_CRON_HOUR`` /
+    ``FINANCE_PIPELINE_CRON_MINUTE`` env vars.
     Set ``SCHEDULER_DISABLED=1`` to skip starting the scheduler entirely
     (useful in tests and single-shot CLI scripts).
     """
@@ -70,6 +74,15 @@ def start_scheduler() -> None:
         id="workflow_approval_sweeper",
         replace_existing=True,
         misfire_grace_time=900,
+    )
+    _scheduler.add_job(
+        run_finance_pipeline_daily,
+        trigger="cron",
+        hour=int(os.getenv("FINANCE_PIPELINE_CRON_HOUR", "19")),
+        minute=int(os.getenv("FINANCE_PIPELINE_CRON_MINUTE", "0")),
+        id="finance_pipeline_daily",
+        replace_existing=True,
+        misfire_grace_time=3600,
     )
     _scheduler.start()
     logger.info(
