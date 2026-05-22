@@ -5,7 +5,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
 from app.core.auth import (
     get_current_actor_roles,
@@ -26,10 +25,6 @@ from app.services.cashflow_ledger_service import ingest_hedge_contract_settlemen
 from app.services.deal_engine import DealEngineService
 from app.services.rfq_service import RFQService
 from app.services.workflow_approval_service import (
-    WORKFLOW_APPROVAL_CONSUMED,
-    WORKFLOW_APPROVAL_GRANTED,
-    WORKFLOW_APPROVAL_REJECTED,
-    WORKFLOW_APPROVAL_SUPERSEDED,
     consume_request,
     grant_request,
     reject_request,
@@ -80,13 +75,7 @@ def get_workflow_approval(
 def grant_workflow_approval(
     approval_id: UUID,
     request: Request,
-    _: None = Depends(
-        audit_event(
-            entity_type="workflow_approval_request",
-            event_type=WORKFLOW_APPROVAL_GRANTED,
-        )
-    ),
-    __: None = Depends(require_any_role("risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: list[str] = Depends(get_current_actor_roles),
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
@@ -101,7 +90,6 @@ def grant_workflow_approval(
             _client_ip(request),
             x_session_id,
         )
-        mark_audit_success(request, row.id, metadata={"actor_sub": actor_sub})
     return row
 
 
@@ -110,13 +98,7 @@ def reject_workflow_approval(
     approval_id: UUID,
     payload: WorkflowApprovalRejectRequest,
     request: Request,
-    _: None = Depends(
-        audit_event(
-            entity_type="workflow_approval_request",
-            event_type=WORKFLOW_APPROVAL_REJECTED,
-        )
-    ),
-    __: None = Depends(require_any_role("risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     actor_sub: str = Depends(get_current_actor_sub),
     actor_roles: list[str] = Depends(get_current_actor_roles),
     x_session_id: str | None = Header(None, alias="X-Session-Id"),
@@ -133,7 +115,6 @@ def reject_workflow_approval(
             payload.reason_code,
             payload.reason_text,
         )
-        mark_audit_success(request, row.id, metadata={"actor_sub": actor_sub})
     return row
 
 
@@ -141,19 +122,12 @@ def reject_workflow_approval(
 def supersede_workflow_approval(
     approval_id: UUID,
     request: Request,
-    _: None = Depends(
-        audit_event(
-            entity_type="workflow_approval_request",
-            event_type=WORKFLOW_APPROVAL_SUPERSEDED,
-        )
-    ),
-    __: None = Depends(require_any_role("risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> WorkflowApprovalRequest:
     with unit_of_work(session, request=request):
         row = supersede_request(session, approval_id, actor_sub)
-        mark_audit_success(request, row.id, metadata={"actor_sub": actor_sub})
     return row
 
 
@@ -162,13 +136,7 @@ def consume_workflow_approval(
     approval_id: UUID,
     payload: WorkflowApprovalConsumeRequest,
     request: Request,
-    _: None = Depends(
-        audit_event(
-            entity_type="workflow_approval_request",
-            event_type=WORKFLOW_APPROVAL_CONSUMED,
-        )
-    ),
-    __: None = Depends(require_any_role("risk_manager", "auditor")),
+    _: None = Depends(require_any_role("risk_manager", "auditor")),
     actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> WorkflowApprovalRequest:
@@ -191,5 +159,4 @@ def consume_workflow_approval(
 
     with unit_of_work(session, request=request):
         row, _ = consume_request(session, approval_id, actor_sub, payload.payload, _executor)
-        mark_audit_success(request, row.id, metadata={"actor_sub": actor_sub})
     return row
