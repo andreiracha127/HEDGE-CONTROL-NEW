@@ -73,6 +73,7 @@ def upgrade() -> None:
         sa.Column("severity", risk_flag_severity_enum, nullable=False),
         sa.Column("subject_entity_type", sa.String(length=64), nullable=False),
         sa.Column("subject_entity_id", _uuid_type(), nullable=True),
+        sa.Column("subject_entity_key", sa.String(length=64), nullable=False),
         sa.Column("payload", _json_type(), nullable=False),
         sa.Column(
             "created_at",
@@ -84,7 +85,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "run_id",
-            "subject_entity_id",
+            "subject_entity_key",
             "flag_type",
             name="uq_finance_pipeline_risk_flags_run_subject_type",
         ),

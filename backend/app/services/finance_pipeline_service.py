@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.audit import AuditEvent
@@ -15,6 +16,7 @@ from app.models.counterparty import Counterparty, KycStatus
 from app.models.exposure import Exposure, ExposureStatus
 from app.models.finance_pipeline import (
     PIPELINE_STEPS,
+    RUN_LEVEL_RISK_FLAG_SUBJECT_KEY,
     FinancePipelineRiskFlag,
     FinancePipelineRun,
     FinancePipelineStep,
@@ -64,6 +66,7 @@ class FinancePipelineService:
             raise HolidaySkipSignal(f"run_date {run_date.isoformat()} is not an LME trading day")
 
         inputs_hash = FinancePipelineRun.compute_hash(run_date)
+        started_at = datetime.now(UTC)
         existing = (
             db.query(FinancePipelineRun).filter(FinancePipelineRun.run_date == run_date).first()
         )
@@ -78,6 +81,8 @@ class FinancePipelineService:
             run = existing
             previous_status = run.status.value
             run.status = PipelineRunStatus.running
+            run.started_at = started_at
+            run.finished_at = None
             run.error_message = None
             FinancePipelineService._emit_audit_event(
                 db,
@@ -95,9 +100,26 @@ class FinancePipelineService:
                 status=PipelineRunStatus.running,
                 inputs_hash=inputs_hash,
                 triggered_by=trigger_source,
+                started_at=started_at,
             )
             db.add(run)
-            db.flush()
+            try:
+                db.flush()
+            except IntegrityError as exc:
+                db.rollback()
+                existing_after_race = (
+                    db.query(FinancePipelineRun)
+                    .filter(FinancePipelineRun.run_date == run_date)
+                    .first()
+                )
+                if (
+                    existing_after_race is not None
+                    and existing_after_race.status == PipelineRunStatus.completed
+                ):
+                    return existing_after_race
+                raise RunAlreadyInProgressSignal(
+                    f"finance pipeline run already in progress for {run_date.isoformat()}"
+                ) from exc
             FinancePipelineService._emit_audit_event(
                 db,
                 run=run,
@@ -126,7 +148,9 @@ class FinancePipelineService:
 
             previous_status = step.status.value
             step.status = PipelineStepStatus.running
+            step.error_message = None
             step.started_at = datetime.now(UTC)
+            step.finished_at = None
             db.flush()
             FinancePipelineService._emit_audit_event(
                 db,
@@ -238,10 +262,10 @@ class FinancePipelineService:
         if run.status != PipelineRunStatus.running:
             return False
         timeout_seconds = int(os.getenv("FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS", "1800"))
-        created_at = run.created_at
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=UTC)
-        return datetime.now(UTC) - created_at < timedelta(seconds=timeout_seconds)
+        lock_anchor = run.started_at or run.created_at
+        if lock_anchor.tzinfo is None:
+            lock_anchor = lock_anchor.replace(tzinfo=UTC)
+        return datetime.now(UTC) - lock_anchor < timedelta(seconds=timeout_seconds)
 
     @staticmethod
     def _execute_step(db: Session, step_name: str, run_date: date, run: FinancePipelineRun) -> int:
@@ -507,6 +531,7 @@ class FinancePipelineService:
                 severity=severity,
                 subject_entity_type=subject_entity_type,
                 subject_entity_id=subject_entity_id,
+                subject_entity_key=str(subject_entity_id or RUN_LEVEL_RISK_FLAG_SUBJECT_KEY),
                 payload=payload,
             )
         )

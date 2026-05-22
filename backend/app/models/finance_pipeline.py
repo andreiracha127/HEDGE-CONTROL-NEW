@@ -69,6 +69,12 @@ class PipelineRiskFlagSeverity(enum.Enum):
 
 
 RiskFlagPayloadType = JSON().with_variant(JSONB(astext_type=Text()), "postgresql")
+RUN_LEVEL_RISK_FLAG_SUBJECT_KEY = "__run__"
+
+
+def _risk_flag_subject_key(context) -> str:
+    subject_entity_id = context.get_current_parameters().get("subject_entity_id")
+    return str(subject_entity_id or RUN_LEVEL_RISK_FLAG_SUBJECT_KEY)
 
 
 class FinancePipelineRun(Base):
@@ -147,7 +153,7 @@ class FinancePipelineRiskFlag(Base):
     __table_args__ = (
         UniqueConstraint(
             "run_id",
-            "subject_entity_id",
+            "subject_entity_key",
             "flag_type",
             name="uq_finance_pipeline_risk_flags_run_subject_type",
         ),
@@ -170,6 +176,11 @@ class FinancePipelineRiskFlag(Base):
     )
     subject_entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
     subject_entity_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    subject_entity_key: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        default=_risk_flag_subject_key,
+    )
     payload: Mapped[dict] = mapped_column(
         RiskFlagPayloadType,
         nullable=False,

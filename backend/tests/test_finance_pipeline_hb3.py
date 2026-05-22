@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -21,9 +22,11 @@ from app.models.finance_pipeline import (
     PIPELINE_STEPS,
     FinancePipelineRiskFlag,
     FinancePipelineRun,
+    FinancePipelineStep,
     PipelineRiskFlagSeverity,
     PipelineRiskFlagType,
     PipelineRunStatus,
+    PipelineStepStatus,
     PipelineTriggerSource,
 )
 from app.models.workflow_approval import (
@@ -129,6 +132,91 @@ def test_running_lock_raises_signal(session) -> None:
     )
     session.add(run)
     session.commit()
+
+    with pytest.raises(RunAlreadyInProgressSignal):
+        FinancePipelineService.run_daily_pipeline(session, date(2026, 5, 22))
+
+
+def test_running_lock_uses_last_started_at_not_original_created_at(monkeypatch) -> None:
+    now = datetime.now(UTC)
+    run = FinancePipelineRun(
+        run_date=date(2026, 5, 22),
+        status=PipelineRunStatus.running,
+        inputs_hash=FinancePipelineRun.compute_hash(date(2026, 5, 22)),
+        created_at=now - timedelta(hours=1),
+        started_at=now,
+    )
+    monkeypatch.setenv("FINANCE_PIPELINE_LOCK_TIMEOUT_SECONDS", "1800")
+
+    assert FinancePipelineService._is_fresh_running_lock(run) is True
+
+
+def test_resume_refreshes_run_started_at_for_lock_window(session) -> None:
+    old_started_at = datetime(2026, 5, 21, 10, 0, tzinfo=UTC)
+    run = FinancePipelineRun(
+        run_date=date(2026, 5, 22),
+        status=PipelineRunStatus.partial,
+        inputs_hash=FinancePipelineRun.compute_hash(date(2026, 5, 22)),
+        started_at=old_started_at,
+        created_at=old_started_at,
+    )
+    session.add(run)
+    session.flush()
+    for idx, step_name in enumerate(PIPELINE_STEPS, start=1):
+        session.add(
+            FinancePipelineStep(
+                run_id=run.id,
+                step_number=idx,
+                step_name=step_name,
+                status=PipelineStepStatus.completed
+                if step_name == "market_snapshot"
+                else PipelineStepStatus.pending,
+            )
+        )
+    session.commit()
+
+    resumed = FinancePipelineService.run_daily_pipeline(session, date(2026, 5, 22))
+
+    assert resumed.id == run.id
+    resumed_started_at = resumed.started_at
+    if resumed_started_at.tzinfo is None:
+        resumed_started_at = resumed_started_at.replace(tzinfo=UTC)
+    assert resumed_started_at > old_started_at
+
+
+def test_resume_clears_stale_step_error_message(client) -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(
+            FinancePipelineService,
+            "_step_mtm_computation",
+            staticmethod(lambda db, run_date, run: (_ for _ in ()).throw(RuntimeError("down"))),
+        )
+        first = client.post("/finance/pipeline/run", json={"run_date": "2026-05-22"})
+    run_id = first.json()["id"]
+
+    second = client.post("/finance/pipeline/run", json={"run_date": "2026-05-22"})
+    detail = client.get(f"/finance/pipeline/runs/{run_id}")
+
+    assert second.json()["status"] == "completed"
+    mtm_step = next(
+        step for step in detail.json()["steps"] if step["step_name"] == "mtm_computation"
+    )
+    assert mtm_step["error_message"] is None
+
+
+def test_insert_race_on_unique_run_date_raises_lock_signal(session, monkeypatch) -> None:
+    original_flush = session.flush
+
+    def flush_with_duplicate_run_date(*args, **kwargs):
+        if any(isinstance(obj, FinancePipelineRun) for obj in session.new):
+            raise IntegrityError(
+                "INSERT INTO finance_pipeline_runs",
+                {},
+                Exception("duplicate key value violates unique constraint"),
+            )
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", flush_with_duplicate_run_date)
 
     with pytest.raises(RunAlreadyInProgressSignal):
         FinancePipelineService.run_daily_pipeline(session, date(2026, 5, 22))
@@ -326,6 +414,60 @@ def test_unique_constraint_blocks_duplicate_flag_emission(session) -> None:
     session.add(second)
     with pytest.raises(IntegrityError):
         session.commit()
+
+
+def test_unique_constraint_blocks_duplicate_run_level_flag_with_null_subject(session) -> None:
+    run = FinancePipelineService.run_daily_pipeline(session, date(2026, 5, 22))
+    first = FinancePipelineRiskFlag(
+        run_id=run.id,
+        flag_type=PipelineRiskFlagType.workflow_approval_pending_past_expiry,
+        severity=PipelineRiskFlagSeverity.warning,
+        subject_entity_type="finance_pipeline_run",
+        subject_entity_id=None,
+        payload={"reason": "first"},
+    )
+    second = FinancePipelineRiskFlag(
+        run_id=run.id,
+        flag_type=PipelineRiskFlagType.workflow_approval_pending_past_expiry,
+        severity=PipelineRiskFlagSeverity.warning,
+        subject_entity_type="finance_pipeline_run",
+        subject_entity_id=None,
+        payload={"reason": "second"},
+    )
+    session.add(first)
+    session.commit()
+    session.add(second)
+    with pytest.raises(IntegrityError):
+        session.commit()
+
+
+def test_scheduled_task_defaults_run_date_from_utc(monkeypatch) -> None:
+    from app.tasks import finance_pipeline_task
+
+    captured = {}
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2030, 1, 2, 0, 15, tzinfo=tz)
+
+    def fake_run_daily_pipeline(session, run_date, **kwargs):
+        captured["run_date"] = run_date
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            status=SimpleNamespace(value="completed"),
+        )
+
+    monkeypatch.setattr(finance_pipeline_task, "datetime", FrozenDateTime)
+    monkeypatch.setattr(
+        finance_pipeline_task.FinancePipelineService,
+        "run_daily_pipeline",
+        staticmethod(fake_run_daily_pipeline),
+    )
+
+    finance_pipeline_task.run_finance_pipeline_daily()
+
+    assert captured["run_date"] == date(2030, 1, 2)
 
 
 def test_reconstruct_past_run_from_four_tables_alone(session) -> None:

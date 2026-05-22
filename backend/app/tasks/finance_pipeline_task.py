@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
@@ -18,7 +18,7 @@ logger = get_logger()
 
 def run_finance_pipeline_daily(today: date | None = None) -> None:
     """Execute one scheduled finance-pipeline run without crashing APScheduler."""
-    run_date = today or date.today()
+    run_date = today or datetime.now(UTC).date()
     session = SessionLocal()
     try:
         run = FinancePipelineService.run_daily_pipeline(
