@@ -66,6 +66,7 @@ class WorkflowApprovalRequest(Base):
             "ux_workflow_approval_requests_idempotency_key",
             "idempotency_key",
             "requested_by",
+            "mutation_type",
             unique=True,
             sqlite_where=sa.text("idempotency_key IS NOT NULL"),
             postgresql_where=sa.text("idempotency_key IS NOT NULL"),
@@ -78,9 +79,7 @@ class WorkflowApprovalRequest(Base):
         Index("ix_workflow_approval_requests_correlation_id", "correlation_id"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     mutation_type: Mapped[MutationType] = mapped_column(
         Enum(MutationType, name="workflow_approval_mutation_type"), nullable=False
     )
@@ -161,4 +160,3 @@ _POLICY_SEED = [
 @event.listens_for(ApprovalPolicy.__table__, "after_create")
 def _seed_approval_policy(target, connection, **_) -> None:  # type: ignore[no-untyped-def]
     connection.execute(target.insert(), _POLICY_SEED)
-

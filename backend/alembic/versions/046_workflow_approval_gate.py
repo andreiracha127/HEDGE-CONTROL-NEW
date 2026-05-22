@@ -113,7 +113,7 @@ def upgrade() -> None:
     op.create_index(
         "ux_workflow_approval_requests_idempotency_key",
         "workflow_approval_requests",
-        ["idempotency_key", "requested_by"],
+        ["idempotency_key", "requested_by", "mutation_type"],
         unique=True,
         postgresql_where=sa.text("idempotency_key IS NOT NULL"),
         sqlite_where=sa.text("idempotency_key IS NOT NULL"),

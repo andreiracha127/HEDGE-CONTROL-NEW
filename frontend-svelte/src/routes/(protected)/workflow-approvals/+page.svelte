@@ -37,7 +37,11 @@
 		try {
 			const response = await apiFetch(workflowApprovalsPath({ status: 'pending' }));
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			approvals = (await response.json()) as WorkflowApproval[];
+			const body = (await response.json()) as {
+				items: WorkflowApproval[];
+				next_cursor: string | null;
+			};
+			approvals = body.items;
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Load failed';
 			approvals = [];
