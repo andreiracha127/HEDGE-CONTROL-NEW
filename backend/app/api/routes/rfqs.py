@@ -102,9 +102,7 @@ def list_rfqs(
     rfq_reads = []
     for rfq in items:
         rfq_read = RFQRead.model_validate(rfq)
-        rfq_read.invitations = [
-            RFQInvitationRead.model_validate(i) for i in rfq.invitations
-        ]
+        rfq_read.invitations = [RFQInvitationRead.model_validate(i) for i in rfq.invitations]
         rfq_reads.append(rfq_read)
     return RFQListResponse(items=rfq_reads, next_cursor=next_cursor)
 
@@ -240,9 +238,7 @@ def list_rfq_quotes(
     """List all quotes for a specific RFQ."""
     rfq = session.get(RFQ, rfq_id)
     if not rfq:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found")
     quotes = (
         session.query(RFQQuote)
         .filter(RFQQuote.rfq_id == rfq_id)
@@ -261,9 +257,7 @@ def list_rfq_state_events(
     """List all state-transition events for an RFQ (timeline)."""
     rfq = session.get(RFQ, rfq_id)
     if not rfq:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="RFQ not found")
     events = (
         session.query(RFQStateEvent)
         .filter(RFQStateEvent.rfq_id == rfq_id)
@@ -273,9 +267,7 @@ def list_rfq_state_events(
     return [RFQStateEventRead.model_validate(e) for e in events]
 
 
-@router.post(
-    "/{rfq_id}/quotes", response_model=RFQQuoteRead, status_code=status.HTTP_201_CREATED
-)
+@router.post("/{rfq_id}/quotes", response_model=RFQQuoteRead, status_code=status.HTTP_201_CREATED)
 @limiter.limit(RATE_LIMIT_MUTATION)
 def create_quote(
     rfq_id: UUID,
@@ -507,10 +499,26 @@ def award_rfq(
             Decimal(str(quote.fixed_price_value)) * Decimal(str(quantity_mt))
             for quote, quantity_mt in awarded_pairs
         )
+        # Bind the awarded quote snapshot into the approval payload so the
+        # canonical hash detects post-grant price drift (e.g. a new quote
+        # supersedes the winning one between evaluate and consume). Sorted
+        # by quote_id keeps the hash deterministic regardless of ranking
+        # ordering.
+        awarded_snapshot = sorted(
+            (
+                {
+                    "quote_id": str(quote.id),
+                    "fixed_price_value": str(Decimal(str(quote.fixed_price_value))),
+                    "quantity_mt": str(Decimal(str(quantity_mt))),
+                }
+                for quote, quantity_mt in awarded_pairs
+            ),
+            key=lambda entry: entry["quote_id"],
+        )
         approval = workflow_approval_service.evaluate_and_maybe_create(
             session,
             MutationType.deal_award,
-            {"rfq_id": str(rfq_id)},
+            {"rfq_id": str(rfq_id), "awarded_quotes": awarded_snapshot},
             notional_usd,
             actor_sub,
             request.client.host if request.client else None,
@@ -528,9 +536,7 @@ def award_rfq(
                         "approval_id": approval.id,
                         "status": approval.status.value,
                         "expires_at": approval.expires_at,
-                        "required_approvers": (
-                            policy.required_approver_roles if policy else []
-                        ),
+                        "required_approvers": (policy.required_approver_roles if policy else []),
                         "polling_url": f"/workflow-approvals/{approval.id}",
                         "consume_url": f"/workflow-approvals/{approval.id}/consume",
                     }

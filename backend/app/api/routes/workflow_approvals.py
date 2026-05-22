@@ -11,6 +11,7 @@ from app.core.auth import (
     get_current_actor_roles,
     get_current_actor_sub,
     require_any_role,
+    require_role,
 )
 from app.core.database import get_session
 from app.core.pagination import paginate
@@ -141,7 +142,11 @@ def reject_workflow_approval(
 def supersede_workflow_approval(
     approval_id: UUID,
     request: Request,
-    _: None = Depends(require_any_role("risk_manager", "auditor")),
+    # supersede + consume are restricted to the original requester at the
+    # service layer; require risk_manager at the route to match the role
+    # invariant of every originating route (POST /deals, /rfqs/award,
+    # /contracts/settle all require_role("risk_manager")).
+    _: None = Depends(require_role("risk_manager")),
     actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> WorkflowApprovalRequest:
@@ -155,7 +160,7 @@ def consume_workflow_approval(
     approval_id: UUID,
     payload: WorkflowApprovalConsumeRequest,
     request: Request,
-    _: None = Depends(require_any_role("risk_manager", "auditor")),
+    _: None = Depends(require_role("risk_manager")),
     actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> WorkflowApprovalRequest:
@@ -176,6 +181,38 @@ def consume_workflow_approval(
             return deal
         if row.mutation_type.value == "deal_award":
             rfq_id = UUID(str(data["rfq_id"]))
+            # Drift guard: the approval payload's awarded_quotes snapshot
+            # must still match the current ranking. Otherwise a quote could
+            # be superseded between grant and consume and the executed
+            # award would differ from what was approved.
+            current_rfq = RFQService.get_live(session, rfq_id)
+            _, current_pairs = RFQService.resolve_awarded_quote(session, current_rfq)
+            from decimal import Decimal
+
+            current_snapshot = sorted(
+                (
+                    {
+                        "quote_id": str(quote.id),
+                        "fixed_price_value": str(Decimal(str(quote.fixed_price_value))),
+                        "quantity_mt": str(Decimal(str(quantity_mt))),
+                    }
+                    for quote, quantity_mt in current_pairs
+                ),
+                key=lambda entry: entry["quote_id"],
+            )
+            if current_snapshot != data.get("awarded_quotes"):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "awarded_quotes_drift_detected",
+                        "message": (
+                            "RFQ ranking changed since approval; the winning quote "
+                            "snapshot in the consume payload no longer matches the "
+                            "current ranking. Re-request approval against the "
+                            "current ranking."
+                        ),
+                    },
+                )
             rfq = RFQService.award(session, rfq_id, actor_sub)
             _emit_consumed_mutation_audit(
                 session,
