@@ -5,11 +5,13 @@ Revises: 003_create_hedge_order_linkages_table
 Create Date: 2026-02-01 15:30:00.000000
 
 """
+
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "004_create_rfq_tables"
@@ -24,15 +26,19 @@ depends_on: Union[str, Sequence[str], None] = None
 rfq_intent_enum_pg = postgresql.ENUM(
     "COMMERCIAL_HEDGE", "GLOBAL_POSITION", name="rfq_intent", create_type=False
 )
-rfq_direction_enum_pg = postgresql.ENUM(
-    "BUY", "SELL", name="rfq_direction", create_type=False
-)
+rfq_direction_enum_pg = postgresql.ENUM("BUY", "SELL", name="rfq_direction", create_type=False)
 rfq_state_enum_pg = postgresql.ENUM(
     "CREATED", "SENT", "QUOTED", name="rfq_state", create_type=False
 )
 rfq_invitation_channel_enum_pg = postgresql.ENUM(
-    "email", "api", "whatsapp", "bank", "broker", "other",
-    name="rfq_invitation_channel", create_type=False,
+    "email",
+    "api",
+    "whatsapp",
+    "bank",
+    "broker",
+    "other",
+    name="rfq_invitation_channel",
+    create_type=False,
 )
 rfq_invitation_status_enum_pg = postgresql.ENUM(
     "queued", "sent", "failed", name="rfq_invitation_status", create_type=False
@@ -40,7 +46,14 @@ rfq_invitation_status_enum_pg = postgresql.ENUM(
 
 
 def _enum_for(is_postgres: bool, pg_enum, members, name):
-    """Return the column type: reuse the PG enum instance, or build a SQLite-friendly Enum."""
+    """Return the column type: reuse the PG enum instance, or build a SQLite-friendly Enum.
+
+    Migrations 001 and 002 use an inline if/else for this same dispatch because they
+    each declare only two enums. This file declares five (rfq_intent, rfq_direction,
+    rfq_state, rfq_invitation_channel, rfq_invitation_status), so the helper earns
+    its keep — inline would cost ~20 lines of near-identical boilerplate. The
+    cross-file pattern divergence is intentional, not an oversight.
+    """
     if is_postgres:
         return pg_enum
     return sa.Enum(*members, name=name, native_enum=False, create_constraint=True)
@@ -56,17 +69,23 @@ def upgrade() -> None:
         rfq_invitation_channel_enum_pg.create(bind, checkfirst=True)
         rfq_invitation_status_enum_pg.create(bind, checkfirst=True)
 
-    intent_t = _enum_for(is_postgres, rfq_intent_enum_pg,
-                         ["COMMERCIAL_HEDGE", "GLOBAL_POSITION"], "rfq_intent")
-    direction_t = _enum_for(is_postgres, rfq_direction_enum_pg,
-                            ["BUY", "SELL"], "rfq_direction")
-    state_t = _enum_for(is_postgres, rfq_state_enum_pg,
-                        ["CREATED", "SENT", "QUOTED"], "rfq_state")
-    channel_t = _enum_for(is_postgres, rfq_invitation_channel_enum_pg,
-                          ["email", "api", "whatsapp", "bank", "broker", "other"],
-                          "rfq_invitation_channel")
-    invite_status_t = _enum_for(is_postgres, rfq_invitation_status_enum_pg,
-                                ["queued", "sent", "failed"], "rfq_invitation_status")
+    intent_t = _enum_for(
+        is_postgres, rfq_intent_enum_pg, ["COMMERCIAL_HEDGE", "GLOBAL_POSITION"], "rfq_intent"
+    )
+    direction_t = _enum_for(is_postgres, rfq_direction_enum_pg, ["BUY", "SELL"], "rfq_direction")
+    state_t = _enum_for(is_postgres, rfq_state_enum_pg, ["CREATED", "SENT", "QUOTED"], "rfq_state")
+    channel_t = _enum_for(
+        is_postgres,
+        rfq_invitation_channel_enum_pg,
+        ["email", "api", "whatsapp", "bank", "broker", "other"],
+        "rfq_invitation_channel",
+    )
+    invite_status_t = _enum_for(
+        is_postgres,
+        rfq_invitation_status_enum_pg,
+        ["queued", "sent", "failed"],
+        "rfq_invitation_status",
+    )
 
     op.create_table(
         "rfq_sequences",

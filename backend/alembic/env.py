@@ -1,11 +1,11 @@
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool, text
 
+from alembic import context
+from app import models
 from app.core.database import get_database_url
 from app.models.base import Base
-from app import models
 
 config = context.config
 
@@ -61,10 +61,13 @@ def run_migrations_online() -> None:
             ).scalar()
 
             if existing_len is None:
-                # Case 1: fresh DB.
+                # Case 1: fresh DB. Use IF NOT EXISTS to survive the race window
+                # between the information_schema probe above and this CREATE — two
+                # Alembic processes initialising the same empty schema in parallel
+                # (e.g. parallel deploy workers) would otherwise crash here.
                 connection.execute(
                     text(
-                        "CREATE TABLE alembic_version ("
+                        "CREATE TABLE IF NOT EXISTS alembic_version ("
                         "version_num VARCHAR(128) NOT NULL, "
                         "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)"
                         ")"
