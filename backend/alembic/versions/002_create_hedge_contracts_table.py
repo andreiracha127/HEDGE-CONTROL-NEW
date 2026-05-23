@@ -18,39 +18,39 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-hedge_leg_side_enum = postgresql.ENUM("buy", "sell", name="hedge_leg_side")
-hedge_classification_enum = postgresql.ENUM("long", "short", name="hedge_classification")
+# Postgres ENUM instances with create_type=False — explicit .create() below avoids
+# the implicit CREATE TYPE that op.create_table would trigger (DuplicateObject in SA 2.0+).
+hedge_leg_side_enum_pg = postgresql.ENUM("buy", "sell", name="hedge_leg_side", create_type=False)
+hedge_classification_enum_pg = postgresql.ENUM(
+    "long", "short", name="hedge_classification", create_type=False
+)
 
 
 def upgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
     if is_postgres:
-        hedge_leg_side_enum.create(bind, checkfirst=True)
-        hedge_classification_enum.create(bind, checkfirst=True)
-
-    enum_kwargs = {} if is_postgres else {"native_enum": False, "create_constraint": True}
+        hedge_leg_side_enum_pg.create(bind, checkfirst=True)
+        hedge_classification_enum_pg.create(bind, checkfirst=True)
+        leg_side_type = hedge_leg_side_enum_pg
+        classification_type = hedge_classification_enum_pg
+    else:
+        leg_side_type = sa.Enum(
+            "buy", "sell", name="hedge_leg_side", native_enum=False, create_constraint=True
+        )
+        classification_type = sa.Enum(
+            "long", "short", name="hedge_classification",
+            native_enum=False, create_constraint=True,
+        )
 
     op.create_table(
         "hedge_contracts",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
         sa.Column("commodity", sa.String(length=64), nullable=False),
         sa.Column("quantity_mt", sa.Float(), nullable=False),
-        sa.Column(
-            "fixed_leg_side",
-            sa.Enum("buy", "sell", name="hedge_leg_side", **enum_kwargs),
-            nullable=False,
-        ),
-        sa.Column(
-            "variable_leg_side",
-            sa.Enum("buy", "sell", name="hedge_leg_side", **enum_kwargs),
-            nullable=False,
-        ),
-        sa.Column(
-            "classification",
-            sa.Enum("long", "short", name="hedge_classification", **enum_kwargs),
-            nullable=False,
-        ),
+        sa.Column("fixed_leg_side", leg_side_type, nullable=False),
+        sa.Column("variable_leg_side", leg_side_type, nullable=False),
+        sa.Column("classification", classification_type, nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -62,5 +62,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("hedge_contracts")
-    hedge_classification_enum.drop(op.get_bind(), checkfirst=True)
-    hedge_leg_side_enum.drop(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        hedge_classification_enum_pg.drop(bind, checkfirst=True)
+        hedge_leg_side_enum_pg.drop(bind, checkfirst=True)
