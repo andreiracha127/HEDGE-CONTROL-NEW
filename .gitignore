@@ -69,3 +69,7 @@ theming-base-content-master/
 .handoffs/
 
 backend/openapi.json
+
+# Codex Connector / openai-codex companion scratch directories (review runtime only)
+.codex-gitdir-*/
+.codex-pytest-tmp/
