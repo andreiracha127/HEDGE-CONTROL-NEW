@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 from pathlib import Path
 
-from scripts.e2e_go_no_go_report import main
+_MODULE_PATH = Path(__file__).resolve().with_name("e2e_go_no_go_report.py")
+_SPEC = importlib.util.spec_from_file_location("e2e_go_no_go_report", _MODULE_PATH)
+assert _SPEC is not None and _SPEC.loader is not None
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+main = _MODULE.main
 
 
 def _write_json(path: Path, payload: dict) -> Path:
