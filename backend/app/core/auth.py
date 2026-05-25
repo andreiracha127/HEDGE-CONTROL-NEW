@@ -271,6 +271,8 @@ def _is_auth_disabled_fallback_user(
     )
 
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+# Exhaustive set of internal-service JWT identities. ``service:webhook_inbound``
+# is intentionally excluded: webhook ingress uses provider signatures.
 _INTERNAL_SERVICE_IDENTITIES = frozenset(
     {
         "service:westmetall_ingest",
@@ -279,8 +281,6 @@ _INTERNAL_SERVICE_IDENTITIES = frozenset(
         "service:e2e_cleanup",
     }
 )
-# ``service:webhook_inbound`` is intentionally excluded here: webhook ingress
-# authenticates through provider signatures, not internal service JWTs.
 
 
 def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:

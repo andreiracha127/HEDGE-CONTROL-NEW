@@ -16,7 +16,10 @@ def _load_json(path: Path) -> dict[str, Any]:
 def _load_optional_json(path: Path, label: str) -> tuple[dict[str, Any], list[str]]:
     if not path.exists():
         return {}, [f"Missing report: {label}"]
-    return _load_json(path), []
+    try:
+        return _load_json(path), []
+    except json.JSONDecodeError:
+        return {}, [f"Malformed report: {label}"]
 
 
 def _pytest_failures(payload: dict[str, Any]) -> list[str]:

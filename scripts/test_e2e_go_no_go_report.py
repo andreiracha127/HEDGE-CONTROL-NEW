@@ -96,6 +96,25 @@ def test_missing_playwright_report_is_no_go(tmp_path: Path) -> None:
     assert "Missing report: Playwright JSON" in report
 
 
+def test_malformed_playwright_report_is_no_go(tmp_path: Path) -> None:
+    pytest_json = _write_json(tmp_path / "pytest.json", {"exitcode": 0, "tests": []})
+    playwright_json = tmp_path / "playwright.json"
+    playwright_json.write_text("{not-json", encoding="utf-8")
+    output = tmp_path / "malformed_playwright.md"
+
+    assert main([
+        "--pytest-json",
+        str(pytest_json),
+        "--playwright-json",
+        str(playwright_json),
+        "--output",
+        str(output),
+    ]) == 1
+    report = output.read_text(encoding="utf-8")
+    assert "Verdict: NO-GO" in report
+    assert "Malformed report: Playwright JSON" in report
+
+
 def test_override_only_for_scenario_isolation_failures(tmp_path: Path) -> None:
     pytest_json = _write_json(
         tmp_path / "pytest.json",
