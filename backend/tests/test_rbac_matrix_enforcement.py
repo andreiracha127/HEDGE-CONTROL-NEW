@@ -327,6 +327,27 @@ def test_westmetall_dev_service_override_rejects_human_actor(client, auth_as, mo
     assert response.status_code == 403
 
 
+def test_westmetall_dev_service_override_rejects_spoofed_fallback_marker(
+    client, monkeypatch
+) -> None:
+    monkeypatch.setenv("DEV_SERVICE_ACTOR_SUB", "service:westmetall_ingest")
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "anonymous",
+        "roles": ["trader", "risk_manager", "auditor"],
+        "_auth_disabled_fallback": "spoofed",
+    }
+    try:
+        response = client.post(
+            "/market-data/westmetall/aluminum/cash-settlement/ingest",
+            json={"settlement_date": "2026-01-30"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert "Invalid role combination" in response.json()["detail"]
+
+
 def test_westmetall_dev_service_override_accepts_auth_disabled_fallback(
     client, monkeypatch
 ) -> None:

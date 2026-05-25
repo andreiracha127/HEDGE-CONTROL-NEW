@@ -38,85 +38,104 @@ def cleanup_by_trace_id(
     inspector = inspect(engine)
     existing_tables = set(inspector.get_table_names())
     columns_by_table = _columns_by_table(inspector, existing_tables)
-    trace_like = f"{request.trace_id}%"
-    source_like = f"e2e://{request.trace_id}/%"
+    escaped_trace = _escape_like(request.trace_id)
+    rfq_like = f"{escaped_trace} %"
+    counterparty_like = f"{escaped_trace}-%"
+    source_like = f"e2e://{escaped_trace}/%"
 
     with engine.begin() as connection:
         rfq_filter = """
             SELECT id FROM rfqs
-            WHERE text_en LIKE :trace_like OR text_pt LIKE :trace_like
+            WHERE text_en LIKE :rfq_like ESCAPE '\\'
+                OR text_pt LIKE :rfq_like ESCAPE '\\'
         """
-        contract_filter = f"""
-            SELECT id FROM hedge_contracts
-            WHERE rfq_id IN ({rfq_filter})
-        """
-        deleted["audit_events"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "audit_events",
-            ("entity_type", "entity_id"),
-            f"""
-                (entity_type = 'rfq' AND entity_id IN ({rfq_filter}))
-                OR (
-                    entity_type = 'hedge_contract'
-                    AND entity_id IN ({contract_filter})
+        rfq_params = {"rfq_like": rfq_like}
+        if _has_columns(existing_tables, columns_by_table, "rfqs", ("text_en", "text_pt")):
+            audit_where = [f"(entity_type = 'rfq' AND entity_id IN ({rfq_filter}))"]
+            if _has_columns(existing_tables, columns_by_table, "hedge_contracts", ("rfq_id",)):
+                contract_filter = f"""
+                    SELECT id FROM hedge_contracts
+                    WHERE rfq_id IN ({rfq_filter})
+                """
+                audit_where.append(
+                    f"""
+                    (
+                        entity_type = 'hedge_contract'
+                        AND entity_id IN ({contract_filter})
+                    )
+                    """
                 )
-            """,
-            {"trace_like": trace_like},
-        )
-        deleted["hedge_contracts"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "hedge_contracts",
-            ("rfq_id",),
-            f"rfq_id IN ({rfq_filter})",
-            {"trace_like": trace_like},
-        )
-        deleted["rfq_quotes"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "rfq_quotes",
-            ("rfq_id",),
-            f"rfq_id IN ({rfq_filter})",
-            {"trace_like": trace_like},
-        )
-        deleted["rfq_invitations"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "rfq_invitations",
-            ("rfq_id",),
-            f"rfq_id IN ({rfq_filter})",
-            {"trace_like": trace_like},
-        )
-        deleted["rfq_state_events"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "rfq_state_events",
-            ("rfq_id",),
-            f"rfq_id IN ({rfq_filter})",
-            {"trace_like": trace_like},
-        )
-        deleted["rfqs"] = _delete_if_columns(
-            connection,
-            existing_tables,
-            columns_by_table,
-            "rfqs",
-            ("text_en", "text_pt"),
-            "text_en LIKE :trace_like OR text_pt LIKE :trace_like",
-            {"trace_like": trace_like},
-        )
+            deleted["audit_events"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "audit_events",
+                ("entity_type", "entity_id"),
+                " OR ".join(audit_where),
+                rfq_params,
+            )
+            deleted["hedge_contracts"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "hedge_contracts",
+                ("rfq_id",),
+                f"rfq_id IN ({rfq_filter})",
+                rfq_params,
+            )
+            deleted["rfq_quotes"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "rfq_quotes",
+                ("rfq_id",),
+                f"rfq_id IN ({rfq_filter})",
+                rfq_params,
+            )
+            deleted["rfq_invitations"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "rfq_invitations",
+                ("rfq_id",),
+                f"rfq_id IN ({rfq_filter})",
+                rfq_params,
+            )
+            deleted["rfq_state_events"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "rfq_state_events",
+                ("rfq_id",),
+                f"rfq_id IN ({rfq_filter})",
+                rfq_params,
+            )
+            deleted["rfqs"] = _delete_if_columns(
+                connection,
+                existing_tables,
+                columns_by_table,
+                "rfqs",
+                ("text_en", "text_pt"),
+                "text_en LIKE :rfq_like ESCAPE '\\' OR text_pt LIKE :rfq_like ESCAPE '\\'",
+                rfq_params,
+            )
+        else:
+            for table in (
+                "audit_events",
+                "hedge_contracts",
+                "rfq_quotes",
+                "rfq_invitations",
+                "rfq_state_events",
+                "rfqs",
+            ):
+                deleted[table] = -1
         deleted["cash_settlement_prices"] = _delete_if_columns(
             connection,
             existing_tables,
             columns_by_table,
             "cash_settlement_prices",
             ("source_url",),
-            "source_url LIKE :source_like",
+            "source_url LIKE :source_like ESCAPE '\\'",
             {"source_like": source_like},
         )
         deleted["counterparties"] = _delete_if_columns(
@@ -125,8 +144,8 @@ def cleanup_by_trace_id(
             columns_by_table,
             "counterparties",
             ("tax_id",),
-            "tax_id LIKE :trace_like",
-            {"trace_like": trace_like},
+            "tax_id LIKE :counterparty_like ESCAPE '\\'",
+            {"counterparty_like": counterparty_like},
         )
     return deleted
 
@@ -167,3 +186,18 @@ def _delete_if_columns(
         params,
     )
     return result.rowcount or 0
+
+
+def _has_columns(
+    existing_tables: set[str],
+    columns_by_table: dict[str, set[str]],
+    table: str,
+    required_columns: tuple[str, ...],
+) -> bool:
+    return table in existing_tables and all(
+        column in columns_by_table[table] for column in required_columns
+    )
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")

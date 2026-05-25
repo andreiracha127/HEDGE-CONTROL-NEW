@@ -281,7 +281,7 @@ def _is_auth_disabled_fallback_user(
     if not structural:
         return user is _ANONYMOUS_USER
     marker = user.get("_auth_disabled_fallback")
-    marker_ok = marker is not None
+    marker_ok = marker is _AUTH_DISABLED_FALLBACK_MARKER
     return (
         marker_ok
         and user.get("sub") == "anonymous"

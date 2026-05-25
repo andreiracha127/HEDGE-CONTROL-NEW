@@ -89,49 +89,91 @@ def test_cleanup_present_when_test_env_and_correct_identity() -> None:
 
 
 def test_cleanup_deletes_trace_namespaced_seed_artifacts() -> None:
-    trace_id = "e2e-cleanup-test"
+    trace_id = "e2e-cleanup_%"
+    other_trace_id = "e2e-cleanup-else"
     session = SessionLocal()
     try:
-        session.add(
-            Counterparty(
-                type=CounterpartyType.supplier,
-                name=f"{trace_id}-supplier-CP",
-                tax_id=f"{trace_id}-supplier",
-                country="BRA",
-                kyc_status=KycStatus.approved,
-                sanctions_status=SanctionsStatus.clear,
-                risk_rating=RiskRating.low,
-            )
+        session.add_all(
+            [
+                Counterparty(
+                    type=CounterpartyType.supplier,
+                    name=f"{trace_id}-supplier-CP",
+                    tax_id=f"{trace_id}-supplier",
+                    country="BRA",
+                    kyc_status=KycStatus.approved,
+                    sanctions_status=SanctionsStatus.clear,
+                    risk_rating=RiskRating.low,
+                ),
+                Counterparty(
+                    type=CounterpartyType.supplier,
+                    name=f"{other_trace_id}-supplier-CP",
+                    tax_id=f"{other_trace_id}-supplier",
+                    country="BRA",
+                    kyc_status=KycStatus.approved,
+                    sanctions_status=SanctionsStatus.clear,
+                    risk_rating=RiskRating.low,
+                ),
+            ]
         )
-        session.add(
-            RFQ(
-                rfq_number="RFQ-E2E-CLEANUP-000001",
-                intent=RFQIntent.global_position,
-                commodity="LME_AL",
-                quantity_mt=Decimal("5.000000"),
-                delivery_window_start=date(2026, 3, 1),
-                delivery_window_end=date(2026, 3, 31),
-                direction=RFQDirection.buy,
-                commercial_active_mt=Decimal("0.000000"),
-                commercial_passive_mt=Decimal("0.000000"),
-                commercial_net_mt=Decimal("0.000000"),
-                commercial_reduction_applied_mt=Decimal("0.000000"),
-                exposure_snapshot_timestamp=datetime.now(timezone.utc),
-                state=RFQState.sent,
-                text_en=f"{trace_id} buy 5MT LME_AL",
-            )
+        session.add_all(
+            [
+                RFQ(
+                    rfq_number="RFQ-E2E-CLEANUP-000001",
+                    intent=RFQIntent.global_position,
+                    commodity="LME_AL",
+                    quantity_mt=Decimal("5.000000"),
+                    delivery_window_start=date(2026, 3, 1),
+                    delivery_window_end=date(2026, 3, 31),
+                    direction=RFQDirection.buy,
+                    commercial_active_mt=Decimal("0.000000"),
+                    commercial_passive_mt=Decimal("0.000000"),
+                    commercial_net_mt=Decimal("0.000000"),
+                    commercial_reduction_applied_mt=Decimal("0.000000"),
+                    exposure_snapshot_timestamp=datetime.now(timezone.utc),
+                    state=RFQState.sent,
+                    text_en=f"{trace_id} buy 5MT LME_AL",
+                ),
+                RFQ(
+                    rfq_number="RFQ-E2E-CLEANUP-000002",
+                    intent=RFQIntent.global_position,
+                    commodity="LME_AL",
+                    quantity_mt=Decimal("5.000000"),
+                    delivery_window_start=date(2026, 3, 1),
+                    delivery_window_end=date(2026, 3, 31),
+                    direction=RFQDirection.buy,
+                    commercial_active_mt=Decimal("0.000000"),
+                    commercial_passive_mt=Decimal("0.000000"),
+                    commercial_net_mt=Decimal("0.000000"),
+                    commercial_reduction_applied_mt=Decimal("0.000000"),
+                    exposure_snapshot_timestamp=datetime.now(timezone.utc),
+                    state=RFQState.sent,
+                    text_en=f"{other_trace_id} buy 5MT LME_AL",
+                ),
+            ]
         )
-        session.add(
-            CashSettlementPrice(
-                source="westmetall",
-                symbol="aluminum_cash_settlement_daily",
-                settlement_date=date(2026, 3, 1),
-                price_usd=Decimal("2450.000000"),
-                is_canonical=True,
-                source_url=f"e2e://{trace_id}/westmetall/2026-03-01",
-                html_sha256=("x" * 64),
-                fetched_at=datetime.now(timezone.utc),
-            )
+        session.add_all(
+            [
+                CashSettlementPrice(
+                    source="westmetall",
+                    symbol="aluminum_cash_settlement_daily",
+                    settlement_date=date(2026, 3, 1),
+                    price_usd=Decimal("2450.000000"),
+                    is_canonical=True,
+                    source_url=f"e2e://{trace_id}/westmetall/2026-03-01",
+                    html_sha256=("x" * 64),
+                    fetched_at=datetime.now(timezone.utc),
+                ),
+                CashSettlementPrice(
+                    source="westmetall",
+                    symbol="aluminum_cash_settlement_daily",
+                    settlement_date=date(2026, 3, 2),
+                    price_usd=Decimal("2450.000000"),
+                    is_canonical=True,
+                    source_url=f"e2e://{other_trace_id}/westmetall/2026-03-02",
+                    html_sha256=("y" * 64),
+                    fetched_at=datetime.now(timezone.utc),
+                ),
+            ]
         )
         session.commit()
     finally:
@@ -151,6 +193,32 @@ def test_cleanup_deletes_trace_namespaced_seed_artifacts() -> None:
     assert body["counterparties"] == 1
     assert body["rfqs"] == 1
     assert body["cash_settlement_prices"] == 1
+
+    session = SessionLocal()
+    try:
+        assert (
+            session.query(Counterparty)
+            .filter(Counterparty.tax_id == f"{other_trace_id}-supplier")
+            .count()
+            == 1
+        )
+        assert (
+            session.query(RFQ)
+            .filter(RFQ.rfq_number == "RFQ-E2E-CLEANUP-000002")
+            .count()
+            == 1
+        )
+        assert (
+            session.query(CashSettlementPrice)
+            .filter(
+                CashSettlementPrice.source_url
+                == f"e2e://{other_trace_id}/westmetall/2026-03-02"
+            )
+            .count()
+            == 1
+        )
+    finally:
+        session.close()
 
 
 def test_cleanup_rejects_unauthenticated() -> None:

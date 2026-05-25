@@ -21,6 +21,7 @@ function run(command, args, options = {}) {
 function runPlaywright(playwrightJson) {
   fs.mkdirSync(path.dirname(playwrightJson), { recursive: true });
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const outputFile = path.resolve(playwrightJson);
   const result = spawnSync(
     npx,
     [
@@ -33,20 +34,21 @@ function runPlaywright(playwrightJson) {
     ],
     {
       cwd: 'frontend-svelte',
-      encoding: 'utf8',
+      stdio: 'inherit',
       env: {
-        ...process.env,
-        BASE_URL: process.env.BASE_URL || 'http://localhost:5173'
+        ...playwrightEnv(outputFile)
       }
     }
   );
-  if (result.stdout) {
-    fs.writeFileSync(playwrightJson, result.stdout, 'utf8');
-  }
-  if (result.stderr) {
-    process.stderr.write(result.stderr);
-  }
   return spawnExitCode(result);
+}
+
+function playwrightEnv(outputFile, env = process.env) {
+  return {
+    ...env,
+    BASE_URL: env.BASE_URL || 'http://localhost:5173',
+    PLAYWRIGHT_JSON_OUTPUT_FILE: outputFile
+  };
 }
 
 function backendPytestEnv(env = process.env) {
@@ -105,4 +107,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { backendPytestEnv, finalExitCode, spawnExitCode };
+module.exports = { backendPytestEnv, finalExitCode, playwrightEnv, spawnExitCode };
