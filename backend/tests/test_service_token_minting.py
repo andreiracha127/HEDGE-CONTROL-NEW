@@ -47,6 +47,7 @@ def service_env(monkeypatch) -> tuple[str, str]:
         ("westmetall_ingest", "service:westmetall_ingest"),
         ("rfq_outbound", "service:rfq_outbound"),
         ("cashflow_pipeline", "service:cashflow_pipeline"),
+        ("e2e_cleanup", "service:e2e_cleanup"),
     ],
 )
 def test_mint_service_token_for_internal_identity(service_env, identity, subject) -> None:
@@ -87,6 +88,15 @@ def test_get_current_user_routes_service_token_to_service_validator(service_env)
     user = get_current_user(_Request(bearer=token), settings=object())
 
     assert user["sub"] == "service:westmetall_ingest"
+
+
+def test_get_current_user_accepts_e2e_cleanup_service_token(service_env) -> None:
+    private_pem, _ = service_env
+    token = make_service_token(private_pem, sub="service:e2e_cleanup")
+
+    user = get_current_user(_Request(bearer=token), settings=object())
+
+    assert user["sub"] == "service:e2e_cleanup"
 
 
 def test_get_current_user_accepts_case_insensitive_bearer_scheme(service_env) -> None:

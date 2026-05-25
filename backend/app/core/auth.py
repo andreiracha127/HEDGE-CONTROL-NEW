@@ -276,6 +276,7 @@ _INTERNAL_SERVICE_IDENTITIES = frozenset(
         "service:westmetall_ingest",
         "service:rfq_outbound",
         "service:cashflow_pipeline",
+        "service:e2e_cleanup",
     }
 )
 # ``service:webhook_inbound`` is intentionally excluded here: webhook ingress

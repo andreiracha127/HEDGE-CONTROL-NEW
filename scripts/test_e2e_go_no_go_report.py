@@ -58,6 +58,44 @@ def test_no_go_on_critical_failure(tmp_path: Path) -> None:
     assert "Verdict: NO-GO" in output.read_text(encoding="utf-8")
 
 
+def test_no_go_when_pytest_session_exitcode_failed_without_test_rows(tmp_path: Path) -> None:
+    pytest_json = _write_json(
+        tmp_path / "pytest.json",
+        {"exitcode": 2, "summary": {"failed": 0}, "tests": []},
+    )
+    playwright_json = _write_json(tmp_path / "playwright.json", {"stats": {"unexpected": 0}})
+    output = tmp_path / "collection_error.md"
+    assert main([
+        "--pytest-json",
+        str(pytest_json),
+        "--playwright-json",
+        str(playwright_json),
+        "--output",
+        str(output),
+    ]) == 1
+    report = output.read_text(encoding="utf-8")
+    assert "Verdict: NO-GO" in report
+    assert "Session exitcode: 2" in report
+
+
+def test_missing_playwright_report_is_no_go(tmp_path: Path) -> None:
+    pytest_json = _write_json(tmp_path / "pytest.json", {"exitcode": 0, "tests": []})
+    output = tmp_path / "missing_playwright.md"
+    missing_playwright_json = tmp_path / "missing-playwright.json"
+
+    assert main([
+        "--pytest-json",
+        str(pytest_json),
+        "--playwright-json",
+        str(missing_playwright_json),
+        "--output",
+        str(output),
+    ]) == 1
+    report = output.read_text(encoding="utf-8")
+    assert "Verdict: NO-GO" in report
+    assert "Missing report: Playwright JSON" in report
+
+
 def test_override_only_for_scenario_isolation_failures(tmp_path: Path) -> None:
     pytest_json = _write_json(
         tmp_path / "pytest.json",

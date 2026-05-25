@@ -3,13 +3,50 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
+function spawnExitCode(result) {
+  if (result.status !== null && result.status !== undefined) {
+    return result.status;
+  }
+  return 1;
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     stdio: 'inherit',
-    shell: process.platform === 'win32',
     ...options
   });
-  return result.status || 0;
+  return spawnExitCode(result);
+}
+
+function runPlaywright(playwrightJson) {
+  fs.mkdirSync(path.dirname(playwrightJson), { recursive: true });
+  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+  const result = spawnSync(
+    npx,
+    [
+      'playwright',
+      'test',
+      'e2e/journey-trader.spec.ts',
+      'e2e/journey-risk-manager.spec.ts',
+      'e2e/journey-auditor.spec.ts',
+      '--reporter=json'
+    ],
+    {
+      cwd: 'frontend-svelte',
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        BASE_URL: process.env.BASE_URL || 'http://localhost:5173'
+      }
+    }
+  );
+  if (result.stdout) {
+    fs.writeFileSync(playwrightJson, result.stdout, 'utf8');
+  }
+  if (result.stderr) {
+    process.stderr.write(result.stderr);
+  }
+  return spawnExitCode(result);
 }
 
 function main() {
@@ -27,14 +64,7 @@ function main() {
     `--json-report-file=${pytestJson}`
   ]);
 
-  if (!fs.existsSync(playwrightJson)) {
-    fs.mkdirSync(path.dirname(playwrightJson), { recursive: true });
-    fs.writeFileSync(
-      playwrightJson,
-      JSON.stringify({ stats: { unexpected: 0, expected: 0 } }),
-      'utf8'
-    );
-  }
+  const playwrightStatus = runPlaywright(playwrightJson);
 
   const reportArgs = [
     'scripts/e2e_go_no_go_report.py',
@@ -49,10 +79,14 @@ function main() {
     reportArgs.push('--override-rationale', process.env.OVERRIDE_RATIONALE);
   }
   const reportStatus = run('python', reportArgs);
-  if (reportStatus !== 0 || pyStatus !== 0) {
+  if (reportStatus !== 0 || pyStatus !== 0 || playwrightStatus !== 0) {
     process.exit(1);
   }
   console.log(`Report written: ${reportPath}`);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { spawnExitCode };
