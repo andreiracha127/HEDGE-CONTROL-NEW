@@ -17,13 +17,23 @@ export async function bootstrapPersona(page: Page, persona: Persona): Promise<vo
 		roles: [persona],
 		exp: Math.floor(Date.now() / 1000) + 300,
 	});
+	const response = await page.request.post(`${API_BASE}/auth/session`, {
+		data: { session_token: token },
+	});
+	if (!response.ok()) {
+		throw new Error(`persona session failed: ${response.status()} ${await response.text()}`);
+	}
+	const body = (await response.json()) as { csrf_token?: unknown };
+	const csrf = typeof body.csrf_token === 'string' ? body.csrf_token : null;
+	if (!csrf) {
+		throw new Error('persona session did not return csrf_token');
+	}
 	await page.addInitScript(
-		({ csrf, sessionToken }) => {
+		({ csrf }) => {
 			window.sessionStorage.setItem('hedge-control.auth.csrf', csrf);
-			window.sessionStorage.setItem('hedge-control.auth.token', sessionToken);
 			document.cookie = `csrf_token=${csrf}; path=/`;
 		},
-		{ csrf: 'test-csrf-token', sessionToken: token },
+		{ csrf },
 	);
 }
 

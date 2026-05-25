@@ -135,15 +135,22 @@ jobs:
       - name: Start docker-compose stack
         run: |
           docker compose up -d db backend
+          backend_ready=0
           # Wait for backend to be healthy
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8000/health > /dev/null 2>&1 || curl -sf http://localhost:8000/docs > /dev/null 2>&1; then
               echo "Backend is ready"
+              backend_ready=1
               break
             fi
             echo "Waiting for backend... ($i/30)"
             sleep 2
           done
+          if [ "$backend_ready" != "1" ]; then
+            echo "Backend did not become ready"
+            docker compose logs backend
+            exit 1
+          fi
 
       - name: Check schema drift
         working-directory: frontend-svelte
@@ -156,7 +163,20 @@ jobs:
         run: |
           npm run build
           npx serve build -l 5173 --no-port-switching -c ../serve.json &
-          sleep 2
+          frontend_ready=0
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173/ > /dev/null 2>&1; then
+              echo "Frontend is ready"
+              frontend_ready=1
+              break
+            fi
+            echo "Waiting for frontend... ($i/30)"
+            sleep 2
+          done
+          if [ "$frontend_ready" != "1" ]; then
+            echo "Frontend did not become ready"
+            exit 1
+          fi
         env:
           VITE_API_BASE_URL: http://localhost:8000
           # J-A6-10 opt-in: the E2E build is a production-mode bundle but
@@ -212,21 +232,41 @@ jobs:
       - name: Start docker-compose stack
         run: |
           docker compose up -d db backend
+          backend_ready=0
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8000/health > /dev/null 2>&1 || curl -sf http://localhost:8000/docs > /dev/null 2>&1; then
               echo "Backend is ready"
+              backend_ready=1
               break
             fi
             echo "Waiting for backend... ($i/30)"
             sleep 2
           done
+          if [ "$backend_ready" != "1" ]; then
+            echo "Backend did not become ready"
+            docker compose logs backend
+            exit 1
+          fi
 
       - name: Build and serve frontend
         working-directory: frontend-svelte
         run: |
           npm run build
           npx serve build -l 5173 --no-port-switching -c ../serve.json &
-          sleep 2
+          frontend_ready=0
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173/ > /dev/null 2>&1; then
+              echo "Frontend is ready"
+              frontend_ready=1
+              break
+            fi
+            echo "Waiting for frontend... ($i/30)"
+            sleep 2
+          done
+          if [ "$frontend_ready" != "1" ]; then
+            echo "Frontend did not become ready"
+            exit 1
+          fi
         env:
           VITE_API_BASE_URL: http://localhost:8000
           VITE_ALLOW_MANUAL_TOKEN_LOGIN: '1'
@@ -237,6 +277,7 @@ jobs:
           cd ../frontend-svelte && mkdir -p playwright-report && BASE_URL=http://localhost:5173 npx playwright test --reporter=json > playwright-report/report.json || true
 
       - name: Generate go-no-go report
+        if: ${{ always() && !cancelled() }}
         run: |
           python scripts/e2e_go_no_go_report.py \
             --pytest-json backend/tests/e2e/report.json \
@@ -245,7 +286,7 @@ jobs:
 
       - name: Upload go-no-go report
         uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
+        if: ${{ always() && !cancelled() }}
         with:
           name: go-no-go-report
           path: docs/audits/*-go-no-go.md
