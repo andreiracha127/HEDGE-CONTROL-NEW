@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
+import time
+from base64 import urlsafe_b64encode
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 import httpx
 from fastapi.testclient import TestClient
 
-from app.core.auth import CSRF_COOKIE_NAME, CSRF_HEADER_NAME, get_current_user
+from app.core.auth import (
+    CSRF_COOKIE_NAME,
+    CSRF_HEADER_NAME,
+    SESSION_COOKIE_NAME,
+    get_current_user,
+)
 from app.main import app
 
 FULL_STACK = os.environ.get("E2E_FULL_STACK") == "1"
@@ -47,15 +55,34 @@ def _clear_override() -> None:
     app.dependency_overrides.pop(get_current_user, None)
 
 
+def _b64url(payload: dict[str, object] | bytes) -> str:
+    raw = (
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        if isinstance(payload, dict)
+        else payload
+    )
+    return urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def _dev_session_token(sub: str, roles: list[str]) -> str:
+    return ".".join(
+        [
+            _b64url({"alg": "HS256", "typ": "JWT"}),
+            _b64url({"sub": sub, "roles": roles, "exp": int(time.time()) + 300}),
+            _b64url(b"e2e-dev-signature"),
+        ]
+    )
+
+
 @contextmanager
 def _persona(sub: str, roles: list[str]) -> Iterator[TestClient | httpx.Client]:
     if FULL_STACK:
+        csrf = "test-csrf-token"
+        session_token = _dev_session_token(sub, roles)
         headers = {
-            "X-Test-Persona-Sub": sub,
-            "X-Test-Persona-Roles": ",".join(roles),
-            CSRF_HEADER_NAME: "test-csrf-token",
+            CSRF_HEADER_NAME: csrf,
         }
-        cookies = {CSRF_COOKIE_NAME: "test-csrf-token"}
+        cookies = {CSRF_COOKIE_NAME: csrf, SESSION_COOKIE_NAME: session_token}
         with httpx.Client(
             base_url=FULL_STACK_BASE_URL,
             headers=headers,

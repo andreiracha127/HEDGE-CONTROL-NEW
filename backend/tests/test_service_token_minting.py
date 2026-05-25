@@ -98,6 +98,23 @@ def test_get_current_user_routes_service_token_to_service_validator(service_env)
     assert user["sub"] == "service:westmetall_ingest"
 
 
+def test_get_current_user_honors_dev_session_token_when_auth_settings_absent() -> None:
+    token = jwt.encode(
+        {
+            "sub": "dev-risk-manager",
+            "roles": ["risk_manager"],
+            "exp": int(time.time()) + 300,
+        },
+        "dev-only-test-key",
+        algorithm="HS256",
+    )
+
+    user = get_current_user(_Request(bearer=token), settings=None)
+
+    assert user["sub"] == "dev-risk-manager"
+    assert user["roles"] == ["risk_manager"]
+
+
 def test_get_current_user_accepts_e2e_cleanup_service_token(service_env) -> None:
     private_pem, _ = service_env
     token = make_service_token(private_pem, sub="service:e2e_cleanup")

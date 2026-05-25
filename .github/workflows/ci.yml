@@ -188,7 +188,7 @@ jobs:
   e2e-full-post-merge:
     name: "E2E: Full go-no-go (post-merge)"
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     needs: [e2e-playwright, e2e-smoke]
     steps:
       - uses: actions/checkout@v4

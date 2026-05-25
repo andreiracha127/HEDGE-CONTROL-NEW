@@ -252,6 +252,24 @@ def get_auth_disabled_fallback_user() -> dict[str, Any]:
     return _ANONYMOUS_USER
 
 
+def _validate_unverified_dev_session_token(token: str) -> dict[str, Any]:
+    try:
+        payload = jwt.get_unverified_claims(token)
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        ) from exc
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    if isinstance(exp, int | float) and exp <= time.time():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+    _validate_human_roles_at_jwt_time(payload)
+    return payload
+
+
 def _is_auth_disabled_fallback_user(
     user: dict[str, Any],
     *,
@@ -392,8 +410,12 @@ def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
-        )
-        return get_auth_disabled_fallback_user()
+            )
+        try:
+            token, _source = _extract_token_with_source(request)
+        except HTTPException:
+            return get_auth_disabled_fallback_user()
+        return _validate_unverified_dev_session_token(token)
 
     assert settings is not None
     token, source = _extract_token_with_source(request)

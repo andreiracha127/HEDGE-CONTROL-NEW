@@ -49,22 +49,37 @@ function runPlaywright(playwrightJson) {
   return spawnExitCode(result);
 }
 
+function backendPytestEnv(env = process.env) {
+  return {
+    ...env,
+    E2E_FULL_STACK: '1',
+    E2E_FULL_STACK_BASE_URL: env.E2E_FULL_STACK_BASE_URL || 'http://localhost:8000',
+    DATABASE_URL: env.DATABASE_URL || 'postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol'
+  };
+}
+
+function finalExitCode(reportStatus) {
+  return reportStatus === 0 ? 0 : 1;
+}
+
 function main() {
   const utcDate = new Date().toISOString().slice(0, 10);
   const reportPath = path.join('docs', 'audits', `${utcDate}-go-no-go.md`);
   const pytestJson = path.join('backend', 'tests', 'e2e', 'report.json');
   const playwrightJson = path.join('frontend-svelte', 'playwright-report', 'report.json');
 
-  const pyStatus = run('python', [
+  run('python', [
     '-m',
     'pytest',
     'backend/tests/e2e/',
     '-v',
     '--json-report',
     `--json-report-file=${pytestJson}`
-  ]);
+  ], {
+    env: backendPytestEnv()
+  });
 
-  const playwrightStatus = runPlaywright(playwrightJson);
+  runPlaywright(playwrightJson);
 
   const reportArgs = [
     'scripts/e2e_go_no_go_report.py',
@@ -79,8 +94,9 @@ function main() {
     reportArgs.push('--override-rationale', process.env.OVERRIDE_RATIONALE);
   }
   const reportStatus = run('python', reportArgs);
-  if (reportStatus !== 0 || pyStatus !== 0 || playwrightStatus !== 0) {
-    process.exit(1);
+  const exitCode = finalExitCode(reportStatus);
+  if (exitCode !== 0) {
+    process.exit(exitCode);
   }
   console.log(`Report written: ${reportPath}`);
 }
@@ -89,4 +105,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { spawnExitCode };
+module.exports = { backendPytestEnv, finalExitCode, spawnExitCode };

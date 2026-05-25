@@ -5,5 +5,6 @@ test('auditor journey reaches the audit route shell without route mocks', async 
 	await expectBackendHealthy(request);
 	await bootstrapPersona(page, 'auditor');
 	await page.goto('/audit');
+	await expect(page).toHaveURL(/\/audit/);
 	await expect(page.locator('body')).toBeVisible();
 });
