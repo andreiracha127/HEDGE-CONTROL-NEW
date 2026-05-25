@@ -61,7 +61,7 @@ The plan was authored without exhaustive grep against current `main`. The execut
 
 3. **Status codes** — the plan accepts ranges (e.g. `(200, 201)`, `(200, 201, 409)`) where idempotency or method semantics make multiple responses correct. The executor MUST NOT widen these ranges to include codes that mask bugs (e.g. accepting `500` because "the test isn't ready"). The matrix-bound 404-vs-403 leak guard for trader+broker MUST stay exactly `404`; widening it to `(403, 404)` is forbidden.
 
-4. **Model attribute names** — `AuditEvent.canonical_payload` is the plan's assumption; if the actual column is e.g. `payload_canonical` or `signed_payload`, the executor reads `backend/app/models/audit.py` and adjusts the test. The executor MUST NOT introduce a `canonical_payload` property on the model to make the test happy — adjust the test side to the model.
+4. **Model attribute names** — the plan's post-absorption code uses `AuditEvent.payload_canonical` (the actual column per `backend/app/models/audit.py`, verified by the hook v2 review on this dispatch). If a future schema rename ships before the executor opens the PR, the executor reads `backend/app/models/audit.py` and adjusts the test. The executor MUST NOT introduce a property on the model to make the test happy — adjust the test side to the model.
 
 5. **Cleanup-table set** — plan Phase 11 Step 3 lists `tables_with_trace = ("audit_events", "rfqs", "deals", "hedge_contracts", "counterparties")`. If a listed table does NOT have a `trace_id` column in the actual schema, the executor either (a) adds a `trace_id` parameter to the seed helper that creates rows there (so future runs can clean up), OR (b) accepts that table as one whose cleanup is best-effort and removes it from the set. Option (a) is preferred when feasible. The executor MUST NOT silently `try/except` over the missing column — the post-Codex amendment removed the broad except for precisely this reason; the schema introspection check (`if t not in existing_tables: deleted[t] = -1`) is the binding pattern.
 
@@ -69,7 +69,11 @@ The plan was authored without exhaustive grep against current `main`. The execut
 
 ### §4.2 Forbidden adjustments
 
-- Replacing the `Depends(require_e2e_cleanup_identity)` guard with a role-based check (`require_role("auditor")`, `require_any_role(...)`, etc.). The identity gate is intentionally narrower than any role; using `auditor` would let a real auditor delete rows in test env, which is the exact failure mode the dual gate prevents.
+- Modifying the cleanup-endpoint dual gate in ANY of the four following directions (parallel sweep of §2 boundary bullet 4):
+  - (i) replacing the `Depends(require_e2e_cleanup_identity)` guard with a role-based check (`require_role("auditor")`, `require_any_role(...)`, etc.) — the identity gate is intentionally narrower than any role; using `auditor` would let a real auditor delete rows in test env, which is the exact failure mode the dual gate prevents;
+  - (ii) widening the identity check to accept ANY actor whose `sub != "service:e2e_cleanup"` (including widening to a set like `{"service:e2e_cleanup", "service:rfq_outbound"}`);
+  - (iii) replacing the 403 on wrong-identity with a redirect, a 200-with-empty-body, or any non-403 fail-soft response;
+  - (iv) swallowing deletion errors with a broad `except` — the post-Codex amendment (commit `ab030ed`) removed the broad `except Exception` for precisely this reason; the schema-introspection pattern `if t not in existing_tables: deleted[t] = -1` is the binding shape.
 - Replacing the `if APP_ENV == "test"` boot-time conditional with a "register-always, deny-in-non-test" pattern. Boot-time absence is the strong defense; deny-at-runtime is the secondary defense; both are required.
 - Replacing `Decimal(str(...))` with `Decimal(...)` from floats anywhere in `_fixtures.py` or seed helpers. The plan's `seed_westmetall_prices` enforces `raw_floats: bool = False` and `raises TypeError`; the executor MUST preserve that fail-closed shape verbatim.
 - Replacing `httpx.Client` with `requests` in `_personas.as_service`/`_persona` full-stack path. The plan binds httpx; the project already depends on httpx via `pip install httpx` in CI.
@@ -88,9 +92,12 @@ If a UI surface (e.g. the audit-trail viewer page at `/audit`) does not exist ye
 
 ## §6 Tests
 
-The entire PR IS the tests. Coverage breakdown (mandatory):
+The entire PR IS the tests. Coverage breakdown (mandatory floor; executor may add more, MUST NOT add fewer):
 
-- **6 backend e2e spec files** under `backend/tests/e2e/` per plan Phases 2–7. Total expected test count: at least 1 (journey_full) + 13 (rbac_matrix parametrized + mixed-role) + 5 (audit_hmac_chain) + 3 (precision_contract) + 4 (market_data_governance) + 2 (scenario_isolation) = **28 backend e2e tests** at minimum.
+- **6 backend e2e spec files** under `backend/tests/e2e/` per plan Phases 2–7, partitioned into smoke vs full:
+  - **Smoke partition** (gates `e2e-smoke` CI job per §10 item 2; targets ≤2 min wall time): at least **14 tests total** — 1 from `test_journey_full.py` (the canonical narrative `test_full_institutional_journey`) + 13 from `test_rbac_matrix.py` (12 parametrized matrix rows enumerated in plan Task 3.1 CASES list + 1 standalone `test_mixed_role_jwt_rejected_at_401`).
+  - **Full-suite partition** (gates `npm run test:e2e:backend` per §10 item 3 and `e2e-full-post-merge` per §10 item 10): smoke 14 + at least **14 additional tests** across the remaining 4 spec files — 5 from `test_audit_hmac_chain.py` + 3 from `test_precision_contract.py` + 4 from `test_market_data_governance.py` + 2 from `test_scenario_isolation.py`.
+  - **Aggregate floor**: at least **28 backend e2e tests** total across the 6 spec files. Reducing any per-file count is a dispatch violation; expanding any per-file count is allowed if the new tests assert binding invariants.
 - **6 cleanup-endpoint gating tests** per plan Phase 11 Step 1 (correct identity in test env; unauthenticated; wrong service identity; human role including auditor; production env; staging env).
 - **3 fixture tests + 3 journey-step tests** under `backend/tests/e2e/test_fixtures.py` + `test_journey_steps.py` per plan Tasks 1.2/1.3.
 - **3 orchestrator unit tests** under `scripts/test_e2e_go_no_go_report.py` per plan Task 9.1 (GO verdict, NO-GO on critical failure, override-only-on-non-critical).

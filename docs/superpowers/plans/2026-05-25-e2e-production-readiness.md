@@ -1116,7 +1116,7 @@ def test_signatures_replay_against_signing_key(seeded: dict[str, object]) -> Non
     events = step_read_audit_trail(rfq_id=rfq["id"])
     key = os.environ["AUDIT_SIGNING_KEY"]
     for ev in events:
-        expected = _hmac_signature(ev["canonical_payload"], key)
+        expected = _hmac_signature(ev["payload_canonical"], key)
         assert ev["signature"] == expected, ev
 
 
@@ -1142,11 +1142,11 @@ def test_tampering_breaks_verification(seeded: dict[str, object]) -> None:
     try:
         ev = session.query(AuditEvent).order_by(AuditEvent.id.desc()).first()
         assert ev is not None
-        original_payload = ev.canonical_payload
-        ev.canonical_payload = original_payload + ' {"tampered": true}'
+        original_payload = ev.payload_canonical
+        ev.payload_canonical = original_payload + ' {"tampered": true}'
         session.commit()
         key = os.environ["AUDIT_SIGNING_KEY"]
-        expected = _hmac_signature(ev.canonical_payload, key)
+        expected = _hmac_signature(ev.payload_canonical, key)
         assert ev.signature != expected
     finally:
         session.close()
@@ -1171,7 +1171,7 @@ def test_no_role_can_delete_audit_event(seeded: dict[str, object]) -> None:
 Run: `pytest backend/tests/e2e/test_audit_hmac_chain.py -v`
 Expected: All 5 PASS.
 
-> **Note on canonical_payload:** If `AuditEvent.canonical_payload` is not the actual column name in `app/models/audit.py`, replace with the correct one. Do not invent the name — read the model.
+> **Note on payload_canonical:** If `AuditEvent.payload_canonical` is not the actual column name in `app/models/audit.py`, replace with the correct one. Do not invent the name — read the model.
 
 - [ ] **Step 3: Commit**
 
