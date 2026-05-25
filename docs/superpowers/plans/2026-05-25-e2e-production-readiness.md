@@ -257,6 +257,7 @@ def as_service(identity: str) -> Iterator[TestClient | httpx.Client]:
         "service:westmetall_ingest",
         "service:rfq_outbound",
         "service:cashflow_pipeline",
+        "service:e2e_cleanup",
     }
     if identity not in valid:
         raise ValueError(f"unknown service identity: {identity}")
@@ -2245,67 +2246,172 @@ git commit -m "ci(e2e): add post-merge full go-no-go job with artifact upload"
 
 ## PHASE 11 — Test-only cleanup endpoint (full-stack mode only)
 
-This phase only matters when running against the docker-compose stack with `E2E_FULL_STACK=1`. In integration mode the autouse `reset_database` fixture handles cleanup. For the full-stack run we need a `POST /internal/test/cleanup` endpoint that the orchestrator can call, gated to `APP_ENV=test` only.
+This phase only matters when running against the docker-compose stack with `E2E_FULL_STACK=1`. In integration mode the autouse `reset_database` fixture handles cleanup. For the full-stack run we need a `POST /internal/test/cleanup` endpoint that the orchestrator can call.
 
-### Task 11.1: Add cleanup endpoint with APP_ENV guard
+**Trust boundary (non-negotiable):** the endpoint is destructive (DELETE across multiple tables) and therefore MUST be defended by **two independent gates**:
+
+1. **Env gate** — router is registered only when `APP_ENV=test` (boot-time, fail-closed on missing/wrong env).
+2. **Identity gate** — request must carry a JWT whose `sub == "service:e2e_cleanup"`. Any other actor (human role, other service identity, unauthenticated) gets 401/403.
+
+Env-only gating is **insufficient** — a misconfigured deployment that ever sets `APP_ENV=test` would expose row-deletion to any caller. The identity gate is the production-side belt-and-suspenders.
+
+### Task 11.1: Add cleanup endpoint with dual gate (env + service identity)
 
 **Files:**
 - Create: `backend/app/api/routes/internal_test.py`
 - Modify: `backend/app/main.py` (conditional router include)
 - Test: `backend/tests/test_internal_test_endpoint_gated.py`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
 ```python
 # backend/tests/test_internal_test_endpoint_gated.py
-"""The /internal/test/cleanup endpoint must exist only when APP_ENV=test."""
+"""The /internal/test/cleanup endpoint must be gated by APP_ENV=test AND
+by service identity ``service:e2e_cleanup``. Unauthenticated, wrong-service,
+or non-test APP_ENV access must all be rejected.
+"""
 from __future__ import annotations
 
 import importlib
-import os
 
 from fastapi.testclient import TestClient
 
+from app.core.auth import get_current_user
 
-def test_cleanup_endpoint_present_when_test_env(monkeypatch) -> None:
-    monkeypatch.setenv("APP_ENV", "test")
+
+def _reload_app() -> object:
     import app.main as main
     importlib.reload(main)
+    return main
+
+
+def test_cleanup_present_when_test_env_and_correct_identity(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    main = _reload_app()
+    main.app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "service:e2e_cleanup",
+        "roles": [],
+    }
+    try:
+        client = TestClient(main.app)
+        r = client.post("/internal/test/cleanup", json={"trace_id": "nonexistent"})
+        # 200 with empty per-table counts is the expected idempotent shape:
+        assert r.status_code == 200, r.text
+        assert isinstance(r.json(), dict)
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_cleanup_rejects_unauthenticated(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    main = _reload_app()
+    # No dependency override → real auth path → no JWT → 401.
     client = TestClient(main.app)
-    # Smoke that the route is registered (any response except 404 means it's there):
-    r = client.post("/internal/test/cleanup", json={"trace_id": "nonexistent"})
-    assert r.status_code != 404, r.text
+    r = client.post("/internal/test/cleanup", json={"trace_id": "x"})
+    assert r.status_code in (401, 403), r.text
 
 
-def test_cleanup_endpoint_absent_when_production_env(monkeypatch) -> None:
+def test_cleanup_rejects_wrong_service_identity(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    main = _reload_app()
+    main.app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "service:westmetall_ingest",
+        "roles": [],
+    }
+    try:
+        client = TestClient(main.app)
+        r = client.post("/internal/test/cleanup", json={"trace_id": "x"})
+        assert r.status_code == 403, r.text
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_cleanup_rejects_human_role_even_auditor(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "test")
+    main = _reload_app()
+    main.app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "real-auditor",
+        "roles": ["auditor"],
+    }
+    try:
+        client = TestClient(main.app)
+        r = client.post("/internal/test/cleanup", json={"trace_id": "x"})
+        assert r.status_code == 403, r.text
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_cleanup_absent_when_production_env(monkeypatch) -> None:
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AUDIT_SIGNING_KEY", "x" * 32)
-    import app.main as main
-    importlib.reload(main)
+    main = _reload_app()
+    main.app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "service:e2e_cleanup",
+        "roles": [],
+    }
+    try:
+        client = TestClient(main.app)
+        r = client.post("/internal/test/cleanup", json={"trace_id": "x"})
+        # Route must not be registered at all in production env, so a correctly
+        # authenticated cleanup identity still gets 404.
+        assert r.status_code == 404, r.text
+    finally:
+        main.app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_cleanup_absent_when_staging_env(monkeypatch) -> None:
+    monkeypatch.setenv("APP_ENV", "staging")
+    monkeypatch.setenv("AUDIT_SIGNING_KEY", "x" * 32)
+    main = _reload_app()
     client = TestClient(main.app)
-    r = client.post("/internal/test/cleanup", json={"trace_id": "nonexistent"})
-    assert r.status_code == 404
+    r = client.post("/internal/test/cleanup", json={"trace_id": "x"})
+    assert r.status_code == 404, r.text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `pytest backend/tests/test_internal_test_endpoint_gated.py -v`
-Expected: 2 FAIL — endpoint absent in both envs.
+Expected: all 6 FAIL — endpoint absent.
 
-- [ ] **Step 3: Implement the router**
+- [ ] **Step 3: Implement the router with identity gate**
 
 ```python
 # backend/app/api/routes/internal_test.py
-"""Test-only cleanup router. Registered conditionally by main.py when APP_ENV=test."""
+"""Test-only cleanup router. Registered conditionally by main.py when
+APP_ENV=test, AND every endpoint is gated by service-identity
+``service:e2e_cleanup``.
+
+Two independent defenses:
+1. Boot-time: ``main.py`` only includes this router when APP_ENV=test.
+2. Per-request: every endpoint Depends on ``require_e2e_cleanup_identity``,
+   which rejects every actor except ``service:e2e_cleanup``.
+
+If either defense is bypassed (misconfig or refactor), the other still
+prevents destructive access.
+"""
 from __future__ import annotations
 
-from fastapi import APIRouter
-from pydantic import BaseModel
-from sqlalchemy import text
+from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
+from sqlalchemy import inspect, text
+
+from app.core.auth import get_current_user
 from app.core.database import engine
 
 router = APIRouter(prefix="/internal/test", tags=["internal-test"])
+
+
+def require_e2e_cleanup_identity(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    if user.get("sub") != "service:e2e_cleanup":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="e2e_cleanup_identity_required",
+        )
+    return user
 
 
 class CleanupRequest(BaseModel):
@@ -2313,25 +2419,38 @@ class CleanupRequest(BaseModel):
 
 
 @router.post("/cleanup")
-def cleanup_by_trace_id(req: CleanupRequest) -> dict[str, int]:
+def cleanup_by_trace_id(
+    req: CleanupRequest,
+    _identity: dict[str, Any] = Depends(require_e2e_cleanup_identity),
+) -> dict[str, int]:
     """Delete all rows tagged with the given trace_id across known tables.
 
-    Returns a per-table delete count. Idempotent.
+    Returns a per-table delete count. Idempotent. Errors are surfaced —
+    we never swallow partial-cleanup failures because they would mask
+    state leakage between E2E runs.
     """
     deleted: dict[str, int] = {}
-    # Tables that carry an explicit trace_id column:
-    tables_with_trace = ("audit_events", "rfqs", "deals", "hedge_contracts", "counterparties")
+    tables_with_trace = (
+        "audit_events",
+        "rfqs",
+        "deals",
+        "hedge_contracts",
+        "counterparties",
+    )
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
     with engine.begin() as conn:
         for t in tables_with_trace:
-            try:
-                r = conn.execute(
-                    text(f'DELETE FROM "{t}" WHERE trace_id = :tid'),
-                    {"tid": req.trace_id},
-                )
-                deleted[t] = r.rowcount or 0
-            except Exception:
-                # Table may not exist (Postgres vs sqlite schema differences); skip.
-                deleted[t] = 0
+            if t not in existing_tables:
+                # Schema may differ across SQLite vs Postgres; explicitly
+                # mark absent tables so callers see them in the response.
+                deleted[t] = -1
+                continue
+            r = conn.execute(
+                text(f'DELETE FROM "{t}" WHERE trace_id = :tid'),
+                {"tid": req.trace_id},
+            )
+            deleted[t] = r.rowcount or 0
     return deleted
 ```
 
@@ -2352,14 +2471,31 @@ Place this block after all production routers are included so that production de
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest backend/tests/test_internal_test_endpoint_gated.py -v`
-Expected: 2 PASS.
+Expected: 6 PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add backend/app/api/routes/internal_test.py backend/app/main.py backend/tests/test_internal_test_endpoint_gated.py
-git commit -m "feat(e2e): /internal/test/cleanup gated by APP_ENV=test"
+git commit -m "feat(e2e): /internal/test/cleanup with dual gate (APP_ENV=test + service:e2e_cleanup identity)"
 ```
+
+### Task 11.2: Update `_personas.as_service` callers in cleanup paths
+
+Any orchestrator code or full-stack helper that calls `/internal/test/cleanup` must mint a JWT under `service:e2e_cleanup`. The persona helper from Task 1.1 already supports this identity (added to the `valid` set).
+
+- [ ] **Step 1: Verify caller pattern**
+
+In any place we add cleanup invocations (typically the session-scope teardown when `E2E_FULL_STACK=1`), use:
+
+```python
+from backend.tests.e2e._personas import as_service
+
+with as_service("service:e2e_cleanup") as client:
+    client.post("/internal/test/cleanup", json={"trace_id": trace_id})
+```
+
+- [ ] **Step 2: No commit needed if no new caller was added** — but if you add a teardown fixture that calls cleanup, commit alongside.
 
 ---
 
