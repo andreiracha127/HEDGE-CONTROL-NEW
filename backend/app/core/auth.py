@@ -251,6 +251,25 @@ def get_auth_disabled_fallback_user() -> dict[str, Any]:
     """Return the singleton dev/test fallback identity used when auth is off."""
     return _ANONYMOUS_USER
 
+
+def _is_auth_disabled_fallback_user(
+    user: dict[str, Any],
+    *,
+    structural: bool = False,
+) -> bool:
+    """Recognize the local/test fallback without accepting signed broad roles."""
+    if not isinstance(user, dict):
+        return False
+    if not structural:
+        return user is _ANONYMOUS_USER
+    marker = user.get("_auth_disabled_fallback")
+    marker_ok = marker is not None
+    return (
+        marker_ok
+        and user.get("sub") == "anonymous"
+        and sorted(user.get("roles") or []) == ["auditor", "risk_manager", "trader"]
+    )
+
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
 _INTERNAL_SERVICE_IDENTITIES = frozenset(
     {
@@ -446,12 +465,11 @@ def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Service identities cannot carry human roles",
         )
-    if (
-        user is _ANONYMOUS_USER
-        and sub == "anonymous"
-        and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
-        and roles == ["auditor", "risk_manager", "trader"]
-    ):
+    if _is_auth_disabled_fallback_user(user) and roles == [
+        "auditor",
+        "risk_manager",
+        "trader",
+    ]:
         # Auth-disabled local/test fallback is isolated by object identity and
         # by the fail-closed env gate in get_current_user(); signed JWT payloads
         # and copied dicts still go through the normal SoD checks below.
@@ -506,7 +524,7 @@ def require_service_identity(name: str):
         if (
             _canonical_env() not in _FAIL_CLOSED_ENVS
             and dev_actor_sub == expected
-            and user is get_auth_disabled_fallback_user()
+            and _is_auth_disabled_fallback_user(user, structural=True)
         ):
             return
         raise HTTPException(
