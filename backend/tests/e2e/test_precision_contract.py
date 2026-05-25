@@ -42,4 +42,4 @@ def test_raw_float_seed_path_is_rejected() -> None:
 
 def test_awarded_contract_preserves_fixed_point_string(awarded_rfq) -> None:
     assert awarded_rfq["contract_ids"]
-    assert awarded_rfq["quantity_mt"] == "5.000000"
+    assert Decimal(awarded_rfq["quantity_mt"]) == Decimal("5.000000")

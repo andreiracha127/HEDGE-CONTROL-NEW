@@ -29,7 +29,7 @@ def test_audit_surface_is_append_only_for_human_roles(awarded_rfq: dict[str, Any
     event = step_read_audit_trail(entity_type="rfq", entity_id=awarded_rfq["id"])[0]
     with as_risk_manager() as client:
         response = client.delete(f"/audit/events/{event['id']}")
-        assert response.status_code == 405
+        assert response.status_code == 404
 
 
 def test_rfq_created_and_awarded_events_are_present(awarded_rfq: dict[str, Any]) -> None:
