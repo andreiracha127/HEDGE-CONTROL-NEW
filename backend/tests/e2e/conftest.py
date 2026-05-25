@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from backend.tests.e2e._fixtures import (
     seed_counterparties,
