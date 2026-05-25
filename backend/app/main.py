@@ -250,7 +250,7 @@ app.include_router(
     finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
 )
 
-if os.environ.get("APP_ENV", "").strip().lower() == "test":
+if _cfg.app_env.strip().lower() == "test":
     from app.api.routes.internal_test import router as internal_test_router
 
     app.include_router(internal_test_router)

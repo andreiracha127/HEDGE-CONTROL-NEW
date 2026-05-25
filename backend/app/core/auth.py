@@ -266,6 +266,12 @@ def _validate_unverified_dev_session_token(token: str) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token",
         )
+    sub = payload.get("sub") if isinstance(payload, dict) else None
+    if isinstance(sub, str) and sub.startswith("service:"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service token requires signed JWT",
+        )
     _validate_human_roles_at_jwt_time(payload)
     return payload
 

@@ -34,7 +34,7 @@ def test_auditor_can_read_canonical_market_data() -> None:
 def test_service_identity_cannot_read_human_market_data_surface() -> None:
     with as_service("service:westmetall_ingest") as client:
         response = client.get("/market-data/westmetall/aluminum/cash-settlement/prices")
-        assert response.status_code == 403
+        assert response.status_code in (401, 403)
 
 
 def test_price_seed_is_idempotent_for_same_date() -> None:

@@ -19,7 +19,7 @@ def test_scenario_route_requires_risk_manager() -> None:
             assert response.status_code == 403, response.text
     with as_service("service:cashflow_pipeline") as client:
         response = client.post("/scenario/what-if/run", json=payload)
-        assert response.status_code == 403, response.text
+        assert response.status_code in (401, 403), response.text
     with as_risk_manager() as client:
         response = client.post("/scenario/what-if/run", json=payload)
         assert response.status_code in (200, 422, 424), response.text

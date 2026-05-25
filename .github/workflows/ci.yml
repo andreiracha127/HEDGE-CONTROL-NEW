@@ -273,7 +273,8 @@ jobs:
 
       - name: Run full E2E suite
         run: |
-          cd backend && python -m pytest tests/e2e/ -v --json-report --json-report-file=tests/e2e/report.json || true
+          rm -f backend/tests/e2e/report.json frontend-svelte/playwright-report/report.json
+          cd backend && E2E_FULL_STACK=1 E2E_FULL_STACK_BASE_URL=http://localhost:8000 DATABASE_URL=postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol python -m pytest tests/e2e/ -v --json-report --json-report-file=tests/e2e/report.json || true
           cd ../frontend-svelte && mkdir -p playwright-report && BASE_URL=http://localhost:5173 npx playwright test --reporter=json > playwright-report/report.json || true
 
       - name: Generate go-no-go report

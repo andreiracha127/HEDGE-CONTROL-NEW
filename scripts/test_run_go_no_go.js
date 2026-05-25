@@ -1,7 +1,16 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 
-const { backendPytestEnv, finalExitCode, playwrightEnv, spawnExitCode } = require('./run_go_no_go.js');
+const {
+  backendPytestEnv,
+  clearEvidenceFiles,
+  finalExitCode,
+  playwrightEnv,
+  spawnExitCode
+} = require('./run_go_no_go.js');
 
 test('spawnExitCode treats signaled child process as failure', () => {
   assert.equal(spawnExitCode({ status: null, signal: 'SIGTERM' }), 1);
@@ -29,4 +38,14 @@ test('playwrightEnv writes JSON reporter output to a file', () => {
 
   assert.equal(env.BASE_URL, 'http://localhost:5173');
   assert.equal(env.PLAYWRIGHT_JSON_OUTPUT_FILE, '/tmp/playwright-report.json');
+});
+
+test('clearEvidenceFiles removes stale reports before a new run', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'go-no-go-'));
+  const stale = path.join(dir, 'report.json');
+  fs.writeFileSync(stale, '{"stale":true}', 'utf8');
+
+  clearEvidenceFiles([stale, path.join(dir, 'missing.json')]);
+
+  assert.equal(fs.existsSync(stale), false);
 });

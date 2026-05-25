@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -72,6 +73,45 @@ def _internal_test_routes_for_env(app_env: str) -> list[str]:
         text=True,
         check=True,
     )
+    return json.loads(completed.stdout.strip().splitlines()[-1])
+
+
+def _internal_test_routes_with_app_env_from_dotenv(app_env: str) -> list[str]:
+    env = os.environ.copy()
+    env.pop("APP_ENV", None)
+    env.update(
+        {
+            "PYTHONPATH": str(BACKEND_DIR),
+            "DATABASE_URL": "sqlite+pysqlite:///:memory:",
+            "AUDIT_SIGNING_KEY": "test-signing-key-for-audit-hmac",
+            "SCHEDULER_DISABLED": "1",
+            "CLERK_FAPI_HOST": "clerk.test",
+            "CLERK_AUDIENCE": "hedge-control",
+            "SERVICE_JWT_SIGNING_KEY": "x" * 64,
+            "SERVICE_JWT_PUBLIC_KEY": "x" * 64,
+            "BACKEND_SERVICE_ISSUER": "https://svc.test",
+            "BACKEND_SERVICE_AUDIENCE": "hedge-control",
+        }
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        Path(tmp_dir, ".env").write_text(f"APP_ENV={app_env}\n", encoding="utf-8")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import json; "
+                    "from app.main import app; "
+                    "print(json.dumps([getattr(r, 'path', '') for r in app.routes "
+                    "if '/internal/test' in getattr(r, 'path', '')]))"
+                ),
+            ],
+            cwd=tmp_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
     return json.loads(completed.stdout.strip().splitlines()[-1])
 
 
@@ -256,3 +296,9 @@ def test_cleanup_absent_when_production_env() -> None:
 
 def test_cleanup_absent_when_staging_env() -> None:
     assert _internal_test_routes_for_env("staging") == []
+
+
+def test_cleanup_present_when_test_env_comes_from_dotenv() -> None:
+    assert _internal_test_routes_with_app_env_from_dotenv("test") == [
+        "/internal/test/cleanup"
+    ]

@@ -18,6 +18,12 @@ function run(command, args, options = {}) {
   return spawnExitCode(result);
 }
 
+function clearEvidenceFiles(paths) {
+  for (const evidencePath of paths) {
+    fs.rmSync(evidencePath, { force: true });
+  }
+}
+
 function runPlaywright(playwrightJson) {
   fs.mkdirSync(path.dirname(playwrightJson), { recursive: true });
   const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
@@ -69,6 +75,7 @@ function main() {
   const reportPath = path.join('docs', 'audits', `${utcDate}-go-no-go.md`);
   const pytestJson = path.join('backend', 'tests', 'e2e', 'report.json');
   const playwrightJson = path.join('frontend-svelte', 'playwright-report', 'report.json');
+  clearEvidenceFiles([pytestJson, playwrightJson]);
 
   run('python', [
     '-m',
@@ -107,4 +114,10 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { backendPytestEnv, finalExitCode, playwrightEnv, spawnExitCode };
+module.exports = {
+  backendPytestEnv,
+  clearEvidenceFiles,
+  finalExitCode,
+  playwrightEnv,
+  spawnExitCode
+};

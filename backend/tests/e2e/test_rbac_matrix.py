@@ -95,4 +95,4 @@ def test_service_identity_cannot_use_human_rfq_route(
 ) -> None:
     with as_service("service:westmetall_ingest") as client:
         response = client.post("/rfqs", json=_rfq_payload(seeded_counterparties["supplier"]))
-        assert response.status_code == 403
+        assert response.status_code in (401, 403)
