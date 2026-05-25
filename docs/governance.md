@@ -240,7 +240,7 @@ Role combinability (binding):
   is therefore equivalent to "is trader-only", which is the intended
   scope of trader-restriction rules.
 
-Service identities (4) — split by authentication source:
+Service identities (4 operational + 1 test-only) — split by authentication source:
 
 Internal-issued (3, JWT signed by backend, short-lived TTL ~5min, same
 actor_sub pattern as human authentication):
@@ -248,6 +248,15 @@ actor_sub pattern as human authentication):
 - `service:westmetall_ingest` — cron-driven market-data ingest
 - `service:rfq_outbound` — outbound RFQ delivery worker
 - `service:cashflow_pipeline` — cashflow_ledger + finance_pipeline writes
+
+Test-only internal-issued (1, JWT signed by backend, valid only when
+`APP_ENV=test`; MUST be rejected in staging/production and any other
+non-test environment):
+
+- `service:e2e_cleanup` — E2E suite cleanup actor for
+  `POST /internal/test/cleanup`; this identity exists solely to let
+  full-stack E2E runs exercise the real bearer service-token path
+  without adding a parallel "magic token" authentication mechanism.
 
 External-ingress (1, request authenticated by external provider; the
 service identity is the INTERNAL processing context for audit-trail

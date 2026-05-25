@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from app.core.auth import get_current_user, mint_service_token
+from app.core.config import get_settings
 from app.main import app
 from app.services.westmetall_cash_settlement import WestmetallFetchEvidence
 from tests.auth_token_helpers import (
@@ -67,6 +68,13 @@ def test_mint_service_token_for_internal_identity(service_env, identity, subject
     assert abs(int(payload["exp"]) - (int(time.time()) + 300)) <= 5
 
 
+def test_e2e_cleanup_service_token_is_test_env_only(service_env, monkeypatch) -> None:
+    monkeypatch.setattr(get_settings(), "app_env", "production")
+
+    with pytest.raises(ValueError, match="Unknown internal service identity"):
+        mint_service_token("e2e_cleanup")
+
+
 def test_mint_service_token_unknown_raises(service_env) -> None:
     with pytest.raises(ValueError):
         mint_service_token("not_a_real_identity")
@@ -97,6 +105,21 @@ def test_get_current_user_accepts_e2e_cleanup_service_token(service_env) -> None
     user = get_current_user(_Request(bearer=token), settings=object())
 
     assert user["sub"] == "service:e2e_cleanup"
+
+
+def test_get_current_user_rejects_e2e_cleanup_service_token_outside_test_env(
+    service_env,
+    monkeypatch,
+) -> None:
+    private_pem, _ = service_env
+    monkeypatch.setattr(get_settings(), "app_env", "staging")
+    token = make_service_token(private_pem, sub="service:e2e_cleanup")
+
+    with pytest.raises(HTTPException) as excinfo:
+        get_current_user(_Request(bearer=token), settings=object())
+
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Invalid service identity"
 
 
 def test_get_current_user_accepts_case_insensitive_bearer_scheme(service_env) -> None:

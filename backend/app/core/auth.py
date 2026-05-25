@@ -271,16 +271,23 @@ def _is_auth_disabled_fallback_user(
     )
 
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
-# Exhaustive set of internal-service JWT identities. ``service:webhook_inbound``
-# is intentionally excluded: webhook ingress uses provider signatures.
+# Exhaustive set of operational internal-service JWT identities.
+# ``service:webhook_inbound`` is intentionally excluded: webhook ingress uses
+# provider signatures.
 _INTERNAL_SERVICE_IDENTITIES = frozenset(
     {
         "service:westmetall_ingest",
         "service:rfq_outbound",
         "service:cashflow_pipeline",
-        "service:e2e_cleanup",
     }
 )
+_TEST_SERVICE_IDENTITIES = frozenset({"service:e2e_cleanup"})
+
+
+def _is_valid_service_identity(identity: str | None) -> bool:
+    if identity in _INTERNAL_SERVICE_IDENTITIES:
+        return True
+    return _canonical_env() == "test" and identity in _TEST_SERVICE_IDENTITIES
 
 
 def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:
@@ -360,7 +367,7 @@ def _validate_service_token(token: str) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         ) from exc
     sub = payload.get("sub") if isinstance(payload, dict) else None
-    if sub not in _INTERNAL_SERVICE_IDENTITIES:
+    if not _is_valid_service_identity(sub):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid service identity",
@@ -411,7 +418,7 @@ def get_current_user(
 
 def mint_service_token(identity: str) -> str:
     expected = identity if identity.startswith("service:") else f"service:{identity}"
-    if expected not in _INTERNAL_SERVICE_IDENTITIES:
+    if not _is_valid_service_identity(expected):
         raise ValueError(f"Unknown internal service identity: {expected}")
 
     issuer = os.getenv("BACKEND_SERVICE_ISSUER", "")
