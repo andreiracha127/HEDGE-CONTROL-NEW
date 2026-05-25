@@ -18,24 +18,35 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
-order_type_enum = postgresql.ENUM("SO", "PO", name="order_type")
-price_type_enum = postgresql.ENUM("fixed", "variable", name="price_type")
+# For Postgres, define ENUM instances with create_type=False so SQLAlchemy 2.0+
+# does NOT auto-issue CREATE TYPE during op.create_table (we do it explicitly via .create()
+# below). Reusing the same instance in the Column avoids the DuplicateObject error.
+order_type_enum_pg = postgresql.ENUM("SO", "PO", name="order_type", create_type=False)
+price_type_enum_pg = postgresql.ENUM("fixed", "variable", name="price_type", create_type=False)
 
 
 def upgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
     if is_postgres:
-        order_type_enum.create(bind, checkfirst=True)
-        price_type_enum.create(bind, checkfirst=True)
-
-    enum_kwargs = {} if is_postgres else {"native_enum": False, "create_constraint": True}
+        order_type_enum_pg.create(bind, checkfirst=True)
+        price_type_enum_pg.create(bind, checkfirst=True)
+        order_type_col_type = order_type_enum_pg
+        price_type_col_type = price_type_enum_pg
+    else:
+        # SQLite: VARCHAR + CHECK constraint via native_enum=False.
+        order_type_col_type = sa.Enum(
+            "SO", "PO", name="order_type", native_enum=False, create_constraint=True
+        )
+        price_type_col_type = sa.Enum(
+            "fixed", "variable", name="price_type", native_enum=False, create_constraint=True
+        )
 
     op.create_table(
         "orders",
         sa.Column("id", sa.Uuid(), primary_key=True, nullable=False),
-        sa.Column("order_type", sa.Enum("SO", "PO", name="order_type", **enum_kwargs), nullable=False),
-        sa.Column("price_type", sa.Enum("fixed", "variable", name="price_type", **enum_kwargs), nullable=False),
+        sa.Column("order_type", order_type_col_type, nullable=False),
+        sa.Column("price_type", price_type_col_type, nullable=False),
         sa.Column("quantity_mt", sa.Float(), nullable=False),
         sa.Column(
             "created_at",
@@ -48,5 +59,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_table("orders")
-    price_type_enum.drop(op.get_bind(), checkfirst=True)
-    order_type_enum.drop(op.get_bind(), checkfirst=True)
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        price_type_enum_pg.drop(bind, checkfirst=True)
+        order_type_enum_pg.drop(bind, checkfirst=True)

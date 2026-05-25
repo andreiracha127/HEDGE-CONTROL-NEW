@@ -251,7 +251,53 @@ def get_auth_disabled_fallback_user() -> dict[str, Any]:
     """Return the singleton dev/test fallback identity used when auth is off."""
     return _ANONYMOUS_USER
 
+
+def _validate_unverified_dev_session_token(token: str) -> dict[str, Any]:
+    try:
+        payload = jwt.get_unverified_claims(token)
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        ) from exc
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    if isinstance(exp, int | float) and exp <= time.time():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token",
+        )
+    sub = payload.get("sub") if isinstance(payload, dict) else None
+    if isinstance(sub, str) and sub.startswith("service:"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service token requires signed JWT",
+        )
+    _validate_human_roles_at_jwt_time(payload)
+    return payload
+
+
+def _is_auth_disabled_fallback_user(
+    user: dict[str, Any],
+    *,
+    structural: bool = False,
+) -> bool:
+    """Recognize the local/test fallback without accepting signed broad roles."""
+    if not isinstance(user, dict):
+        return False
+    if not structural:
+        return user is _ANONYMOUS_USER
+    marker = user.get("_auth_disabled_fallback")
+    marker_ok = marker is _AUTH_DISABLED_FALLBACK_MARKER
+    return (
+        marker_ok
+        and user.get("sub") == "anonymous"
+        and sorted(user.get("roles") or []) == ["auditor", "risk_manager", "trader"]
+    )
+
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
+# Exhaustive set of operational internal-service JWT identities.
+# ``service:webhook_inbound`` is intentionally excluded: webhook ingress uses
+# provider signatures.
 _INTERNAL_SERVICE_IDENTITIES = frozenset(
     {
         "service:westmetall_ingest",
@@ -259,8 +305,13 @@ _INTERNAL_SERVICE_IDENTITIES = frozenset(
         "service:cashflow_pipeline",
     }
 )
-# ``service:webhook_inbound`` is intentionally excluded here: webhook ingress
-# authenticates through provider signatures, not internal service JWTs.
+_TEST_SERVICE_IDENTITIES = frozenset({"service:e2e_cleanup"})
+
+
+def _is_valid_service_identity(identity: str | None) -> bool:
+    if identity in _INTERNAL_SERVICE_IDENTITIES:
+        return True
+    return _canonical_env() == "test" and identity in _TEST_SERVICE_IDENTITIES
 
 
 def _validate_clerk_token(token: str, settings: AuthSettings) -> dict[str, Any]:
@@ -340,7 +391,7 @@ def _validate_service_token(token: str) -> dict[str, Any]:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
         ) from exc
     sub = payload.get("sub") if isinstance(payload, dict) else None
-    if sub not in _INTERNAL_SERVICE_IDENTITIES:
+    if not _is_valid_service_identity(sub):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid service identity",
@@ -365,8 +416,12 @@ def get_current_user(
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Authentication required",
-        )
-        return get_auth_disabled_fallback_user()
+            )
+        try:
+            token, _source = _extract_token_with_source(request)
+        except HTTPException:
+            return get_auth_disabled_fallback_user()
+        return _validate_unverified_dev_session_token(token)
 
     assert settings is not None
     token, source = _extract_token_with_source(request)
@@ -391,7 +446,7 @@ def get_current_user(
 
 def mint_service_token(identity: str) -> str:
     expected = identity if identity.startswith("service:") else f"service:{identity}"
-    if expected not in _INTERNAL_SERVICE_IDENTITIES:
+    if not _is_valid_service_identity(expected):
         raise ValueError(f"Unknown internal service identity: {expected}")
 
     issuer = os.getenv("BACKEND_SERVICE_ISSUER", "")
@@ -446,12 +501,11 @@ def extract_actor_roles_from_payload(user: dict[str, Any]) -> list[str]:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Service identities cannot carry human roles",
         )
-    if (
-        user is _ANONYMOUS_USER
-        and sub == "anonymous"
-        and user.get("_auth_disabled_fallback") is _AUTH_DISABLED_FALLBACK_MARKER
-        and roles == ["auditor", "risk_manager", "trader"]
-    ):
+    if _is_auth_disabled_fallback_user(user) and roles == [
+        "auditor",
+        "risk_manager",
+        "trader",
+    ]:
         # Auth-disabled local/test fallback is isolated by object identity and
         # by the fail-closed env gate in get_current_user(); signed JWT payloads
         # and copied dicts still go through the normal SoD checks below.
@@ -506,7 +560,7 @@ def require_service_identity(name: str):
         if (
             _canonical_env() not in _FAIL_CLOSED_ENVS
             and dev_actor_sub == expected
-            and user is get_auth_disabled_fallback_user()
+            and _is_auth_disabled_fallback_user(user, structural=True)
         ):
             return
         raise HTTPException(

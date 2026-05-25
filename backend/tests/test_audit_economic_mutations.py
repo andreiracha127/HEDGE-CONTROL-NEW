@@ -696,6 +696,10 @@ class TestRouteCoverageStatic:
         ("POST", "/auth/refresh"): "explicitly out of A5 route audit scope: auth session refresh",
         ("POST", "/auth/logout"): "explicitly out of A5 route audit scope: auth session logout",
         ("POST", "/finance/pipeline/run"): "covered institutional mutation",
+        (
+            "POST",
+            "/internal/test/cleanup",
+        ): "explicitly out of A5 route audit scope: test-only cleanup endpoint",
     }
 
     def test_mutating_route_inventory_is_classified_and_audited(self) -> None:

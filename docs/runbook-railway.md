@@ -125,6 +125,8 @@ Production deployment is manual:
 
 Use service-specific redeploys when the blast radius is narrow. Redeploy all dependent services only when a shared contract, environment variable, or image change requires it.
 
+Before deploying past pilot day 1, `npm run test:go-no-go` is the mandatory pre-deploy gate. It writes the production-readiness evidence report to `docs/audits/<UTC-date>-go-no-go.md`. A `NO-GO` verdict requires fixing the underlying defect or setting an explicit `OVERRIDE_RATIONALE=<text>` environment variable, which is valid only for `test_scenario_isolation` failures per the E2E production-readiness spec.
+
 ## Connection and Database Access
 
 Runtime application traffic should use the private Railway database reference exposed through `DATABASE_URL`.
