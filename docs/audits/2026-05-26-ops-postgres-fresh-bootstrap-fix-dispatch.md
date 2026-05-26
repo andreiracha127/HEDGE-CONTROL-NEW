@@ -143,7 +143,7 @@ The SQLite test dialect ignores the `CAST(... AS hedge_classification)` because 
 
 **Rationale (binding for §10 acceptance):** the `sa.table(...)` / `sa.column(...)` primitives in alembic are lightweight Column descriptors used ONLY for SQL composition — they do NOT trigger DDL, do NOT call the ENUM's `.create()`, and do NOT bind the column to any metadata. Passing the ENUM type instance through `sa.column("mutation_type", mutation_type_enum)` informs the executemany binding layer to emit `$1::workflow_approval_mutation_type` instead of `$1::VARCHAR`, so the INSERT statement is plannable against the real table column type.
 
-The same logic applies to `_json_type()` — passing the variant-aware JSONB/JSON type makes the parameter bind as `JSONB` on Postgres and `JSON` on SQLite, matching the table's column type produced by `op.create_table("approval_policy", ..., sa.Column(..., _json_type(), ...))` earlier in the same migration.
+The same logic applies to `_json_type()` — passing the variant-aware JSONB/JSON type makes the parameter bind as `JSONB` on Postgres and `JSON` on SQLite, matching the table's column type produced by `op.create_table("approval_policy", ..., sa.Column(..., _json_type(), ...))` earlier in the same migration. The `_json_type()` helper is **pre-existing** in `046` (currently defined at line 53 of the unpatched file as `def _json_type() -> sa.types.TypeEngine: return postgresql.JSONB(astext_type=sa.Text()).with_variant(sa.JSON(), "sqlite")`); the patch does NOT introduce a new helper, it only references the existing one from the `sa.column(...)` call site. Same applies to `mutation_type_enum` and `threshold_dimension_enum` (pre-existing module-level declarations at lines 19–24 and 34–38 respectively).
 
 The row data dict literals are unchanged. `mutation_type` values (`"deal_create"`, `"deal_award"`, `"hedge_contract_settle"`) and `threshold_dimension` values (`"notional_usd"`, `"settlement_amount_usd"`) remain string literals — Postgres accepts string values bound through an ENUM-typed parameter as long as the value is a valid ENUM member. The cast direction is what matters; the literal shape is fine.
 
@@ -175,7 +175,7 @@ The patch keeps the explicit pre-create for `trigger_source_enum` (needed for th
 
 ### §4.5 Patch 5 — `.github/workflows/ci.yml`
 
-**Locus:** a new top-level job under `jobs:`, placed AFTER the existing `backend-tests` job and BEFORE the `e2e-playwright` job (alphabetic ordering by job key is the existing convention).
+**Locus:** a new top-level job under `jobs:`, placed AFTER the existing `backend-test` job (placement within the file is non-binding as long as the job key is exactly `alembic-fresh-postgres`; the existing file groups jobs by domain — frontend, backend, e2e — so backend-adjacent placement is the natural fit).
 
 **Patch shape:**
 
@@ -223,7 +223,7 @@ The patch keeps the explicit pre-create for `trigger_source_enum` (needed for th
           python -m alembic current | grep -F "047_finance_pipeline_hb3_hardening (head)"
 ```
 
-**Rationale (binding for §10 acceptance):** the existing CI matrix (`backend-tests` job) runs against SQLite-in-memory. The institutional debt class C-OPS-PG-FRESH (chain works on SQLite but not on fresh Postgres) was invisible because no CI job exercises the fresh-Postgres bootstrap path. This job is the durable gate: any future migration that adds an ENUM via `add_column` without an explicit `.create(checkfirst=True)`, or that uses untyped literals against ENUM columns, will fail this job on PR and never reach `main`.
+**Rationale (binding for §10 acceptance):** the existing CI matrix (`backend-test` job) runs against SQLite-in-memory. The institutional debt class C-OPS-PG-FRESH (chain works on SQLite but not on fresh Postgres) was invisible because no CI job exercises the fresh-Postgres bootstrap path. This job is the durable gate: any future migration that adds an ENUM via `add_column` without an explicit `.create(checkfirst=True)`, or that uses untyped literals against ENUM columns, will fail this job on PR and never reach `main`.
 
 The job uses Postgres 16 (matching `docker-compose.yml`'s `image: postgres:16`). The `DATABASE_URL` env var uses `postgresql+psycopg://` (matching the production driver, not `postgresql://` which would default to `psycopg2`). The `5433` host port matches the docker-compose convention for local dev to avoid conflict with a host-resident Postgres.
 
@@ -235,9 +235,9 @@ The executor MUST adjust the following IF the actual codebase state at branch-op
 
 1. **Line numbers in the locus citations.** Auto-formatting or comment changes between dispatch authorship (2026-05-26) and executor branch open may shift the cited line numbers (e.g. "around line 112"). The executor uses the surrounding code context (the `# 2. orders — add Phase-1 columns` comment block, the `_backfill_inconsistent_classifications` function name, the `def upgrade()` function in `047_*`) as the anchor, NOT the line number. Line numbers in this dispatch are advisory.
 
-2. **CI yaml job ordering.** If a new job has landed between the existing `backend-tests` and `e2e-playwright` jobs (e.g. another operational job), the executor places `alembic-fresh-postgres` in alphabetic order by job key. The key MUST be `alembic-fresh-postgres` exactly; renaming is forbidden.
+2. **CI yaml job placement.** The executor places `alembic-fresh-postgres` adjacent to the existing `backend-test` job (logical grouping by domain — the file currently orders jobs as `frontend-check`, `frontend-test`, `frontend-build`, `backend-test`, `e2e-smoke`, `e2e-playwright`, `e2e-full-post-merge`; the new job is backend-adjacent, so right after `backend-test` is the natural slot). The key MUST be `alembic-fresh-postgres` exactly; renaming is forbidden. Placement is non-binding beyond "anywhere under `jobs:`"; the alphabetic-key convention does NOT apply (the existing file does not use it).
 
-3. **The `python-version: "3.12"` value.** If the existing `backend-tests` job uses `"3.11"`, the executor MUST match the existing version (both jobs run the same backend code; version drift is a separate concern). If both `"3.11"` and `"3.12"` are in the matrix, the new job uses `"3.12"` (matching the dispatch author's local environment).
+3. **The `python-version: "3.12"` value.** If the existing `backend-test` job uses `"3.11"`, the executor MUST match the existing version (both jobs run the same backend code; version drift is a separate concern). If both `"3.11"` and `"3.12"` are in the matrix, the new job uses `"3.12"` (matching the dispatch author's local environment).
 
 ### §4.7 Forbidden adjustments
 
@@ -309,7 +309,7 @@ The PR is mergeable iff ALL of the following are simultaneously true:
 
 2. **The new CI job runs green on the PR.** The `alembic-fresh-postgres` job in `.github/workflows/ci.yml` completes successfully on the PR's head SHA. The job's `Verify single head reached` step matches `047_finance_pipeline_hb3_hardening (head)` literally.
 
-3. **Pre-existing CI matrix continues to pass.** `backend-tests` (SQLite unit suite), `frontend-check`, `frontend-build`, `e2e-playwright` — all jobs that were green on `main` immediately before this PR remain green.
+3. **Pre-existing CI matrix continues to pass.** Every job under `.github/workflows/ci.yml` that exists on `main` immediately before this PR remains green on the PR's head SHA. Current full set: `frontend-check`, `frontend-test`, `frontend-build`, `backend-test`, `e2e-smoke`, `e2e-playwright`, `e2e-full-post-merge` (the `e2e-full-post-merge` job is the post-merge-only one and may show as `SKIPPED` on the PR — that is its expected state per its `on: push` trigger; SKIPPED counts as passing for the gate). The new `alembic-fresh-postgres` job is verified separately by criterion #2.
 
 4. **`backend/tests/test_alembic_chain.py` passes.** Single-head invariant preserved. No revision file added or renamed.
 
@@ -317,7 +317,7 @@ The PR is mergeable iff ALL of the following are simultaneously true:
 
 6. **The `CAST(... AS hedge_classification)` form is used in patch 2**, not the `::hedge_classification` Postgres shorthand. Grep verification: `grep -F "CAST(" backend/alembic/versions/026_classification_invariant.py` returns 2 lines; `grep -F "::hedge_classification" backend/alembic/versions/026_classification_invariant.py` returns 0 lines.
 
-7. **Patch 3 swaps exactly four `sa.column(...)` declarations in `046`'s `bulk_insert`.** Grep verification: `grep -F "sa.column(\"mutation_type\", mutation_type_enum)" backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line; `grep -F "sa.column(\"threshold_dimension\", threshold_dimension_enum)" backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line; `grep -cF "_json_type()" backend/alembic/versions/046_workflow_approval_gate.py` returns at least 4 (2 from the patch's `sa.column(..., _json_type())` lines + 2 from the pre-existing `op.create_table(...)` calls). `grep -F "sa.String" backend/alembic/versions/046_workflow_approval_gate.py` returns 0 lines (the patch removes the last `sa.String` usage).
+7. **Patch 3 swaps exactly four `sa.column(...)` declarations in `046`'s `bulk_insert`.** Grep verification targets ONLY the four lines inside the `op.bulk_insert(sa.table("approval_policy", ...))` block — `046` also contains multiple legitimate `sa.String(length=...)` calls in `op.create_table(...)` column definitions (e.g. `requested_by`, `approved_by`, `mutation_payload_hash`, `_uuid_type`'s sqlite variant) which the patch does NOT touch. Required: `grep -F 'sa.column("mutation_type", mutation_type_enum)' backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line; `grep -F 'sa.column("threshold_dimension", threshold_dimension_enum)' backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line; `grep -F 'sa.column("required_approver_roles", _json_type())' backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line; `grep -F 'sa.column("fallback_when_requester_is", _json_type())' backend/alembic/versions/046_workflow_approval_gate.py` returns 1 line. Forbidden: `grep -F 'sa.column("mutation_type", sa.String)' backend/alembic/versions/046_workflow_approval_gate.py` returns 0 lines; `grep -F 'sa.column("threshold_dimension", sa.String)' backend/alembic/versions/046_workflow_approval_gate.py` returns 0 lines; `grep -F 'sa.column("required_approver_roles", sa.JSON)' backend/alembic/versions/046_workflow_approval_gate.py` returns 0 lines; `grep -F 'sa.column("fallback_when_requester_is", sa.JSON)' backend/alembic/versions/046_workflow_approval_gate.py` returns 0 lines. The executor MUST NOT widen the patch to remove `sa.String` from the `op.create_table(...)` column definitions — those are legitimate VARCHAR columns and out of scope.
 
 8. **Patch 4 keeps exactly one explicit `.create(` call in `047`'s `upgrade()`.** Grep verification: `grep -cE "\.create\(bind.*checkfirst=True\)" backend/alembic/versions/047_finance_pipeline_hb3_hardening.py` returns `1` (only `trigger_source_enum.create(bind, checkfirst=True)` remains in upgrade; downgrade keeps its three `.drop()` calls).
 
