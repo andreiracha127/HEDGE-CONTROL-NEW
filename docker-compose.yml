@@ -37,6 +37,9 @@ services:
       # inside AuditTrailService.record (Layer 1) still fails-closed if a
       # production deployment forgets to override this.
       AUDIT_SIGNING_KEY: "dev-only-do-not-use-in-prod-replace-me"
+      # Local/CI docker-compose is an isolated test stack; outbound WhatsApp
+      # must not require production credentials to create RFQs.
+      WHATSAPP_PROVIDER: "fake"
     ports:
       - "8000:8000"
 
