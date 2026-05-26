@@ -26,21 +26,23 @@ function clearEvidenceFiles(paths) {
 
 function runPlaywright(playwrightJson) {
   fs.mkdirSync(path.dirname(playwrightJson), { recursive: true });
-  const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
   const outputFile = path.resolve(playwrightJson);
+  const args = [
+    'playwright',
+    'test',
+    'e2e/journey-trader.spec.ts',
+    'e2e/journey-risk-manager.spec.ts',
+    'e2e/journey-auditor.spec.ts',
+    '--reporter=json'
+  ];
+  const command = process.platform === 'win32' ? `npx ${args.join(' ')}` : 'npx';
   const result = spawnSync(
-    npx,
-    [
-      'playwright',
-      'test',
-      'e2e/journey-trader.spec.ts',
-      'e2e/journey-risk-manager.spec.ts',
-      'e2e/journey-auditor.spec.ts',
-      '--reporter=json'
-    ],
+    command,
+    process.platform === 'win32' ? [] : args,
     {
       cwd: 'frontend-svelte',
       stdio: 'inherit',
+      shell: process.platform === 'win32',
       env: {
         ...playwrightEnv(outputFile)
       }
