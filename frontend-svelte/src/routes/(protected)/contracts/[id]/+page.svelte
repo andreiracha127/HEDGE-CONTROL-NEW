@@ -155,6 +155,21 @@
 	}
 </script>
 
+{#snippet documentList()}
+	{#if documents.length}
+		{#each documents as d, i (d.id ?? d.name ?? i)}
+			<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
+				<Icon name="doc"/>
+				<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
+				<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
+				<Icon name="download"/>
+			</button>
+		{/each}
+	{:else}
+		<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
+	{/if}
+{/snippet}
+
 <div class="page">
 	<div class="page-head">
 		<div style="flex: 1;">
@@ -307,18 +322,7 @@
 
 				<Card title="Documentação">
 					<div class="stack gap-2">
-						{#if documents.length}
-						{#each documents as d, i (d.id ?? d.name ?? i)}
-							<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
-								<Icon name="doc"/>
-								<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
-								<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
-								<Icon name="download"/>
-							</button>
-						{/each}
-						{:else}
-							<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
-						{/if}
+						{@render documentList()}
 					</div>
 				</Card>
 
@@ -446,18 +450,7 @@
 		<div class="grid-2">
 			<Card title="Documentos do contrato">
 				<div class="stack gap-2">
-					{#if documents.length}
-					{#each documents as d, i (d.id ?? d.name ?? i)}
-						<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
-							<Icon name="doc"/>
-							<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
-							<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
-							<Icon name="download"/>
-						</button>
-					{/each}
-					{:else}
-						<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
-					{/if}
+					{@render documentList()}
 				</div>
 			</Card>
 			<Card title="Histórico de versões">

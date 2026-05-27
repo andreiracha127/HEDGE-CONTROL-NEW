@@ -120,8 +120,8 @@ describe('latest review feedback regressions', () => {
 	it('clamps non-finite bar percentages before writing CSS width', () => {
 		const source = readRoute('../lib/components/alcast/Bar.svelte');
 
-		expect(source).toContain('Number.isFinite(pct)');
-		expect(source).not.toContain('Math.max(0, pct)');
+		expect(source).toContain('Number.isFinite(pct) ? pct : 0');
+		expect(source).not.toMatch(/Math\.max\(0,\s*pct\)/);
 	});
 
 	it('guards MTM analytics fixed prices before formatting or scenario math', () => {
