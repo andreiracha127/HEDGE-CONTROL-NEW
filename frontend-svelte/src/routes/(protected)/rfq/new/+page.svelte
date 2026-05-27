@@ -62,6 +62,78 @@
 		'2026-08-31',
 		'2026-12-25',
 		'2026-12-28',
+		'2027-01-01',
+		'2027-03-26',
+		'2027-03-29',
+		'2027-05-03',
+		'2027-05-31',
+		'2027-08-30',
+		'2027-12-27',
+		'2027-12-28',
+		'2028-01-03',
+		'2028-04-14',
+		'2028-04-17',
+		'2028-05-01',
+		'2028-05-29',
+		'2028-08-28',
+		'2028-12-25',
+		'2028-12-26',
+		'2029-01-01',
+		'2029-03-30',
+		'2029-04-02',
+		'2029-05-07',
+		'2029-05-28',
+		'2029-08-27',
+		'2029-12-25',
+		'2029-12-26',
+		'2030-01-01',
+		'2030-04-19',
+		'2030-04-22',
+		'2030-05-06',
+		'2030-05-27',
+		'2030-08-26',
+		'2030-12-25',
+		'2030-12-26',
+		'2031-01-01',
+		'2031-04-11',
+		'2031-04-14',
+		'2031-05-05',
+		'2031-05-26',
+		'2031-08-25',
+		'2031-12-25',
+		'2031-12-26',
+		'2032-01-01',
+		'2032-03-26',
+		'2032-03-29',
+		'2032-05-03',
+		'2032-05-31',
+		'2032-08-30',
+		'2032-12-27',
+		'2032-12-28',
+		'2033-01-03',
+		'2033-04-15',
+		'2033-04-18',
+		'2033-05-02',
+		'2033-05-30',
+		'2033-08-29',
+		'2033-12-26',
+		'2033-12-27',
+		'2034-01-02',
+		'2034-04-07',
+		'2034-04-10',
+		'2034-05-01',
+		'2034-05-29',
+		'2034-08-28',
+		'2034-12-25',
+		'2034-12-26',
+		'2035-01-01',
+		'2035-03-23',
+		'2035-03-26',
+		'2035-05-07',
+		'2035-05-28',
+		'2035-08-27',
+		'2035-12-25',
+		'2035-12-26',
 	]);
 
 	function dateInputValue(date: Date): string {
@@ -75,8 +147,10 @@
 	const todayIso = dateInputValue(today);
 	const currentYear = today.getFullYear();
 	const currentMonthIndex = today.getMonth();
-	const years = Array.from({ length: 5 }, (_, i) => currentYear + i);
-	const commodities = ['ALUMINIUM', 'COPPER', 'ZINC', 'LEAD', 'NICKEL', 'TIN'];
+	const lmeHolidayCoverageEndYear = 2035;
+	const lastSelectableYear = Math.min(currentYear + 4, lmeHolidayCoverageEndYear);
+	const years = Array.from({ length: lastSelectableYear - currentYear + 1 }, (_, i) => currentYear + i);
+	const commodities = ['ALUMINIUM'];
 
 	function emptyLeg(side: LegSide = 'buy'): LegState {
 		return {
@@ -180,15 +254,6 @@
 		} else {
 			selectedCounterpartyIds = [...selectedCounterpartyIds, id];
 		}
-	}
-
-	function addTrade() {
-		trades = [...trades, emptyTrade(trades.length)];
-	}
-
-	function removeTrade(index: number) {
-		trades = trades.filter((_, i) => i !== index);
-		trades = trades.map((t, i) => ({ ...t, title: `Trade ${i + 1}` }));
 	}
 
 	function oppositeSide(side: LegSide): LegSide {
@@ -343,6 +408,34 @@
 		trades = [...trades];
 	}
 
+	function legReadinessError(leg: LegState, label: string): string | null {
+		if (!leg.priceType) {
+			return `${label}: selecione o Price Type`;
+		}
+		if (leg.priceType === 'AVGInter' && (!leg.startDate || !leg.endDate)) {
+			return `${label}: informe Data Inicio e Data Fim`;
+		}
+		if (leg.orderType === 'Limit' && !leg.limitPrice.trim()) {
+			return `${label}: informe o Preco Limite`;
+		}
+		return null;
+	}
+
+	function ensureTradeReadyForPreview(trade: TradeState | undefined): string | null {
+		if (!trade || !trade.leg1.priceType) {
+			return 'Configure pelo menos a Leg 1 do primeiro trade';
+		}
+
+		const leg1Error = legReadinessError(trade.leg1, 'Leg 1');
+		if (leg1Error) return leg1Error;
+
+		if (tradeType === 'Swap' && !trade.leg2.priceType) {
+			return 'Configure a Leg 2 para trades Swap';
+		}
+
+		return showLeg2 ? legReadinessError(trade.leg2, 'Leg 2') : null;
+	}
+
 	function buildLegPayload(leg: LegState) {
 		if (!quantityValidation.ok) {
 			throw new Error(quantityValidation.reason);
@@ -366,13 +459,26 @@
 				if (leg.orderType !== 'At Market') {
 					payload.order_validity = leg.orderValidity || null;
 				}
-				if (leg.orderType === 'Limit' && leg.limitPrice) {
-					payload.order_limit_price = leg.limitPrice;
+				if (leg.orderType === 'Limit' && leg.limitPrice.trim()) {
+					payload.order_limit_price = leg.limitPrice.trim();
 				}
 			}
 		}
 
 		return payload;
+	}
+
+	function buildPreviewBody(trade: TradeState): Record<string, unknown> {
+		const body: Record<string, unknown> = {
+			trade_type: tradeType,
+			leg1: buildLegPayload(trade.leg1),
+			company_header: companyLabel,
+			company_label_for_payoff: companyLabel,
+		};
+		if (showLeg2) {
+			body.leg2 = buildLegPayload(trade.leg2);
+		}
+		return body;
 	}
 
 	function deriveRfqDirection(trade: TradeState | undefined): 'BUY' | 'SELL' {
@@ -407,44 +513,51 @@
 			: deliveryWindowFromLeg(trade.leg1) || deliveryWindowFromLeg(trade.leg2);
 	}
 
-	async function loadPreview() {
+	async function requestPreviewText({ showNotification = true }: { showNotification?: boolean } = {}) {
 		if (!quantityValidation.ok) {
-			notifications.warning(`Quantidade inválida: ${quantityValidation.reason}`);
-			return;
+			if (showNotification) {
+				notifications.warning(`Quantidade inválida: ${quantityValidation.reason}`);
+			}
+			return null;
 		}
 
 		const trade = trades[0];
-		if (!trade || !trade.leg1.priceType) {
-			notifications.warning('Configure pelo menos a Leg 1 do primeiro trade');
-			return;
+		const readinessError = ensureTradeReadyForPreview(trade);
+		if (readinessError) {
+			if (showNotification) {
+				notifications.warning(readinessError);
+			}
+			return null;
 		}
 
 		try {
-			const body: Record<string, unknown> = {
-				trade_type: tradeType,
-				leg1: buildLegPayload(trade.leg1),
-				company_header: companyLabel,
-				company_label_for_payoff: companyLabel,
-			};
-			if (showLeg2 && trade.leg2.priceType) {
-				body.leg2 = buildLegPayload(trade.leg2);
-			}
-
 			const response = await apiFetch('/rfqs/preview-text', {
 				method: 'POST',
-				body: JSON.stringify(body),
+				body: JSON.stringify(buildPreviewBody(trade)),
 			});
 			if (!response.ok) {
 				const err = await response.json().catch(() => ({ detail: 'Erro' }));
 				throw new Error(typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail));
 			}
 			const data = await response.json();
-			previewTextEn = data.text_en || data.text || '';
-			previewTextPt = data.text_pt || '';
-			showPreview = true;
+			return {
+				textEn: data.text_en || data.text || '',
+				textPt: data.text_pt || '',
+			};
 		} catch (e) {
-			notifications.warning(e instanceof Error ? e.message : 'Nao foi possivel gerar preview do texto');
+			if (showNotification) {
+				notifications.warning(e instanceof Error ? e.message : 'Nao foi possivel gerar preview do texto');
+			}
+			return null;
 		}
+	}
+
+	async function loadPreview() {
+		const preview = await requestPreviewText();
+		if (!preview) return;
+		previewTextEn = preview.textEn;
+		previewTextPt = preview.textPt;
+		showPreview = true;
 	}
 
 	async function copyText(text: string) {
@@ -468,6 +581,11 @@
 			notifications.warning('Selecione pelo menos uma contraparte');
 			return;
 		}
+		const readinessError = ensureTradeReadyForPreview(trades[0]);
+		if (readinessError) {
+			notifications.warning(readinessError);
+			return;
+		}
 
 		const deliveryWindow = deriveDeliveryWindow(trades[0]);
 		if (!deliveryWindow) {
@@ -480,6 +598,12 @@
 			notifications.error(
 				'Sessão sem identidade verificável (sub). Faça login novamente para criar RFQs.',
 			);
+			return;
+		}
+
+		const preview = await requestPreviewText({ showNotification: false });
+		if (!preview) {
+			notifications.warning('Nao foi possivel atualizar o texto RFQ antes do envio');
 			return;
 		}
 
@@ -502,8 +626,8 @@
 				if (buyTradeId) body.buy_trade_id = buyTradeId;
 				if (sellTradeId) body.sell_trade_id = sellTradeId;
 			}
-			if (previewTextEn) body.text_en = previewTextEn;
-			if (previewTextPt) body.text_pt = previewTextPt;
+			body.text_en = preview.textEn;
+			body.text_pt = preview.textPt;
 
 			const response = await apiFetch('/rfqs', {
 				method: 'POST',
@@ -674,14 +798,6 @@
 								class="rounded border border-blue/30 px-2 py-1 text-xs text-blue hover:bg-blue/10"
 								title="Spread: Buy AVG + Sell AVG">Spread</button
 							>
-							{#if tradeIdx > 0}
-								<button
-									type="button"
-									onclick={() => removeTrade(tradeIdx)}
-									class="ml-2 rounded px-2 py-1 text-xs text-danger hover:bg-danger/10"
-									title="Remover Trade">Remover</button
-								>
-							{/if}
 						</div>
 					</div>
 
@@ -824,7 +940,14 @@
 							{#if trade.leg1.orderType === 'Limit'}
 								<div class="md:w-1/3">
 									<label class={labelClass} for="leg1-limit-{tradeIdx}">Preco Limite (USD)</label>
-									<input id="leg1-limit-{tradeIdx}" type="text" bind:value={trade.leg1.limitPrice} placeholder="USD" class="{inputClass} tabular-nums" />
+									<input
+										id="leg1-limit-{tradeIdx}"
+										type="text"
+										bind:value={trade.leg1.limitPrice}
+										required={trade.leg1.orderType === 'Limit'}
+										placeholder="USD"
+										class="{inputClass} tabular-nums"
+									/>
 								</div>
 							{/if}
 						{/if}
@@ -970,7 +1093,14 @@
 								{#if trade.leg2.orderType === 'Limit'}
 									<div class="md:w-1/3">
 										<label class={labelClass} for="leg2-limit-{tradeIdx}">Preco Limite (USD)</label>
-										<input id="leg2-limit-{tradeIdx}" type="text" bind:value={trade.leg2.limitPrice} placeholder="USD" class="{inputClass} tabular-nums" />
+										<input
+											id="leg2-limit-{tradeIdx}"
+											type="text"
+											bind:value={trade.leg2.limitPrice}
+											required={trade.leg2.orderType === 'Limit'}
+											placeholder="USD"
+											class="{inputClass} tabular-nums"
+										/>
 									</div>
 								{/if}
 							{/if}
@@ -980,9 +1110,6 @@
 			{/each}
 
 			<div class="flex flex-wrap items-center gap-3">
-				<button type="button" onclick={addTrade} class="rounded border border-surface-700 px-3 py-1.5 text-sm text-surface-400 hover:bg-surface-800">
-					+ Novo Trade
-				</button>
 				<div class="flex-1"></div>
 				<button
 					type="button"
