@@ -5,13 +5,13 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
-	import { exposureBucketsFrom } from '$lib/alcast/route-data';
+	import { canonicalCommodityCode, exposureBucketsFrom } from '$lib/alcast/route-data';
 	let { data } = $props();
 	const exposureRows = $derived(data.exposureRows ?? []);
 
-	let commodity = $state('ALUMINIUM');
+	let commodity = $state('ALUMINUM');
 	const COMMODITIES = [
-		{ label: 'AL-LME', value: 'ALUMINIUM' },
+		{ label: 'AL-LME', value: 'ALUMINUM' },
 		{ label: 'CU-LME', value: 'COPPER' },
 		{ label: 'ZN-LME', value: 'ZINC' },
 		{ label: 'NI-LME', value: 'NICKEL' },
@@ -19,7 +19,7 @@
 	];
 	const filteredExposureBuckets = $derived.by(() =>
 		exposureBucketsFrom({
-			items: exposureRows.filter((bucket: Record<string, any>) => bucket.commodity === commodity),
+			items: exposureRows.filter((bucket: Record<string, any>) => canonicalCommodityCode(bucket.commodity) === commodity),
 		}),
 	);
 

@@ -6,7 +6,6 @@
 	import Icon from '$lib/components/alcast/Icon.svelte';
 
 	let { data } = $props();
-	let period = $state<'MTD' | 'QTD' | 'YTD' | 'Custom'>('MTD');
 	const pnl = $derived(data.pnl);
 	const totals = $derived(pnl.totals);
 	const deals = $derived(pnl.deals ?? []);
@@ -79,19 +78,13 @@
 			<div class="page-sub">Resultado realizado, não-realizado e atribuição</div>
 		</div>
 		<div class="page-actions">
-			<div class="radio-group">
-				<button type="button" class:active={period === 'MTD'} onclick={() => (period = 'MTD')}>MTD</button>
-				<button type="button" class:active={period === 'QTD'} onclick={() => (period = 'QTD')}>QTD</button>
-				<button type="button" class:active={period === 'YTD'} onclick={() => (period = 'YTD')}>YTD</button>
-				<button type="button" class:active={period === 'Custom'} onclick={() => (period = 'Custom')}>Custom</button>
-			</div>
 			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
 		</div>
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
-			label="P&L total MTD"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
+			label="P&L total"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
 			spark={dailyBars.map(([, v]) => v)} sparkColor={money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'}
 		/>
 		<Kpi label="Realizado"            value={fmtUsd(totals.hedge_pnl_realized)}  delta={`${deals.length} deal(s)`} deltaKind={money(totals.hedge_pnl_realized) < 0 ? 'neg' : 'pos'}/>
@@ -118,7 +111,7 @@
 			</div>
 		</Card>
 
-		<Card title="Atribuição" sub="MTD">
+		<Card title="Atribuição" sub={`Snapshot ${data.snapshotDate}`}>
 			<table class="tbl tbl-tight">
 				<thead>
 					<tr>
@@ -153,7 +146,7 @@
 		</Card>
 	</div>
 
-	<Card title="Top contribuintes" sub="Contratos com maior impacto MTD" noPad>
+	<Card title="Top contribuintes" sub={`Contratos com maior impacto no snapshot ${data.snapshotDate}`} noPad>
 		<table class="tbl">
 			<thead>
 				<tr>

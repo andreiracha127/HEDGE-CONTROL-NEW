@@ -3,15 +3,17 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import { canonicalCommodityCode } from '$lib/alcast/route-data';
 	type Contract = Record<string, any>;
 	let { data } = $props();
 	const contracts = $derived(data.contracts);
 
 	function midFor(commodity: string): number {
-		if (commodity === 'AL-LME') return 2645.5;
-		if (commodity === 'CU-LME') return 9412.0;
-		if (commodity === 'ZN-LME') return 2812.5;
-		if (commodity === 'USDBRL') return 5.124;
+		const canonical = canonicalCommodityCode(commodity);
+		if (canonical === 'ALUMINUM') return 2645.5;
+		if (canonical === 'COPPER') return 9412.0;
+		if (canonical === 'ZINC') return 2812.5;
+		if (canonical === 'USDBRL') return 5.124;
 		return 0;
 	}
 

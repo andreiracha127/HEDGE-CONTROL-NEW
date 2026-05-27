@@ -92,13 +92,63 @@ describe('latest review feedback regressions', () => {
 		const routeData = readFileSync(resolve(process.cwd(), 'src', 'lib', 'alcast', 'route-data.ts'), 'utf8');
 
 		expect(source).toContain('const filteredExposureBuckets = $derived');
-		expect(source).toContain('bucket.commodity === commodity');
+		expect(source).toContain('canonicalCommodityCode(bucket.commodity) === commodity');
 		expect(source).toContain('{#each filteredExposureBuckets as b');
 		expect(source).toContain('b.commercial_active_mt.toLocaleString');
 		expect(source).toContain('b.commercial_passive_mt.toLocaleString');
-		expect(routeData).toContain('commodity: row.commodity ?? row.product_code ?? row.asset');
+		expect(routeData).toContain('export function canonicalCommodityCode');
+		expect(routeData).toContain("return 'ALUMINUM'");
 		expect(source).not.toContain('commercial_mt * 0.62');
 		expect(source).not.toContain('commercial_mt * 0.38');
+	});
+
+	it('renders dashboard commodity exposure from live exposure aggregates', () => {
+		const source = readRoute('(protected)/+page.svelte');
+		const loader = readRoute('(protected)/+page.ts');
+		const routeData = readFileSync(resolve(process.cwd(), 'src', 'lib', 'alcast', 'route-data.ts'), 'utf8');
+
+		expect(loader).toContain('exposureRows: exposureCommodityRowsFrom(exposureList)');
+		expect(routeData).toContain('export function exposureCommodityRowsFrom');
+		expect(source).toContain('const exposureRows = $derived(data.exposureRows ?? [])');
+		expect(source).not.toContain('const exposureRows = [');
+		expect(source).not.toContain("comm: '22.400'");
+	});
+
+	it('keeps RFQ detail ranking, impact, and history tied to backend evidence', () => {
+		const source = readRoute('(protected)/rfq/[id]/+page.svelte');
+		const loader = readRoute('(protected)/rfq/[id]/+page.ts');
+
+		expect(loader).toContain("rfq.intent === 'SPREAD'");
+		expect(loader).toContain('spreadBest.buy_quote?.id');
+		expect(source).toContain("rfq.direction === 'SELL' ? (price - mid) * rfq.qty : (mid - price) * rfq.qty");
+		expect(source).toContain('const stateEvents = $derived(data.stateEvents ?? [])');
+		expect(source).toContain('{#each stateEvents as event');
+		expect(source).not.toContain('Cotou 2.638,50');
+	});
+
+	it('does not expose inert P&L period tabs', () => {
+		const source = readRoute('(protected)/analytics/pnl/+page.svelte');
+
+		expect(source).not.toContain("period = $state");
+		expect(source).not.toContain("period === 'QTD'");
+		expect(source).not.toContain('P&L total MTD');
+	});
+
+	it('omits fabricated counterparty contract, MTM, and spread metrics', () => {
+		const source = readRoute('(protected)/counterparties/+page.svelte');
+
+		expect(source).not.toContain('Math.floor(cp.used / 600_000)');
+		expect(source).not.toContain('Math.floor(cp.used * 0.004)');
+		expect(source).not.toContain('function spread');
+		expect(source).toContain('const totalLimit = $derived');
+	});
+
+	it('persists commercial order references through the submitted notes field', () => {
+		const source = readRoute('(protected)/orders/new/+page.svelte');
+
+		expect(source).toContain('const submittedNotes = $derived.by');
+		expect(source).toContain('Referencia ERP/SAP');
+		expect(source).toContain('notes: submittedNotes');
 	});
 
 	it('preserves variable-order entry prices in order creation payloads', () => {

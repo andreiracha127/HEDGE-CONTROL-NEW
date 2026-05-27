@@ -36,6 +36,12 @@
 		}
 	});
 
+	const submittedNotes = $derived.by(() => {
+		const referenceLine = `Referencia ERP/SAP: ${reference}`;
+		const trimmedNotes = notes.trim();
+		return trimmedNotes ? `${referenceLine}\n${trimmedNotes}` : referenceLine;
+	});
+
 	async function submit() {
 		submitting = true;
 		const selectedCounterparty = counterparties.find((item) => item.short === cp || item.id === cp);
@@ -53,7 +59,7 @@
 				counterparty_name: selectedCounterparty?.name ?? cp,
 				delivery_date_start: delivery,
 				delivery_date_end: delivery,
-				notes,
+				notes: submittedNotes,
 			},
 		});
 		submitting = false;

@@ -11,6 +11,7 @@
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
 	const sampleQuotes = $derived(data.quotes);
+	const stateEvents = $derived(data.stateEvents ?? []);
 	let actionBusy = $state<'cancel' | 'refresh' | 'award' | null>(null);
 
 	const id = $derived(page.params.id ?? '');
@@ -22,6 +23,32 @@
 	function vsMid(price: number | null): number | null {
 		if (price == null) return null;
 		return ((price - mid) / mid) * 100;
+	}
+
+	function pnlVsMid(price: number | null): number | null {
+		if (price == null || !rfq) return null;
+		const impact = rfq.direction === 'SELL' ? (price - mid) * rfq.qty : (mid - price) * rfq.qty;
+		return Number.isFinite(impact) ? impact : null;
+	}
+
+	function eventKind(event: Record<string, any>): 'pos' | 'warn' | 'info' {
+		if (event.to_state === 'AWARDED' || event.to_state === 'CLOSED') return 'pos';
+		if (event.trigger === 'cancel' || event.to_state === 'CANCELLED') return 'warn';
+		return 'info';
+	}
+
+	function eventWhen(event: Record<string, any>): string {
+		const raw = event.event_timestamp ?? event.created_at;
+		if (!raw) return '—';
+		const date = new Date(raw);
+		if (Number.isNaN(date.getTime())) return String(raw);
+		return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+	}
+
+	function eventWhat(event: Record<string, any>): string {
+		if (event.reason) return event.reason;
+		if (event.from_state) return `${event.from_state} → ${event.to_state}`;
+		return `RFQ ${event.to_state}`;
 	}
 
 	function errorDetail(detail: unknown): string {
@@ -187,6 +214,7 @@
 				</Card>
 				<Card title="Notional & impacto">
 					{#if best && best.price != null}
+						{@const impact = pnlVsMid(best.price)}
 						<dl class="kv">
 							<dt>Notional (melhor)</dt>
 							<dd class="tabular strong">
@@ -197,8 +225,8 @@
 								R$ {(rfq.qty * best.price * 5.124).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 							</dd>
 							<dt>P&amp;L vs mid</dt>
-							<dd class="tabular" style="color: var(--pos);">
-								+US$ {((mid - best.price) * rfq.qty).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							<dd class="tabular" style="color: {impact == null ? 'var(--muted)' : impact >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{impact == null ? '—' : `${impact >= 0 ? '+' : '-'}US$ ${Math.abs(impact).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
 							</dd>
 							<dt>Δ cobertura jun/26</dt><dd class="tabular" style="color: var(--pos);">+28,6 pp → 116,7 %</dd>
 							<dt>Margem inicial</dt><dd class="tabular">US$ 158.310 (10 %)</dd>
@@ -211,13 +239,21 @@
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
 			<Card title="Histórico" sub="Trilha completa de auditoria">
 				<div class="feed">
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">RFQ criada · rascunho aprovado</div><div class="row gap-2"><span class="when">09:14</span><span class="who">· M. Santos</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Enviada a 5 contrapartes</div><div class="row gap-2"><span class="when">09:18</span><span class="who">· Sistema</span></div></div></div>
-					<div class="feed-item pos"><div class="icon"></div><div><div class="what">Cotou 2.638,50</div><div class="row gap-2"><span class="when">09:18</span><span class="who">· ITAU</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Cotou 2.639,25</div><div class="row gap-2"><span class="when">09:18</span><span class="who">· JPM</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Cotou 2.641,00</div><div class="row gap-2"><span class="when">09:19</span><span class="who">· SANT</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Cotou 2.642,75</div><div class="row gap-2"><span class="when">09:19</span><span class="who">· BTG</span></div></div></div>
-					<div class="feed-item warn"><div class="icon"></div><div><div class="what">Cotação pendente · 15 min</div><div class="row gap-2"><span class="when">agora</span><span class="who">· BRAD</span></div></div></div>
+					{#each stateEvents as event (event.id)}
+						<div class="feed-item {eventKind(event)}">
+							<div class="icon"></div>
+							<div>
+								<div class="what">{eventWhat(event)}</div>
+								<div class="row gap-2">
+									<span class="when">{eventWhen(event)}</span>
+									<span class="who">· {event.user_id ?? event.triggering_counterparty_id ?? event.trigger ?? 'Sistema'}</span>
+								</div>
+							</div>
+						</div>
+					{/each}
+					{#if stateEvents.length === 0}
+						<div style="font-size: 12px; color: var(--muted);">Sem eventos de estado registrados.</div>
+					{/if}
 				</div>
 			</Card>
 

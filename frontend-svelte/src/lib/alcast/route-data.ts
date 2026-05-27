@@ -43,6 +43,25 @@ const numberOrNull = (value: unknown): number | null => {
 
 const datePart = (value: unknown): string => (typeof value === 'string' ? value.slice(0, 10) : '');
 
+export function canonicalCommodityCode(value: unknown): string {
+	const raw = String(value ?? '').trim().toUpperCase();
+	if (raw === 'ALUMINIUM' || raw === 'ALUMINUM' || raw === 'AL-LME' || raw === 'LME_ALUMINUM') return 'ALUMINUM';
+	if (raw === 'COPPER' || raw === 'CU-LME' || raw === 'LME_COPPER') return 'COPPER';
+	if (raw === 'ZINC' || raw === 'ZN-LME' || raw === 'LME_ZINC') return 'ZINC';
+	if (raw === 'NICKEL' || raw === 'NI-LME' || raw === 'LME_NICKEL') return 'NICKEL';
+	if (raw === 'USD/BRL') return 'USDBRL';
+	return raw || '—';
+}
+
+export function displayCommodityCode(value: unknown): string {
+	const canonical = canonicalCommodityCode(value);
+	if (canonical === 'ALUMINUM') return 'AL-LME';
+	if (canonical === 'COPPER') return 'CU-LME';
+	if (canonical === 'ZINC') return 'ZN-LME';
+	if (canonical === 'NICKEL') return 'NI-LME';
+	return canonical;
+}
+
 export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
@@ -62,12 +81,16 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 
 export function normalizeRfqQuote(
 	row: Record<string, any>,
-	options: { bestQuoteId?: string | null; bestPrice?: number | null } = {},
+	options: { bestQuoteId?: string | null; bestQuoteIds?: string[]; bestPrice?: number | null } = {},
 ): Record<string, any> {
 	const price = numberOrNull(row.fixed_price_value ?? row.price);
 	const bestPrice = options.bestPrice ?? null;
+	const quoteId = String(row.id);
+	const isBest =
+		(options.bestQuoteIds != null && options.bestQuoteIds.includes(quoteId)) ||
+		(options.bestQuoteId != null && quoteId === options.bestQuoteId);
 	const status =
-		options.bestQuoteId != null && String(row.id) === options.bestQuoteId
+		isBest
 			? 'best'
 			: row.state === 'rejected'
 				? 'rejected'
@@ -151,9 +174,11 @@ export function normalizeCashflow(row: Record<string, any>): Record<string, any>
 }
 
 export function normalizeCommodity(row: Record<string, any>): Record<string, any> {
+	const code = row.symbol ?? row.code ?? '—';
 	return {
 		...row,
-		code: row.symbol ?? row.code ?? '—',
+		code: displayCommodityCode(code),
+		canonical_code: canonicalCommodityCode(code),
 		name: row.name ?? row.symbol ?? row.code ?? '—',
 		unit: row.unit ?? 'USD/t',
 		last: numberOrNull(row.price_usd ?? row.value ?? row.last),
@@ -176,9 +201,9 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 	};
 }
 
-export function exposureBucketsFrom(data: unknown) {
+function normalizedExposureRows(data: unknown): Record<string, any>[] {
 	const rows = items<Record<string, any>>(data);
-	const normalized = rows.map((row) => {
+	return rows.map((row) => {
 		const commercialMt =
 			numberOrNull(row.commercial_mt ?? row.commercial_net_mt ?? row.original_tons ?? row.quantity_mt) ?? 0;
 		const commercialActiveMt =
@@ -198,10 +223,12 @@ export function exposureBucketsFrom(data: unknown) {
 				: commercialMt !== 0
 					? (hedgedMt / Math.abs(commercialMt)) * 100
 					: 0;
+		const commodity = canonicalCommodityCode(row.commodity ?? row.product_code ?? row.asset);
 
 		return {
 			...row,
-			commodity: row.commodity ?? row.product_code ?? row.asset ?? '—',
+			commodity,
+			commodity_display: displayCommodityCode(commodity),
 			month:
 				row.month ??
 				row.settlement_month ??
@@ -212,9 +239,14 @@ export function exposureBucketsFrom(data: unknown) {
 			commercial_passive_mt: commercialPassiveMt,
 			hedged_mt: hedgedMt,
 			residual_mt: residualMt,
+			mtm_delta_usd: numberOrNull(row.mtm_delta_usd ?? row.mtm_change_usd ?? row.delta_mtm_usd),
 			ratio,
 		};
 	});
+}
+
+export function exposureBucketsFrom(data: unknown) {
+	const normalized = normalizedExposureRows(data);
 	const byMonth = new Map<string, Record<string, any>>();
 	for (const bucket of normalized) {
 		const key = bucket.month || '—';
@@ -234,5 +266,40 @@ export function exposureBucketsFrom(data: unknown) {
 				: 0;
 	}
 	return Array.from(byMonth.values());
+}
+
+export function exposureCommodityRowsFrom(data: unknown) {
+	const byCommodity = new Map<string, Record<string, any>>();
+	for (const row of normalizedExposureRows(data)) {
+		const key = row.commodity;
+		const existing = byCommodity.get(key);
+		if (!existing) {
+			byCommodity.set(key, {
+				code: row.commodity_display,
+				commodity: key,
+				commercial_mt: row.commercial_mt,
+				commercial_active_mt: row.commercial_active_mt,
+				commercial_passive_mt: row.commercial_passive_mt,
+				hedged_mt: row.hedged_mt,
+				residual_mt: row.residual_mt,
+				mtm_delta_usd: row.mtm_delta_usd,
+				pct: row.ratio,
+			});
+			continue;
+		}
+		existing.commercial_mt += row.commercial_mt;
+		existing.commercial_active_mt += row.commercial_active_mt;
+		existing.commercial_passive_mt += row.commercial_passive_mt;
+		existing.hedged_mt += row.hedged_mt;
+		existing.residual_mt += row.residual_mt;
+		if (row.mtm_delta_usd != null) {
+			existing.mtm_delta_usd = (existing.mtm_delta_usd ?? 0) + row.mtm_delta_usd;
+		}
+		existing.pct =
+			existing.commercial_mt !== 0
+				? (existing.hedged_mt / Math.abs(existing.commercial_mt)) * 100
+				: 0;
+	}
+	return Array.from(byCommodity.values()).sort((a, b) => Math.abs(b.commercial_mt) - Math.abs(a.commercial_mt));
 }
 

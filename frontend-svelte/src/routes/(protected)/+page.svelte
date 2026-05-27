@@ -8,14 +8,11 @@
 	let { data } = $props();
 	const commodities = $derived(data.commodities);
 	const exposureBuckets = $derived(data.exposureBuckets);
-
-	const exposureRows = [
-		{ code: 'AL-LME', comm: '22.400',         hed: '12.300',        res: '10.100',        pct: 55, delta: '+US$ 14.820', kind: 'pos' as const },
-		{ code: 'CU-LME', comm: '3.200',          hed: '1.250',         res: '1.950',         pct: 39, delta: '+US$ 2.140',  kind: 'pos' as const },
-		{ code: 'ZN-LME', comm: '2.450',          hed: '180',           res: '2.270',         pct: 7,  delta: '−US$ 410',    kind: 'neg' as const },
-		{ code: 'NI-LME', comm: '420',            hed: '0',             res: '420',           pct: 0,  delta: '+US$ 0',      kind: 'flat' as const },
-		{ code: 'USDBRL', comm: 'US$ 38,2 M',     hed: 'US$ 18,0 M',    res: 'US$ 20,2 M',    pct: 47, delta: '+US$ 1.910',  kind: 'pos' as const },
-	];
+	const exposureRows = $derived(data.exposureRows ?? []);
+	const totalCommercial = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.commercial_mt ?? 0), 0));
+	const totalHedged = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.hedged_mt ?? 0), 0));
+	const totalResidual = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
+	const totalCoverage = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : 0);
 
 	const feed = [
 		{ kind: 'pos',  when: '09:14', who: 'M. Santos',    whatHtml: 'Nova RFQ <strong>RFQ-2026-0184</strong> · AL-LME 1.200t buy' },
@@ -48,6 +45,18 @@
 		return v.toLocaleString('en-US', opts);
 	}
 
+	function fmtMt(value: unknown): string {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) return '—';
+		return parsed.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+	}
+
+	function fmtMtmDelta(value: unknown): string {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) return '—';
+		return `${parsed >= 0 ? '+' : '-'}US$ ${Math.abs(parsed).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+	}
+
 	function marketChangePct(c: Record<string, any>): number | null {
 		if (c.last == null || c.prev == null || c.prev === 0) return null;
 		const chg = ((c.last - c.prev) / c.prev) * 100;
@@ -77,19 +86,19 @@
 	<div class="kpi-row" style="margin-bottom: 16px;">
 		<Kpi
 			label="Exposição comercial"
-			value="36.300"
+			value={fmtMt(totalCommercial)}
 			unit="t"
-			delta="+1.420 t vs ontem"
-			deltaKind="pos"
+			delta={`${exposureRows.length} commodity(s) live`}
+			deltaKind="flat"
 			spark={[24, 26, 28, 27, 29, 32, 34, 36, 36.3]}
 			sparkColor="var(--navy-2)"
 		/>
 		<Kpi
 			label="Hedge ratio"
-			value="49,3"
+			value={totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}
 			unit="%"
-			delta="+2,1 pp vs ontem"
-			deltaKind="pos"
+			delta="live exposure list"
+			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
 			spark={[41, 42, 44, 43, 45, 46, 47, 48, 49.3]}
 			sparkColor="var(--pos)"
 		/>
@@ -102,7 +111,7 @@
 			sparkColor="var(--pos)"
 		/>
 		<Kpi
-			label="P&L MTD realizado"
+			label="P&L realizado"
 			value="+US$ 312.880"
 			delta="+1,8 % vs mês anterior"
 			deltaKind="pos"
@@ -202,9 +211,9 @@
 					{#each exposureRows as r (r.code)}
 						<tr>
 							<td class="strong"><CommodityChip code={r.code}/></td>
-							<td class="num">{r.comm}</td>
-							<td class="num">{r.hed}</td>
-							<td class="num">{r.res}</td>
+							<td class="num">{fmtMt(r.commercial_mt)}</td>
+							<td class="num">{fmtMt(r.hedged_mt)}</td>
+							<td class="num">{fmtMt(r.residual_mt)}</td>
 							<td>
 								<div class="row gap-3">
 									<Bar pct={r.pct} kind={r.pct >= 70 ? 'pos' : r.pct >= 40 ? 'warn' : 'neg'}/>
@@ -213,10 +222,13 @@
 							</td>
 							<td
 								class="num"
-								style="color: {r.kind === 'pos' ? 'var(--pos)' : r.kind === 'neg' ? 'var(--neg)' : 'var(--muted)'};"
-							>{r.delta}</td>
+								style="color: {r.mtm_delta_usd == null ? 'var(--muted)' : r.mtm_delta_usd >= 0 ? 'var(--pos)' : 'var(--neg)'};"
+							>{fmtMtmDelta(r.mtm_delta_usd)}</td>
 						</tr>
 					{/each}
+					{#if exposureRows.length === 0}
+						<tr><td colspan="6" style="color: var(--muted);">Sem exposição live carregada</td></tr>
+					{/if}
 				</tbody>
 			</table>
 		</Card>

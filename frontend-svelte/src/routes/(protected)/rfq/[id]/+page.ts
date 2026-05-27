@@ -16,19 +16,26 @@ export const load = async ({ params }: { params: { id: string } }) => {
 	const tradeRanking = requireData(tradeRankingResult, 'Failed to load RFQ trade ranking') as Record<string, any>;
 	const quoteRows = items<Record<string, any>>(requireData(quotesResult, 'Failed to load RFQ quotes'));
 	const activeQuotes = quoteRows.filter((quote) => quote.state !== 'rejected');
-	const bestRankedQuote =
-		(tradeRanking.ranking?.[0]?.quote as Record<string, any> | undefined) ??
-		activeQuotes
-			.slice()
-			.sort((a, b) => {
-				const left = Number(a.fixed_price_value);
-				const right = Number(b.fixed_price_value);
-				return rfq.direction === 'SELL' ? right - left : left - right;
-			})[0];
+	const spreadBest = rfq.intent === 'SPREAD' ? (ranking as Record<string, any>).ranking?.[0] : null;
+	const bestRankedQuote = spreadBest
+		? null
+		: (tradeRanking.ranking?.[0]?.quote as Record<string, any> | undefined) ??
+			activeQuotes
+				.slice()
+				.sort((a, b) => {
+					const left = Number(a.fixed_price_value);
+					const right = Number(b.fixed_price_value);
+					return rfq.direction === 'SELL' ? right - left : left - right;
+				})[0];
+	const bestQuoteIds = spreadBest
+		? [spreadBest.buy_quote?.id, spreadBest.sell_quote?.id].filter(Boolean).map(String)
+		: bestRankedQuote?.id
+			? [String(bestRankedQuote.id)]
+			: [];
 	const bestPrice = bestRankedQuote ? Number(bestRankedQuote.fixed_price_value) : null;
 	const quotes = quoteRows.map((quote) =>
 		normalizeRfqQuote(quote, {
-			bestQuoteId: bestRankedQuote?.id ? String(bestRankedQuote.id) : null,
+			bestQuoteIds,
 			bestPrice: Number.isFinite(bestPrice) ? bestPrice : null,
 		}),
 	);

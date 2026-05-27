@@ -1,5 +1,5 @@
 import { client } from '$lib/api/client';
-import { exposureBucketsFrom, items, normalizeCommodity, normalizeRfq, optionalData } from '$lib/alcast/route-data';
+import { exposureBucketsFrom, exposureCommodityRowsFrom, items, normalizeCommodity, normalizeRfq, optionalData } from '$lib/alcast/route-data';
 
 export const load = async () => {
 	const [globalExposureResult, exposureListResult, rfqsResult, marketResult] = await Promise.allSettled([
@@ -19,6 +19,7 @@ export const load = async () => {
 		rfqs: items<Record<string, any>>(rfqsData).map(normalizeRfq),
 		commodities: items<Record<string, any>>(marketData).map(normalizeCommodity),
 		exposureBuckets: exposureBucketsFrom(exposureList),
+		exposureRows: exposureCommodityRowsFrom(exposureList),
 	};
 };
 
