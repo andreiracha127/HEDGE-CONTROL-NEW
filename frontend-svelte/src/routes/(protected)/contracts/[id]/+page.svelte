@@ -30,12 +30,18 @@
 		return c.price ?? null;
 	});
 
-	const today = new Date();
+	let now = $state(Date.now());
+	$effect(() => {
+		const interval = window.setInterval(() => {
+			now = Date.now();
+		}, 60_000);
+		return () => window.clearInterval(interval);
+	});
 	const settleDate = $derived(c?.settle ?? null);
 	const daysToSettle = $derived.by(() => {
 		if (!settleDate) return null;
 		const timestamp = new Date(settleDate).getTime();
-		return Number.isFinite(timestamp) ? Math.round((timestamp - today.getTime()) / 86_400_000) : null;
+		return Number.isFinite(timestamp) ? Math.round((timestamp - now) / 86_400_000) : null;
 	});
 	const notional = $derived(c.qty == null || c.price == null ? null : c.qty * c.price);
 	const cpName = $derived(

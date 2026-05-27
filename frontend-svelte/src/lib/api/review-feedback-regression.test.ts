@@ -143,7 +143,8 @@ describe('latest review feedback regressions', () => {
 		expect(cashflow).toContain('<Bar pct={r.pct}');
 		expect(cashflow).not.toContain('amount_usd * 5.124');
 		expect(cashflow).not.toContain("'JPM'");
-		expect(contractDetail).toContain('const today = new Date()');
+		expect(contractDetail).toContain('let now = $state(Date.now())');
+		expect(contractDetail).not.toContain('const today = new Date()');
 		expect(contractDetail).toContain("c.status === 'partially_settled'");
 		expect(contractDetail).toContain('href={`/rfq/${c.rfq_id}`}');
 		expect(contractDetail).not.toContain("c.status === 'maturing'");
