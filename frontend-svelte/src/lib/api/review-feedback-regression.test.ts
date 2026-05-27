@@ -68,9 +68,86 @@ describe('latest review feedback regressions', () => {
 		const source = readRoute('(protected)/rfq/new/+page.svelte');
 
 		expect(source).toContain('const intentReady = $derived');
+		expect(source).toContain("const rfqRoleReady = $derived(authStore.hasRole('risk_manager'))");
+		expect(source).toContain('const datesReady = $derived(!!leg1.startDate && !!leg1.endDate)');
 		expect(source).toContain("client.POST('/rfqs/preview-text'");
 		expect(source).toContain('text_en: preview.text_en ?? preview.text');
 		expect(source).toContain('text_pt: preview.text_pt ?? preview.text');
-		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !intentReady\}/);
+		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
+		expect(source).not.toContain("new Date().toISOString().slice(0, 10)");
+	});
+
+	it('keeps live market rows keyed by a unique quote identity', () => {
+		const source = readRoute('(protected)/market-data/+page.svelte');
+
+		expect(source).toContain('function marketKey');
+		expect(source).toContain('{#each commodities as c (marketKey(c))}');
+		expect(source).not.toContain('{#each commodities as c (c.code)}');
+	});
+
+	it('filters exposure buckets by the selected commodity tab', () => {
+		const source = readRoute('(protected)/exposures/+page.svelte');
+		const routeData = readFileSync(resolve(process.cwd(), 'src', 'lib', 'alcast', 'route-data.ts'), 'utf8');
+
+		expect(source).toContain('const filteredExposureBuckets = $derived');
+		expect(source).toContain('bucket.commodity === commodity');
+		expect(source).toContain('{#each filteredExposureBuckets as b');
+		expect(source).toContain('b.commercial_active_mt.toLocaleString');
+		expect(source).toContain('b.commercial_passive_mt.toLocaleString');
+		expect(routeData).toContain('commodity: row.commodity ?? row.product_code ?? row.asset');
+		expect(source).not.toContain('commercial_mt * 0.62');
+		expect(source).not.toContain('commercial_mt * 0.38');
+	});
+
+	it('preserves variable-order entry prices in order creation payloads', () => {
+		const source = readRoute('(protected)/orders/new/+page.svelte');
+
+		expect(source).toContain("priceType === 'fixed'");
+		expect(source).toContain('avg_entry_price: price');
+		expect(source).toContain('pricing_convention');
+		expect(source).toMatch(/priceType === 'fixed'[\s\S]+:\s*\{[\s\S]*avg_entry_price: price[\s\S]*pricing_convention/);
+	});
+
+	it('keeps partially settled contracts visible in list filters', () => {
+		const source = readRoute('(protected)/contracts/+page.svelte');
+
+		expect(source).toContain('OPEN_CONTRACT_STATUSES');
+		expect(source).toContain("'partially_settled'");
+		expect(source).toContain("status === 'partially_settled'");
+	});
+
+	it('clamps non-finite bar percentages before writing CSS width', () => {
+		const source = readRoute('../lib/components/alcast/Bar.svelte');
+
+		expect(source).toContain('Number.isFinite(pct)');
+		expect(source).not.toContain('Math.max(0, pct)');
+	});
+
+	it('guards MTM analytics fixed prices before formatting or scenario math', () => {
+		const source = readRoute('(protected)/analytics/mtm/+page.svelte');
+
+		expect(source).toContain('function fmtPrice');
+		expect(source).toContain('if (c.price == null) return');
+		expect(source).toContain('function scenarioMtm(c: Contract): number | null');
+		expect(source).not.toMatch(/<td class="num">\{c\.price\.toLocaleString/);
+	});
+
+	it('preflights RFQ recipients for WhatsApp channel availability', () => {
+		const source = readRoute('(protected)/rfq/new/+page.svelte');
+
+		expect(source).toContain('function canReceiveRfq');
+		expect(source).toContain('cp.is_active !== false');
+		expect(source).toContain('!!cp.whatsapp_phone');
+		expect(source).toContain("cp.kyc_status === 'approved'");
+		expect(source).not.toContain("cp.status === 'active'");
+		expect(source).toContain('selectedCounterparties.every(canReceiveRfq)');
+		expect(source).toContain('!canReceiveRfq(cp)');
+	});
+
+	it('defaults new counterparties to a trader-allowed type', () => {
+		const source = readRoute('(protected)/counterparties/new/+page.svelte');
+
+		expect(source).toContain("$state<'broker' | 'bank_br' | 'customer' | 'supplier'>('supplier')");
+		expect(source).not.toContain('kyc_status:');
 	});
 });

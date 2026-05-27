@@ -29,6 +29,10 @@
 		if (l === 'média') return 'warn';
 		return 'neutral';
 	}
+
+	function marketKey(c: Record<string, any>): string {
+		return `${c.code}:${c.settlement_date ?? c.date ?? c.ts ?? 'latest'}:${c.provider ?? ''}`;
+	}
 </script>
 
 <div class="page">
@@ -59,7 +63,7 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each commodities as c (c.code)}
+					{#each commodities as c (marketKey(c))}
 						{@const hasLast = c.last != null}
 						{@const hasPrev = c.prev != null && c.prev !== 0}
 						{@const chg = hasLast && hasPrev ? ((c.last - c.prev) / c.prev) * 100 : null}

@@ -45,7 +45,9 @@
 				commodity,
 				quantity_mt: qty,
 				price_type: priceType,
-				...(priceType === 'fixed' ? { avg_entry_price: price } : { pricing_convention: pricingConv === 'LME-AVG-M' ? 'AVG' : 'C2R' }),
+				...(priceType === 'fixed'
+					? { avg_entry_price: price }
+					: { avg_entry_price: price, pricing_convention: pricingConv === 'LME-AVG-M' ? 'AVG' : 'C2R' }),
 				currency,
 				counterparty_id: selectedCounterparty?.id ?? null,
 				counterparty_name: selectedCounterparty?.name ?? cp,

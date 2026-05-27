@@ -19,13 +19,19 @@
 		return c.commodity === 'USDBRL' ? 4 : 2;
 	}
 
+	function fmtPrice(c: Contract): string {
+		if (c.price == null) return '—';
+		return c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) });
+	}
+
 	function fmtQty(c: Contract): string {
 		if (c.qty == null) return '—';
 		if (c.commodity === 'USDBRL') return (c.qty / 1_000_000).toFixed(1) + ' M';
 		return c.qty.toLocaleString('pt-BR');
 	}
 
-	function scenarioMtm(c: Contract): number {
+	function scenarioMtm(c: Contract): number | null {
+		if (c.price == null || c.qty == null) return null;
 		const mid = midFor(c.commodity);
 		const scenarioMid = mid * 0.97;
 		return c.fixed_leg === 'buy' ? (scenarioMid - c.price) * c.qty : (c.price - scenarioMid) * c.qty;
@@ -89,20 +95,21 @@
 					{#each contracts as c (c.id)}
 						{@const mid = midFor(c.commodity)}
 						{@const scen = scenarioMtm(c)}
+						{@const hasPrice = c.price != null}
 						<tr>
 							<td class="strong mono">{c.id}</td>
 							<td><CommodityChip code={c.commodity}/></td>
 							<td class="num">{fmtQty(c)}</td>
-							<td class="num">{c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
+							<td class="num">{fmtPrice(c)}</td>
 							<td class="num">{mid.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
-							<td class="num" style="color: {mid > c.price ? 'var(--pos)' : 'var(--neg)'};">
-								{mid >= c.price ? '+' : ''}{(mid - c.price).toFixed(priceDigits(c))}
+							<td class="num" style="color: {!hasPrice ? 'var(--muted)' : mid > c.price ? 'var(--pos)' : 'var(--neg)'};">
+								{hasPrice ? `${mid >= c.price ? '+' : ''}${(mid - c.price).toFixed(priceDigits(c))}` : '—'}
 							</td>
 							<td class="num strong" style="color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 								{fmtMtm(c.mtm)}
 							</td>
-							<td class="num" style="color: {scen >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{scen >= 0 ? '+' : ''}{scen.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							<td class="num" style="color: {scen == null ? 'var(--muted)' : scen >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{scen == null ? '—' : `${scen >= 0 ? '+' : ''}${scen.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
 							</td>
 						</tr>
 					{/each}

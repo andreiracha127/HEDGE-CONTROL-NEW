@@ -5,11 +5,23 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
+	import { exposureBucketsFrom } from '$lib/alcast/route-data';
 	let { data } = $props();
-	const exposureBuckets = $derived(data.exposureBuckets);
+	const exposureRows = $derived(data.exposureRows ?? []);
 
-	let commodity = $state('AL-LME');
-	const COMMODITIES = ['AL-LME', 'CU-LME', 'ZN-LME', 'NI-LME', 'USDBRL'];
+	let commodity = $state('ALUMINIUM');
+	const COMMODITIES = [
+		{ label: 'AL-LME', value: 'ALUMINIUM' },
+		{ label: 'CU-LME', value: 'COPPER' },
+		{ label: 'ZN-LME', value: 'ZINC' },
+		{ label: 'NI-LME', value: 'NICKEL' },
+		{ label: 'USDBRL', value: 'USDBRL' },
+	];
+	const filteredExposureBuckets = $derived.by(() =>
+		exposureBucketsFrom({
+			items: exposureRows.filter((bucket: Record<string, any>) => bucket.commodity === commodity),
+		}),
+	);
 
 	const pending = [
 		{ when: 'hoje', sev: 'neg' as const,  title: 'ago/26 abaixo da política', desc: 'Cobertura em 39 % · meta ≥ 70 %' },
@@ -49,8 +61,8 @@
 		{#snippet actions()}
 			<div class="row gap-2">
 				<div class="radio-group">
-					{#each COMMODITIES as c (c)}
-						<button type="button" class:active={commodity === c} onclick={() => (commodity = c)}>{c}</button>
+					{#each COMMODITIES as c (c.value)}
+						<button type="button" class:active={commodity === c.value} onclick={() => (commodity = c.value)}>{c.label}</button>
 					{/each}
 				</div>
 				<button type="button" class="btn btn-secondary btn-sm"><Icon name="filter"/>Filtros</button>
@@ -72,13 +84,13 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each exposureBuckets as b (b.month)}
+				{#each filteredExposureBuckets as b (b.month)}
 					{@const ok = b.ratio >= 70}
 					{@const warn = b.ratio >= 40 && b.ratio < 70}
 					<tr>
 						<td class="strong">{b.month}</td>
-						<td class="num">{(b.commercial_mt * 0.62).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
-						<td class="num">{(b.commercial_mt * 0.38).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num">{b.commercial_active_mt.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num">{b.commercial_passive_mt.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
 						<td class="num strong">{b.commercial_mt.toLocaleString('pt-BR')}</td>
 						<td class="num">{b.hedged_mt.toLocaleString('pt-BR')}</td>
 						<td class="num" style="color: {b.residual_mt > 2000 ? 'var(--neg)' : 'var(--ink-2)'};">{b.residual_mt.toLocaleString('pt-BR')}</td>
@@ -106,7 +118,7 @@
 				{/each}
 			</tbody>
 		</table>
-		<Pager from={1} to={8} total={8}/>
+		<Pager from={filteredExposureBuckets.length > 0 ? 1 : 0} to={filteredExposureBuckets.length} total={filteredExposureBuckets.length}/>
 	</Card>
 
 	<div class="grid-7-5" style="margin-top: 16px;">

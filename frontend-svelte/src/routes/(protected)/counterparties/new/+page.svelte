@@ -7,7 +7,7 @@
 	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 
-	let type = $state<'broker' | 'bank_br' | 'customer' | 'supplier'>('broker');
+	let type = $state<'broker' | 'bank_br' | 'customer' | 'supplier'>('supplier');
 	let name = $state('');
 	let shortName = $state('');
 	let taxId = $state('');
@@ -49,7 +49,6 @@
 				whatsapp_phone: whatsapp || null,
 				payment_terms_days: Number(paymentTerms || 30),
 				credit_limit_usd: Number(creditLimit || 0),
-				kyc_status: 'pending',
 				risk_rating: riskRating,
 				sanctions_status: sanctions,
 				notes: notes || null,

@@ -176,6 +176,10 @@ export function exposureBucketsFrom(data: unknown) {
 	const normalized = rows.map((row) => {
 		const commercialMt =
 			numberOrNull(row.commercial_mt ?? row.commercial_net_mt ?? row.original_tons ?? row.quantity_mt) ?? 0;
+		const commercialActiveMt =
+			numberOrNull(row.commercial_active_mt) ?? (commercialMt > 0 ? commercialMt : 0);
+		const commercialPassiveMt =
+			numberOrNull(row.commercial_passive_mt) ?? (commercialMt < 0 ? Math.abs(commercialMt) : 0);
 		const hedgedMt = numberOrNull(row.hedged_mt ?? row.hedge_mt ?? row.hedged_tons) ?? 0;
 		const residualMt =
 			numberOrNull(row.residual_mt ?? row.exposure_residual_mt ?? row.open_tons) ??
@@ -192,12 +196,15 @@ export function exposureBucketsFrom(data: unknown) {
 
 		return {
 			...row,
+			commodity: row.commodity ?? row.product_code ?? row.asset ?? '—',
 			month:
 				row.month ??
 				row.settlement_month ??
 				row.reference_month ??
 				datePart(row.delivery_date_start ?? row.delivery_window_start ?? row.as_of_date ?? row.exposure_date),
 			commercial_mt: commercialMt,
+			commercial_active_mt: commercialActiveMt,
+			commercial_passive_mt: commercialPassiveMt,
 			hedged_mt: hedgedMt,
 			residual_mt: residualMt,
 			ratio,
@@ -211,6 +218,8 @@ export function exposureBucketsFrom(data: unknown) {
 			byMonth.set(key, { ...bucket, month: key });
 			continue;
 		}
+		existing.commercial_active_mt += bucket.commercial_active_mt;
+		existing.commercial_passive_mt += bucket.commercial_passive_mt;
 		existing.commercial_mt += bucket.commercial_mt;
 		existing.hedged_mt += bucket.hedged_mt;
 		existing.residual_mt += bucket.residual_mt;

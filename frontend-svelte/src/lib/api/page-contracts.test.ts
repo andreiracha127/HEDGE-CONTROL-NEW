@@ -97,7 +97,7 @@ describe('design-port create affordances', () => {
 		expect(createSource).toContain('type,');
 		expect(createSource).toContain('name,');
 		expect(createSource).toContain('country,');
-		expect(createSource).toMatch(/kyc_status:\s*['"]pending['"]/);
+		expect(createSource).not.toContain('kyc_status:');
 	});
 
 	it('posts order create through the purchase/sales endpoints', () => {

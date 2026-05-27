@@ -53,12 +53,15 @@
 	const quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
+	const rfqRoleReady = $derived(authStore.hasRole('risk_manager'));
+	const datesReady = $derived(!!leg1.startDate && !!leg1.endDate);
 	const intentReady = $derived(
 		intent === 'GLOBAL_POSITION' ||
 			(intent === 'COMMERCIAL_HEDGE' && !!orderId) ||
 			(intent === 'SPREAD' && !!buyTradeId && !!sellTradeId),
 	);
-	const selectedCounterparties = $derived(counterparties.filter((cp) => cp.status === 'active' && cps.includes(cp.id)));
+	const selectedCounterparties = $derived(counterparties.filter((cp) => canReceiveRfq(cp) && cps.includes(cp.id)));
+	const recipientsReady = $derived(selectedCounterparties.length > 0 && selectedCounterparties.every(canReceiveRfq));
 	const cpList = $derived(
 		counterparties.filter(
 			(cp) =>
@@ -72,9 +75,13 @@
 		cps = cps.includes(id) ? cps.filter((c) => c !== id) : [...cps, id];
 	}
 
+	function canReceiveRfq(cp: Record<string, any>): boolean {
+		return cp.is_active !== false && cp.kyc_status === 'approved' && !!cp.whatsapp_phone;
+	}
+
 	$effect(() => {
 		if (!initializedCounterparties && counterparties.length > 0) {
-			cps = counterparties.filter((cp) => cp.status === 'active').slice(0, 4).map((cp) => cp.id);
+			cps = counterparties.filter(canReceiveRfq).slice(0, 4).map((cp) => cp.id);
 			initializedCounterparties = true;
 		}
 	});
@@ -169,6 +176,10 @@
 			notifications.error('Configure todas as pernas obrigatórias antes de pré-visualizar a RFQ.');
 			return;
 		}
+		if (!datesReady) {
+			notifications.error('Informe a janela de entrega antes de pré-visualizar a RFQ.');
+			return;
+		}
 		const preview = await requestPreviewText();
 		if (preview) notifications.success('Texto da RFQ gerado a partir das pernas configuradas.');
 	}
@@ -187,8 +198,20 @@
 			notifications.error('Configure todas as pernas obrigatórias antes de enviar a RFQ.');
 			return;
 		}
+		if (!datesReady) {
+			notifications.error('Informe a janela de entrega antes de enviar a RFQ.');
+			return;
+		}
 		if (selectedCounterparties.length === 0) {
 			notifications.error('Selecione pelo menos uma contraparte válida.');
+			return;
+		}
+		if (!recipientsReady) {
+			notifications.error('Selecione apenas contrapartes com KYC aprovado e WhatsApp cadastrado.');
+			return;
+		}
+		if (!rfqRoleReady) {
+			notifications.error('Criação de RFQ requer perfil risk_manager.');
 			return;
 		}
 		if (!intentReady) {
@@ -201,8 +224,8 @@
 			submitting = false;
 			return;
 		}
-		const deliveryStart = leg1.startDate || new Date().toISOString().slice(0, 10);
-		const deliveryEnd = leg1.endDate || deliveryStart;
+		const deliveryStart = leg1.startDate;
+		const deliveryEnd = leg1.endDate;
 		const { data: created, error: apiError } = await client.POST('/rfqs', {
 			body: {
 				commodity,
@@ -252,14 +275,14 @@
 		</div>
 		<div class="page-actions">
 			<a href="/rfq" class="btn btn-ghost">Cancelar</a>
-			<button type="button" data-testid="rfq-preview-button" class="btn btn-secondary" onclick={previewText} disabled={!quantityValidation.ok || !legsReady}>Pré-visualizar texto</button>
+			<button type="button" data-testid="rfq-preview-button" class="btn btn-secondary" onclick={previewText} disabled={!quantityValidation.ok || !legsReady || !datesReady}>Pré-visualizar texto</button>
 			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
 			<button
 				type="button"
 				class="btn btn-primary"
 				onclick={submit}
 				data-testid="rfq-submit-button"
-				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady || !intentReady}
+				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady || !datesReady || !intentReady || !recipientsReady || !rfqRoleReady}
 			>
 				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`}
 			</button>
@@ -388,7 +411,7 @@
 					{#each cpList as cp (cp.id)}
 						{@const on = cps.includes(cp.id)}
 						{@const usePct = (cp.used / cp.limit) * 100}
-						{@const disabled = cp.status !== 'active'}
+						{@const disabled = !canReceiveRfq(cp)}
 						<button
 							type="button"
 							{disabled}
@@ -402,7 +425,7 @@
 									<div class="row gap-2" style="margin-bottom: 2px;">
 										<span style="font-weight: 500; font-size: 13px;">{cp.name}</span>
 										<Badge kind="neutral">{cp.rating}</Badge>
-										{#if disabled}<Badge kind="warn" dot>Em análise</Badge>{/if}
+										{#if disabled}<Badge kind="warn" dot>{cp.is_active === false || cp.kyc_status !== 'approved' ? 'Em análise' : 'Sem WhatsApp'}</Badge>{/if}
 									</div>
 									<div class="row gap-2" style="font-size: 11px; color: var(--muted);">
 										<span>Limite</span>

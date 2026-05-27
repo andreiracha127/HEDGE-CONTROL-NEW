@@ -3,7 +3,7 @@
 
 	let { pct, kind = 'pos' }: { pct: number; kind?: Kind } = $props();
 
-	const clamped = $derived(Math.min(100, Math.max(0, pct)));
+	const clamped = $derived(Math.min(100, Math.max(0, Number.isFinite(pct) ? pct : 0)));
 </script>
 
 <div class="bar">

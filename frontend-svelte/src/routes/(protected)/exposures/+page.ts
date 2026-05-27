@@ -1,5 +1,5 @@
 import { client } from '$lib/api/client';
-import { exposureBucketsFrom, requireData } from '$lib/alcast/route-data';
+import { exposureBucketsFrom, items, requireData } from '$lib/alcast/route-data';
 
 export const load = async () => {
 	const [listResult, netResult, tasksResult] = await Promise.all([
@@ -13,6 +13,7 @@ export const load = async () => {
 	const tasks = requireData(tasksResult, 'Failed to load exposure tasks');
 
 	return {
+		exposureRows: items<Record<string, any>>(exposureList),
 		exposureBuckets: exposureBucketsFrom(exposureList),
 		netExposure,
 		tasks,

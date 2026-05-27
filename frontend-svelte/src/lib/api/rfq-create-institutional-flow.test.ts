@@ -93,7 +93,7 @@ describe('RFQ create page — production submit contract', () => {
 		expect(source).toContain("intent === 'GLOBAL_POSITION'");
 		expect(source).toContain("intent === 'COMMERCIAL_HEDGE' && !!orderId");
 		expect(source).toContain("intent === 'SPREAD' && !!buyTradeId && !!sellTradeId");
-		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !intentReady\}/);
+		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
 	});
 
 	it('validates MT quantity at three-decimal precision before preview or submit', () => {

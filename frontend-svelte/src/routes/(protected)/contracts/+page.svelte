@@ -11,6 +11,7 @@
 	const contracts = $derived(data.contracts);
 
 	let tab = $state<'active' | 'maturing' | 'settled'>('active');
+	const OPEN_CONTRACT_STATUSES = new Set(['active', 'partially_settled']);
 
 	const TABS: [typeof tab, string, number][] = [
 		['active',   'Ativos',     84],
@@ -20,8 +21,9 @@
 	const filteredContracts = $derived(
 		contracts.filter((contract) => {
 			const status = contract.status;
-			if (tab === 'active') return status === 'active';
+			if (tab === 'active') return OPEN_CONTRACT_STATUSES.has(status);
 			if (tab === 'settled') return status === 'settled';
+			if (status === 'partially_settled') return true;
 			const settleMs = contract.settle ? Date.parse(contract.settle) : Number.NaN;
 			if (!Number.isFinite(settleMs) || status !== 'active') return false;
 			const now = Date.now();
