@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { exposureBucketsFrom, normalizeAuditEvent, normalizeCashflow, normalizeCommodity, normalizeRfqQuote } from './route-data';
+import {
+	exposureBucketsFrom,
+	normalizeAuditEvent,
+	normalizeCashflow,
+	normalizeCommodity,
+	normalizeContract,
+	normalizeRfqQuote,
+} from './route-data';
 
 describe('exposureBucketsFrom', () => {
 	it('normalizes live exposure-list rows into bucket-shaped numeric fields', () => {
@@ -43,6 +50,21 @@ describe('live API row normalizers', () => {
 		expect(normalizeCashflow({ amount_usd: '-10.00', cashflow_date: '2026-06-01' })).toMatchObject({
 			amount_usd: -10,
 			direction: 'out',
+		});
+	});
+
+	it('maps projection settlement dates onto the rendered cashflow date field', () => {
+		expect(normalizeCashflow({ amount_usd: '25.00', settlement_date: '2026-06-15' })).toMatchObject({
+			date: '2026-06-15',
+			amount_usd: 25,
+		});
+	});
+
+	it('keeps missing contract MTM unavailable for the contracts table', () => {
+		expect(normalizeContract({ quantity_mt: '100.000', fixed_price_value: '2638.50' })).toMatchObject({
+			qty: 100,
+			price: 2638.5,
+			mtm: null,
 		});
 	});
 

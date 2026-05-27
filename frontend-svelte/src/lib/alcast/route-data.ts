@@ -96,14 +96,14 @@ export function normalizeOrder(row: Record<string, any>): Record<string, any> {
 export function normalizeContract(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
-		qty: row.quantity_mt ?? row.qty,
+		qty: numberOrNull(row.quantity_mt ?? row.qty),
 		type: row.float_pricing_convention ?? row.type ?? 'Forward',
 		fixed_leg: row.fixed_leg_side ?? row.fixed_leg ?? 'buy',
 		var_leg: row.variable_leg_side ?? row.var_leg ?? 'sell',
-		price: row.fixed_price_value ?? row.price,
+		price: numberOrNull(row.fixed_price_value ?? row.price),
 		cp: row.counterparty_short ?? row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
 		settle: row.settlement_date ?? row.prompt_date ?? row.settle,
-		mtm: row.mtm_value ?? row.mtm ?? null,
+		mtm: numberOrNull(row.mtm_value ?? row.mtm),
 		status: row.status ?? 'active',
 	};
 }
@@ -125,7 +125,7 @@ export function normalizeCashflow(row: Record<string, any>): Record<string, any>
 	const amountUsd = numberOrNull(row.amount_usd) ?? 0;
 	return {
 		...row,
-		date: row.cashflow_date ?? row.price_settlement_date ?? row.date,
+		date: row.cashflow_date ?? row.price_settlement_date ?? row.settlement_date ?? row.date,
 		desc: row.description ?? `${row.object_type ?? 'cashflow'} ${row.object_id ?? ''}`.trim(),
 		cp: row.counterparty_name ?? row.cp ?? '—',
 		commodity: row.commodity ?? '—',

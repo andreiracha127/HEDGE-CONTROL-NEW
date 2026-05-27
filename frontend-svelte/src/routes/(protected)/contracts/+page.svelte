@@ -19,13 +19,24 @@
 	];
 
 	function fmtQty(c: Contract): string {
+		if (c.qty == null) return '—';
 		if (c.commodity === 'USDBRL') return 'US$ ' + (c.qty / 1_000_000).toFixed(1) + ' M';
 		return c.qty.toLocaleString('pt-BR') + ' t';
 	}
 
 	function fmtPrice(c: Contract): string {
+		if (c.price == null) return '—';
 		const digits = c.commodity === 'USDBRL' ? 4 : 2;
 		return c.price.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+	}
+
+	function fmtDate(value: string | null | undefined): string {
+		return value ? value.split('-').reverse().join('/') : '—';
+	}
+
+	function fmtMtm(value: number | null | undefined): string {
+		if (value == null) return '—';
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
 </script>
 
@@ -94,9 +105,9 @@
 						<td class="num">{fmtQty(c)}</td>
 						<td class="num strong">{fmtPrice(c)}</td>
 						<td>{c.cp}</td>
-						<td>{c.settle.split('-').reverse().join('/')}</td>
-						<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+						<td>{fmtDate(c.settle)}</td>
+						<td class="num strong" style="color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{fmtMtm(c.mtm)}
 						</td>
 						<td><StatePill state={c.status}/></td>
 						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
