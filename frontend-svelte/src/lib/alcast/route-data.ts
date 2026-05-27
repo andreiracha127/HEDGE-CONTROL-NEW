@@ -137,13 +137,35 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 
 export function exposureBucketsFrom(data: unknown) {
 	const rows = items<Record<string, any>>(data);
-	return rows.map((row) => ({
-		...row,
-		month: row.month ?? datePart(row.as_of_date ?? row.exposure_date),
-		commercial_mt: row.commercial_mt ?? row.commercial_net_mt ?? row.quantity_mt ?? null,
-		hedged_mt: row.hedged_mt ?? row.hedge_mt ?? null,
-		residual_mt: row.residual_mt ?? row.exposure_residual_mt ?? null,
-		ratio: row.coverage_ratio ?? row.hedge_ratio ?? null,
-	}));
+	return rows.map((row) => {
+		const commercialMt =
+			numberOrNull(row.commercial_mt ?? row.commercial_net_mt ?? row.original_tons ?? row.quantity_mt) ?? 0;
+		const hedgedMt = numberOrNull(row.hedged_mt ?? row.hedge_mt ?? row.hedged_tons) ?? 0;
+		const residualMt =
+			numberOrNull(row.residual_mt ?? row.exposure_residual_mt ?? row.open_tons) ??
+			Math.max(Math.abs(commercialMt) - hedgedMt, 0);
+		const explicitRatio = numberOrNull(row.coverage_ratio ?? row.hedge_ratio ?? row.hedge_coverage_ratio);
+		const ratio =
+			explicitRatio != null
+				? explicitRatio >= 0 && explicitRatio <= 1
+					? explicitRatio * 100
+					: explicitRatio
+				: commercialMt !== 0
+					? (hedgedMt / Math.abs(commercialMt)) * 100
+					: 0;
+
+		return {
+			...row,
+			month:
+				row.month ??
+				row.settlement_month ??
+				row.reference_month ??
+				datePart(row.delivery_date_start ?? row.delivery_window_start ?? row.as_of_date ?? row.exposure_date),
+			commercial_mt: commercialMt,
+			hedged_mt: hedgedMt,
+			residual_mt: residualMt,
+			ratio,
+		};
+	});
 }
 

@@ -50,6 +50,14 @@ describe('design-port route load contracts', () => {
 		expect(source).toContain('Failed to load workflow approvals');
 		expect(source).not.toContain('backendGap');
 	});
+
+	it('keeps workflow approval grant and reject wired to live backend mutations', () => {
+		const source = read('(protected)/workflow-approvals/+page.svelte');
+		expect(source).toContain("client.POST('/workflow-approvals/{approval_id}/grant'");
+		expect(source).toContain("client.POST('/workflow-approvals/{approval_id}/reject'");
+		expect(source).toContain('data.approvals');
+		expect(source).not.toContain('APR-2026-0098');
+	});
 });
 
 describe('design-port create affordances', () => {

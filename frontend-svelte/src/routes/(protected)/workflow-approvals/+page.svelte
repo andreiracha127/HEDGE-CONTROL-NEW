@@ -1,52 +1,133 @@
 <script lang="ts">
-	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { client } from '$lib/api/client';
 	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { notifications } from '$lib/stores/notifications.svelte';
 
-	interface Approval {
-		urgent?: boolean;
-		approved?: boolean;
+	type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'consumed' | 'superseded';
+	type Approval = {
 		id: string;
-		title: string;
-		desc: string;
-		requestor: string;
-		when: string;
-		policy: string;
+		mutation_type: string;
+		status: ApprovalStatus;
+		requested_by: string;
+		approved_by?: string | null;
+		threshold_at_request: string;
+		threshold_config_value: string;
+		threshold_dimension: string;
+		expires_at: string;
+		created_at: string;
+	};
+
+	let { data } = $props();
+	const approvals = $derived((data.approvals ?? []) as Approval[]);
+	const pendingApprovals = $derived(approvals.filter((approval) => approval.status === 'pending'));
+	const expiringSoon = $derived(
+		pendingApprovals.filter((approval) => {
+			const expiresAt = Date.parse(approval.expires_at);
+			return Number.isFinite(expiresAt) && expiresAt - Date.now() <= 24 * 60 * 60 * 1000;
+		}).length,
+	);
+	const highestThreshold = $derived(
+		pendingApprovals.reduce((max, approval) => {
+			const value = Number(approval.threshold_at_request);
+			return Number.isFinite(value) ? Math.max(max, value) : max;
+		}, 0),
+	);
+	const canAct = $derived(authStore.hasAnyRole('risk_manager', 'auditor'));
+
+	let acting = $state<string | null>(null);
+	let rejecting = $state<string | null>(null);
+	let reasonText = $state('');
+
+	function badgeKind(status: ApprovalStatus): 'pos' | 'neg' | 'warn' | 'info' | 'neutral' {
+		if (status === 'approved' || status === 'consumed') return 'pos';
+		if (status === 'rejected' || status === 'expired') return 'neg';
+		if (status === 'pending') return 'warn';
+		return 'neutral';
 	}
 
-	const items: Approval[] = [
-		{
-			urgent: true,
-			id: 'APR-2026-0098',
-			title: 'Ordem fora da alçada do trader',
-			desc: 'ORD-2026-0420 · AL-LME 2.500t buy @ 2.638,50 · JPM · Notional US$ 6,6 M (acima do limite trader US$ 5 M)',
-			requestor: 'M. Santos · Trader',
-			when: 'aguardando há 1h 42min',
-			policy: 'Política Hedge §4.2',
-		},
-		{
-			id: 'APR-2026-0097',
-			title: 'Novo limite de contraparte',
-			desc: 'Aumento de US$ 6,5 M → US$ 9,0 M · Citi Brasil · revisão semestral',
-			requestor: 'L. Ferreira · Risco',
-			when: 'aguardando há 12h',
-			policy: 'Política Crédito §8.1',
-		},
-		{
-			approved: true,
-			id: 'APR-2026-0096',
-			title: 'Contrato CT-2026-0118',
-			desc: 'AL-LME 1.500t buy · ITAU · Notional US$ 3,9 M',
-			requestor: 'A. Costa · Aprovador',
-			when: 'aprovada ontem 17:55',
-			policy: 'Política Hedge §4.1',
-		},
-	];
-
-	function barColor(a: Approval): string {
-		if (a.urgent) return 'var(--neg)';
-		if (a.approved) return 'var(--pos)';
+	function barColor(approval: Approval): string {
+		if (approval.status === 'approved' || approval.status === 'consumed') return 'var(--pos)';
+		if (approval.status === 'rejected' || approval.status === 'expired') return 'var(--neg)';
 		return 'var(--orange)';
+	}
+
+	function mutationLabel(value: string): string {
+		const labels: Record<string, string> = {
+			deal_create: 'Criacao de contrato',
+			deal_award: 'Award de RFQ',
+			hedge_contract_settle: 'Liquidacao de contrato',
+		};
+		return labels[value] ?? value;
+	}
+
+	function thresholdLabel(value: string): string {
+		const labels: Record<string, string> = {
+			notional_usd: 'Notional',
+			settlement_amount_usd: 'Settlement',
+		};
+		return labels[value] ?? value;
+	}
+
+	function money(value: string | number): string {
+		const amount = Number(value);
+		if (!Number.isFinite(amount)) return '—';
+		return amount.toLocaleString('pt-BR', {
+			style: 'currency',
+			currency: 'USD',
+			maximumFractionDigits: 0,
+		});
+	}
+
+	function dateTime(value: string): string {
+		const date = new Date(value);
+		if (Number.isNaN(date.getTime())) return '—';
+		return date.toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+	}
+
+	function errorDetail(detail: unknown): string {
+		return typeof detail === 'string' ? detail : 'erro desconhecido';
+	}
+
+	async function grant(id: string) {
+		acting = id;
+		const { error: apiError } = await client.POST('/workflow-approvals/{approval_id}/grant', {
+			params: { path: { approval_id: id } },
+		});
+		acting = null;
+		if (apiError) {
+			notifications.error(`Falha ao aprovar: ${errorDetail(apiError.detail)}`);
+			return;
+		}
+		notifications.success('Aprovacao concedida');
+		await invalidateAll();
+	}
+
+	async function reject(id: string) {
+		const text = reasonText.trim();
+		if (text.length < 8) {
+			notifications.warning('Informe uma justificativa com pelo menos 8 caracteres.');
+			return;
+		}
+
+		acting = id;
+		const { error: apiError } = await client.POST('/workflow-approvals/{approval_id}/reject', {
+			params: { path: { approval_id: id } },
+			body: { reason_code: 'other', reason_text: text },
+		});
+		acting = null;
+		if (apiError) {
+			notifications.error(`Falha ao rejeitar: ${errorDetail(apiError.detail)}`);
+			return;
+		}
+		rejecting = null;
+		reasonText = '';
+		notifications.success('Aprovacao rejeitada');
+		await invalidateAll();
 	}
 </script>
 
@@ -54,50 +135,79 @@
 	<div class="page-head">
 		<div>
 			<h1 class="page-title">Aprovações</h1>
-			<div class="page-sub">Workflow de aprovações pendentes · 2 itens aguardando você</div>
+			<div class="page-sub">Workflow de aprovações pendentes · {pendingApprovals.length} item{pendingApprovals.length === 1 ? '' : 's'} aguardando ação</div>
 		</div>
 		<div class="page-actions">
-			<button type="button" class="btn btn-secondary">Histórico</button>
+			<button type="button" class="btn btn-secondary" onclick={() => invalidateAll()}><Icon name="refresh"/>Atualizar</button>
 		</div>
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Aguardando você" value="2"   delta="SLA médio 2h · 1 vencendo" deltaKind="neg"/>
-		<Kpi label="Aprovadas (mês)"  value="38"  delta="taxa de aprovação 95 %"     deltaKind="pos"/>
-		<Kpi label="Tempo médio"      value="01:18" unit="h:m" delta="−00:24 vs mês anterior" deltaKind="pos"/>
-		<Kpi label="Rejeições"        value="2"   delta="motivo: fora de alçada"/>
+		<Kpi label="Pendentes" value={String(pendingApprovals.length)} delta={`${expiringSoon} vencendo em 24h`} deltaKind={expiringSoon > 0 ? 'neg' : 'flat'}/>
+		<Kpi label="Maior alçada" value={money(highestThreshold)} delta="limite solicitado"/>
+		<Kpi label="Carregadas" value={String(approvals.length)} delta="endpoint /workflow-approvals"/>
+		<Kpi label="Permissão" value={canAct ? 'Ativa' : 'Restrita'} delta="risk_manager ou auditor" deltaKind={canAct ? 'pos' : 'neg'}/>
 	</div>
 
-	<div class="stack gap-3">
-		{#each items as a (a.id)}
-			<div class="card" style="padding: 18px; display: grid; grid-template-columns: 4px 1fr auto; gap: 16px; align-items: center;">
-				<div style="align-self: stretch; background: {barColor(a)}; border-radius: 2px;"></div>
-				<div>
-					<div class="row gap-3" style="margin-bottom: 4px;">
-						{#if a.urgent}
-							<Badge kind="neg" dot>SLA vencendo</Badge>
-						{:else if a.approved}
-							<Badge kind="pos" dot>Aprovado</Badge>
-						{:else}
-							<Badge kind="warn" dot>Pendente</Badge>
+	{#if approvals.length === 0}
+		<Card>
+			<div style="font-size: 13px; color: var(--muted);">Nenhuma aprovação pendente.</div>
+		</Card>
+	{:else}
+		<div class="stack gap-3">
+			{#each approvals as approval (approval.id)}
+				<div class="card" style="padding: 18px; display: grid; grid-template-columns: 4px 1fr auto; gap: 16px; align-items: center;">
+					<div style="align-self: stretch; background: {barColor(approval)}; border-radius: 2px;"></div>
+					<div>
+						<div class="row gap-3" style="margin-bottom: 4px;">
+							<Badge kind={badgeKind(approval.status)} dot>{approval.status}</Badge>
+							<span class="mono" style="font-size: 11px; color: var(--muted);">{approval.id}</span>
+							<span style="font-size: 11px; color: var(--muted);">· {thresholdLabel(approval.threshold_dimension)}</span>
+						</div>
+						<div style="font-size: 14px; font-weight: 500; margin-bottom: 4px;">{mutationLabel(approval.mutation_type)}</div>
+						<div style="font-size: 12.5px; color: var(--ink-3);">
+							{money(approval.threshold_at_request)} solicitado · limite {money(approval.threshold_config_value)}
+						</div>
+						<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">
+							Solicitado por {approval.requested_by} · expira {dateTime(approval.expires_at)}
+						</div>
+						{#if rejecting === approval.id}
+							<div class="row gap-2" style="margin-top: 10px;">
+								<input
+									class="input"
+									style="max-width: 420px;"
+									bind:value={reasonText}
+									placeholder="Justificativa da rejeição"
+									aria-label="Justificativa da rejeição"
+								/>
+								<button type="button" class="btn btn-danger btn-sm" disabled={acting === approval.id} onclick={() => reject(approval.id)}>
+									Confirmar rejeição
+								</button>
+							</div>
 						{/if}
-						<span class="mono" style="font-size: 11px; color: var(--muted);">{a.id}</span>
-						<span style="font-size: 11px; color: var(--muted);">· {a.policy}</span>
 					</div>
-					<div style="font-size: 14px; font-weight: 500; margin-bottom: 4px;">{a.title}</div>
-					<div style="font-size: 12.5px; color: var(--ink-3);">{a.desc}</div>
-					<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{a.requestor} · {a.when}</div>
+					<div class="row gap-2">
+						{#if approval.status === 'pending' && canAct}
+							<button
+								type="button"
+								class="btn btn-danger"
+								disabled={acting === approval.id}
+								onclick={() => {
+									rejecting = rejecting === approval.id ? null : approval.id;
+									reasonText = '';
+								}}
+							>
+								Rejeitar
+							</button>
+							<button type="button" class="btn btn-primary" disabled={acting === approval.id} onclick={() => grant(approval.id)}>
+								<Icon name="shieldCheck"/>{acting === approval.id ? 'Processando...' : 'Aprovar'}
+							</button>
+						{:else}
+							<button type="button" class="btn btn-secondary" disabled>Sem ação</button>
+						{/if}
+					</div>
 				</div>
-				<div class="row gap-2">
-					{#if !a.approved}
-						<button type="button" class="btn btn-secondary">Ver detalhes</button>
-						<button type="button" class="btn btn-danger">Rejeitar</button>
-						<button type="button" class="btn btn-primary"><Icon name="shieldCheck"/>Aprovar</button>
-					{:else}
-						<button type="button" class="btn btn-secondary">Ver registro</button>
-					{/if}
-				</div>
-			</div>
-		{/each}
-	</div>
+			{/each}
+		</div>
+	{/if}
 </div>
