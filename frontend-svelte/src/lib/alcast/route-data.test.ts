@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { exposureBucketsFrom, normalizeCashflow, normalizeCommodity, normalizeRfqQuote } from './route-data';
+import { exposureBucketsFrom, normalizeAuditEvent, normalizeCashflow, normalizeCommodity, normalizeRfqQuote } from './route-data';
 
 describe('exposureBucketsFrom', () => {
 	it('normalizes live exposure-list rows into bucket-shaped numeric fields', () => {
@@ -67,6 +67,21 @@ describe('live API row normalizers', () => {
 			spread: 0,
 			received: '2026-05-27T12:00:00Z',
 			status: 'best',
+		});
+	});
+
+	it('maps audit detail from payload instead of duplicating event_type', () => {
+		expect(
+			normalizeAuditEvent({
+				event_type: 'rfq_invitation_rejected',
+				entity_id: 'rfq-1',
+				timestamp_utc: '2026-05-27T12:00:00Z',
+				payload: { detail: 'Counterparty declined quote' },
+			}),
+		).toMatchObject({
+			action: 'rfq_invitation_rejected',
+			entity: 'rfq-1',
+			detail: 'Counterparty declined quote',
 		});
 	});
 });

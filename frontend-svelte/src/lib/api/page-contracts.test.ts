@@ -38,6 +38,7 @@ describe('design-port route load contracts', () => {
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}/trade-ranking'");
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}/state-events'");
 		expect(source).toContain('normalizeRfqQuote');
+		expect(source).not.toContain('backendGap');
 	});
 
 	it('loads market data through the Westmetall settlement-price endpoint', () => {

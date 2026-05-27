@@ -62,7 +62,7 @@ export function normalizeRfqQuote(
 	const price = numberOrNull(row.fixed_price_value ?? row.price);
 	const bestPrice = options.bestPrice ?? null;
 	const status =
-		options.bestQuoteId && String(row.id) === options.bestQuoteId
+		options.bestQuoteId != null && String(row.id) === options.bestQuoteId
 			? 'best'
 			: row.state === 'rejected'
 				? 'rejected'
@@ -149,6 +149,7 @@ export function normalizeCommodity(row: Record<string, any>): Record<string, any
 }
 
 export function normalizeAuditEvent(row: Record<string, any>): Record<string, any> {
+	const payload = row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, any>) : {};
 	return {
 		...row,
 		ts: row.timestamp_utc ?? row.ts,
@@ -156,7 +157,7 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 		role: row.actor_role ?? row.role ?? 'System',
 		action: row.event_type ?? row.action,
 		entity: row.entity_id ?? row.entity,
-		detail: row.event_type ?? row.detail ?? '',
+		detail: payload.detail ?? payload.reason ?? row.detail ?? row.description ?? '',
 	};
 }
 

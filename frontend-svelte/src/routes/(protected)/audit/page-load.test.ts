@@ -18,7 +18,7 @@ describe('audit load', () => {
 		const result = await load();
 
 		expect(get).toHaveBeenCalledWith('/audit/events', { params: { query: { limit: 200 } } });
-		expect(result.auditLog[0]).toMatchObject({ action: 'rfq.create', detail: 'rfq.create', entity: 'rfq-1', role: 'System', ts: '2026-05-27T00:00:00Z', user: 'Sistema' });
+		expect(result.auditLog[0]).toMatchObject({ action: 'rfq.create', detail: '', entity: 'rfq-1', role: 'System', ts: '2026-05-27T00:00:00Z', user: 'Sistema' });
 	});
 
 	test('returns an empty log instead of throwing when the auditor endpoint is forbidden', async () => {
