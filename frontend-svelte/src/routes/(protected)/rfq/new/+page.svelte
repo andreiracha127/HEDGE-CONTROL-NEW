@@ -530,8 +530,8 @@
 
 			<Card title="Governança">
 				<dl class="kv">
-					<dt>Alçada</dt><dd>Trader · até US$ 5 M</dd>
-					<dt>Aprovação</dt><dd><Badge kind="pos" dot>Dentro da alçada</Badge></dd>
+					<dt>Alçada</dt><dd>Risk Manager</dd>
+					<dt>Aprovação</dt><dd><Badge kind="neutral" dot>Sujeita ao workflow</Badge></dd>
 					<dt>Política IFRS</dt><dd>Hedge accounting</dd>
 					<dt>Mark-to-market</dt><dd>Diário · LME 11:30 BST</dd>
 				</dl>

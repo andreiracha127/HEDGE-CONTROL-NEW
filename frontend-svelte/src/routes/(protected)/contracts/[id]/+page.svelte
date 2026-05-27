@@ -22,11 +22,10 @@
 		if (c.commodity === 'AL-LME') return 2645.5;
 		if (c.commodity === 'CU-LME') return 9412.0;
 		if (c.commodity === 'ZN-LME') return 2812.5;
-		if (c.commodity === 'USDBRL') return 5.124;
 		return c.price ?? null;
 	});
 
-	const today = new Date(2026, 4, 27);
+	const today = new Date();
 	const settleDate = $derived(c?.settle ?? null);
 	const daysToSettle = $derived.by(() => {
 		if (!settleDate) return null;
@@ -132,7 +131,7 @@
 			<button type="button" class="btn btn-secondary">Histórico MTM</button>
 			{#if c.status === 'active'}
 				<button type="button" class="btn btn-danger">Unwinding</button>
-			{:else if c.status === 'maturing'}
+			{:else if c.status === 'partially_settled'}
 				<button type="button" class="btn btn-accent">Iniciar liquidação</button>
 			{/if}
 		</div>
@@ -189,7 +188,14 @@
 						<dt>Contratação</dt><dd>26/05/2026 09:02</dd>
 						<dt>Liquidação</dt><dd>{fmtSettleWithDays()}</dd>
 						<dt>Contraparte</dt><dd><a href={`/counterparties/${c.cp}`}>{cpName}</a></dd>
-						<dt>RFQ origem</dt><dd class="mono"><a href="/rfq/RFQ-2026-0177">RFQ-2026-0177</a></dd>
+						<dt>RFQ origem</dt>
+						<dd class="mono">
+							{#if c.rfq_id}
+								<a href={`/rfq/${c.rfq_id}`}>{c.rfq_number ?? c.rfq_id}</a>
+							{:else}
+								—
+							{/if}
+						</dd>
 						<dt>Política contábil</dt><dd>Hedge accounting (IFRS 9)</dd>
 						<dt>Margem inicial</dt>
 						<dd class="tabular">{notional == null ? '—' : `US$ ${(notional * 0.1).toLocaleString('en-US', { maximumFractionDigits: 0 })} (10%)`}</dd>

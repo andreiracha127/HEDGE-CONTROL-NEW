@@ -133,6 +133,22 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toMatch(/<td class="num">\{c\.price\.toLocaleString/);
 	});
 
+	it('keeps latest review cleanup free of static finance residues', () => {
+		const cashflow = readRoute('(protected)/cashflow/+page.svelte');
+		const contractDetail = readRoute('(protected)/contracts/[id]/+page.svelte');
+		const rfqCreate = readRoute('(protected)/rfq/new/+page.svelte');
+
+		expect(cashflow).toContain('function fmtBrl');
+		expect(cashflow).not.toContain('amount_usd * 5.124');
+		expect(contractDetail).toContain('const today = new Date()');
+		expect(contractDetail).toContain("c.status === 'partially_settled'");
+		expect(contractDetail).toContain('href={`/rfq/${c.rfq_id}`}');
+		expect(contractDetail).not.toContain("c.status === 'maturing'");
+		expect(contractDetail).not.toContain('RFQ-2026-0177');
+		expect(rfqCreate).toContain('<dt>Alçada</dt><dd>Risk Manager</dd>');
+		expect(rfqCreate).not.toContain('Trader · até US$ 5 M');
+	});
+
 	it('preflights RFQ recipients for WhatsApp channel availability', () => {
 		const source = readRoute('(protected)/rfq/new/+page.svelte');
 

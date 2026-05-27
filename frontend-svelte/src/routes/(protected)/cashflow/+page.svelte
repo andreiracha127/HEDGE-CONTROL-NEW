@@ -67,6 +67,11 @@
 		const parts = date.split('-');
 		return parts.length === 3 ? `${parts[2]}/${parts[1]}` : '—';
 	}
+
+	function fmtBrl(c: Record<string, any>): string {
+		if (c.amount_brl == null) return '—';
+		return `R$ ${Number(c.amount_brl).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
+	}
 </script>
 
 <div class="page">
@@ -164,7 +169,7 @@
 						<td class="num strong" style="color: {c.amount_usd >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 							{c.amount_usd >= 0 ? '+' : ''}{c.amount_usd.toLocaleString('en-US', { maximumFractionDigits: 0 })}
 						</td>
-						<td class="num">R$ {(c.amount_usd * 5.124).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num">{fmtBrl(c)}</td>
 						<td>
 							{#if c.amount_usd >= 0}
 								<Badge kind="pos" dot>Entrada</Badge>
