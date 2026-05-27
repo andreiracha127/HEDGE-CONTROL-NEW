@@ -29,7 +29,7 @@
 
 	const months = $derived(Object.keys(byMonth).sort());
 	const maxAbs = $derived(
-		Math.max(...months.map((m) => Math.max(byMonth[m].inflow, -byMonth[m].outflow))),
+		Math.max(1, ...months.map((m) => Math.max(byMonth[m].inflow, -byMonth[m].outflow))),
 	);
 
 	const cpConcentration = [

@@ -83,7 +83,7 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each quotes as q (q.cp)}
+						{#each quotes as q (q.id)}
 							{@const isBest = q.status === 'best'}
 							{@const isPending = q.status === 'pending'}
 							{@const mid_pct = vsMid(q.price)}

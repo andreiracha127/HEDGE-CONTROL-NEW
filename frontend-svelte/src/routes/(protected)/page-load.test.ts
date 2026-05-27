@@ -22,7 +22,7 @@ describe('dashboard load', () => {
 		const result = await load();
 
 		expect(result.rfqs[0]).toMatchObject({ id: 'rfq-1', rfq: 'rfq-1' });
-		expect(result.commodities[0]).toMatchObject({ code: 'AL-LME', last: '2645.50', prev: null, provider: '—' });
+		expect(result.commodities[0]).toMatchObject({ code: 'AL-LME', last: 2645.5, prev: null, provider: '—' });
 		expect((result.globalExposure as any).commercial_net_mt).toBe('10.000');
 	});
 });

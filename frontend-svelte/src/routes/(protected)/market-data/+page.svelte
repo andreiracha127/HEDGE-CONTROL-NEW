@@ -60,22 +60,24 @@
 				</thead>
 				<tbody>
 					{#each commodities as c (c.code)}
-						{@const chg = ((c.last - c.prev) / c.prev) * 100}
+						{@const hasLast = c.last != null}
+						{@const hasPrev = c.prev != null && c.prev !== 0}
+						{@const chg = hasLast && hasPrev ? ((c.last - c.prev) / c.prev) * 100 : null}
 						{@const spread = c.code === 'USDBRL' ? 0.0005 : 1.5}
-						{@const bid = c.last - spread / 2}
-						{@const ask = c.last + spread / 2}
+						{@const bid = hasLast ? c.last - spread / 2 : null}
+						{@const ask = hasLast ? c.last + spread / 2 : null}
 						{@const digits = c.code === 'USDBRL' ? 4 : 2}
 						<tr>
 							<td class="strong">
 								<CommodityChip code={c.code}/>
 								<div style="font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 1px;">{c.name}</div>
 							</td>
-							<td class="num strong">{c.last.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}</td>
-							<td class="num">{bid.toFixed(digits)}</td>
-							<td class="num">{ask.toFixed(digits)}</td>
+							<td class="num strong">{hasLast ? c.last.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits }) : '—'}</td>
+							<td class="num">{bid != null ? bid.toFixed(digits) : '—'}</td>
+							<td class="num">{ask != null ? ask.toFixed(digits) : '—'}</td>
 							<td class="num">{spread.toFixed(digits)}</td>
-							<td class="num" style="color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{chg >= 0 ? '+' : ''}{chg.toFixed(2)} %
+							<td class="num" style="color: {chg == null ? 'var(--muted)' : chg >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{chg == null ? '—' : `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} %`}
 							</td>
 							<td><Badge kind="neutral">{c.code === 'USDBRL' ? 'B3' : 'Refinitiv'}</Badge></td>
 							<td style="color: var(--muted); font-size: 12px;">27/05 09:14:08</td>

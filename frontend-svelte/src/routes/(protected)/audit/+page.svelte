@@ -8,6 +8,7 @@
 	import { notifications } from '$lib/stores/notifications.svelte';
 	let { data } = $props();
 	const auditLog = $derived(data.auditLog);
+	const auditLoadError = $derived(data.auditLoadError);
 	type VerifyStatus = 'valid' | 'invalid' | 'unverifiable';
 	let verifyResults = $state<Record<string, VerifyStatus>>({});
 
@@ -25,6 +26,17 @@
 		return ('0x' + Math.abs(i * 7919 + 13).toString(16)).padEnd(10, 'a') + '…';
 	}
 
+	function verifyStatus(result: { valid?: boolean; detail?: string } | null | undefined): VerifyStatus {
+		if (result?.valid === true) return 'valid';
+		if (result?.valid === false) {
+			const detail = result.detail?.toLowerCase() ?? '';
+			return detail.includes('without a signature') || detail.includes('missing signature') || detail.includes('no signature')
+				? 'unverifiable'
+				: 'invalid';
+		}
+		return 'unverifiable';
+	}
+
 	async function verifyEvent(eventId: string) {
 		const { data: result, error: apiError } = await client.GET('/audit/events/{event_id}/verify', {
 			params: { path: { event_id: eventId } },
@@ -34,8 +46,7 @@
 			notifications.error(`Falha ao verificar evento: ${apiError.detail ?? 'erro desconhecido'}`);
 			return;
 		}
-		const status: VerifyStatus = result?.valid === true ? 'valid' : result?.valid === false ? 'invalid' : 'unverifiable';
-		verifyResults = { ...verifyResults, [eventId]: status };
+		verifyResults = { ...verifyResults, [eventId]: verifyStatus(result) };
 	}
 </script>
 
@@ -64,6 +75,9 @@
 			<div class="sp"></div>
 			<span style="font-size: 11.5px; color: var(--muted);">1.247 eventos · 8 usuários ativos</span>
 		</div>
+		{#if auditLoadError}
+			<div class="badge warn" style="margin: 12px 18px;">Falha ao carregar eventos: {auditLoadError}</div>
+		{/if}
 		<table class="tbl">
 			<thead>
 				<tr>

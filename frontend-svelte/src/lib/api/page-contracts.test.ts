@@ -35,7 +35,9 @@ describe('design-port route load contracts', () => {
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}'");
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}/quotes'");
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}/ranking'");
+		expect(source).toContain("client.GET('/rfqs/{rfq_id}/trade-ranking'");
 		expect(source).toContain("client.GET('/rfqs/{rfq_id}/state-events'");
+		expect(source).toContain('normalizeRfqQuote');
 	});
 
 	it('loads market data through the Westmetall settlement-price endpoint', () => {
@@ -62,12 +64,17 @@ describe('design-port route load contracts', () => {
 
 describe('design-port create affordances', () => {
 	it('shows the new RFQ entry point and posts through client.POST /rfqs', () => {
+		const loadSource = read('(protected)/rfq/new/+page.ts');
 		const listSource = read('(protected)/rfq/+page.svelte');
 		const createSource = read('(protected)/rfq/new/+page.svelte');
+		expect(loadSource).toContain("client.GET('/orders'");
 		expect(listSource).toContain('href="/rfq/new"');
+		expect(listSource).toContain("goto(`/rfq${query}`");
 		expect(createSource).toContain("client.POST('/rfqs'");
 		expect(createSource).toContain('authStore.userSub');
 		expect(createSource).toContain('invitations:');
+		expect(createSource).toContain('value={order.id}');
+		expect(createSource).not.toContain('PO-2026-1184');
 	});
 
 	it('shows the new counterparty entry point and posts the current CounterpartyCreate shape', () => {

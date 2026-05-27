@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import Kpi from '$lib/components/alcast/Kpi.svelte';
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
@@ -9,15 +10,20 @@
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
+	type TabKey = 'all' | 'CREATED' | 'SENT' | 'QUOTED';
+	const tab = $derived((data.tab ?? 'all') as TabKey);
 
-	let tab = $state<'all' | 'CREATED' | 'SENT' | 'QUOTED'>('all');
-
-	const TABS: [typeof tab, string, number][] = [
-		['all',     'Todas',    184],
-		['CREATED', 'Criadas',    1],
-		['SENT',    'Enviadas',   2],
-		['QUOTED',  'Cotadas',    4],
+	const TABS: [TabKey, string][] = [
+		['all',     'Todas'],
+		['CREATED', 'Criadas'],
+		['SENT',    'Enviadas'],
+		['QUOTED',  'Cotadas'],
 	];
+
+	function setTab(next: TabKey) {
+		const query = next === 'all' ? '' : `?tab=${next}`;
+		goto(`/rfq${query}`, { noScroll: true });
+	}
 
 	function fmtQty(qty: number, commodity: string): string {
 		if (commodity === 'USDBRL') return 'US$ ' + (qty / 1_000_000).toFixed(1) + ' M';
@@ -53,9 +59,9 @@
 	<Card noPad>
 		<div class="tbl-tools">
 			<div class="tabs-pill">
-				{#each TABS as [k, l, c] (k)}
-					<button type="button" class="tab" class:active={tab === k} onclick={() => (tab = k)}>
-						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
+				{#each TABS as [k, l] (k)}
+					<button type="button" class="tab" class:active={tab === k} onclick={() => setTab(k)}>
+						{l}
 					</button>
 				{/each}
 			</div>

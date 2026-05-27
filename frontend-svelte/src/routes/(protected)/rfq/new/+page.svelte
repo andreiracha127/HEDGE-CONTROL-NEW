@@ -14,6 +14,7 @@
 	import { validateMtQuantity } from '$lib/rfq/quantity';
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
+	const orders = $derived(data.orders ?? []);
 	let submitting = $state(false);
 
 	function emptyLeg(side: LegSide): Leg {
@@ -42,7 +43,8 @@
 	let sellTradeId = $state('');
 	let leg1 = $state<Leg>(emptyLeg('buy'));
 	let leg2 = $state<Leg>(emptyLeg('sell'));
-	let cps = $state<string[]>(['ITAU', 'JPM', 'SANT', 'BTG']);
+	let cps = $state<string[]>([]);
+	let initializedCounterparties = $state(false);
 	let cpSearch = $state('');
 
 	const showLeg2 = $derived(tradeType === 'Swap');
@@ -50,6 +52,7 @@
 	const quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
+	const selectedCounterparties = $derived(counterparties.filter((cp) => cps.includes(cp.id)));
 	const cpList = $derived(
 		counterparties.filter(
 			(cp) =>
@@ -59,8 +62,24 @@
 		),
 	);
 
-	function toggleCP(short: string) {
-		cps = cps.includes(short) ? cps.filter((c) => c !== short) : [...cps, short];
+	function toggleCP(id: string) {
+		cps = cps.includes(id) ? cps.filter((c) => c !== id) : [...cps, id];
+	}
+
+	$effect(() => {
+		if (!initializedCounterparties && counterparties.length > 0) {
+			cps = counterparties.slice(0, 4).map((cp) => cp.id);
+			initializedCounterparties = true;
+		}
+	});
+
+	function orderLabel(order: Record<string, any>): string {
+		const ref = order.order_type ?? 'ORDEM';
+		const qty = Number(order.qty ?? order.quantity_mt ?? 0).toLocaleString('pt-BR', {
+			maximumFractionDigits: 3,
+		});
+		const window = order.delivery_start ?? order.delivery_date_start ?? order.reference_month ?? 'sem janela';
+		return `${ref} · ${qty} MT · ${window}`;
 	}
 
 	function applyTemplate(tpl: 'queda' | 'alta' | 'spread') {
@@ -98,8 +117,11 @@
 			notifications.error(quantityValidation.reason);
 			return;
 		}
+		if (selectedCounterparties.length === 0) {
+			notifications.error('Selecione pelo menos uma contraparte válida.');
+			return;
+		}
 		submitting = true;
-		const selectedCounterparties = counterparties.filter((cp) => cps.includes(cp.short));
 		const deliveryStart = leg1.startDate || new Date().toISOString().slice(0, 10);
 		const deliveryEnd = leg1.endDate || deliveryStart;
 		const { data: created, error: apiError } = await client.POST('/rfqs', {
@@ -156,9 +178,9 @@
 				class="btn btn-primary"
 				onclick={submit}
 				data-testid="rfq-submit-button"
-				disabled={submitting || !quantityValidation.ok || cps.length === 0 || !leg1.priceType}
+				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !leg1.priceType}
 			>
-				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${cps.length} contraparte${cps.length === 1 ? '' : 's'}`}
+				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`}
 			</button>
 		</div>
 	</div>
@@ -231,9 +253,9 @@
 							<label class="field-label" for="rfq-order-id">Ordem vinculada (PO / SO) <span class="req">*</span></label>
 							<select id="rfq-order-id" class="select" bind:value={orderId}>
 								<option value="">— Selecione uma ordem comercial —</option>
-								<option value="PO-2026-1184">PO-2026-1184 · 1500 MT · jun/26</option>
-								<option value="PO-2026-1183">PO-2026-1183 · 800 MT · jul/26</option>
-								<option value="SO-2026-0942">SO-2026-0942 · 500 MT · jun/26</option>
+								{#each orders as order (order.id)}
+									<option value={order.id}>{orderLabel(order)}</option>
+								{/each}
 							</select>
 						</div>
 					{/if}
@@ -273,7 +295,7 @@
 
 			<Card
 				title="3. Contrapartes"
-				sub={`${cps.length} de ${counterparties.length} selecionadas · RFQ será enviada simultaneamente`}
+				sub={`${selectedCounterparties.length} de ${counterparties.length} selecionadas · RFQ será enviada simultaneamente`}
 			>
 				{#snippet actions()}
 					<div class="input-suffix" style="width: 220px;">
@@ -283,13 +305,13 @@
 
 				<div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
 					{#each cpList as cp (cp.id)}
-						{@const on = cps.includes(cp.short)}
+						{@const on = cps.includes(cp.id)}
 						{@const usePct = (cp.used / cp.limit) * 100}
 						{@const disabled = cp.status === 'review'}
 						<button
 							type="button"
 							{disabled}
-							onclick={() => toggleCP(cp.short)}
+							onclick={() => toggleCP(cp.id)}
 							class="card"
 							style="padding: 12px; text-align: left; cursor: {disabled ? 'not-allowed' : 'pointer'}; border-color: {on ? 'var(--navy)' : 'var(--line-strong)'}; opacity: {disabled ? 0.5 : 1}; background: {on ? '#F4F7FC' : '#fff'};"
 						>
@@ -354,8 +376,8 @@
 						/>
 					{/if}
 					<Validation
-						ok={cps.length > 0}
-						label={cps.length > 0 ? `${cps.length} contraparte(s) selecionada(s)` : 'Sem contrapartes selecionadas'}
+						ok={selectedCounterparties.length > 0}
+						label={selectedCounterparties.length > 0 ? `${selectedCounterparties.length} contraparte(s) selecionada(s)` : 'Sem contrapartes selecionadas'}
 					/>
 					<Validation
 						ok={intent !== 'COMMERCIAL_HEDGE' || !!orderId}

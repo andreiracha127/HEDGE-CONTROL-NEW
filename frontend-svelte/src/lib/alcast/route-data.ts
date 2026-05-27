@@ -55,6 +55,30 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 	};
 }
 
+export function normalizeRfqQuote(
+	row: Record<string, any>,
+	options: { bestQuoteId?: string | null; bestPrice?: number | null } = {},
+): Record<string, any> {
+	const price = numberOrNull(row.fixed_price_value ?? row.price);
+	const bestPrice = options.bestPrice ?? null;
+	const status =
+		options.bestQuoteId && String(row.id) === options.bestQuoteId
+			? 'best'
+			: row.state === 'rejected'
+				? 'rejected'
+				: row.state ?? row.status ?? 'quoted';
+
+	return {
+		...row,
+		cp: row.counterparty_short ?? row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
+		price,
+		spread: price != null && bestPrice != null ? price - bestPrice : null,
+		received: row.received_at ?? row.created_at ?? row.received,
+		valid: row.valid_until ?? row.valid ?? null,
+		status,
+	};
+}
+
 export function normalizeOrder(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
@@ -85,8 +109,8 @@ export function normalizeContract(row: Record<string, any>): Record<string, any>
 }
 
 export function normalizeCounterparty(row: Record<string, any>): Record<string, any> {
-	const limit = row.credit_limit_usd ?? row.limit ?? 0;
-	const used = row.credit_used_usd ?? row.used ?? 0;
+	const limit = numberOrNull(row.credit_limit_usd ?? row.limit) ?? 0;
+	const used = numberOrNull(row.credit_used_usd ?? row.used) ?? 0;
 	return {
 		...row,
 		short: row.short_name ?? row.short ?? row.id,
@@ -98,14 +122,15 @@ export function normalizeCounterparty(row: Record<string, any>): Record<string, 
 }
 
 export function normalizeCashflow(row: Record<string, any>): Record<string, any> {
+	const amountUsd = numberOrNull(row.amount_usd) ?? 0;
 	return {
 		...row,
 		date: row.cashflow_date ?? row.price_settlement_date ?? row.date,
 		desc: row.description ?? `${row.object_type ?? 'cashflow'} ${row.object_id ?? ''}`.trim(),
 		cp: row.counterparty_name ?? row.cp ?? '—',
 		commodity: row.commodity ?? '—',
-		amount_usd: row.amount_usd,
-		direction: numberOrNull(row.amount_usd) != null && numberOrNull(row.amount_usd)! < 0 ? 'out' : 'in',
+		amount_usd: amountUsd,
+		direction: amountUsd < 0 ? 'out' : 'in',
 		status: row.status ?? 'projected',
 	};
 }
@@ -116,8 +141,8 @@ export function normalizeCommodity(row: Record<string, any>): Record<string, any
 		code: row.symbol ?? row.code ?? '—',
 		name: row.name ?? row.symbol ?? row.code ?? '—',
 		unit: row.unit ?? 'USD/t',
-		last: row.price_usd ?? row.value ?? row.last ?? null,
-		prev: row.previous_value ?? row.prev ?? null,
+		last: numberOrNull(row.price_usd ?? row.value ?? row.last),
+		prev: numberOrNull(row.previous_value ?? row.prev),
 		settlement_date: row.settlement_date,
 		provider: row.provider ?? row.source ?? '—',
 	};
