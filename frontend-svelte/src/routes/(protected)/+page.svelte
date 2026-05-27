@@ -39,12 +39,19 @@
 		return 'var(--neg)';
 	}
 
-	function fmt(v: number, code: string): string {
+	function fmt(v: number | null, code: string): string {
+		if (v == null || !Number.isFinite(v)) return '—';
 		const opts =
 			code === 'USDBRL'
 				? { minimumFractionDigits: 4, maximumFractionDigits: 4 }
 				: { minimumFractionDigits: 2, maximumFractionDigits: 2 };
 		return v.toLocaleString('en-US', opts);
+	}
+
+	function marketChangePct(c: Record<string, any>): number | null {
+		if (c.last == null || c.prev == null || c.prev === 0) return null;
+		const chg = ((c.last - c.prev) / c.prev) * 100;
+		return Number.isFinite(chg) ? chg : null;
 	}
 </script>
 
@@ -221,7 +228,7 @@
 
 			<div class="stack" style="gap: 0;">
 				{#each commodities as c (c.code)}
-					{@const chg = ((c.last - c.prev) / c.prev) * 100}
+					{@const chg = marketChangePct(c)}
 					<div
 						class="row gap-3"
 						style="padding: 11px 0; border-bottom: 1px solid var(--line-soft);"
@@ -232,12 +239,16 @@
 						</div>
 						<div style="text-align: right;">
 							<div class="tabular" style="font-weight: 500;">{fmt(c.last, c.code)}</div>
-							<div
-								class="tabular"
-								style="font-size: 11px; color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};"
-							>
-								{chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(2)}%
-							</div>
+							{#if chg == null}
+								<div class="tabular" style="font-size: 11px; color: var(--muted);">—</div>
+							{:else}
+								<div
+									class="tabular"
+									style="font-size: 11px; color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};"
+								>
+									{chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(2)}%
+								</div>
+							{/if}
 						</div>
 					</div>
 				{/each}

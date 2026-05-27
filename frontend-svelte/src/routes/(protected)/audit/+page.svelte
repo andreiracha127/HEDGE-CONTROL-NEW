@@ -22,8 +22,10 @@
 		return 'neutral';
 	}
 
-	function hashStub(i: number): string {
-		return ('0x' + Math.abs(i * 7919 + 13).toString(16)).padEnd(10, 'a') + '…';
+	function fmtChecksum(value: unknown): string {
+		if (typeof value !== 'string' || !value.trim()) return '—';
+		const checksum = value.trim();
+		return checksum.length > 18 ? `${checksum.slice(0, 12)}…${checksum.slice(-6)}` : checksum;
 	}
 
 	function verifyStatus(result: { valid?: boolean; detail?: string } | null | undefined): VerifyStatus {
@@ -101,7 +103,7 @@
 						<td class="mono" style="font-size: 12px;">{e.action}</td>
 						<td class="mono">{e.entity}</td>
 						<td style="color: var(--ink-3);">{e.detail}</td>
-						<td class="mono" style="font-size: 11px; color: var(--muted-2);">{hashStub(i)}</td>
+						<td class="mono" style="font-size: 11px; color: var(--muted-2);">{fmtChecksum(e.checksum)}</td>
 						<td>
 							<button
 								type="button"

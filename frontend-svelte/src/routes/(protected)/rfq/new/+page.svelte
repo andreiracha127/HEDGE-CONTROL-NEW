@@ -53,6 +53,11 @@
 	const quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
+	const intentReady = $derived(
+		intent === 'GLOBAL_POSITION' ||
+			(intent === 'COMMERCIAL_HEDGE' && !!orderId) ||
+			(intent === 'SPREAD' && !!buyTradeId && !!sellTradeId),
+	);
 	const selectedCounterparties = $derived(counterparties.filter((cp) => cp.status === 'active' && cps.includes(cp.id)));
 	const cpList = $derived(
 		counterparties.filter(
@@ -108,6 +113,66 @@
 		leg1 = { ...leg1, side: opp };
 	}
 
+	function previewLeg(leg: Leg) {
+		const priceType = leg.priceType as Exclude<Leg['priceType'], ''>;
+		const orderType = leg.orderType ? (leg.orderType as Exclude<Leg['orderType'], ''>) : null;
+		return {
+			side: leg.side,
+			price_type: priceType,
+			quantity_mt: quantityValidation.ok ? quantityValidation.canonical : quantityMtRaw,
+			month_name: priceType === 'AVG' ? leg.monthName : null,
+			year: priceType === 'AVG' ? leg.year : null,
+			start_date: priceType === 'AVGInter' ? leg.startDate || null : null,
+			end_date: priceType === 'AVGInter' ? leg.endDate || null : null,
+			fixing_date: priceType === 'Fix' || priceType === 'C2R' ? leg.fixingDate || null : null,
+			order_type: orderType,
+			order_validity: leg.orderValidity || null,
+			order_limit_price: leg.limitPrice || null,
+		};
+	}
+
+	function buildPreviewPayload() {
+		return {
+			trade_type: tradeType,
+			leg1: previewLeg(leg1),
+			leg2: showLeg2 ? previewLeg(leg2) : null,
+			sync_ppt: false,
+			company_header: company,
+			company_label_for_payoff: company,
+			channel_type: 'BROKER_LME',
+		};
+	}
+
+	function intentError(): string {
+		if (intent === 'COMMERCIAL_HEDGE') return 'Selecione a ordem comercial vinculada antes de enviar a RFQ.';
+		if (intent === 'SPREAD') return 'Informe Buy Trade ID e Sell Trade ID antes de enviar a RFQ de spread.';
+		return 'Complete as referências da intenção antes de enviar a RFQ.';
+	}
+
+	async function requestPreviewText() {
+		const { data: preview, error: previewError } = await client.POST('/rfqs/preview-text', {
+			body: buildPreviewPayload(),
+		});
+		if (previewError || !preview) {
+			notifications.error(`Falha ao gerar texto da RFQ: ${previewError?.detail ?? 'erro desconhecido'}`);
+			return null;
+		}
+		return preview;
+	}
+
+	async function previewText() {
+		if (!quantityValidation.ok) {
+			notifications.error(quantityValidation.reason);
+			return;
+		}
+		if (!legsReady) {
+			notifications.error('Configure todas as pernas obrigatórias antes de pré-visualizar a RFQ.');
+			return;
+		}
+		const preview = await requestPreviewText();
+		if (preview) notifications.success('Texto da RFQ gerado a partir das pernas configuradas.');
+	}
+
 	async function submit() {
 		const actorSub = authStore.userSub;
 		if (!actorSub) {
@@ -126,7 +191,16 @@
 			notifications.error('Selecione pelo menos uma contraparte válida.');
 			return;
 		}
+		if (!intentReady) {
+			notifications.error(intentError());
+			return;
+		}
 		submitting = true;
+		const preview = await requestPreviewText();
+		if (!preview) {
+			submitting = false;
+			return;
+		}
 		const deliveryStart = leg1.startDate || new Date().toISOString().slice(0, 10);
 		const deliveryEnd = leg1.endDate || deliveryStart;
 		const { data: created, error: apiError } = await client.POST('/rfqs', {
@@ -137,6 +211,8 @@
 				quantity_mt: quantityValidation.canonical,
 				delivery_window_start: deliveryStart,
 				delivery_window_end: deliveryEnd,
+				text_en: preview.text_en ?? preview.text,
+				text_pt: preview.text_pt ?? preview.text,
 				invitations: selectedCounterparties.map((cp) => ({
 					counterparty_id: cp.id,
 					channel: 'whatsapp',
@@ -176,14 +252,14 @@
 		</div>
 		<div class="page-actions">
 			<a href="/rfq" class="btn btn-ghost">Cancelar</a>
-			<button type="button" data-testid="rfq-preview-button" class="btn btn-secondary" disabled={!quantityValidation.ok}>Pré-visualizar texto</button>
+			<button type="button" data-testid="rfq-preview-button" class="btn btn-secondary" onclick={previewText} disabled={!quantityValidation.ok || !legsReady}>Pré-visualizar texto</button>
 			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
 			<button
 				type="button"
 				class="btn btn-primary"
 				onclick={submit}
 				data-testid="rfq-submit-button"
-				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady}
+				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady || !intentReady}
 			>
 				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`}
 			</button>
@@ -388,6 +464,12 @@
 						ok={intent !== 'COMMERCIAL_HEDGE' || !!orderId}
 						label={intent === 'COMMERCIAL_HEDGE' ? (orderId ? 'Ordem comercial vinculada' : 'Sem ordem vinculada') : 'Intenção sem ordem'}
 					/>
+					{#if intent === 'SPREAD'}
+						<Validation
+							ok={!!buyTradeId && !!sellTradeId}
+							label={buyTradeId && sellTradeId ? 'Trades do spread vinculados' : 'Spread sem buy/sell trade'}
+						/>
+					{/if}
 				</div>
 			</Card>
 

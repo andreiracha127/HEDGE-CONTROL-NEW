@@ -52,8 +52,8 @@ describe('RFQ create page — MT quantity precision', () => {
 		const submitBtn = source.match(/<button\b[^>]*data-testid="rfq-submit-button"[^>]*>/);
 		expect(previewBtn, 'preview button element must be present').toBeTruthy();
 		expect(submitBtn, 'submit button element must be present').toBeTruthy();
-		expect(previewBtn![0]).toMatch(/disabled=\{!quantityValidation\.ok\}/);
-		expect(submitBtn![0]).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok/);
+		expect(previewBtn![0]).toMatch(/disabled=\{!quantityValidation\.ok \|\| !legsReady\}/);
+		expect(submitBtn![0]).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !intentReady\}/);
 	});
 
 	it('renders the validation error inline when quantity is invalid', () => {

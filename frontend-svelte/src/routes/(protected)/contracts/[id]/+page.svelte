@@ -12,6 +12,7 @@
 	let { data } = $props();
 	const contracts = $derived(data.contracts);
 	const counterparties = $derived(data.counterparties);
+	const cashflows = $derived(data.cashflow ?? []);
 
 	const id = $derived(page.params.id ?? '');
 	const c = $derived(contracts.find((x) => x.id === id) ?? contracts[0]);
@@ -26,9 +27,12 @@
 	});
 
 	const today = new Date(2026, 4, 27);
-	const daysToSettle = $derived(
-		Math.round((new Date(c.settle).getTime() - today.getTime()) / 86_400_000),
-	);
+	const settleDate = $derived(c?.settle ?? null);
+	const daysToSettle = $derived.by(() => {
+		if (!settleDate) return null;
+		const timestamp = new Date(settleDate).getTime();
+		return Number.isFinite(timestamp) ? Math.round((timestamp - today.getTime()) / 86_400_000) : null;
+	});
 	const notional = $derived(c.qty * c.price);
 	const cpName = $derived(
 		counterparties.find((x) => x.short === c.cp)?.name ?? c.cp,
@@ -54,6 +58,31 @@
 	function priceDigits(contract: Contract): number {
 		return contract.commodity === 'USDBRL' ? 4 : 2;
 	}
+
+	function fmtDate(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		const parts = date.split('-');
+		if (parts.length !== 3) return value;
+		return `${parts[2]}/${parts[1]}/${parts[0]}`;
+	}
+
+	function fmtSettleWithDays(): string {
+		const date = fmtDate(settleDate);
+		return daysToSettle == null ? date : `${date} (${daysToSettle}d)`;
+	}
+
+	function settleMonth(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		return date.length >= 7 ? `${date.slice(5, 7)}/${date.slice(2, 4)}` : '—';
+	}
+
+	function settleYearMonth(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		return date.length >= 7 ? date.slice(0, 7) : '—';
+	}
 </script>
 
 <div class="page">
@@ -69,12 +98,12 @@
 				<Badge kind="neutral">{c.type}</Badge>
 				<CommodityChip code={c.commodity}/>
 				<StatePill state={c.status}/>
-				{#if daysToSettle <= 7 && daysToSettle >= 0}
+				{#if daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0}
 					<Badge kind="warn" dot>Vence em {daysToSettle}d</Badge>
 				{/if}
 			</div>
 			<div class="page-sub" style="margin-top: 6px;">
-				{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa × {c.var_leg === 'buy' ? 'Compra' : 'Venda'} variável · {c.qty.toLocaleString('pt-BR')} {c.commodity === 'USDBRL' ? 'USD' : 'MT'} · {c.cp} · liquidação {c.settle.split('-').reverse().join('/')}
+				{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa × {c.var_leg === 'buy' ? 'Compra' : 'Venda'} variável · {c.qty.toLocaleString('pt-BR')} {c.commodity === 'USDBRL' ? 'USD' : 'MT'} · {c.cp} · liquidação {fmtDate(settleDate)}
 			</div>
 		</div>
 		<div class="page-actions">
@@ -109,10 +138,10 @@
 		/>
 		<Kpi
 			label="Dias até liquidação"
-			value={String(daysToSettle)}
-			unit="d"
-			delta={c.settle.split('-').reverse().join('/')}
-			deltaKind={daysToSettle <= 7 ? 'neg' : 'flat'}
+			value={daysToSettle == null ? '—' : String(daysToSettle)}
+			unit={daysToSettle == null ? '' : 'd'}
+			delta={fmtDate(settleDate)}
+			deltaKind={daysToSettle != null && daysToSettle <= 7 ? 'neg' : 'flat'}
 		/>
 	</div>
 
@@ -137,7 +166,7 @@
 						</dd>
 						<dt>Preço variável</dt><dd>LME Average · mês de liquidação</dd>
 						<dt>Contratação</dt><dd>26/05/2026 09:02</dd>
-						<dt>Liquidação</dt><dd>{c.settle.split('-').reverse().join('/')} ({daysToSettle}d)</dd>
+						<dt>Liquidação</dt><dd>{fmtSettleWithDays()}</dd>
 						<dt>Contraparte</dt><dd><a href={`/counterparties/${c.cp}`}>{cpName}</a></dd>
 						<dt>RFQ origem</dt><dd class="mono"><a href="/rfq/RFQ-2026-0177">RFQ-2026-0177</a></dd>
 						<dt>Política contábil</dt><dd>Hedge accounting (IFRS 9)</dd>
@@ -196,7 +225,7 @@
 						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Contrato assinado · ORD-2026-0419 ↘ <strong>{c.id}</strong></div><div class="row gap-2"><span class="when">26/05 09:02</span><span class="who">· R. Almeida</span></div></div></div>
 						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Aprovação concedida · APR-2026-0096</div><div class="row gap-2"><span class="when">26/05 13:45</span><span class="who">· A. Costa</span></div></div></div>
 						<div class="feed-item info"><div class="icon"></div><div><div class="what">MTM atualizado · +US$ 1.420</div><div class="row gap-2"><span class="when">27/05 09:14</span><span class="who">· Sistema</span></div></div></div>
-						<div class="feed-item info"><div class="icon"></div><div><div class="what">Liquidação financeira · {c.cp}</div><div class="row gap-2"><span class="when">{c.settle.split('-').reverse().join('/')}</span><span class="who">· Agendado</span></div></div></div>
+						<div class="feed-item info"><div class="icon"></div><div><div class="what">Liquidação financeira · {c.cp}</div><div class="row gap-2"><span class="when">{fmtDate(settleDate)}</span><span class="who">· Agendado</span></div></div></div>
 					</div>
 				</Card>
 
@@ -250,7 +279,7 @@
 						<td><Badge kind="info">Fix</Badge></td>
 						<td class="num">{c.qty.toLocaleString('pt-BR')} MT</td>
 						<td class="num strong">{c.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-						<td>{c.settle.split('-').reverse().join('/')} · fixing</td>
+						<td>{fmtDate(settleDate)} · fixing</td>
 						<td>LME Official Settlement</td>
 					</tr>
 					<tr>
@@ -258,8 +287,8 @@
 						<td><DirectionBadge dir={c.var_leg}/></td>
 						<td><Badge kind="neutral">AVG</Badge></td>
 						<td class="num">{c.qty.toLocaleString('pt-BR')} MT</td>
-						<td class="num">média {c.settle.slice(5, 7)}/{c.settle.slice(2, 4)}</td>
-						<td>{c.settle.split('-')[0]}-{c.settle.slice(5, 7)} · mês completo</td>
+						<td class="num">média {settleMonth(settleDate)}</td>
+						<td>{settleYearMonth(settleDate)} · mês completo</td>
 						<td>LME Average Month</td>
 					</tr>
 				</tbody>
@@ -278,35 +307,28 @@
 					</tr>
 				</thead>
 				<tbody>
-					<tr>
-						<td>{c.settle.split('-').reverse().join('/')}</td>
-						<td>Liquidação principal · {c.id}</td>
-						<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-						</td>
-						<td>
-							{#if c.mtm >= 0}
-								<Badge kind="pos" dot>Entrada</Badge>
-							{:else}
-								<Badge kind="neg" dot>Saída</Badge>
-							{/if}
-						</td>
-						<td><StatePill state="projected"/></td>
-					</tr>
-					<tr>
-						<td>15/06/2026</td>
-						<td>Margin call (estimado · 30 % do MTM)</td>
-						<td class="num">US$ {(Math.abs(c.mtm) * 0.3).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
-						<td><Badge kind="info" dot>Garantia</Badge></td>
-						<td><StatePill state="projected"/></td>
-					</tr>
-					<tr>
-						<td>27/05/2026</td>
-						<td>Pagamento de margem inicial</td>
-						<td class="num">US$ {(notional * 0.1).toLocaleString('en-US', { maximumFractionDigits: 0 })}</td>
-						<td><Badge kind="info" dot>Garantia</Badge></td>
-						<td><StatePill state="confirmed"/></td>
-					</tr>
+					{#if cashflows.length}
+						{#each cashflows as flow, i (flow.id ?? i)}
+							{@const amount = Number(flow.amount_usd ?? 0)}
+							<tr>
+								<td>{fmtDate(flow.date)}</td>
+								<td>{flow.desc ?? flow.description ?? 'Cash flow'}</td>
+								<td class="num strong" style="color: {amount >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+									{amount >= 0 ? '+' : ''}{amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+								</td>
+								<td>
+									{#if flow.direction === 'in'}
+										<Badge kind="pos" dot>Entrada</Badge>
+									{:else}
+										<Badge kind="neg" dot>Saída</Badge>
+									{/if}
+								</td>
+								<td><StatePill state={flow.status ?? 'projected'}/></td>
+							</tr>
+						{/each}
+					{:else}
+						<tr><td colspan="5" class="tbl-empty">Nenhum cash flow carregado para este contrato</td></tr>
+					{/if}
 				</tbody>
 			</table>
 		</Card>

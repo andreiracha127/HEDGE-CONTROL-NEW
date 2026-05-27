@@ -1,5 +1,5 @@
 import { client } from '$lib/api/client';
-import { items, normalizeContract, normalizeCounterparty, requireData } from '$lib/alcast/route-data';
+import { items, normalizeCashflow, normalizeContract, normalizeCounterparty, requireData } from '$lib/alcast/route-data';
 
 export const load = async ({ params }: { params: { id: string } }) => {
 	const contractId = params.id;
@@ -15,7 +15,7 @@ export const load = async ({ params }: { params: { id: string } }) => {
 	const contract = normalizeContract(requireData(contractResult, 'Failed to load contract') as Record<string, any>);
 	const linkages = items(requireData(linkagesResult, 'Failed to load contract linkages'));
 	const mtm = requireData(mtmResult, 'Failed to load contract MTM');
-	const cashflow = items(requireData(cashflowResult, 'Failed to load contract cashflow'));
+	const cashflow = items<Record<string, any>>(requireData(cashflowResult, 'Failed to load contract cashflow')).map(normalizeCashflow);
 	const counterparties = items<Record<string, any>>(requireData(counterpartiesResult, 'Failed to load counterparties')).map(normalizeCounterparty);
 	const enrichedContract: Record<string, any> = {
 		...contract,

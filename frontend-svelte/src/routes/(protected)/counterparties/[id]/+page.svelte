@@ -36,6 +36,10 @@
 		return value ? value.split('-').reverse().join('/') : '—';
 	}
 
+	function fmtText(value: unknown): string {
+		return typeof value === 'string' && value.trim() ? value : '—';
+	}
+
 	function fmtMtm(value: number | null | undefined): string {
 		if (value == null) return '—';
 		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
@@ -58,7 +62,7 @@
 						<Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{cp.rating}</Badge>
 						<StatePill state={cp.status}/>
 						<Badge kind="neutral">{cp.short}</Badge>
-						<span style="font-size: 11.5px; color: var(--muted);">· Banco BR · São Paulo · BRA</span>
+						<span style="font-size: 11.5px; color: var(--muted);">· {fmtText(cp.type)} · {fmtText(cp.city)} · {fmtText(cp.country)}</span>
 					</div>
 				</div>
 			</div>
@@ -100,13 +104,13 @@
 			<div class="stack gap-4">
 				<Card title="Identificação">
 					<dl class="kv" style="grid-template-columns: 160px 1fr 160px 1fr;">
-						<dt>Razão social</dt><dd>{cp.name} S.A.</dd>
-						<dt>Tax ID (CNPJ)</dt><dd class="mono">17.298.092/0001-30</dd>
-						<dt>Tipo</dt><dd>Banco BR</dd>
-						<dt>País</dt><dd>BRA</dd>
-						<dt>Cidade</dt><dd>São Paulo</dd>
-						<dt>Endereço</dt><dd>Av. Brigadeiro Faria Lima, 3500</dd>
-						<dt>Cadastro</dt><dd>18/03/2026</dd>
+						<dt>Razão social</dt><dd>{fmtText(cp.legal_name ?? cp.name)}</dd>
+						<dt>Tax ID (CNPJ)</dt><dd class="mono">{fmtText(cp.tax_id)}</dd>
+						<dt>Tipo</dt><dd>{fmtText(cp.type)}</dd>
+						<dt>País</dt><dd>{fmtText(cp.country)}</dd>
+						<dt>Cidade</dt><dd>{fmtText(cp.city)}</dd>
+						<dt>Endereço</dt><dd>{fmtText(cp.address)}</dd>
+						<dt>Cadastro</dt><dd>{fmtDate(cp.created_at ?? cp.created)}</dd>
 						<dt>Última operação</dt><dd>27/05/2026 09:14</dd>
 					</dl>
 				</Card>

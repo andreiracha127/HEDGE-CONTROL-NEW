@@ -155,12 +155,12 @@
 								<td style="font-size: 12px; color: var(--muted);">{q.received ?? '—'}</td>
 								<td><StatePill state={q.status}/></td>
 								<td>
-									{#if !isPending && !isBest}
-										<button type="button" class="btn btn-secondary btn-sm" onclick={awardRfq} disabled={actionBusy !== null}>Fechar</button>
-									{:else if isBest}
+									{#if isBest}
 										<button type="button" class="btn btn-accent btn-sm" onclick={awardRfq} disabled={actionBusy !== null}>Fechar →</button>
-									{:else}
+									{:else if isPending}
 										<button type="button" class="btn btn-ghost btn-sm" onclick={refreshRfq} disabled={actionBusy !== null}>Lembrar</button>
+									{:else}
+										<span style="color: var(--muted);">—</span>
 									{/if}
 								</td>
 							</tr>

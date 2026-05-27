@@ -81,6 +81,21 @@ describe('RFQ create page — production submit contract', () => {
 		expect(source).not.toMatch(/counterparty_ids\s*:/);
 	});
 
+	it('generates preview text from the leg editor before POST /rfqs', () => {
+		expect(source).toContain("client.POST('/rfqs/preview-text'");
+		expect(source).toContain('body: buildPreviewPayload()');
+		expect(source).toContain('text_en: preview.text_en ?? preview.text');
+		expect(source).toContain('text_pt: preview.text_pt ?? preview.text');
+	});
+
+	it('requires intent references before enabling submit', () => {
+		expect(source).toContain('const intentReady = $derived');
+		expect(source).toContain("intent === 'GLOBAL_POSITION'");
+		expect(source).toContain("intent === 'COMMERCIAL_HEDGE' && !!orderId");
+		expect(source).toContain("intent === 'SPREAD' && !!buyTradeId && !!sellTradeId");
+		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !intentReady\}/);
+	});
+
 	it('validates MT quantity at three-decimal precision before preview or submit', () => {
 		expect(source).toContain('step="0.001"');
 		expect(source).toContain('validateMtQuantity');
