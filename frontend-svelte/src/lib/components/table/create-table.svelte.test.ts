@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/svelte';
+import { tick } from 'svelte';
 import TableTestWrapper from '../../../tests/helpers/TableTestWrapper.svelte';
 import {
 	getCoreRowModel,
@@ -30,6 +31,7 @@ const columns: ColumnDef<TestData, unknown>[] = [
 function renderTable(opts: Partial<{
 	data: TestData[];
 	sorting: Array<{ id: string; desc: boolean }>;
+	enableSorting: boolean;
 	globalFilter: string;
 	columnVisibility: Record<string, boolean>;
 	pagination: { pageIndex: number; pageSize: number };
@@ -49,7 +51,7 @@ function renderTable(opts: Partial<{
 				data,
 				columns,
 				getCoreRowModel: getCoreRowModel(),
-				...(opts.sorting ? { getSortedRowModel: getSortedRowModel() } : {}),
+				...(opts.sorting || opts.enableSorting ? { getSortedRowModel: getSortedRowModel() } : {}),
 				...(opts.globalFilter !== undefined ? { getFilteredRowModel: getFilteredRowModel() } : {}),
 				...(Object.keys(state).length > 0 ? { state } : {}),
 			}),
@@ -93,6 +95,13 @@ describe('createSvelteTable', () => {
 		const rows = table.getSortedRowModel().rows;
 		const values = rows.map((r) => r.getValue('value'));
 		expect(values).toEqual([30, 20, 10]);
+	});
+
+	it('syncs internally managed sorting state', async () => {
+		const table = renderTable({ enableSorting: true });
+		table.setSorting([{ id: 'value', desc: false }]);
+		await tick();
+		expect(table.getState().sorting).toEqual([{ id: 'value', desc: false }]);
 	});
 
 	it('supports global filtering', () => {
