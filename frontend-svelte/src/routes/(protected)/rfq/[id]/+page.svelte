@@ -10,32 +10,20 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	let { data } = $props();
+	const optionalData = $derived(data as Record<string, any>);
 	const rfqs = $derived(data.rfqs);
-	const sampleQuotes = $derived(data.quotes);
+	const loadedQuotes = $derived(data.quotes);
 	const stateEvents = $derived(data.stateEvents ?? []);
 	let actionBusy = $state<'cancel' | 'refresh' | 'award' | null>(null);
 
 	const id = $derived(page.params.id ?? '');
 	const rfq = $derived(rfqs.find((r) => r.id === id) ?? rfqs[0]);
-	const quotes = $derived(sampleQuotes);
+	const quotes = $derived(loadedQuotes);
 	const best = $derived(quotes.find((q) => q.status === 'best'));
 	const canManageRfq = $derived(authStore.hasRole('risk_manager'));
 	const canCancelRfq = $derived(canManageRfq && ['CREATED', 'SENT'].includes(rfq.state));
 	const canRefreshRfq = $derived(canManageRfq && ['SENT', 'QUOTED'].includes(rfq.state));
 	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && !!best);
-	const mid = 2645.5;
-
-	function vsMid(price: number | null): number | null {
-		if (price == null) return null;
-		return ((price - mid) / mid) * 100;
-	}
-
-	function pnlVsMid(price: number | null): number | null {
-		if (price == null || !rfq) return null;
-		const impact = rfq.direction === 'SELL' ? (price - mid) * rfq.qty : (mid - price) * rfq.qty;
-		return Number.isFinite(impact) ? impact : null;
-	}
-
 	function eventKind(event: Record<string, any>): 'pos' | 'warn' | 'info' {
 		if (event.to_state === 'AWARDED' || event.to_state === 'CLOSED') return 'pos';
 		if (event.trigger === 'cancel' || event.to_state === 'CANCELLED') return 'warn';
@@ -100,11 +88,7 @@
 		await handleActionResult(apiError, 'RFQ fechada com a melhor cotação elegível');
 	}
 
-	const docs = [
-		{ name: 'Confirmação de RFQ',                size: '48 KB' },
-		{ name: 'Snapshot de exposição #EXP-091200', size: '172 KB' },
-		{ name: 'Política de hedge · v3.2',          size: '2,1 MB' },
-	];
+	const documents = $derived((optionalData.documents ?? []) as Record<string, any>[]);
 </script>
 
 <div class="page">
@@ -132,11 +116,13 @@
 
 	<div class="card" style="margin-bottom: 16px; padding: 12px 18px;">
 		<div class="steps">
-			<div class="step done"><span class="dot"></span>Criada · 09:14</div>
-			<div class="step done"><span class="dot"></span>Enviada · 09:18</div>
-			<div class="step current"><span class="dot"></span>Cotada · 09:19 — 4/5</div>
-			<div class="step"><span class="dot"></span>Aprovada</div>
-			<div class="step"><span class="dot"></span>Executada</div>
+			{#if stateEvents.length}
+				{#each stateEvents as event (event.id)}
+					<div class="step done"><span class="dot"></span>{eventWhat(event)} · {eventWhen(event)}</div>
+				{/each}
+			{:else}
+				<div class="step current"><span class="dot"></span>Estado atual · {rfq.state}</div>
+			{/if}
 		</div>
 	</div>
 
@@ -144,7 +130,7 @@
 		<div class="stack gap-4">
 			<Card
 				title="Cotações recebidas"
-				sub="Janela de cotação válida até 09:34 · 16 min restantes"
+				sub="Cotações retornadas pelo backend"
 				noPad
 			>
 				{#snippet actions()}
@@ -157,7 +143,6 @@
 							<th>Contraparte</th>
 							<th class="num">Preço (USD/t)</th>
 							<th class="num">Spread vs melhor</th>
-							<th class="num">vs Mid LME</th>
 							<th>Validade</th>
 							<th>Recebida</th>
 							<th>Status</th>
@@ -168,7 +153,6 @@
 						{#each quotes as q (q.id)}
 							{@const isBest = q.status === 'best'}
 							{@const isPending = q.status === 'pending'}
-							{@const mid_pct = vsMid(q.price)}
 							<tr class:selected={isBest}>
 								<td class="strong">
 									{q.cp}
@@ -176,12 +160,9 @@
 										<span style="margin-left: 6px; color: var(--orange); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Melhor</span>
 									{/if}
 								</td>
-								<td class="num strong">{q.price ? q.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+								<td class="num strong">{q.price != null ? q.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
 								<td class="num" style="color: {q.spread === 0 ? 'var(--pos)' : 'var(--ink-2)'};">
 									{q.spread != null ? (q.spread === 0 ? '—' : '+' + q.spread.toFixed(2)) : '—'}
-								</td>
-								<td class="num" style="color: {mid_pct != null ? (mid_pct < 0 ? 'var(--pos)' : 'var(--neg)') : 'var(--muted)'};">
-									{mid_pct != null ? (mid_pct >= 0 ? '+' : '') + mid_pct.toFixed(2) + ' %' : '—'}
 								</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.valid ?? '—'}</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.received ?? '—'}</td>
@@ -197,6 +178,9 @@
 								</td>
 							</tr>
 						{/each}
+						{#if quotes.length === 0}
+							<tr><td colspan="7" class="tbl-empty">Nenhuma cotação carregada</td></tr>
+						{/if}
 					</tbody>
 				</table>
 			</Card>
@@ -206,36 +190,26 @@
 					<dl class="kv">
 						<dt>RFQ</dt><dd class="mono">{rfq.id}</dd>
 						<dt>Intenção</dt><dd>{rfq.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : rfq.intent === 'SPREAD' ? 'Spread' : 'Posição global'}</dd>
-						<dt>Tipo</dt><dd>Forward (futuro a termo)</dd>
+						<dt>Tipo</dt><dd>{rfq.instrument_type ?? rfq.product_type ?? '—'}</dd>
 						<dt>Lado</dt><dd><DirectionBadge dir={rfq.direction}/></dd>
 						<dt>Quantidade</dt><dd class="tabular">{rfq.qty.toLocaleString('pt-BR')} t</dd>
 						<dt>Janela</dt>
 						<dd>
 							{rfq.window} · {rfq.delivery_start.split('-').reverse().join('/')} → {rfq.delivery_end.split('-').reverse().join('/')}
 						</dd>
-						<dt>Mid LME (ref.)</dt><dd class="tabular">2.645,50</dd>
-						<dt>Solicitante</dt><dd>{rfq.requester} · Mesa Metais</dd>
+						<dt>Solicitante</dt><dd>{rfq.requester ?? '—'}</dd>
 					</dl>
 				</Card>
 				<Card title="Notional & impacto">
 					{#if best && best.price != null}
-						{@const impact = pnlVsMid(best.price)}
 						<dl class="kv">
 							<dt>Notional (melhor)</dt>
 							<dd class="tabular strong">
 								US$ {(rfq.qty * best.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}
 							</dd>
-							<dt>Notional em BRL</dt>
-							<dd class="tabular">
-								R$ {(rfq.qty * best.price * 5.124).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
-							</dd>
-							<dt>P&amp;L vs mid</dt>
-							<dd class="tabular" style="color: {impact == null ? 'var(--muted)' : impact >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{impact == null ? '—' : `${impact >= 0 ? '+' : '-'}US$ ${Math.abs(impact).toLocaleString('en-US', { maximumFractionDigits: 0 })}`}
-							</dd>
-							<dt>Δ cobertura jun/26</dt><dd class="tabular" style="color: var(--pos);">+28,6 pp → 116,7 %</dd>
-							<dt>Margem inicial</dt><dd class="tabular">US$ 158.310 (10 %)</dd>
 						</dl>
+					{:else}
+						<div class="tbl-empty">Nenhuma melhor cotação carregada</div>
 					{/if}
 				</Card>
 			</div>
@@ -264,14 +238,17 @@
 
 			<Card title="Documentos">
 				<div class="stack gap-2">
-					{#each docs as d (d.name)}
+					{#each documents as d, i (d.id ?? d.name ?? i)}
 						<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
 							<Icon name="doc"/>
-							<span style="flex: 1;">{d.name}</span>
-							<span style="color: var(--muted); font-size: 11px;">{d.size}</span>
+							<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
+							<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
 							<Icon name="download"/>
 						</button>
 					{/each}
+					{#if documents.length === 0}
+						<div class="tbl-empty">Nenhum documento carregado para esta RFQ</div>
+					{/if}
 				</div>
 			</Card>
 		</div>

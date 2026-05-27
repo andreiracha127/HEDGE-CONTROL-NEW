@@ -13,13 +13,21 @@
 	let tab = $state<'all' | 'filled' | 'partial' | 'pending' | 'cancelled'>('all');
 	let dir = $state<'all' | 'buy' | 'sell'>('all');
 
-	const TABS: [typeof tab, string, number][] = [
-		['all',       'Todas',      47],
-		['filled',    'Liquidadas', 38],
-		['partial',   'Parciais',    3],
-		['pending',   'Pendentes',   4],
-		['cancelled', 'Canceladas',  2],
-	];
+	const statusCount = (status: string) => orders.filter((order) => order.status === status).length;
+	const totalVolume = $derived(
+		orders.reduce((sum, order) => {
+			const qty = Number(order.quantity_mt ?? order.qty);
+			const price = Number(order.avg_entry_price ?? order.price);
+			return Number.isFinite(qty) && Number.isFinite(price) ? sum + Math.abs(qty * price) : sum;
+		}, 0),
+	);
+	const TABS = $derived<[typeof tab, string, number][]>([
+		['all',       'Todas',      orders.length],
+		['filled',    'Liquidadas', statusCount('filled')],
+		['partial',   'Parciais',   statusCount('partial')],
+		['pending',   'Pendentes',  statusCount('pending')],
+		['cancelled', 'Canceladas', statusCount('cancelled')],
+	]);
 	const filteredOrders = $derived(
 		orders.filter((order) => {
 			const statusOk = tab === 'all' || order.status === tab;
@@ -37,6 +45,10 @@
 	function fmtOrderPrice(order: Record<string, any>): string {
 		return formatPrice(order.avg_entry_price ?? order.price, order.commodity === 'USDBRL' ? 'USD/BRL' : 'USD/MT');
 	}
+
+	function fmtUsd(value: number): string {
+		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
+	}
 </script>
 
 <div class="page">
@@ -52,10 +64,10 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Ordens hoje"     value="24"        delta="+4 vs ontem"           deltaKind="pos"/>
-		<Kpi label="Volume D"        value="US$ 24,1 M" delta="+US$ 3,2 M vs ontem"   deltaKind="pos"/>
-		<Kpi label="Preço médio AL"  value="2.632,15"  unit="USD/t" delta="vs mid 2.635,00 LME" deltaKind="pos"/>
-		<Kpi label="Slippage médio"  value="−0,11"     unit="%" delta="dentro do limite −0,25%" deltaKind="pos"/>
+		<Kpi label="Ordens carregadas" value={String(orders.length)} delta="/orders" deltaKind="flat"/>
+		<Kpi label="Volume carregado" value={fmtUsd(totalVolume)} delta="quantidade × preço" deltaKind="flat"/>
+		<Kpi label="Liquidadas" value={String(statusCount('filled'))} delta="status filled" deltaKind="flat"/>
+		<Kpi label="Pendentes" value={String(statusCount('pending'))} delta="status pending" deltaKind="flat"/>
 	</div>
 
 	<Card noPad>

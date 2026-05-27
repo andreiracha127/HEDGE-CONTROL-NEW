@@ -8,6 +8,13 @@
 	import { canonicalCommodityCode, exposureBucketsFrom } from '$lib/alcast/route-data';
 	let { data } = $props();
 	const exposureRows = $derived(data.exposureRows ?? []);
+	const hedgeTasks = $derived((data.tasks?.items ?? data.tasks ?? []) as Record<string, any>[]);
+	const netRows = $derived((data.netExposure?.items ?? data.netExposure ?? []) as Record<string, any>[]);
+	const exposureBuckets = $derived(data.exposureBuckets ?? []);
+	const totalCommercial = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.commercial_mt ?? 0), 0));
+	const totalHedged = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.hedged_mt ?? 0), 0));
+	const totalResidual = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
+	const policyAdherence = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : null);
 
 	let commodity = $state('ALUMINUM');
 	const COMMODITIES = [
@@ -23,17 +30,20 @@
 		}),
 	);
 
-	const pending = [
-		{ when: 'hoje', sev: 'neg' as const,  title: 'ago/26 abaixo da política', desc: 'Cobertura em 39 % · meta ≥ 70 %' },
-		{ when: 'hoje', sev: 'neg' as const,  title: 'set/26 abaixo da política', desc: 'Cobertura em 22,9 % · meta ≥ 70 %' },
-		{ when: 'hoje', sev: 'warn' as const, title: 'Diferença jun/26 ↔ SAP',    desc: '15 t de divergência detectadas' },
-		{ when: 'd-1',  sev: 'warn' as const, title: '3 ajustes de exposição',    desc: 'Pendentes de aprovação no workflow' },
-		{ when: 'd-2',  sev: 'info' as const, title: 'Rebalanceamento sugerido',  desc: 'Reduzir 200 t em ZN-LME para abrir limite' },
-	];
+	function fmtMt(value: unknown): string {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) return '—';
+		return parsed.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+	}
 
-	function sevColor(sev: 'neg' | 'warn' | 'info'): string {
-		if (sev === 'neg') return 'var(--neg)';
-		if (sev === 'warn') return 'var(--orange)';
+	function fmtPct(value: number | null): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return value.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+	}
+
+	function taskColor(status: unknown): string {
+		if (status === 'pending') return 'var(--orange)';
+		if (status === 'cancelled') return 'var(--muted)';
 		return 'var(--info)';
 	}
 </script>
@@ -42,7 +52,7 @@
 	<div class="page-head">
 		<div>
 			<h1 class="page-title">Exposições</h1>
-			<div class="page-sub">Saldo comercial líquido por janela de entrega · snapshot 27/05/2026 09:12</div>
+			<div class="page-sub">Saldo comercial líquido por janela de entrega</div>
 		</div>
 		<div class="page-actions">
 			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Recalcular</button>
@@ -51,10 +61,10 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Comercial total"        value="36.300" unit="t" delta="+1.420 t · 24h" deltaKind="pos"/>
-		<Kpi label="Hedgeado"               value="17.900" unit="t" delta="+700 t · 24h"   deltaKind="pos"/>
-		<Kpi label="Residual"               value="18.400" unit="t" delta="+720 t · 24h"   deltaKind="neg"/>
-		<Kpi label="Aderência à política"   value="49,3"   unit="%" delta="meta ≥ 70 %"    deltaKind="neg"/>
+		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposures/list" deltaKind="flat"/>
+		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="exposures/list" deltaKind="flat"/>
+		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposures/list" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
+		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="hedged/commercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
 	</div>
 
 	<Card title="Exposição por commodity e janela" sub="Drill-down por mês de entrega" noPad>
@@ -116,46 +126,61 @@
 						</td>
 					</tr>
 				{/each}
+				{#if filteredExposureBuckets.length === 0}
+					<tr><td colspan="9" class="tbl-empty">Nenhuma exposição carregada para o filtro selecionado</td></tr>
+				{/if}
 			</tbody>
 		</table>
 		<Pager from={filteredExposureBuckets.length > 0 ? 1 : 0} to={filteredExposureBuckets.length} total={filteredExposureBuckets.length}/>
 	</Card>
 
 	<div class="grid-7-5" style="margin-top: 16px;">
-		<Card title="Reconciliação contábil" sub="Comparativo SAP × Plataforma de Hedge · D-1">
+		<Card title="Exposição líquida" sub="Derivado de /exposures/net">
 			<table class="tbl tbl-tight">
 				<thead>
 					<tr>
-						<th>Janela</th>
-						<th class="num">SAP (ECC)</th>
-						<th class="num">Plataforma</th>
-						<th class="num">Δ</th>
-						<th>Status</th>
+						<th>Commodity</th>
+						<th class="num">Long</th>
+						<th class="num">Short</th>
+						<th class="num">Net</th>
+						<th class="num">Hedge long</th>
+						<th class="num">Hedge short</th>
 					</tr>
 				</thead>
 				<tbody>
-					<tr><td>jun/26</td><td class="num">4.215</td><td class="num">4.200</td><td class="num" style="color: var(--warn);">−15</td><td><Badge kind="warn" dot>Diferença</Badge></td></tr>
-					<tr><td>jul/26</td><td class="num">3.800</td><td class="num">3.800</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
-					<tr><td>ago/26</td><td class="num">4.100</td><td class="num">4.100</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
-					<tr><td>set/26</td><td class="num">3.495</td><td class="num">3.500</td><td class="num" style="color: var(--warn);">+5</td><td><Badge kind="warn" dot>Diferença</Badge></td></tr>
-					<tr><td>out/26</td><td class="num">3.900</td><td class="num">3.900</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
+					{#each netRows as row, i (row.commodity ?? i)}
+						<tr>
+							<td class="strong">{row.commodity ?? '—'}</td>
+							<td class="num">{fmtMt(row.long_tons)}</td>
+							<td class="num">{fmtMt(row.short_tons)}</td>
+							<td class="num strong">{fmtMt(row.net_tons)}</td>
+							<td class="num">{fmtMt(row.long_hedged)}</td>
+							<td class="num">{fmtMt(row.short_hedged)}</td>
+						</tr>
+					{/each}
+					{#if netRows.length === 0}
+						<tr><td colspan="6" class="tbl-empty">Nenhuma exposição líquida carregada</td></tr>
+					{/if}
 				</tbody>
 			</table>
 		</Card>
 
 		<Card title="Pendências" sub="Itens que precisam de ação">
 			<div class="stack" style="gap: 0;">
-				{#each pending as p, i (i)}
+				{#each hedgeTasks as task (task.id)}
 					<div class="row gap-3" style="padding: 10px 0; border-bottom: 1px solid var(--line-soft);">
-						<div style="width: 4px; align-self: stretch; background: {sevColor(p.sev)}; border-radius: 2px;"></div>
+						<div style="width: 4px; align-self: stretch; background: {taskColor(task.status)}; border-radius: 2px;"></div>
 						<div style="flex: 1;">
-							<div style="font-size: 12.5px; font-weight: 500;">{p.title}</div>
-							<div style="font-size: 11.5px; color: var(--muted);">{p.desc}</div>
+							<div style="font-size: 12.5px; font-weight: 500;">{task.recommended_action ?? 'Ação de hedge'}</div>
+							<div style="font-size: 11.5px; color: var(--muted);">{fmtMt(task.recommended_tons)} t · exposição {task.exposure_id ?? '—'}</div>
 						</div>
-						<div style="font-size: 11px; color: var(--muted);">{p.when}</div>
+						<div style="font-size: 11px; color: var(--muted);">{task.status ?? '—'}</div>
 						<button type="button" class="btn btn-ghost btn-sm">Ver →</button>
 					</div>
 				{/each}
+				{#if hedgeTasks.length === 0}
+					<div class="tbl-empty">Nenhuma pendência carregada</div>
+				{/if}
 			</div>
 		</Card>
 	</div>

@@ -142,7 +142,7 @@
 				<div class="field-grid">
 					<div class="field">
 						<label class="field-label" for="counterparty-contact-name">Nome do contato</label>
-						<input id="counterparty-contact-name" class="input" placeholder="Maria Santos" bind:value={contactName}/>
+						<input id="counterparty-contact-name" class="input" placeholder="Nome do contato" bind:value={contactName}/>
 					</div>
 					<div class="field">
 						<label class="field-label" for="counterparty-contact-email">Email</label>

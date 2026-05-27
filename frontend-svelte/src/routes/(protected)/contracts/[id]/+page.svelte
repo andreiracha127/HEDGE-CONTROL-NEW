@@ -133,6 +133,24 @@
 		return contract.commodity === 'USDBRL' ? 4 : 2;
 	}
 
+	function legLabel(side: unknown): string {
+		if (side === 'buy') return 'Compra';
+		if (side === 'sell') return 'Venda';
+		return '—';
+	}
+
+	function legLabelUpper(side: unknown): string {
+		if (side === 'buy') return 'COMPRA';
+		if (side === 'sell') return 'VENDA';
+		return '—';
+	}
+
+	function legKind(side: unknown): 'pos' | 'neg' | 'neutral' {
+		if (side === 'buy') return 'pos';
+		if (side === 'sell') return 'neg';
+		return 'neutral';
+	}
+
 	function fmtDate(value: string | null | undefined): string {
 		if (!value) return '—';
 		const date = value.slice(0, 10);
@@ -192,7 +210,7 @@
 				{/if}
 			</div>
 			<div class="page-sub" style="margin-top: 6px;">
-				{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa × {c.var_leg === 'buy' ? 'Compra' : 'Venda'} variável · {fmtQty(c)} · {c.cp} · liquidação {fmtDate(settleDate)}
+				{legLabel(c.fixed_leg)} fixa × {legLabel(c.var_leg)} variável · {fmtQty(c)} · {c.cp} · liquidação {fmtDate(settleDate)}
 			</div>
 		</div>
 		<div class="page-actions">
@@ -273,10 +291,10 @@
 
 				<Card title="Pernas do swap" sub="Visualização do payoff">
 					<div class="grid-2">
-						<div class="card" style="padding: 16px; background: {c.fixed_leg === 'buy' ? 'var(--pos-soft)' : 'var(--neg-soft)'};">
+						<div class="card" style="padding: 16px; background: {c.fixed_leg === 'buy' ? 'var(--pos-soft)' : c.fixed_leg === 'sell' ? 'var(--neg-soft)' : 'var(--surface-sunk)'};">
 							<div class="row gap-2" style="margin-bottom: 10px;">
-								<Badge kind={c.fixed_leg === 'buy' ? 'pos' : 'neg'}>
-									{c.fixed_leg === 'buy' ? 'COMPRA' : 'VENDA'} FIXA
+								<Badge kind={legKind(c.fixed_leg)}>
+									{legLabelUpper(c.fixed_leg)} FIXA
 								</Badge>
 								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Leg 1</span>
 							</div>
@@ -286,10 +304,10 @@
 							</div>
 							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · contratual</div>
 						</div>
-						<div class="card" style="padding: 16px; background: {c.var_leg === 'buy' ? 'var(--pos-soft)' : 'var(--neg-soft)'};">
+						<div class="card" style="padding: 16px; background: {c.var_leg === 'buy' ? 'var(--pos-soft)' : c.var_leg === 'sell' ? 'var(--neg-soft)' : 'var(--surface-sunk)'};">
 							<div class="row gap-2" style="margin-bottom: 10px;">
-								<Badge kind={c.var_leg === 'buy' ? 'pos' : 'neg'}>
-									{c.var_leg === 'buy' ? 'COMPRA' : 'VENDA'} VARIÁVEL
+								<Badge kind={legKind(c.var_leg)}>
+									{legLabelUpper(c.var_leg)} VARIÁVEL
 								</Badge>
 								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Leg 2</span>
 							</div>
@@ -297,7 +315,7 @@
 							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
 								{fmtNumber(mid, priceDigits(c))}
 							</div>
-							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · LME 11:30 BST</div>
+							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · preço carregado</div>
 						</div>
 					</div>
 					<div class="divider"></div>
@@ -358,18 +376,18 @@
 				<tbody>
 					<tr>
 						<td class="strong">Leg 1</td>
-						<td><DirectionBadge dir={c.fixed_leg}/></td>
+						<td><DirectionBadge dir={c.fixed_leg ?? '—'}/></td>
 						<td><Badge kind="info">Fix</Badge></td>
-						<td class="num">{c.qty.toLocaleString('pt-BR')} MT</td>
+						<td class="num">{fmtQty(c)}</td>
 						<td class="num strong">{fmtPrice(c)}</td>
 						<td>{fmtDate(settleDate)} · fixing</td>
 						<td>LME Official Settlement</td>
 					</tr>
 					<tr>
 						<td class="strong">Leg 2</td>
-						<td><DirectionBadge dir={c.var_leg}/></td>
+						<td><DirectionBadge dir={c.var_leg ?? '—'}/></td>
 						<td><Badge kind="neutral">AVG</Badge></td>
-						<td class="num">{c.qty.toLocaleString('pt-BR')} MT</td>
+						<td class="num">{fmtQty(c)}</td>
 						<td class="num">média {settleMonth(settleDate)}</td>
 						<td>{settleYearMonth(settleDate)} · mês completo</td>
 						<td>LME Average Month</td>
@@ -402,11 +420,13 @@
 								<td>
 									{#if flow.direction === 'in'}
 										<Badge kind="pos" dot>Entrada</Badge>
-									{:else}
+									{:else if flow.direction === 'out'}
 										<Badge kind="neg" dot>Saída</Badge>
+									{:else}
+										<span style="color: var(--muted);">—</span>
 									{/if}
 								</td>
-								<td><StatePill state={flow.status ?? 'projected'}/></td>
+								<td><StatePill state={flow.status ?? '—'}/></td>
 							</tr>
 						{/each}
 					{:else}

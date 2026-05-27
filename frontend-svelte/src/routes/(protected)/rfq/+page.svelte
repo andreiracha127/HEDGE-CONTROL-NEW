@@ -12,13 +12,22 @@
 	const rfqs = $derived(data.rfqs);
 	type TabKey = 'all' | 'CREATED' | 'SENT' | 'QUOTED';
 	const tab = $derived((data.tab ?? 'all') as TabKey);
+	const totalLoaded = $derived(data.total ?? rfqs.length);
+	const stateCount = (state: string) => rfqs.filter((rfq) => rfq.state === state).length;
+	const quotedNotional = $derived(
+		rfqs.reduce((sum, rfq) => {
+			const qty = Number(rfq.qty);
+			const best = Number(rfq.best);
+			return Number.isFinite(qty) && Number.isFinite(best) ? sum + Math.abs(qty * best) : sum;
+		}, 0),
+	);
 
-	const TABS: [TabKey, string][] = [
-		['all',     'Todas'],
-		['CREATED', 'Criadas'],
-		['SENT',    'Enviadas'],
-		['QUOTED',  'Cotadas'],
-	];
+	const TABS = $derived<[TabKey, string, number][]>([
+		['all',     'Todas',    totalLoaded],
+		['CREATED', 'Criadas',  stateCount('CREATED')],
+		['SENT',    'Enviadas', stateCount('SENT')],
+		['QUOTED',  'Cotadas',  stateCount('QUOTED')],
+	]);
 
 	function setTab(next: TabKey) {
 		const query = next === 'all' ? '' : `?tab=${next}`;
@@ -35,6 +44,10 @@
 		const digits = commodity === 'USDBRL' ? 4 : 2;
 		return best.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
+
+	function fmtUsdMillions(value: number): string {
+		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
+	}
 </script>
 
 <div class="page">
@@ -50,18 +63,18 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="RFQ abertas"             value="3"          delta="2 aguardando cotação"  deltaKind="flat"/>
-		<Kpi label="Tempo médio à cotação"   value="00:18"      unit="min" delta="−00:02 vs semana" deltaKind="pos"/>
-		<Kpi label="Hit ratio (mês)"         value="68,4"       unit="%" delta="+3,2 pp" deltaKind="pos"/>
-		<Kpi label="Volume em cotação"       value="US$ 4,9 M"  delta="3 commodities"/>
+		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="/rfqs" deltaKind="flat"/>
+		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="state=CREATED" deltaKind="flat"/>
+		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="state=SENT" deltaKind="flat"/>
+		<Kpi label="Notional cotado" value={fmtUsdMillions(quotedNotional)} delta="qty × melhor preço" deltaKind="flat"/>
 	</div>
 
 	<Card noPad>
 		<div class="tbl-tools">
 			<div class="tabs-pill">
-				{#each TABS as [k, l] (k)}
+				{#each TABS as [k, l, c] (k)}
 					<button type="button" class="tab" class:active={tab === k} onclick={() => setTab(k)}>
-						{l}
+						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
 					</button>
 				{/each}
 			</div>
@@ -107,8 +120,11 @@
 						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
 				{/each}
+				{#if rfqs.length === 0}
+					<tr><td colspan="11" class="tbl-empty">Nenhuma RFQ para o filtro selecionado</td></tr>
+				{/if}
 			</tbody>
 		</table>
-		<Pager from={1} to={7} total={184}/>
+		<Pager from={rfqs.length > 0 ? 1 : 0} to={rfqs.length} total={totalLoaded}/>
 	</Card>
 </div>

@@ -535,7 +535,7 @@
 					<dt>Alçada</dt><dd>Risk Manager</dd>
 					<dt>Aprovação</dt><dd><Badge kind="neutral" dot>Sujeita ao workflow</Badge></dd>
 					<dt>Política IFRS</dt><dd>Hedge accounting</dd>
-					<dt>Mark-to-market</dt><dd>Diário · LME 11:30 BST</dd>
+					<dt>Mark-to-market</dt><dd>Conforme serviço de marcação carregado</dd>
 				</dl>
 			</Card>
 		</div>

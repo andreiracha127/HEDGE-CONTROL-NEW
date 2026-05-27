@@ -82,6 +82,18 @@
 	function fmtUsdMillions(value: number): string {
 		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
 	}
+
+	function legLabel(side: unknown): string {
+		if (side === 'buy') return 'Compra';
+		if (side === 'sell') return 'Venda';
+		return '—';
+	}
+
+	function legKind(side: unknown): 'pos' | 'neg' | 'neutral' {
+		if (side === 'buy') return 'pos';
+		if (side === 'sell') return 'neg';
+		return 'neutral';
+	}
 </script>
 
 <div class="page">
@@ -141,9 +153,9 @@
 						<td>{c.type}</td>
 						<td>
 							<span class="row gap-2" style="font-size: 11px;">
-								<Badge kind={c.fixed_leg === 'buy' ? 'pos' : 'neg'}>{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa</Badge>
+								<Badge kind={legKind(c.fixed_leg)}>{legLabel(c.fixed_leg)} fixa</Badge>
 								<span style="color: var(--muted);">×</span>
-								<Badge kind="neutral">{c.var_leg === 'buy' ? 'Compra' : 'Venda'} var.</Badge>
+								<Badge kind={legKind(c.var_leg)}>{legLabel(c.var_leg)} var.</Badge>
 							</span>
 						</td>
 						<td class="num">{fmtQty(c)}</td>

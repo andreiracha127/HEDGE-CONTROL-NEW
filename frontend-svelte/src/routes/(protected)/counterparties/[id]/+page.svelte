@@ -19,6 +19,28 @@
 	const usePct = $derived(cp.limit > 0 ? (cp.used / cp.limit) * 100 : 0);
 	const cpContracts = $derived<Contract[]>(contracts.filter((c) => c.counterparty_id === cp.id || c.cp_id === cp.id || c.cp === cp.short));
 	const mtm = $derived(cpContracts.reduce((s, c) => s + (Number(c.mtm) || 0), 0));
+	const latestContractDate = $derived(
+		cpContracts
+			.map((contract) => contract.created_at ?? contract.traded ?? contract.settle)
+			.filter(Boolean)
+			.sort()
+			.at(-1) ?? null,
+	);
+	const concentrationRows = $derived.by(() => {
+		const byCommodity = new Map<string, number>();
+		for (const contract of cpContracts) {
+			const qty = Number(contract.qty);
+			const price = Number(contract.price);
+			const notional = Number.isFinite(qty) && Number.isFinite(price) ? Math.abs(qty * price) : 0;
+			if (notional === 0) continue;
+			byCommodity.set(contract.commodity ?? '—', (byCommodity.get(contract.commodity ?? '—') ?? 0) + notional);
+		}
+		const total = Array.from(byCommodity.values()).reduce((sum, value) => sum + value, 0);
+		return Array.from(byCommodity.entries()).map(([commodity, notional]) => ({
+			commodity,
+			pct: total > 0 ? (notional / total) * 100 : 0,
+		}));
+	});
 
 	function fmtQty(c: Contract): string {
 		if (c.qty == null) return '—';
@@ -43,6 +65,11 @@
 	function fmtMtm(value: number | null | undefined): string {
 		if (value == null) return '—';
 		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+	}
+
+	function fmtUsdMillions(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
 	}
 </script>
 
@@ -75,19 +102,19 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Limite de crédito" value={`US$ ${(cp.limit / 1_000_000).toFixed(1)}`} unit="M" delta="aprovado 18/03/2026"/>
+		<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="credit_limit_usd"/>
 		<Kpi
 			label="Utilização"
 			value={`${usePct.toFixed(0)}`}
 			unit="%"
-			delta={`US$ ${(cp.used / 1_000_000).toFixed(1)} M em uso`}
+			delta={`${fmtUsdMillions(cp.used)} em uso`}
 			deltaKind={usePct > 80 ? 'neg' : usePct > 60 ? 'flat' : 'pos'}
 		/>
-		<Kpi label="Contratos ativos" value={String(cpContracts.length)} delta={`Notional US$ ${(cp.used / 1_000_000).toFixed(1)} M`}/>
+		<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="/contracts/hedge"/>
 		<Kpi
 			label="MTM (USD)"
 			value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-			delta="marcação 11:30 BST"
+			delta="mtm_value carregado"
 			deltaKind={mtm >= 0 ? 'pos' : 'neg'}
 		/>
 	</div>
@@ -111,17 +138,16 @@
 						<dt>Cidade</dt><dd>{fmtText(cp.city)}</dd>
 						<dt>Endereço</dt><dd>{fmtText(cp.address)}</dd>
 						<dt>Cadastro</dt><dd>{fmtDate(cp.created_at ?? cp.created)}</dd>
-						<dt>Última operação</dt><dd>27/05/2026 09:14</dd>
+						<dt>Última operação</dt><dd>{fmtDate(latestContractDate)}</dd>
 					</dl>
 				</Card>
 
 				<Card title="Contato">
 					<dl class="kv">
-						<dt>Mesa</dt><dd>Mesa de Commodities</dd>
-						<dt>Contato principal</dt><dd>Maria Santos · trader@{cp.short.toLowerCase()}.com.br</dd>
-						<dt>Telefone</dt><dd>+55 11 3000-0000</dd>
-						<dt>WhatsApp</dt><dd>+55 11 99999-0000</dd>
-						<dt>Canal RFQ</dt><dd><Badge kind="pos" dot>Email + WhatsApp</Badge></dd>
+						<dt>Contato principal</dt><dd>{fmtText(cp.contact_name)}</dd>
+						<dt>Email</dt><dd>{fmtText(cp.contact_email)}</dd>
+						<dt>Telefone</dt><dd>{fmtText(cp.contact_phone)}</dd>
+						<dt>WhatsApp</dt><dd>{fmtText(cp.whatsapp_phone)}</dd>
 					</dl>
 				</Card>
 
@@ -131,10 +157,18 @@
 							<tr><th>Quando</th><th>Tipo</th><th>Entidade</th><th class="num">Volume</th><th>Status</th></tr>
 						</thead>
 						<tbody>
-							<tr><td>27/05 09:14</td><td>RFQ</td><td class="mono">RFQ-2026-0184</td><td class="num">1.200 MT</td><td><StatePill state="QUOTED"/></td></tr>
-							<tr><td>27/05 09:04</td><td>Ordem</td><td class="mono">ORD-2026-0419</td><td class="num">1.500 MT</td><td><StatePill state="filled"/></td></tr>
-							<tr><td>26/05 13:02</td><td>Ordem</td><td class="mono">ORD-2026-0415</td><td class="num">700 MT</td><td><StatePill state="filled"/></td></tr>
-							<tr><td>25/05 11:18</td><td>RFQ</td><td class="mono">RFQ-2026-0167</td><td class="num">2.000 MT</td><td><StatePill state="QUOTED"/></td></tr>
+							{#each cpContracts as contract (contract.id)}
+								<tr>
+									<td>{fmtDate(contract.created_at ?? contract.traded)}</td>
+									<td>Contrato</td>
+									<td class="mono">{contract.id}</td>
+									<td class="num">{fmtQty(contract)}</td>
+									<td><StatePill state={contract.status}/></td>
+								</tr>
+							{/each}
+							{#if cpContracts.length === 0}
+								<tr><td colspan="5" class="tbl-empty">Nenhuma operação carregada para esta contraparte</td></tr>
+							{/if}
 						</tbody>
 					</table>
 				</Card>
@@ -153,45 +187,40 @@
 						</div>
 						<div style="flex: 1;">
 							<dl class="kv">
-								<dt>Limite</dt><dd class="tabular">US$ {(cp.limit / 1_000_000).toFixed(1)} M</dd>
-								<dt>Em uso</dt><dd class="tabular strong">US$ {(cp.used / 1_000_000).toFixed(1)} M</dd>
-								<dt>Disponível</dt><dd class="tabular" style="color: var(--pos);">US$ {((cp.limit - cp.used) / 1_000_000).toFixed(1)} M</dd>
+								<dt>Limite</dt><dd class="tabular">{fmtUsdMillions(cp.limit)}</dd>
+								<dt>Em uso</dt><dd class="tabular strong">{fmtUsdMillions(cp.used)}</dd>
+								<dt>Disponível</dt><dd class="tabular" style="color: var(--pos);">{fmtUsdMillions(cp.limit - cp.used)}</dd>
 							</dl>
 						</div>
 					</div>
 					<div class="divider" style="margin: 6px 0 12px;"></div>
 					<div class="section-title" style="margin-bottom: 8px;">Concentração por commodity</div>
 					<div class="stack gap-2">
-						<div class="row gap-3">
-							<span style="width: 80px; font-size: 12px;">AL-LME</span>
-							<Bar pct={72} kind="pos"/>
-							<span class="tabular" style="width: 40px; text-align: right; font-size: 11px;">72%</span>
-						</div>
-						<div class="row gap-3">
-							<span style="width: 80px; font-size: 12px;">USDBRL</span>
-							<Bar pct={21} kind="pos"/>
-							<span class="tabular" style="width: 40px; text-align: right; font-size: 11px;">21%</span>
-						</div>
-						<div class="row gap-3">
-							<span style="width: 80px; font-size: 12px;">CU-LME</span>
-							<Bar pct={7} kind="pos"/>
-							<span class="tabular" style="width: 40px; text-align: right; font-size: 11px;">7%</span>
-						</div>
+						{#each concentrationRows as row (row.commodity)}
+							<div class="row gap-3">
+								<span style="width: 80px; font-size: 12px;">{row.commodity}</span>
+								<Bar pct={row.pct} kind={row.pct > 80 ? 'neg' : row.pct > 60 ? 'warn' : 'pos'}/>
+								<span class="tabular" style="width: 40px; text-align: right; font-size: 11px;">{row.pct.toFixed(0)}%</span>
+							</div>
+						{/each}
+						{#if concentrationRows.length === 0}
+							<div class="tbl-empty">Nenhuma concentração carregada</div>
+						{/if}
 					</div>
 				</Card>
 
 				<Card title="Compliance">
 					<dl class="kv">
-						<dt>KYC</dt><dd><Badge kind="pos" dot>Aprovado</Badge> <span style="color: var(--muted); font-size: 11px;">· renova em 12/09/2026</span></dd>
-						<dt>Sanctions</dt><dd><Badge kind="pos" dot>Clear</Badge> <span style="color: var(--muted); font-size: 11px;">· última varredura 25/05</span></dd>
-						<dt>Rating externo</dt><dd>S&amp;P {cp.rating} · Moody's Aa3</dd>
-						<dt>Política IFRS</dt><dd>Aprovado para hedge accounting</dd>
+						<dt>KYC</dt><dd>{fmtText(cp.kyc_status)}</dd>
+						<dt>Sanctions</dt><dd>{fmtText(cp.sanctions_status)}</dd>
+						<dt>Rating</dt><dd>{fmtText(cp.rating)}</dd>
+						<dt>Ativa</dt><dd>{cp.is_active === true ? 'Sim' : cp.is_active === false ? 'Não' : '—'}</dd>
 					</dl>
 				</Card>
 			</div>
 		</div>
 	{:else if tab === 'contratos'}
-		<Card title="Contratos ativos" sub={`${cpContracts.length} contratos · notional total US$ ${(cp.used / 1_000_000).toFixed(1)} M`} noPad>
+		<Card title="Contratos ativos" sub={`${cpContracts.length} contratos carregados`} noPad>
 			<table class="tbl">
 				<thead>
 					<tr>
@@ -227,34 +256,21 @@
 				<table class="tbl tbl-tight">
 					<thead><tr><th>Data</th><th class="num">Limite</th><th class="num">Δ</th><th>Aprovador</th></tr></thead>
 					<tbody>
-						<tr><td>18/03/2026</td><td class="num tabular strong">{(cp.limit / 1_000_000).toFixed(1)} M</td><td class="num" style="color: var(--pos);">+2,0 M</td><td>Comitê de Risco</td></tr>
-						<tr><td>15/09/2025</td><td class="num tabular">{((cp.limit - 2_000_000) / 1_000_000).toFixed(1)} M</td><td class="num">—</td><td>Comitê de Risco</td></tr>
-						<tr><td>22/03/2025</td><td class="num tabular">{((cp.limit - 4_000_000) / 1_000_000).toFixed(1)} M</td><td class="num" style="color: var(--pos);">+1,5 M</td><td>Comitê de Risco</td></tr>
-						<tr><td>10/09/2024</td><td class="num tabular">{((cp.limit - 5_500_000) / 1_000_000).toFixed(1)} M</td><td class="num">Inicial</td><td>Comitê de Risco</td></tr>
+						<tr><td colspan="4" class="tbl-empty">Nenhum histórico de limite carregado</td></tr>
 					</tbody>
 				</table>
 			</Card>
 
 			<Card title="Trilha KYC">
 				<div class="feed">
-					<div class="feed-item pos"><div class="icon"></div><div><div class="what">KYC renovado · documentação atualizada</div><div class="row gap-2"><span class="when">12/03/2026</span><span class="who">· L. Ferreira</span></div></div></div>
-					<div class="feed-item pos"><div class="icon"></div><div><div class="what">Sanctions screening · clear (OFAC, Bacen, EU)</div><div class="row gap-2"><span class="when">25/05/2026</span><span class="who">· Sistema</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Limite ampliado de US$ 10 M → US$ 12 M</div><div class="row gap-2"><span class="when">18/03/2026</span><span class="who">· Comitê de Risco</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Revisão semestral concluída · sem restrições</div><div class="row gap-2"><span class="when">15/09/2025</span><span class="who">· A. Costa</span></div></div></div>
-					<div class="feed-item pos"><div class="icon"></div><div><div class="what">Habilitação inicial para operar RFQs</div><div class="row gap-2"><span class="when">10/09/2024</span><span class="who">· Comitê de Risco</span></div></div></div>
+					<div class="tbl-empty">Nenhuma trilha KYC carregada</div>
 				</div>
 			</Card>
 		</div>
 	{:else if tab === 'atividade'}
 		<Card title="Linha do tempo">
 			<div class="feed">
-				<div class="feed-item pos"><div class="icon"></div><div><div class="what">RFQ <strong>RFQ-2026-0184</strong> enviada · AL-LME 1.200t buy</div><div class="row gap-2"><span class="when">hoje 09:14</span><span class="who">· M. Santos</span></div></div></div>
-				<div class="feed-item pos"><div class="icon"></div><div><div class="what">Ordem <strong>ORD-2026-0419</strong> liquidada · 1.500t @ 2.631,00</div><div class="row gap-2"><span class="when">hoje 09:04</span><span class="who">· R. Almeida</span></div></div></div>
-				<div class="feed-item info"><div class="icon"></div><div><div class="what">Contrato CT-2026-0118 aprovado</div><div class="row gap-2"><span class="when">ontem 17:55</span><span class="who">· A. Costa</span></div></div></div>
-				<div class="feed-item pos"><div class="icon"></div><div><div class="what">Ordem ORD-2026-0415 liquidada · 700t</div><div class="row gap-2"><span class="when">ontem 13:02</span><span class="who">· R. Almeida</span></div></div></div>
-				<div class="feed-item info"><div class="icon"></div><div><div class="what">Sanctions screening · clear</div><div class="row gap-2"><span class="when">25/05</span><span class="who">· Sistema</span></div></div></div>
-				<div class="feed-item warn"><div class="icon"></div><div><div class="what">Limite revisado preventivamente · sem alteração</div><div class="row gap-2"><span class="when">22/05</span><span class="who">· L. Ferreira</span></div></div></div>
-				<div class="feed-item info"><div class="icon"></div><div><div class="what">RFQ RFQ-2026-0145 cancelada</div><div class="row gap-2"><span class="when">20/05</span><span class="who">· M. Santos</span></div></div></div>
+				<div class="tbl-empty">Nenhuma atividade carregada para esta contraparte</div>
 			</div>
 		</Card>
 	{/if}

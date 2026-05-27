@@ -70,6 +70,9 @@
 						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
 				{/each}
+				{#if counterparties.length === 0}
+					<tr><td colspan="7" class="tbl-empty">Nenhuma contraparte carregada</td></tr>
+				{/if}
 			</tbody>
 		</table>
 	</Card>

@@ -114,13 +114,15 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toContain("comm: '22.400'");
 	});
 
-	it('keeps RFQ detail ranking, impact, and history tied to backend evidence', () => {
+	it('keeps RFQ detail ranking, notional, and history tied to backend evidence', () => {
 		const source = readRoute('(protected)/rfq/[id]/+page.svelte');
 		const loader = readRoute('(protected)/rfq/[id]/+page.ts');
 
 		expect(loader).toContain("rfq.intent === 'SPREAD'");
 		expect(loader).toContain('spreadBest.buy_quote?.id');
-		expect(source).toContain("rfq.direction === 'SELL' ? (price - mid) * rfq.qty : (mid - price) * rfq.qty");
+		expect(source).toContain('US$ {(rfq.qty * best.price).toLocaleString');
+		expect(source).not.toContain('const mid =');
+		expect(source).not.toContain('pnlVsMid');
 		expect(source).toContain("const canManageRfq = $derived(authStore.hasRole('risk_manager'))");
 		expect(source).toContain("rfq.state === 'QUOTED' && !!best");
 		expect(source).toContain('const stateEvents = $derived(data.stateEvents ?? [])');
@@ -162,12 +164,15 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toContain('href={`/counterparties/${c.cp}`}');
 	});
 
-	it('does not load hedge contracts from trader counterparty detail', () => {
+	it('loads counterparty detail contracts from the backend instead of keeping prototype operations', () => {
 		const loader = readRoute('(protected)/counterparties/[id]/+page.ts');
+		const source = readRoute('(protected)/counterparties/[id]/+page.svelte');
 
 		expect(loader).toContain("client.GET('/counterparties/{counterparty_id}'");
-		expect(loader).not.toContain("client.GET('/contracts/hedge'");
-		expect(loader).toContain('contracts: []');
+		expect(loader).toContain("client.GET('/contracts/hedge'");
+		expect(loader).toContain('items<Record<string, any>>(optionalData(contractsResult)).map(normalizeContract)');
+		expect(source).toContain('{#each cpContracts as contract');
+		expect(source).not.toContain('RFQ-2026-0184');
 	});
 
 	it('filters risk-only analysis links by role in the sidebar', () => {
@@ -202,12 +207,14 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toMatch(/Math\.max\(0,\s*pct\)/);
 	});
 
-	it('guards MTM analytics fixed prices before formatting or scenario math', () => {
+	it('guards MTM analytics fixed prices and removes scenario math without backend contract', () => {
 		const source = readRoute('(protected)/analytics/mtm/+page.svelte');
 
 		expect(source).toContain('function fmtPrice');
 		expect(source).toContain('if (c.price == null) return');
-		expect(source).toContain('function scenarioMtm(c: Contract): number | null');
+		expect(source).toContain('const mtmValues = $derived');
+		expect(source).not.toContain('function scenarioMtm');
+		expect(source).not.toContain('midFor');
 		expect(source).not.toMatch(/<td class="num">\{c\.price\.toLocaleString/);
 	});
 

@@ -13,16 +13,7 @@
 	const totalHedged = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.hedged_mt ?? 0), 0));
 	const totalResidual = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
 	const totalCoverage = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : 0);
-
-	const feed = [
-		{ kind: 'pos',  when: '09:14', who: 'M. Santos',    whatHtml: 'Nova RFQ <strong>RFQ-2026-0184</strong> · AL-LME 1.200t buy' },
-		{ kind: 'info', when: '09:08', who: 'Sistema',      whatHtml: 'Snapshot diário de exposições · 4 ajustes detectados' },
-		{ kind: 'pos',  when: '09:04', who: 'R. Almeida',   whatHtml: 'Ordem <strong>ORD-2026-0419</strong> liquidada · AL-LME 1.500t @ 2.631,00 · ITAU' },
-		{ kind: 'warn', when: '08:55', who: 'L. Ferreira',  whatHtml: 'Limite de contraparte <strong>Citi</strong> sob análise · uso 0/6,5M' },
-		{ kind: 'pos',  when: '08:21', who: 'R. Almeida',   whatHtml: 'Ordem <strong>ORD-2026-0418</strong> liquidada · USDBRL 3M @ 5,1115 · JPM' },
-		{ kind: 'info', when: '08:14', who: 'Sistema',      whatHtml: 'Cotações LME atualizadas (open)' },
-		{ kind: 'pos',  when: '17:55', who: 'A. Costa',     whatHtml: 'Aprovação <strong>APR-2026-0096</strong> concedida · CT-2026-0118' },
-	];
+	const openRfqs = $derived(data.rfqs ?? []);
 
 	function coverageKind(ratio: number): 'pos' | 'warn' | 'neg' {
 		if (ratio >= 70) return 'pos';
@@ -68,7 +59,7 @@
 	<div class="page-head">
 		<div>
 			<h1 class="page-title">Visão geral</h1>
-			<div class="page-sub">Posições, cobertura de hedge e atividade · atualizado às 09:14</div>
+			<div class="page-sub">Posições, cobertura de hedge e atividade</div>
 		</div>
 		<div class="page-actions">
 			<button type="button" class="btn btn-secondary">
@@ -90,8 +81,6 @@
 			unit="t"
 			delta={`${exposureRows.length} commodity(s) live`}
 			deltaKind="flat"
-			spark={[24, 26, 28, 27, 29, 32, 34, 36, 36.3]}
-			sparkColor="var(--navy-2)"
 		/>
 		<Kpi
 			label="Hedge ratio"
@@ -99,27 +88,18 @@
 			unit="%"
 			delta="live exposure list"
 			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
-			spark={[41, 42, 44, 43, 45, 46, 47, 48, 49.3]}
-			sparkColor="var(--pos)"
 		/>
 		<Kpi
-			label="MTM agregado"
-			value="+US$ 204.165"
-			delta="+US$ 18.460 1d"
-			deltaKind="pos"
-			spark={[100, 110, 140, 160, 150, 170, 180, 190, 204]}
-			sparkColor="var(--pos)"
+			label="Residual"
+			value={fmtMt(totalResidual)}
+			unit="t"
+			delta="derivado de exposures/list"
+			deltaKind={totalResidual === 0 ? 'flat' : 'neg'}
 		/>
 		<Kpi
-			label="P&L realizado"
-			value="+US$ 312.880"
-			delta="+1,8 % vs mês anterior"
-			deltaKind="pos"
-		/>
-		<Kpi
-			label="RFQ abertas"
-			value="3"
-			delta="2 aguardando cotação"
+			label="RFQs enviadas"
+			value={String(openRfqs.length)}
+			delta="state=SENT"
 			deltaKind="flat"
 		/>
 	</div>
@@ -172,24 +152,13 @@
 			</div>
 		</Card>
 
-		<Card title="Atividade recente" sub="Operações dos últimos 24 h">
+		<Card title="Atividade recente" sub="Eventos operacionais carregados">
 			{#snippet actions()}
 				<button type="button" class="btn-link">Ver tudo</button>
 			{/snippet}
 
 			<div class="feed">
-				{#each feed as item, i (i)}
-					<div class="feed-item {item.kind}">
-						<div class="icon"></div>
-						<div>
-							<div class="what">{@html item.whatHtml}</div>
-							<div class="row gap-2">
-								<span class="when">{item.when}</span>
-								<span class="who">· {item.who}</span>
-							</div>
-						</div>
-					</div>
-				{/each}
+				<div class="tbl-empty">Sem atividade recente</div>
 			</div>
 		</Card>
 	</div>
@@ -233,7 +202,7 @@
 			</table>
 		</Card>
 
-		<Card title="Cotações de mercado" sub="LME · Bovespa · 09:14">
+		<Card title="Cotações de mercado" sub="Westmetall cash settlement">
 			{#snippet actions()}
 				<Badge kind="pos" dot>ao vivo</Badge>
 			{/snippet}

@@ -115,7 +115,7 @@ export function normalizeOrder(row: Record<string, any>): Record<string, any> {
 		direction: row.order_type === 'SO' ? 'SELL' : 'BUY',
 		price: row.avg_entry_price ?? row.price,
 		cp: row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
-		status: row.status ?? 'filled',
+		status: row.status ?? '—',
 		traded: row.trade_date ?? row.created_at ?? row.traded,
 		settlement: row.delivery_date_end ?? row.settlement ?? null,
 	};
@@ -125,14 +125,14 @@ export function normalizeContract(row: Record<string, any>): Record<string, any>
 	return {
 		...row,
 		qty: numberOrNull(row.quantity_mt ?? row.qty),
-		type: row.float_pricing_convention ?? row.type ?? 'Forward',
-		fixed_leg: row.fixed_leg_side ?? row.fixed_leg ?? 'buy',
-		var_leg: row.variable_leg_side ?? row.var_leg ?? 'sell',
+		type: row.float_pricing_convention ?? row.type ?? '—',
+		fixed_leg: row.fixed_leg_side ?? row.fixed_leg ?? null,
+		var_leg: row.variable_leg_side ?? row.var_leg ?? null,
 		price: numberOrNull(row.fixed_price_value ?? row.price),
 		cp: row.counterparty_short ?? row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
 		settle: row.settlement_date ?? row.prompt_date ?? row.settle,
 		mtm: numberOrNull(row.mtm_value ?? row.mtm),
-		status: row.status ?? 'active',
+		status: row.status ?? '—',
 	};
 }
 
@@ -169,7 +169,7 @@ export function normalizeCashflow(row: Record<string, any>): Record<string, any>
 		commodity: row.commodity ?? '—',
 		amount_usd: amountUsd,
 		direction: amountUsd < 0 ? 'out' : 'in',
-		status: row.status ?? 'projected',
+		status: row.status ?? '—',
 	};
 }
 

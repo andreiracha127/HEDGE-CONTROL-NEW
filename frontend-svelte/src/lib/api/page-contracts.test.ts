@@ -57,6 +57,13 @@ describe('design-port route load contracts', () => {
 		expect(source).toContain('Failed to load market data');
 	});
 
+	it('loads exposures from the list, net, and task contracts', () => {
+		const source = read('(protected)/exposures/+page.ts');
+		expect(source).toContain("client.GET('/exposures/list'");
+		expect(source).toContain("client.GET('/exposures/net'");
+		expect(source).toContain("client.GET('/exposures/tasks'");
+	});
+
 	it('loads workflow approvals from the canonical backend endpoint', () => {
 		const source = read('(protected)/workflow-approvals/+page.ts');
 		expect(source).toContain("client.GET('/workflow-approvals'");
@@ -135,6 +142,9 @@ describe('design-port create affordances', () => {
 		const source = read('(protected)/analytics/mtm/+page.svelte');
 		expect(source).toContain('function fmtMtm');
 		expect(source).not.toContain('c.mtm.toLocaleString');
+		expect(source).not.toContain('midFor');
+		expect(source).not.toContain('const sliders');
+		expect(source).not.toContain('const historical');
 	});
 
 	it('does not link normal orders to placeholder RFQs', () => {
@@ -156,5 +166,14 @@ describe('design-port create affordances', () => {
 		expect(orders).toContain('{#each filteredOrders as o (o.id)}');
 		expect(contracts).toContain('const filteredContracts = $derived');
 		expect(contracts).toContain('{#each filteredContracts as c (c.id)}');
+	});
+
+	it('keeps RFQ list counters and pagination derived from loaded data', () => {
+		const source = read('(protected)/rfq/+page.svelte');
+		expect(source).toContain('value={String(totalLoaded)}');
+		expect(source).toContain('stateCount(');
+		expect(source).toContain('total={totalLoaded}');
+		expect(source).not.toContain('value="3"');
+		expect(source).not.toContain('total={184}');
 	});
 });
