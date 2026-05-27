@@ -67,14 +67,14 @@
 	}
 </script>
 
-<div class="overflow-x-auto rounded border border-surface-800">
+<div class="overflow-x-auto rounded border border-gray-200">
 	<table class="w-full text-sm">
 		<thead class="sticky top-0 z-10">
 			{#each table.getHeaderGroups() as headerGroup}
-				<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
+				<tr class="border-b border-gray-200 bg-white text-left text-xs text-gray-500">
 					{#each headerGroup.headers as header}
 						<th
-							class="px-3 py-2 font-medium {header.column.getCanSort() ? 'cursor-pointer select-none hover:text-surface-300' : ''}"
+							class="px-3 py-2 font-medium {header.column.getCanSort() ? 'cursor-pointer select-none hover:text-gray-700' : ''}"
 							style="width: {header.getSize()}px"
 							onclick={header.column.getToggleSortingHandler()}
 						>
@@ -94,30 +94,30 @@
 		<tbody>
 			{#if isLoading}
 				{#each Array(5) as _}
-					<tr class="border-b border-surface-800/50">
+					<tr class="border-b border-gray-200">
 						{#each columns as _col}
 							<td class="px-3 py-2">
-								<div class="h-4 w-24 animate-pulse rounded bg-surface-800"></div>
+								<div class="h-4 w-24 animate-pulse rounded bg-gray-100"></div>
 							</td>
 						{/each}
 					</tr>
 				{/each}
 			{:else}
 				{#each table.getRowModel().rows as row (row.id)}
-					<tr class="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors {rowClass(row)}">
+					<tr class="border-b border-gray-200 hover:bg-gray-100 transition-colors {rowClass(row)}">
 						{#each row.getVisibleCells() as cell}
 							<td class="px-3 py-2">
 								{#if cell.getIsGrouped()}
 									<button
 										onclick={row.getToggleExpandedHandler()}
-										class="flex items-center gap-1 font-medium text-surface-200"
+										class="flex items-center gap-1 font-medium text-gray-900"
 									>
 										<span>{row.getIsExpanded() ? '▾' : '▸'}</span>
 										<span>{renderCell(cell)}</span>
-										<span class="ml-1 text-xs text-surface-500">({row.subRows.length})</span>
+										<span class="ml-1 text-xs text-gray-500">({row.subRows.length})</span>
 									</button>
 								{:else if cell.getIsAggregated()}
-									<span class="font-medium text-surface-300">{renderCell(cell)}</span>
+									<span class="font-medium text-gray-700">{renderCell(cell)}</span>
 								{:else if cell.getIsPlaceholder()}
 									<!-- grouped placeholder -->
 								{:else}
@@ -128,7 +128,7 @@
 					</tr>
 				{:else}
 					<tr>
-						<td colspan={columns.length} class="px-3 py-8 text-center text-surface-500">
+						<td colspan={columns.length} class="px-3 py-8 text-center text-gray-500">
 							{emptyMessage}
 						</td>
 					</tr>

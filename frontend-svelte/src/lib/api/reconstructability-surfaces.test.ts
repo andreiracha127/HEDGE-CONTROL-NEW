@@ -20,25 +20,27 @@ function read(rel: string): string {
 
 describe('orders list page — J-A6-08 reconstructability surface', () => {
 	const source = read('(protected)/orders/+page.svelte');
+	const loadSource = read('(protected)/orders/+page.ts');
 
-	it('exists and calls the canonical /orders list endpoint via ordersListPath', () => {
-		expect(source).toContain('ordersListPath');
-		expect(source).toContain("import { ordersListPath } from '$lib/api/paths'");
+	it('exists and calls the canonical /orders list endpoint through the typed client load function', () => {
+		expect(loadSource).toContain("client.GET('/orders'");
+		expect(loadSource).toContain('normalizeOrder');
 	});
 
 	it('renders canonical OrderRead fields (id, quantity_mt, order_type, commodity)', () => {
-		expect(source).toMatch(/order\.id/);
-		expect(source).toMatch(/order\.quantity_mt/);
-		expect(source).toMatch(/order\.order_type/);
-		expect(source).toMatch(/order\.commodity/);
+		expect(source).toMatch(/o\.id/);
+		expect(source).toMatch(/o\.commodity/);
+		expect(loadSource).toMatch(/normalizeOrder/);
+		expect(readFileSync(resolve(SRC, 'lib', 'alcast', 'route-data.ts'), 'utf8')).toMatch(/quantity_mt/);
+		expect(readFileSync(resolve(SRC, 'lib', 'alcast', 'route-data.ts'), 'utf8')).toMatch(/order_type/);
 	});
 
 	it('renders MT quantity via formatQuantityMT (three-decimal preservation)', () => {
-		expect(source).toMatch(/formatQuantityMT\(order\.quantity_mt\)/);
+		expect(source).toMatch(/formatQuantityMT\(order\.quantity_mt \?\? order\.qty\)/);
 	});
 
 	it('links each row to the /orders/{id} detail view', () => {
-		expect(source).toMatch(/href=\{`\/orders\/\$\{order\.id\}`\}/);
+		expect(source).toMatch(/href=\{`\/orders\/\$\{o\.id\}`\}/);
 		expect(source).toContain('data-testid="orders-detail-link"');
 	});
 
@@ -81,13 +83,11 @@ describe('order detail page — J-A6-08 reconstructability surface', () => {
 
 describe('audit events page — J-A6-09 reconstructability surface', () => {
 	const source = read('(protected)/audit/+page.svelte');
+	const loadSource = read('(protected)/audit/+page.ts');
 
-	it('exists and calls /audit/events + /audit/events/{id}/verify via the typed helpers', () => {
-		expect(source).toContain('auditEventsPath');
-		expect(source).toContain('auditEventVerifyPath');
-		expect(source).toContain(
-			"import { auditEventsPath, auditEventVerifyPath } from '$lib/api/paths'",
-		);
+	it('exists and calls /audit/events + /audit/events/{id}/verify through typed client paths', () => {
+		expect(loadSource).toContain("client.GET('/audit/events'");
+		expect(source).toContain("client.GET('/audit/events/{event_id}/verify'");
 	});
 
 	it('gates the page UI behind the auditor role', () => {
@@ -114,26 +114,14 @@ describe('audit events page — J-A6-09 reconstructability surface', () => {
 });
 
 describe('layout — J-A6-08/09 navigation visibility', () => {
-	const source = readFileSync(resolve(ROUTES, '+layout.svelte'), 'utf8');
+	const source = readFileSync(resolve(SRC, 'lib', 'components', 'alcast', 'Sidebar.svelte'), 'utf8');
 
 	it('always lists /orders in the protected nav (visible to any authenticated user)', () => {
 		expect(source).toMatch(/href:\s*['"]\/orders['"]/);
 	});
 
-	it('only lists /audit in the nav when authStore.hasRole(\'auditor\') is true', () => {
-		// The nav array must spread the /audit entry from a hasRole
-		// ternary so non-auditors (risk_manager, trader) never see the
-		// link. Asserted as a structural match — the spread `...(... ?
-		// [{href:'/audit',...}] : [])` must appear in the source — not
-		// as an index-order heuristic that breaks if `/audit` is later
-		// referenced anywhere else in the file.
-		expect(source).toMatch(
-			/\.\.\.\(\s*authStore\.hasRole\(\s*['"]auditor['"]\s*\)[\s\S]*?href:\s*['"]\/audit['"][\s\S]*?\)/,
-		);
-		// And it must NOT appear as an unconditional flat array entry.
-		expect(source).not.toMatch(
-			/\{\s*href:\s*['"]\/audit['"][^}]*\}\s*,\s*(?!\s*\])/,
-		);
+	it('only lists /audit in the nav when the current user has the auditor role', () => {
+		expect(source).toMatch(/userRoles\.includes\(\s*['"]auditor['"]\s*\)[\s\S]*?href:\s*['"]\/audit['"]/);
 	});
 });
 

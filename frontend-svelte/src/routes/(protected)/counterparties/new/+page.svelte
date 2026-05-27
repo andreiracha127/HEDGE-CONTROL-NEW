@@ -1,237 +1,261 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { client } from '$lib/api/client';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
-	import { apiFetch } from '$lib/api/fetch';
-	import { authStore } from '$lib/stores/auth.svelte';
 
-	type CounterpartyType = 'broker' | 'bank_br' | 'customer' | 'supplier';
-
-	const allTypeOptions: Array<{ value: CounterpartyType; label: string }> = [
-		{ value: 'broker', label: 'Broker' },
-		{ value: 'bank_br', label: 'Banco BR' },
-		{ value: 'customer', label: 'Cliente' },
-		{ value: 'supplier', label: 'Fornecedor' },
-	];
-	const traderTypeOptions = allTypeOptions.filter((option) =>
-		['customer', 'supplier'].includes(option.value),
-	);
-
-	let type = $state<CounterpartyType>('broker');
+	let type = $state<'broker' | 'bank_br' | 'customer' | 'supplier'>('broker');
 	let name = $state('');
 	let shortName = $state('');
 	let taxId = $state('');
-	let country = $state('');
+	let country = $state('BRA');
 	let city = $state('');
 	let address = $state('');
 	let contactName = $state('');
 	let contactEmail = $state('');
 	let contactPhone = $state('');
-	let whatsappPhone = $state('');
-	let paymentTermsDays = $state<number | null>(30);
-	let creditLimitUsd = $state<number | null>(null);
-	let sanctionsStatus = $state('clear');
-	let riskRating = $state('medium');
+	let whatsapp = $state('');
+	let paymentTerms = $state('30');
+	let creditLimit = $state('5000000');
+	let riskRating = $state<'low' | 'medium' | 'high'>('medium');
+	let sanctions = $state<'clear' | 'flagged' | 'blocked'>('clear');
 	let notes = $state('');
-
 	let submitting = $state(false);
 
-	const canCreate = $derived(authStore.hasAnyRole('trader', 'risk_manager'));
-	const isTraderOnly = $derived(authStore.isTraderOnly());
-	const typeOptions = $derived(isTraderOnly ? traderTypeOptions : allTypeOptions);
+	const TYPE_LABEL: Record<string, string> = {
+		broker:   'Broker',
+		bank_br:  'Banco BR',
+		customer: 'Cliente',
+		supplier: 'Fornecedor',
+	};
 
-	$effect(() => {
-		if (isTraderOnly && !['customer', 'supplier'].includes(type)) {
-			type = 'customer';
-		}
-	});
-
-	async function handleSubmit(e: SubmitEvent) {
-		e.preventDefault();
-
-		if (!canCreate) {
-			notifications.error('Perfil sem permissão para criar contraparte');
-			return;
-		}
-		if (!name.trim()) {
-			notifications.warning('Nome é obrigatório');
-			return;
-		}
-		if (!country.trim() || country.trim().length !== 3) {
-			notifications.warning('País deve ter exatamente 3 caracteres (ex: BRA, USA)');
-			return;
-		}
-
+	async function submit() {
 		submitting = true;
-		try {
-			const body: Record<string, unknown> = {
+		const { data: created, error: apiError } = await client.POST('/counterparties', {
+			body: {
 				type,
-				name: name.trim(),
-				country: country.trim().toUpperCase(),
-				sanctions_status: sanctionsStatus,
+				name,
+				short_name: shortName || null,
+				tax_id: taxId || null,
+				country,
+				city: city || null,
+				address: address || null,
+				contact_name: contactName || null,
+				contact_email: contactEmail || null,
+				contact_phone: contactPhone || null,
+				whatsapp_phone: whatsapp || null,
+				payment_terms_days: Number(paymentTerms || 30),
+				credit_limit_usd: Number(creditLimit || 0),
+				kyc_status: 'pending',
 				risk_rating: riskRating,
-			};
-
-			if (shortName.trim()) body.short_name = shortName.trim();
-			if (taxId.trim()) body.tax_id = taxId.trim();
-			if (city.trim()) body.city = city.trim();
-			if (address.trim()) body.address = address.trim();
-			if (contactName.trim()) body.contact_name = contactName.trim();
-			if (contactEmail.trim()) body.contact_email = contactEmail.trim();
-			if (contactPhone.trim()) body.contact_phone = contactPhone.trim();
-			if (whatsappPhone.trim()) body.whatsapp_phone = whatsappPhone.trim();
-			if (paymentTermsDays != null && paymentTermsDays > 0) body.payment_terms_days = paymentTermsDays;
-			if (creditLimitUsd != null && creditLimitUsd > 0) body.credit_limit_usd = creditLimitUsd;
-			if (notes.trim()) body.notes = notes.trim();
-
-			const response = await apiFetch('/counterparties', {
-				method: 'POST',
-				body: JSON.stringify(body),
-			});
-
-			if (!response.ok) {
-				const err = await response.json().catch(() => ({ detail: 'Erro desconhecido' }));
-				throw new Error(typeof err.detail === 'string' ? err.detail : JSON.stringify(err.detail));
-			}
-
-			const cp = await response.json();
-			notifications.success('Contraparte criada com sucesso');
-			goto(`/counterparties/${cp.id}`);
-		} catch (e) {
-			notifications.error(e instanceof Error ? e.message : 'Erro ao criar contraparte');
-		} finally {
-			submitting = false;
+				sanctions_status: sanctions,
+				notes: notes || null,
+				is_active: true,
+			},
+		});
+		submitting = false;
+		if (apiError) {
+			notifications.error(`Falha ao criar contraparte: ${apiError.detail ?? 'erro desconhecido'}`);
+			return;
 		}
+		notifications.success(`Contraparte ${created?.name ?? name} criada`);
+		await goto(`/counterparties/${created?.id}`);
 	}
-
-	const inputClass =
-		'mt-1 w-full rounded border border-surface-700 bg-surface-800 px-3 py-2 text-sm text-surface-200';
-	const labelClass = 'block text-sm font-medium text-surface-400';
 </script>
 
-<div class="mx-auto max-w-3xl p-6">
-	<div class="mb-6 flex items-center gap-3">
-		<a href="/counterparties" class="text-surface-500 hover:text-surface-300">← Voltar</a>
-		<h1 class="text-lg font-semibold text-surface-200">Nova Contraparte</h1>
+<div class="page">
+	<div class="page-head">
+		<div>
+			<div class="row gap-2" style="margin-bottom: 4px;">
+				<a href="/counterparties" class="btn btn-link"><Icon name="arrowLeft"/> Contrapartes</a>
+				<span style="color: var(--muted);">/</span>
+				<span style="font-size: 12px; color: var(--muted);">Nova contraparte</span>
+			</div>
+			<h1 class="page-title">Nova contraparte</h1>
+			<div class="page-sub">Cadastro inicial — KYC, sanctions screening e limite serão revisados pelo time de Risco</div>
+		</div>
+		<div class="page-actions">
+			<a href="/counterparties" class="btn btn-ghost">Cancelar</a>
+			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
+			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting || !name || !country}>
+				<Icon name="plus"/>{submitting ? 'Criando...' : 'Criar contraparte'}
+			</button>
+		</div>
 	</div>
 
-	{#if !canCreate}
-		<div class="rounded border border-surface-700 bg-surface-900 p-4 text-sm text-surface-400">
-			Perfil sem permissão para criar contraparte.
+	<div class="detail-grid">
+		<div class="stack gap-4">
+			<Card title="1. Identificação" sub="Dados cadastrais e jurídicos">
+				<div class="field-grid">
+					<div class="field">
+						<label class="field-label" for="counterparty-type">Tipo <span class="req">*</span></label>
+						<select id="counterparty-type" class="select" bind:value={type}>
+							<option value="broker">Broker / corretora</option>
+							<option value="bank_br">Banco BR</option>
+							<option value="customer">Cliente</option>
+							<option value="supplier">Fornecedor</option>
+						</select>
+					</div>
+					<div class="field">
+						<label class="field-label" for="counterparty-name">Razão social <span class="req">*</span></label>
+						<input id="counterparty-name" class="input" placeholder="Itaú BBA S.A." maxlength="200" bind:value={name}/>
+					</div>
+					<div class="field">
+						<label class="field-label">
+							Abreviação
+							<InfoTip>Sigla curta usada em tabelas e badges (até 6 caracteres).</InfoTip>
+						</label>
+						<input class="input" placeholder="ITAU" maxlength="50" bind:value={shortName}/>
+					</div>
+					<div class="field">
+						<label class="field-label" for="counterparty-tax-id">Tax ID</label>
+						<input id="counterparty-tax-id" class="input mono" placeholder="CNPJ ou VAT internacional" bind:value={taxId}/>
+					</div>
+					<div class="field">
+						<label class="field-label">
+							País <span class="req">*</span>
+							<InfoTip>ISO 3166-1 alfa-3 · 3 letras maiúsculas (BRA, USA, GBR, DEU…).</InfoTip>
+						</label>
+						<input
+							class="input"
+							placeholder="BRA"
+							maxlength="3"
+							style="text-transform: uppercase;"
+							value={country}
+							oninput={(e) => (country = e.currentTarget.value.toUpperCase())}
+						/>
+					</div>
+					<div class="field">
+						<label class="field-label" for="counterparty-city">Cidade</label>
+						<input id="counterparty-city" class="input" placeholder="São Paulo" bind:value={city}/>
+					</div>
+					<div class="field" style="grid-column: 1 / -1;">
+						<label class="field-label" for="counterparty-address">Endereço</label>
+						<input id="counterparty-address" class="input" placeholder="Av. Brigadeiro Faria Lima, 3500 — 04538-132" bind:value={address}/>
+					</div>
+				</div>
+			</Card>
+
+			<Card title="2. Contato">
+				<div class="field-grid">
+					<div class="field">
+						<label class="field-label" for="counterparty-contact-name">Nome do contato</label>
+						<input id="counterparty-contact-name" class="input" placeholder="Maria Santos" bind:value={contactName}/>
+					</div>
+					<div class="field">
+						<label class="field-label" for="counterparty-contact-email">Email</label>
+						<input id="counterparty-contact-email" class="input" type="email" placeholder="msantos@contraparte.com.br" bind:value={contactEmail}/>
+					</div>
+					<div class="field">
+						<label class="field-label" for="counterparty-contact-phone">Telefone</label>
+						<input id="counterparty-contact-phone" class="input" placeholder="+55 11 3000-0000" bind:value={contactPhone}/>
+					</div>
+					<div class="field">
+						<label class="field-label">
+							WhatsApp
+							<InfoTip>Usado para envio de RFQ via mensageria.</InfoTip>
+						</label>
+						<input class="input" placeholder="+5511999999999" bind:value={whatsapp}/>
+					</div>
+				</div>
+			</Card>
+
+			<Card title="3. Financeiro & compliance" sub="Limites de crédito, classificação e screening de sanções">
+				<div class="field-grid">
+					<div class="field">
+						<label class="field-label" for="counterparty-payment-terms">Prazo de pagamento</label>
+						<div class="input-suffix">
+							<input id="counterparty-payment-terms" class="input" type="number" min="1" bind:value={paymentTerms}/>
+							<span class="suffix">dias</span>
+						</div>
+					</div>
+					<div class="field">
+						<label class="field-label">
+							Limite de crédito
+							<InfoTip>Aprovação adicional necessária acima de US$ 10 M.</InfoTip>
+						</label>
+						<div class="input-suffix">
+							<input class="input" type="number" bind:value={creditLimit}/>
+							<span class="suffix">USD</span>
+						</div>
+					</div>
+					<div class="field">
+						<div class="field-label">Classificação de risco</div>
+						<div class="radio-group">
+							<button type="button" class:active={riskRating === 'low'} onclick={() => (riskRating = 'low')}>Baixo</button>
+							<button type="button" class:active={riskRating === 'medium'} onclick={() => (riskRating = 'medium')}>Médio</button>
+							<button type="button" class:active={riskRating === 'high'} onclick={() => (riskRating = 'high')}>Alto</button>
+						</div>
+					</div>
+					<div class="field">
+						<label class="field-label">
+							Sanctions screening
+							<InfoTip>Resultado da varredura OFAC / Bacen / EU sanctions.</InfoTip>
+						</label>
+						<div class="radio-group">
+							<button type="button" class:active={sanctions === 'clear'} onclick={() => (sanctions = 'clear')}>Clear</button>
+							<button type="button" class:active={sanctions === 'flagged'} onclick={() => (sanctions = 'flagged')}>Flagged</button>
+							<button type="button" class:active={sanctions === 'blocked'} onclick={() => (sanctions = 'blocked')}>Blocked</button>
+						</div>
+					</div>
+					<div class="field" style="grid-column: 1 / -1;">
+						<label class="field-label" for="counterparty-notes">Observações</label>
+						<textarea id="counterparty-notes" class="textarea" placeholder="Histórico, restrições, instruções específicas para a mesa…" bind:value={notes}></textarea>
+					</div>
+				</div>
+			</Card>
 		</div>
-	{:else}
-		<form onsubmit={handleSubmit} class="space-y-6">
-			<fieldset class="space-y-4 rounded border border-surface-700 p-4">
-				<legend class="px-2 text-sm font-semibold text-surface-300">Identificação</legend>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-					<div>
-						<label class={labelClass} for="cp-type">Tipo</label>
-						<select id="cp-type" bind:value={type} class={inputClass}>
-							{#each typeOptions as option}
-								<option value={option.value}>{option.label}</option>
-							{/each}
-						</select>
-					</div>
-					<div>
-						<label class={labelClass} for="cp-name">Nome <span class="text-danger">*</span></label>
-						<input id="cp-name" type="text" bind:value={name} required maxlength="200" class={inputClass} />
-					</div>
-				</div>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-					<div>
-						<label class={labelClass} for="cp-short">Abreviação</label>
-						<input id="cp-short" type="text" bind:value={shortName} maxlength="50" class={inputClass} />
-					</div>
-					<div>
-						<label class={labelClass} for="cp-tax">Tax ID</label>
-						<input id="cp-tax" type="text" bind:value={taxId} maxlength="50" placeholder="CNPJ / VAT" class="{inputClass} placeholder-surface-600" />
-					</div>
-					<div>
-						<label class={labelClass} for="cp-country">País <span class="text-danger">*</span></label>
-						<input id="cp-country" type="text" bind:value={country} required maxlength="3" placeholder="BRA" class="{inputClass} uppercase placeholder-surface-600" />
-					</div>
-				</div>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-					<div>
-						<label class={labelClass} for="cp-city">Cidade</label>
-						<input id="cp-city" type="text" bind:value={city} maxlength="100" class={inputClass} />
-					</div>
-					<div>
-						<label class={labelClass} for="cp-address">Endereço</label>
-						<input id="cp-address" type="text" bind:value={address} class={inputClass} />
-					</div>
-				</div>
-			</fieldset>
 
-			<fieldset class="space-y-4 rounded border border-surface-700 p-4">
-				<legend class="px-2 text-sm font-semibold text-surface-300">Contato</legend>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-					<div>
-						<label class={labelClass} for="cp-contact-name">Nome do Contato</label>
-						<input id="cp-contact-name" type="text" bind:value={contactName} maxlength="200" class={inputClass} />
-					</div>
-					<div>
-						<label class={labelClass} for="cp-email">Email</label>
-						<input id="cp-email" type="email" bind:value={contactEmail} maxlength="200" class={inputClass} />
-					</div>
-				</div>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-					<div>
-						<label class={labelClass} for="cp-phone">Telefone</label>
-						<input id="cp-phone" type="tel" bind:value={contactPhone} maxlength="50" class={inputClass} />
-					</div>
-					<div>
-						<label class={labelClass} for="cp-whatsapp">WhatsApp</label>
-						<input id="cp-whatsapp" type="tel" bind:value={whatsappPhone} maxlength="50" placeholder="+5511999999999" class="{inputClass} placeholder-surface-600" />
-					</div>
-				</div>
-			</fieldset>
+		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
+			<Card title="Resumo">
+				<dl class="kv">
+					<dt>Tipo</dt><dd>{TYPE_LABEL[type]}</dd>
+					<dt>Razão social</dt><dd>{name || '—'}</dd>
+					<dt>Abreviação</dt><dd>{shortName || '—'}</dd>
+					<dt>País</dt><dd>{country}</dd>
+					<dt>Limite</dt><dd class="tabular">US$ {(Number(creditLimit || 0) / 1_000_000).toFixed(1)} M</dd>
+					<dt>Risco</dt>
+					<dd>
+						{#if riskRating === 'low'}
+							<Badge kind="pos" dot>Baixo</Badge>
+						{:else if riskRating === 'high'}
+							<Badge kind="neg" dot>Alto</Badge>
+						{:else}
+							<Badge kind="warn" dot>Médio</Badge>
+						{/if}
+					</dd>
+					<dt>Sanctions</dt>
+					<dd>
+						{#if sanctions === 'clear'}
+							<Badge kind="pos" dot>Clear</Badge>
+						{:else if sanctions === 'blocked'}
+							<Badge kind="neg" dot>Blocked</Badge>
+						{:else}
+							<Badge kind="warn" dot>Flagged</Badge>
+						{/if}
+					</dd>
+				</dl>
+			</Card>
 
-			<fieldset class="space-y-4 rounded border border-surface-700 p-4">
-				<legend class="px-2 text-sm font-semibold text-surface-300">Financeiro e Compliance</legend>
-				<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-					<div>
-						<label class={labelClass} for="cp-payment">Prazo de Pagamento (dias)</label>
-						<input id="cp-payment" type="number" step="1" min="1" bind:value={paymentTermsDays} class="{inputClass} tabular-nums" />
+			<Card title="Próximos passos">
+				<div class="stack gap-2" style="font-size: 12.5px;">
+					<div class="row gap-2">
+						<span style="width: 18px; height: 18px; border-radius: 50%; background: var(--orange); color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 600;">1</span>
+						Time de Risco revisa KYC (até 2 dias úteis)
 					</div>
-					<div>
-						<label class={labelClass} for="cp-credit">Limite de Crédito (USD)</label>
-						<input id="cp-credit" type="number" step="0.01" min="0" bind:value={creditLimitUsd} class="{inputClass} tabular-nums" />
+					<div class="row gap-2">
+						<span style="width: 18px; height: 18px; border-radius: 50%; background: var(--line-strong); color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 600;">2</span>
+						Aprovação do limite no comitê
 					</div>
-					<div>
-						<label class={labelClass} for="cp-risk">Classificação de Risco</label>
-						<select id="cp-risk" bind:value={riskRating} class={inputClass}>
-							<option value="low">Low</option>
-							<option value="medium">Medium</option>
-							<option value="high">High</option>
-						</select>
-					</div>
-					<div>
-						<label class={labelClass} for="cp-sanctions">Sanções</label>
-						<select id="cp-sanctions" bind:value={sanctionsStatus} class={inputClass}>
-							<option value="clear">Clear</option>
-							<option value="flagged">Flagged</option>
-							<option value="blocked">Blocked</option>
-						</select>
+					<div class="row gap-2">
+						<span style="width: 18px; height: 18px; border-radius: 50%; background: var(--line-strong); color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 600;">3</span>
+						Habilitação para operar RFQs
 					</div>
 				</div>
-				<div>
-					<label class={labelClass} for="cp-notes">Observações</label>
-					<textarea id="cp-notes" bind:value={notes} rows="3" class="{inputClass} placeholder-surface-600"></textarea>
-				</div>
-			</fieldset>
-
-			<div class="flex items-center gap-3">
-				<button
-					type="submit"
-					disabled={submitting}
-					class="rounded bg-accent px-5 py-2 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
-				>
-					{submitting ? 'Criando...' : 'Criar Contraparte'}
-				</button>
-				<a href="/counterparties" class="rounded border border-surface-700 px-4 py-2 text-sm text-surface-400 hover:bg-surface-800">
-					Cancelar
-				</a>
-			</div>
-		</form>
-	{/if}
+			</Card>
+		</div>
+	</div>
 </div>

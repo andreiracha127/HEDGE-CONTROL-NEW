@@ -69,12 +69,12 @@
 	<title>Login | Hedge Control</title>
 </svelte:head>
 
-<main class="flex min-h-screen items-center justify-center bg-surface-950 px-4 py-8">
+<main class="flex min-h-screen items-center justify-center bg-gray-50 px-4 py-8">
 	<section class="w-full max-w-md">
-		<h1 class="mb-6 text-xl font-semibold text-surface-200">Hedge Control</h1>
+		<h1 class="mb-6 text-xl font-semibold text-gray-900">Hedge Control</h1>
 		<div bind:this={mountEl}></div>
 		{#if error}
-			<p class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
+			<p class="mt-4 rounded border border-danger/40 bg-red-600 px-3 py-2 text-sm text-red-700">
 				{error}
 			</p>
 		{/if}

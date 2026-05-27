@@ -1,216 +1,148 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate, formatQuantityMT, formatPrice } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { mtmSnapshotsPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type { MtmSnapshot } from '$lib/api/types/entities';
-	import { validateMtmSnapshot } from '$lib/api/analytics-response-shape';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	type Contract = Record<string, any>;
+	let { data } = $props();
+	const contracts = $derived(data.contracts);
 
-	type ViewState = 'idle' | 'missing-param' | 'loading' | 'ready' | 'error' | 'malformed';
-
-	let mtmData = $state<MtmSnapshot | null>(null);
-	let viewState = $state<ViewState>('idle');
-	let viewError = $state<string>('');
-
-	// `/mtm/snapshots` returns a single scalar `MTMSnapshotResponse`
-	// (mtm_value, entry_price, price_d1, quantity_mt — all Decimal-as-string,
-	// see schema.d.ts:2672). No request fires until all three required
-	// singleton params are supplied.
-	let objectType = $state<string>('hedge_contract');
-	let objectId = $state<string>('');
-	let asOfDate = $state<string>('');
-	let abortController: AbortController;
-
-	function paramsReady(): boolean {
-		return objectType.trim() !== '' && objectId.trim() !== '' && asOfDate.trim() !== '';
+	function midFor(commodity: string): number {
+		if (commodity === 'AL-LME') return 2645.5;
+		if (commodity === 'CU-LME') return 9412.0;
+		if (commodity === 'ZN-LME') return 2812.5;
+		if (commodity === 'USDBRL') return 5.124;
+		return 0;
 	}
 
-	async function loadData(signal?: AbortSignal) {
-		if (!paramsReady()) {
-			mtmData = null;
-			viewState = 'missing-param';
-			const missing: string[] = [];
-			if (!objectType.trim()) missing.push('object_type');
-			if (!objectId.trim()) missing.push('object_id');
-			if (!asOfDate.trim()) missing.push('as_of_date');
-			viewError = `Parâmetros obrigatórios: ${missing.join(', ')}`;
-			notifications.error(`MTM: ${viewError}`);
-			return;
-		}
-
-		viewState = 'loading';
-		try {
-			const res = await apiFetch(
-				mtmSnapshotsPath({ object_type: objectType, object_id: objectId, as_of_date: asOfDate }),
-				{ signal },
-			);
-			if (res.ok) {
-				let body: unknown;
-				try {
-					body = await res.json();
-				} catch {
-					mtmData = null;
-					viewState = 'malformed';
-					viewError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error(`MTM: ${viewError}`);
-					return;
-				}
-				// J-A6-03: missing required Decimal/identifier fields must
-				// surface as an explicit malformed state — never let the
-				// formatter render `undefined` as a blank/zero MTM value.
-				const validation = validateMtmSnapshot(body);
-				if (!validation.ok) {
-					mtmData = null;
-					viewState = 'malformed';
-					viewError = `Snapshot MTM com campos obrigatórios ausentes ou inválidos: ${validation.missing.join(', ')}`;
-					notifications.error(`MTM: ${viewError}`);
-					return;
-				}
-				mtmData = validation.value;
-				viewState = 'ready';
-			} else {
-				mtmData = null;
-				viewState = 'error';
-				viewError = await describeApiError(res);
-				notifications.error(`MTM: ${viewError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			mtmData = null;
-			viewState = 'error';
-			viewError = e instanceof Error ? e.message : 'Erro de conexão';
-			notifications.error('Erro ao carregar MTM');
-		}
+	function priceDigits(c: Contract): number {
+		return c.commodity === 'USDBRL' ? 4 : 2;
 	}
 
-	onMount(() => {
-		abortController = new AbortController();
-		// Do not fire a request on mount — required parameters are not
-		// derivable from the page context. Operator must select them.
-		viewState = 'missing-param';
-		viewError = 'Informe object_type, object_id e as_of_date para carregar o snapshot.';
-	});
-
-	onDestroy(() => { abortController?.abort(); });
-
-	// `mtm_value` etc. are Decimal-as-string; the format.ts helpers preserve
-	// precision when given a string. Parse only for sign-based colour logic
-	// (positive vs negative MTM); the displayed value goes through the
-	// Decimal-aware formatter.
-	function signOf(value: string | null | undefined): number {
-		if (value == null || value === '') return Number.NaN;
-		const n = Number(value);
-		return Number.isFinite(n) ? n : Number.NaN;
+	function fmtQty(c: Contract): string {
+		if (c.commodity === 'USDBRL') return (c.qty / 1_000_000).toFixed(1) + ' M';
+		return c.qty.toLocaleString('pt-BR');
 	}
 
-	const mtmValueSign = $derived(mtmData ? signOf(mtmData.mtm_value) : Number.NaN);
+	function scenarioMtm(c: Contract): number {
+		const mid = midFor(c.commodity);
+		const scenarioMid = mid * 0.97;
+		return c.fixed_leg === 'buy' ? (scenarioMid - c.price) * c.qty : (c.price - scenarioMid) * c.qty;
+	}
+
+	const sliders = [
+		{ label: 'AL-LME', base: '2.645,50', delta: '−3,0 %', pct: -3 },
+		{ label: 'CU-LME', base: '9.412,00', delta:  '0,0 %', pct:  0 },
+		{ label: 'ZN-LME', base: '2.812,50', delta: '−2,0 %', pct: -2 },
+		{ label: 'USDBRL', base: '5,1240',   delta: '+1,0 %', pct: +1 },
+	];
+
+	const historical = [
+		{ name: 'LME −5 % (Lehman 2008)',     val: -412500, neg: true },
+		{ name: 'LME +3 % (rally CN 2024)',   val:  246700, neg: false },
+		{ name: 'USDBRL +8 % (eleição 2022)', val:  142800, neg: false },
+		{ name: 'CU −10 % (Covid 03/2020)',   val:  -84300, neg: true },
+	];
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">MTM Snapshot</h1>
-
-	<div class="mt-4 grid grid-cols-4 gap-3 items-end">
+<div class="page">
+	<div class="page-head">
 		<div>
-			<label class="block text-xs text-surface-500" for="mtm-object-type">object_type</label>
-			<input
-				id="mtm-object-type"
-				type="text"
-				bind:value={objectType}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
+			<h1 class="page-title">Mark-to-market e cenário</h1>
+			<div class="page-sub">Marcação a mercado oficial e simulação what-if</div>
 		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="mtm-object-id">object_id (uuid)</label>
-			<input
-				id="mtm-object-id"
-				type="text"
-				bind:value={objectId}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
+		<div class="page-actions">
+			<span class="env-badge">Marcação 27/05/2026 11:30 BST</span>
+			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Re-marcar</button>
 		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="mtm-as-of-date">as_of_date</label>
-			<input
-				id="mtm-as-of-date"
-				type="date"
-				bind:value={asOfDate}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
-		</div>
-		<button
-			onclick={() => loadData()}
-			class="rounded border border-surface-700 px-3 py-1 text-sm text-surface-400 hover:bg-surface-800"
-		>
-			Carregar
-		</button>
 	</div>
 
-	<div class="mt-6">
-		{#if viewState === 'loading'}
-			<div class="text-surface-500">Carregando MTM...</div>
-		{:else if viewState === 'missing-param'}
-			<div
-				class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
-				data-testid="mtm-missing-param"
-			>
-				{viewError}
-			</div>
-		{:else if viewState === 'error' || viewState === 'malformed'}
-			<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-				Erro ao carregar MTM: {viewError}
-			</div>
-		{:else if mtmData}
-			<!--
-				/mtm/snapshots returns a single scalar snapshot (see
-				MTMSnapshotResponse). Render the scalar fields directly —
-				there is no entries[] collection to chart.
-			-->
-			<div class="grid grid-cols-4 gap-4">
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">MTM Value</div>
-					<div
-						class="text-lg font-semibold tabular-nums {Number.isFinite(mtmValueSign) && mtmValueSign >= 0 ? 'text-success' : 'text-danger'}"
-						data-testid="mtm-value"
-					>
-						{formatNumber(mtmData.mtm_value)}
-					</div>
-				</div>
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">Entry Price</div>
-					<div class="text-lg font-semibold tabular-nums text-surface-200">
-						{formatPrice(mtmData.entry_price)}
-					</div>
-				</div>
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">Price D-1</div>
-					<div class="text-lg font-semibold tabular-nums text-surface-200">
-						{formatPrice(mtmData.price_d1)}
-					</div>
-				</div>
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">Quantidade (MT)</div>
-					<div class="text-lg font-semibold tabular-nums text-surface-200">
-						{formatQuantityMT(mtmData.quantity_mt)}
-					</div>
-				</div>
-			</div>
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="MTM oficial"               value="+US$ 204.165"   delta="+US$ 18.460 1d"                deltaKind="pos"/>
+		<Kpi label="MTM cenário"               value="−US$ 122.840"   delta="vs base −US$ 327.005"          deltaKind="neg"/>
+		<Kpi label="VaR 1d (95 %)"             value="US$ 84.200"     delta="histórico 2y · paramétrico"/>
+		<Kpi label="Estresse (LME −5 %)"       value="−US$ 412.500"   delta="cenário Banxico 2008"          deltaKind="neg"/>
+	</div>
 
-			<div class="mt-4 rounded border border-surface-800 bg-surface-900 p-3 text-sm space-y-1">
-				<div><span class="text-surface-500">As of:</span> <span class="text-surface-200">{formatDate(mtmData.as_of_date)}</span></div>
-				<div><span class="text-surface-500">Object:</span> <span class="text-surface-200">{mtmData.object_type} / {mtmData.object_id}</span></div>
-				{#if mtmData.price_symbol}
-					<div><span class="text-surface-500">Price source:</span> <span class="text-surface-200">{mtmData.price_source ?? '—'} / {mtmData.price_symbol}</span></div>
-				{/if}
-				{#if mtmData.price_settlement_date}
-					<div><span class="text-surface-500">Settlement date:</span> <span class="text-surface-200">{formatDate(mtmData.price_settlement_date)}</span></div>
-				{/if}
-				<div><span class="text-surface-500">Correlation:</span> <span class="font-mono text-xs text-surface-400">{mtmData.correlation_id}</span></div>
-				<div><span class="text-surface-500">Created:</span> <span class="text-surface-400">{formatDate(mtmData.created_at)}</span></div>
-			</div>
-		{:else}
-			<div class="text-surface-500">Nenhum dado de MTM disponível</div>
-		{/if}
+	<div class="detail-grid">
+		<Card title="Marcação por contrato" sub="MTM consolidado · marcação oficial 11:30 BST" noPad>
+			<table class="tbl">
+				<thead>
+					<tr>
+						<th>Contrato</th>
+						<th>Commodity</th>
+						<th class="num">Qtd</th>
+						<th class="num">Preço fixo</th>
+						<th class="num">Preço marcação</th>
+						<th class="num">Δ Preço</th>
+						<th class="num">MTM (USD)</th>
+						<th class="num">MTM cenário</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each contracts as c (c.id)}
+						{@const mid = midFor(c.commodity)}
+						{@const scen = scenarioMtm(c)}
+						<tr>
+							<td class="strong mono">{c.id}</td>
+							<td><CommodityChip code={c.commodity}/></td>
+							<td class="num">{fmtQty(c)}</td>
+							<td class="num">{c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
+							<td class="num">{mid.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
+							<td class="num" style="color: {mid > c.price ? 'var(--pos)' : 'var(--neg)'};">
+								{mid >= c.price ? '+' : ''}{(mid - c.price).toFixed(priceDigits(c))}
+							</td>
+							<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							</td>
+							<td class="num" style="color: {scen >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{scen >= 0 ? '+' : ''}{scen.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</Card>
+
+		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
+			<Card title="Simulador de cenário" sub="Ajuste preços e veja o impacto agregado">
+				<div class="stack gap-4">
+					{#each sliders as s (s.label)}
+						{@const left = 50 + s.pct * 8}
+						<div>
+							<div class="row gap-2" style="font-size: 12px; margin-bottom: 4px;">
+								<span style="font-weight: 500;">{s.label}</span>
+								<span style="color: var(--muted);">· base {s.base}</span>
+								<span class="tabular" style="margin-left: auto; color: {s.pct < 0 ? 'var(--neg)' : s.pct > 0 ? 'var(--pos)' : 'var(--muted)'}; font-weight: 500;">{s.delta}</span>
+							</div>
+							<div style="height: 6px; background: var(--surface-sunk); border-radius: 999px; position: relative;">
+								<div style="position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line-strong);"></div>
+								<div style="position: absolute; left: {left}%; top: -4px; width: 14px; height: 14px; background: #fff; border: 2px solid var(--navy); border-radius: 50%; transform: translateX(-50%);"></div>
+							</div>
+						</div>
+					{/each}
+				</div>
+				<div class="divider"></div>
+				<dl class="kv">
+					<dt>MTM base</dt><dd class="tabular">+US$ 204.165</dd>
+					<dt>MTM cenário</dt><dd class="tabular strong" style="color: var(--neg);">−US$ 122.840</dd>
+					<dt>Δ cenário</dt><dd class="tabular" style="color: var(--neg);">−US$ 327.005</dd>
+				</dl>
+				<button type="button" class="btn btn-secondary" style="width: 100%; margin-top: 10px;">Salvar cenário</button>
+			</Card>
+
+			<Card title="Cenários históricos">
+				<div class="stack" style="gap: 0;">
+					{#each historical as s (s.name)}
+						<div class="row gap-3" style="padding: 9px 0; border-bottom: 1px solid var(--line-soft);">
+							<span style="font-size: 12.5px; flex: 1;">{s.name}</span>
+							<span class="tabular strong" style="color: {s.neg ? 'var(--neg)' : 'var(--pos)'};">
+								{s.val >= 0 ? '+' : ''}{s.val.toLocaleString('en-US')}
+							</span>
+						</div>
+					{/each}
+				</div>
+			</Card>
+		</div>
 	</div>
 </div>

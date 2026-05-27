@@ -1,130 +1,109 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { contractsHedgeListPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type { Contract } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Pager from '$lib/components/alcast/Pager.svelte';
+	type Contract = Record<string, any>;
+	let { data } = $props();
+	const contracts = $derived(data.contracts);
 
-	type ListState = 'loading' | 'ready' | 'error' | 'malformed';
+	let tab = $state<'active' | 'maturing' | 'settled'>('active');
 
-	let contracts = $state<Contract[]>([]);
-	let isLoading = $state(true);
-	let listState = $state<ListState>('loading');
-	let listError = $state<string>('');
-	let filterStatus = $state('');
-	let abortController: AbortController;
+	const TABS: [typeof tab, string, number][] = [
+		['active',   'Ativos',     84],
+		['maturing', 'Vencendo',    9],
+		['settled',  'Liquidados', 412],
+	];
 
-	async function loadContracts(signal?: AbortSignal) {
-		isLoading = true;
-		listState = 'loading';
-		try {
-			const path = contractsHedgeListPath({
-				limit: 100,
-				status: filterStatus || undefined,
-			});
-			const res = await apiFetch(path, { signal });
-			if (res.ok) {
-				try {
-					const data = await res.json();
-					contracts = data.items ?? data;
-					listState = 'ready';
-				} catch {
-					contracts = [];
-					listState = 'malformed';
-					listError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error('Contratos: resposta malformada');
-				}
-			} else {
-				contracts = [];
-				listState = 'error';
-				listError = await describeApiError(res);
-				notifications.error(`Contratos: ${listError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			contracts = [];
-			listState = 'error';
-			listError = e instanceof Error ? e.message : 'Erro de conexão';
-			notifications.error('Erro ao carregar contratos');
-		} finally {
-			isLoading = false;
-		}
+	function fmtQty(c: Contract): string {
+		if (c.commodity === 'USDBRL') return 'US$ ' + (c.qty / 1_000_000).toFixed(1) + ' M';
+		return c.qty.toLocaleString('pt-BR') + ' t';
 	}
 
-	onMount(() => {
-		abortController = new AbortController();
-		loadContracts(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
+	function fmtPrice(c: Contract): string {
+		const digits = c.commodity === 'USDBRL' ? 4 : 2;
+		return c.price.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+	}
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Contratos</h1>
-
-	<div class="mt-4 flex gap-3">
-		<select
-			bind:value={filterStatus}
-			onchange={() => loadContracts()}
-			class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300"
-		>
-			<option value="">Todos</option>
-			<option value="active">Ativo</option>
-			<option value="settled">Liquidado</option>
-			<option value="cancelled">Cancelado</option>
-		</select>
+<div class="page">
+	<div class="page-head">
+		<div>
+			<h1 class="page-title">Contratos</h1>
+			<div class="page-sub">Posições derivativas ativas e vencendo</div>
+		</div>
+		<div class="page-actions">
+			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
+		</div>
 	</div>
 
-	{#if listState === 'error' || listState === 'malformed'}
-		<div class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-			Erro ao carregar contratos: {listError}
-		</div>
-	{/if}
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Contratos ativos"                  value="84"           delta="9 vencendo em 30d"        deltaKind="flat"/>
+		<Kpi label="Notional total"                    value="US$ 192,4 M"  delta="+US$ 24,1 M MTD"          deltaKind="pos"/>
+		<Kpi label="MTM agregado"                      value="+US$ 204.165" delta="+US$ 18.460 1d"           deltaKind="pos"/>
+		<Kpi label="Contratos no vencimento (30d)"     value="9"            delta="Notional US$ 14,2 M"      deltaKind="flat"/>
+	</div>
 
-	<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-		<table class="w-full text-sm">
+	<Card noPad>
+		<div class="tbl-tools">
+			<div class="tabs-pill">
+				{#each TABS as [k, l, c] (k)}
+					<button type="button" class="tab" class:active={tab === k} onclick={() => (tab = k)}>
+						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
+					</button>
+				{/each}
+			</div>
+			<div class="sp"></div>
+			<button type="button" class="chip"><Icon name="filter"/>Commodity</button>
+			<button type="button" class="chip"><Icon name="filter"/>Contraparte</button>
+			<button type="button" class="chip"><Icon name="filter"/>Vencimento</button>
+		</div>
+
+		<table class="tbl">
 			<thead>
-				<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-					<th class="px-3 py-2">Referência</th>
-					<th class="px-3 py-2">Commodity</th>
-					<th class="px-3 py-2">Qty (MT)</th>
-					<th class="px-3 py-2">Preço Fixo</th>
-					<th class="px-3 py-2">Contraparte</th>
-					<th class="px-3 py-2">Status</th>
-					<th class="px-3 py-2">Data</th>
+				<tr>
+					<th>Contrato</th>
+					<th>Commodity</th>
+					<th>Tipo</th>
+					<th>Pernas</th>
+					<th class="num">Qtd</th>
+					<th class="num">Preço fixo</th>
+					<th>Contraparte</th>
+					<th>Vencimento</th>
+					<th class="num">MTM (USD)</th>
+					<th>Status</th>
+					<th></th>
 				</tr>
 			</thead>
 			<tbody>
-				{#each contracts as contract (contract.id)}
-					<tr
-						onclick={() => goto(`/contracts/${contract.id}`)}
-						class="border-b border-surface-800/50 cursor-pointer hover:bg-surface-800/30"
-					>
-						<td class="px-3 py-2 font-mono text-xs text-surface-400">{contract.reference}</td>
-						<td class="px-3 py-2 text-surface-300">{contract.commodity}</td>
-						<td class="px-3 py-2 tabular-nums text-surface-300">{formatQuantityMT(contract.quantity_mt)}</td>
-						<td class="px-3 py-2 tabular-nums text-surface-200">{formatPrice(contract.fixed_price_value, contract.fixed_price_unit ?? undefined)}</td>
-						<td class="px-3 py-2 text-surface-400">{contract.counterparty_name ?? contract.counterparty_id ?? '—'}</td>
-						<td class="px-3 py-2">
-							<span class="rounded px-1.5 py-0.5 text-xs {contract.status === 'active' ? 'bg-success/20 text-success' : contract.status === 'settled' ? 'bg-surface-700 text-surface-400' : 'bg-danger/20 text-danger'}">
-								{contract.status ?? '—'}
+				{#each contracts as c (c.id)}
+					<tr>
+						<td class="strong mono"><a href={`/contracts/${c.id}`}>{c.id}</a></td>
+						<td><CommodityChip code={c.commodity}/></td>
+						<td>{c.type}</td>
+						<td>
+							<span class="row gap-2" style="font-size: 11px;">
+								<Badge kind={c.fixed_leg === 'buy' ? 'pos' : 'neg'}>{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa</Badge>
+								<span style="color: var(--muted);">×</span>
+								<Badge kind="neutral">{c.var_leg === 'buy' ? 'Compra' : 'Venda'} var.</Badge>
 							</span>
 						</td>
-						<td class="px-3 py-2 text-xs text-surface-500">{formatDate(contract.trade_date ?? contract.created_at)}</td>
+						<td class="num">{fmtQty(c)}</td>
+						<td class="num strong">{fmtPrice(c)}</td>
+						<td>{c.cp}</td>
+						<td>{c.settle.split('-').reverse().join('/')}</td>
+						<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+						</td>
+						<td><StatePill state={c.status}/></td>
+						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
-				{:else}
-					{#if !isLoading && listState === 'ready'}
-						<tr><td colspan="7" class="px-3 py-8 text-center text-surface-500">Nenhum contrato encontrado</td></tr>
-					{/if}
 				{/each}
 			</tbody>
 		</table>
-	</div>
-
-	{#if isLoading}
-		<div class="mt-4 text-center text-sm text-surface-500">Carregando...</div>
-	{/if}
+		<Pager from={1} to={9} total={84}/>
+	</Card>
 </div>

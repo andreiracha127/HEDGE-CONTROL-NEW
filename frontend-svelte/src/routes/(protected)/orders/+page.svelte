@@ -1,146 +1,111 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, formatQuantityMT, formatPrice } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { ordersListPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type { OrderRead } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Pager from '$lib/components/alcast/Pager.svelte';
+	import { formatPrice, formatQuantityMT } from '$lib/utils/format';
+	let { data } = $props();
+	const orders = $derived(data.orders);
 
-	// J-A6-08: read-only orders surface. The page exists so auditors and
-	// risk managers can reconstruct exposure source records — mutations
-	// (create/archive/link) are intentionally out of scope for PR-A6-4.
+	let tab = $state<'all' | 'filled' | 'partial' | 'pending' | 'cancelled'>('all');
+	let dir = $state<'all' | 'buy' | 'sell'>('all');
 
-	type ViewState = 'loading' | 'ready' | 'error';
+	const TABS: [typeof tab, string, number][] = [
+		['all',       'Todas',      47],
+		['filled',    'Liquidadas', 38],
+		['partial',   'Parciais',    3],
+		['pending',   'Pendentes',   4],
+		['cancelled', 'Canceladas',  2],
+	];
 
-	let orders = $state<OrderRead[]>([]);
-	let nextCursor = $state<string | null>(null);
-	let viewState = $state<ViewState>('loading');
-	let viewError = $state<string>('');
-	let abortController: AbortController;
-
-	async function loadOrders(signal?: AbortSignal) {
-		viewState = 'loading';
-		try {
-			const res = await apiFetch(ordersListPath({ limit: 50 }), { signal });
-			if (res.ok) {
-				const body = await res.json();
-				orders = Array.isArray(body?.items) ? body.items : [];
-				nextCursor = typeof body?.next_cursor === 'string' ? body.next_cursor : null;
-				viewState = 'ready';
-			} else {
-				orders = [];
-				viewState = 'error';
-				viewError = await describeApiError(res);
-				notifications.error(`Orders: ${viewError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			orders = [];
-			viewState = 'error';
-			viewError = e instanceof Error ? e.message : 'Erro de conexão';
-			notifications.error('Erro ao carregar orders');
-		}
+	function fmtQty(order: Record<string, any>): string {
+		if (order.commodity === 'USDBRL') return formatPrice(order.quantity_mt ?? order.qty, 'USD');
+		return `${formatQuantityMT(order.quantity_mt ?? order.qty)} MT`;
 	}
 
-	function orderTypeLabel(t: OrderRead['order_type']): string {
-		return t === 'SO' ? 'Sales Order' : 'Purchase Order';
+	function fmtOrderPrice(order: Record<string, any>): string {
+		return formatPrice(order.avg_entry_price ?? order.price, order.commodity === 'USDBRL' ? 'USD/BRL' : 'USD/MT');
 	}
-
-	function orderTypeColor(t: OrderRead['order_type']): string {
-		return t === 'SO' ? 'text-success' : 'text-accent';
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadOrders(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
 </script>
 
-<div class="p-6">
-	<div class="flex items-center justify-between">
+<div class="page">
+	<div class="page-head">
 		<div>
-			<h1 class="text-lg font-semibold text-surface-200">Orders</h1>
-			<p class="mt-1 text-xs text-surface-500">
-				Registros canônicos de pedidos (SO/PO) — fonte das exposições. Somente leitura.
-			</p>
+			<h1 class="page-title">Ordens</h1>
+			<div class="page-sub">Execução de hedges e fechamento com contrapartes</div>
+		</div>
+		<div class="page-actions">
+			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
+			<a href="/orders/new" class="btn btn-primary"><Icon name="plus"/>Nova ordem</a>
 		</div>
 	</div>
 
-	{#if viewState === 'loading'}
-		<div class="mt-4 text-surface-500">Carregando...</div>
-	{:else if viewState === 'error'}
-		<div
-			class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
-			data-testid="orders-error"
-		>
-			Erro ao carregar orders: {viewError}
-		</div>
-	{:else if orders.length === 0}
-		<div class="mt-4 text-surface-500" data-testid="orders-empty">Nenhuma order cadastrada</div>
-	{:else}
-		<div class="mt-4 overflow-x-auto rounded border border-surface-800" data-testid="orders-table">
-			<table class="w-full text-sm">
-				<thead>
-					<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-						<th class="px-3 py-2">Tipo</th>
-						<th class="px-3 py-2">Commodity</th>
-						<th class="px-3 py-2">Qty (MT)</th>
-						<th class="px-3 py-2">Pricing</th>
-						<th class="px-3 py-2">Preço (USD/MT)</th>
-						<th class="px-3 py-2">Contraparte</th>
-						<th class="px-3 py-2">Entrega</th>
-						<th class="px-3 py-2">Criado</th>
-						<th class="px-3 py-2"></th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each orders as order (order.id)}
-						<tr class="border-b border-surface-800/50 hover:bg-surface-900/30">
-							<td class="px-3 py-2 text-xs font-semibold {orderTypeColor(order.order_type)}">
-								{orderTypeLabel(order.order_type)}
-							</td>
-							<td class="px-3 py-2 text-surface-200">{order.commodity}</td>
-							<td class="px-3 py-2 tabular-nums text-surface-200" data-testid="orders-quantity">
-								{formatQuantityMT(order.quantity_mt)}
-							</td>
-							<td class="px-3 py-2 text-xs text-surface-400">
-								{order.price_type}{order.pricing_convention ? ` · ${order.pricing_convention}` : ''}
-							</td>
-							<td class="px-3 py-2 tabular-nums text-surface-200">
-								{order.avg_entry_price != null
-									? formatPrice(order.avg_entry_price, `${order.currency}/MT`)
-									: '—'}
-							</td>
-							<td class="px-3 py-2 text-surface-300 text-xs">
-								{order.counterparty_name ?? '—'}
-							</td>
-							<td class="px-3 py-2 text-xs text-surface-400">
-								{order.delivery_date_start ? formatDate(order.delivery_date_start) : '—'}
-								{#if order.delivery_date_end} → {formatDate(order.delivery_date_end)}{/if}
-							</td>
-							<td class="px-3 py-2 text-xs text-surface-500">{formatDate(order.created_at)}</td>
-							<td class="px-3 py-2">
-								<a
-									href={`/orders/${order.id}`}
-									data-testid="orders-detail-link"
-									class="text-xs text-accent hover:underline"
-								>
-									Detalhe →
-								</a>
-							</td>
-						</tr>
-					{/each}
-				</tbody>
-			</table>
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Ordens hoje"     value="24"        delta="+4 vs ontem"           deltaKind="pos"/>
+		<Kpi label="Volume D"        value="US$ 24,1 M" delta="+US$ 3,2 M vs ontem"   deltaKind="pos"/>
+		<Kpi label="Preço médio AL"  value="2.632,15"  unit="USD/t" delta="vs mid 2.635,00 LME" deltaKind="pos"/>
+		<Kpi label="Slippage médio"  value="−0,11"     unit="%" delta="dentro do limite −0,25%" deltaKind="pos"/>
+	</div>
+
+	<Card noPad>
+		<div class="tbl-tools">
+			<div class="tabs-pill">
+				{#each TABS as [k, l, c] (k)}
+					<button type="button" class="tab" class:active={tab === k} onclick={() => (tab = k)}>
+						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
+					</button>
+				{/each}
+			</div>
+			<div class="sp"></div>
+			<div class="radio-group">
+				<button type="button" class:active={dir === 'all'} onclick={() => (dir = 'all')}>Todas</button>
+				<button type="button" class:active={dir === 'buy'} class:buy={dir === 'buy'} onclick={() => (dir = 'buy')}>Compra</button>
+				<button type="button" class:active={dir === 'sell'} class:sell={dir === 'sell'} onclick={() => (dir = 'sell')}>Venda</button>
+			</div>
+			<button type="button" class="chip"><Icon name="filter"/>Commodity</button>
+			<button type="button" class="chip"><Icon name="filter"/>Contraparte</button>
+			<button type="button" class="chip"><Icon name="filter"/>Período</button>
 		</div>
 
-		{#if nextCursor}
-			<p class="mt-3 text-xs text-surface-500" data-testid="orders-next-cursor">
-				Cursor de próxima página disponível (paginação cursor-based, não implementada nesta wave).
-			</p>
-		{/if}
-	{/if}
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>Ordem</th>
+					<th>RFQ</th>
+					<th>Commodity</th>
+					<th>Lado</th>
+					<th class="num">Quantidade</th>
+					<th class="num">Preço (USD)</th>
+					<th>Contraparte</th>
+					<th>Liquidação</th>
+					<th>Status</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each orders as o (o.id)}
+					<tr style="cursor: default;">
+						<td class="strong mono">{o.id}</td>
+						<td class="mono"><a href={`/rfq/${o.rfq}`}>{o.rfq}</a></td>
+						<td><CommodityChip code={o.commodity}/></td>
+						<td><DirectionBadge dir={o.direction}/></td>
+						<td class="num">{fmtQty(o)}</td>
+						<td class="num strong">{fmtOrderPrice(o)}</td>
+						<td>{o.cp}</td>
+						<td>{o.settlement ? o.settlement.split('-').reverse().join('/') : '—'}</td>
+						<td><StatePill state={o.status}/></td>
+						<td>
+							<a href={`/orders/${o.id}`} data-testid="orders-detail-link" class="btn btn-ghost btn-sm">
+								<Icon name="chevronRight"/>
+							</a>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+		<Pager from={1} to={8} total={47}/>
+	</Card>
 </div>

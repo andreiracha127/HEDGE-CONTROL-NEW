@@ -52,109 +52,109 @@
 
 <div class="p-6 max-w-4xl">
 	<div class="flex items-center gap-3">
-		<a href="/orders" class="text-surface-500 hover:text-surface-300">← Voltar</a>
-		<h1 class="text-lg font-semibold text-surface-200">Order</h1>
+		<a href="/orders" class="text-gray-500 hover:text-gray-700">← Voltar</a>
+		<h1 class="text-lg font-semibold text-gray-900">Order</h1>
 		{#if order}
-			<span class="font-mono text-xs text-surface-500">{order.id}</span>
+			<span class="font-mono text-xs text-gray-500">{order.id}</span>
 		{/if}
 	</div>
 
 	{#if viewState === 'loading'}
-		<div class="mt-4 text-surface-500">Carregando...</div>
+		<div class="mt-4 text-gray-500">Carregando...</div>
 	{:else if viewState === 'error'}
 		<div
-			class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger"
+			class="mt-4 rounded border border-danger/40 bg-red-600 px-3 py-2 text-sm text-red-700"
 			data-testid="order-detail-error"
 		>
 			Erro ao carregar order: {viewError}
 		</div>
 	{:else if order}
 		<div class="mt-4 grid grid-cols-2 gap-3" data-testid="order-detail">
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Tipo</div>
-				<div class="text-sm font-semibold text-surface-200">
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Tipo</div>
+				<div class="text-sm font-semibold text-gray-900">
 					{order.order_type === 'SO' ? 'Sales Order' : 'Purchase Order'}
 				</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Commodity</div>
-				<div class="text-sm font-semibold text-surface-200">{order.commodity}</div>
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Commodity</div>
+				<div class="text-sm font-semibold text-gray-900">{order.commodity}</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Quantidade (MT)</div>
-				<div class="text-sm font-semibold tabular-nums text-surface-200" data-testid="order-detail-quantity">
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Quantidade (MT)</div>
+				<div class="text-sm font-semibold tabular-nums text-gray-900" data-testid="order-detail-quantity">
 					{formatQuantityMT(order.quantity_mt)}
 				</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Pricing</div>
-				<div class="text-sm text-surface-200">
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Pricing</div>
+				<div class="text-sm text-gray-900">
 					{order.price_type}{order.pricing_convention ? ` · ${order.pricing_convention}` : ''}
 				</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Preço médio</div>
-				<div class="text-sm tabular-nums text-surface-200">
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Preço médio</div>
+				<div class="text-sm tabular-nums text-gray-900">
 					{order.avg_entry_price != null
 						? formatPrice(order.avg_entry_price, `${order.currency}/MT`)
 						: '—'}
 				</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Moeda</div>
-				<div class="text-sm text-surface-200">{order.currency}</div>
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Moeda</div>
+				<div class="text-sm text-gray-900">{order.currency}</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Contraparte</div>
-				<div class="text-sm text-surface-200">{order.counterparty_name ?? '—'}</div>
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Contraparte</div>
+				<div class="text-sm text-gray-900">{order.counterparty_name ?? '—'}</div>
 				{#if order.counterparty_id}
-					<div class="font-mono text-xs text-surface-500">{order.counterparty_id}</div>
+					<div class="font-mono text-xs text-gray-500">{order.counterparty_id}</div>
 				{/if}
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Pagamento</div>
-				<div class="text-sm text-surface-200">
+			<div class="rounded border border-gray-200 bg-white p-3">
+				<div class="text-xs text-gray-500">Pagamento</div>
+				<div class="text-sm text-gray-900">
 					{order.payment_terms_days != null ? `${order.payment_terms_days} dias` : '—'}
 				</div>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3 col-span-2">
-				<div class="text-xs text-surface-500">Janela de entrega</div>
-				<div class="text-sm text-surface-200">
+			<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
+				<div class="text-xs text-gray-500">Janela de entrega</div>
+				<div class="text-sm text-gray-900">
 					{order.delivery_date_start ? formatDate(order.delivery_date_start) : '—'}
 					{#if order.delivery_date_end} → {formatDate(order.delivery_date_end)}{/if}
-					{#if order.delivery_terms} · <span class="text-surface-400">{order.delivery_terms}</span>{/if}
+					{#if order.delivery_terms} · <span class="text-gray-500">{order.delivery_terms}</span>{/if}
 				</div>
 			</div>
 			{#if order.reference_month}
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">Mês de referência (AVG)</div>
-					<div class="text-sm text-surface-200">{order.reference_month}</div>
+				<div class="rounded border border-gray-200 bg-white p-3">
+					<div class="text-xs text-gray-500">Mês de referência (AVG)</div>
+					<div class="text-sm text-gray-900">{order.reference_month}</div>
 				</div>
 			{/if}
 			{#if order.fixing_date}
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">Fixing (C2R)</div>
-					<div class="text-sm text-surface-200">{formatDate(order.fixing_date)}</div>
+				<div class="rounded border border-gray-200 bg-white p-3">
+					<div class="text-xs text-gray-500">Fixing (C2R)</div>
+					<div class="text-sm text-gray-900">{formatDate(order.fixing_date)}</div>
 				</div>
 			{/if}
 			{#if order.observation_date_start}
-				<div class="rounded border border-surface-800 bg-surface-900 p-3 col-span-2">
-					<div class="text-xs text-surface-500">Janela de observação (AVGInter)</div>
-					<div class="text-sm text-surface-200">
+				<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
+					<div class="text-xs text-gray-500">Janela de observação (AVGInter)</div>
+					<div class="text-sm text-gray-900">
 						{formatDate(order.observation_date_start)}
 						{#if order.observation_date_end} → {formatDate(order.observation_date_end)}{/if}
 					</div>
 				</div>
 			{/if}
 			{#if order.notes}
-				<div class="rounded border border-surface-800 bg-surface-900 p-3 col-span-2">
-					<div class="text-xs text-surface-500">Notas</div>
-					<pre class="mt-1 whitespace-pre-wrap text-sm text-surface-300">{order.notes}</pre>
+				<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
+					<div class="text-xs text-gray-500">Notas</div>
+					<pre class="mt-1 whitespace-pre-wrap text-sm text-gray-700">{order.notes}</pre>
 				</div>
 			{/if}
-			<div class="rounded border border-surface-800 bg-surface-900 p-3 col-span-2 text-xs text-surface-500">
+			<div class="rounded border border-gray-200 bg-white p-3 col-span-2 text-xs text-gray-500">
 				Criado em {formatDate(order.created_at)}
-				{#if order.deleted_at} · <span class="text-warning">Arquivado em {formatDate(order.deleted_at)}</span>{/if}
+				{#if order.deleted_at} · <span class="text-amber-700">Arquivado em {formatDate(order.deleted_at)}</span>{/if}
 			</div>
 		</div>
 	{/if}

@@ -5,66 +5,20 @@
 	import { notifications, type Notification } from '$lib/stores/notifications.svelte';
 	import { page } from '$app/state';
 	import { clerk, initClerk } from '$lib/clerk';
+	import AppShell from '$lib/components/alcast/AppShell.svelte';
 
-	let { children } = $props();
+	let { children, data } = $props();
 
-	// WS lifecycle: connect when authenticated, disconnect on logout
 	$effect(() => {
 		if (authStore.isAuthenticated) {
 			wsStore.connect();
 			void initClerk().catch(() => {
-				// Restored cookie sessions can render before Clerk loads; refresh remains best-effort.
+				/* Restored cookie sessions can render before Clerk loads; refresh remains best-effort. */
 			});
 		} else {
 			wsStore.disconnect();
 		}
 	});
-
-	function wsStatusDot(status: string): string {
-		switch (status) {
-			case 'authenticated': return 'bg-success';
-			case 'open':
-			case 'connecting': return 'bg-warning animate-pulse';
-			case 'error': return 'bg-danger';
-			default: return 'bg-surface-600';
-		}
-	}
-
-	// J-A6-08/09: orders surface is visible to any authenticated user
-	// (read-only reconstructability), while audit is restricted to the
-	// `auditor` role both here and at the backend. The role gate is a UX
-	// courtesy — the security boundary is the backend's `require_role`
-	// check on `/audit/events` and `/audit/events/{id}/verify`.
-	const navItems = $derived([
-		{ href: '/', label: 'Dashboard', icon: '◉' },
-		{ href: '/rfq', label: 'RFQs', icon: '⇄' },
-		{ href: '/orders', label: 'Orders', icon: '⊟' },
-		{ href: '/exposures', label: 'Exposições', icon: '◧' },
-		{ href: '/cashflow', label: 'Cashflow', icon: '⊞' },
-		{ href: '/contracts', label: 'Contratos', icon: '◳' },
-		{ href: '/counterparties', label: 'Contrapartes', icon: '⊕' },
-		{ href: '/analytics/pnl', label: 'Analytics', icon: '◠' },
-		{ href: '/market-data', label: 'Market Data', icon: '◆' },
-		...(authStore.hasRole('auditor')
-			? [{ href: '/audit', label: 'Audit', icon: '⊜' }]
-			: []),
-	]);
-
-	let sidebarCollapsed = $state(false);
-
-	function isActive(href: string): boolean {
-		if (href === '/') return page.url.pathname === '/';
-		return page.url.pathname.startsWith(href);
-	}
-
-	function typeColor(type: Notification['type']): string {
-		switch (type) {
-			case 'success': return 'bg-success/90 text-white';
-			case 'error': return 'bg-danger/90 text-white';
-			case 'warning': return 'bg-warning/90 text-surface-950';
-			default: return 'bg-accent/90 text-white';
-		}
-	}
 
 	async function logout() {
 		wsStore.disconnect();
@@ -72,102 +26,67 @@
 			await initClerk();
 			await clerk.signOut();
 		} catch {
-			// Local/backend logout must not depend on Clerk CDN availability.
+			/* Local logout must not depend on Clerk CDN availability. */
 		} finally {
 			authStore.logout();
 		}
 	}
+
+	function typeColor(type: Notification['type']): string {
+		if (type === 'success') return 'badge pos';
+		if (type === 'error') return 'badge neg';
+		if (type === 'warning') return 'badge warn';
+		return 'badge info';
+	}
+
+	const crumbs = $derived(crumbsFor(page.url.pathname));
+	const navBadges = $derived(data?.navBadges ?? { rfqOpen: null, ordersToday: null, approvalsPending: null });
+
+	function crumbsFor(pathname: string): string[] {
+		const segments = pathname.split('/').filter(Boolean);
+		if (segments.length === 0) return ['Hedge Control', 'Visão geral'];
+
+		const labels: Record<string, string> = {
+			exposures: 'Exposições',
+			orders: 'Ordens',
+			new: 'Novo',
+			rfq: 'RFQ',
+			contracts: 'Contratos',
+			counterparties: 'Contrapartes',
+			cashflow: 'Fluxo de caixa',
+			analytics: 'Análise',
+			pnl: 'P&L',
+			mtm: 'MTM',
+			'what-if': 'What-if',
+			'market-data': 'Dados de mercado',
+			'workflow-approvals': 'Aprovações',
+			audit: 'Auditoria',
+		};
+
+		return ['Hedge Control', ...segments.map((segment) => labels[segment] ?? segment)];
+	}
 </script>
 
-<div class="flex h-screen overflow-hidden">
-	<!-- Sidebar -->
-	{#if authStore.isAuthenticated}
-		<nav
-			class="flex flex-col border-r border-surface-800 bg-surface-900 transition-[width] duration-200 {sidebarCollapsed ? 'w-14' : 'w-52'}"
-		>
-			<div class="flex h-12 items-center justify-between border-b border-surface-800 px-3">
-				{#if !sidebarCollapsed}
-					<span class="text-sm font-semibold text-surface-200">Hedge Control</span>
-				{/if}
-				<button
-					onclick={() => (sidebarCollapsed = !sidebarCollapsed)}
-					class="rounded p-1 text-surface-400 hover:bg-surface-800 hover:text-surface-200"
-				>
-					{sidebarCollapsed ? '→' : '←'}
-				</button>
-			</div>
-
-			<div class="flex-1 overflow-y-auto py-2">
-				{#each navItems as item}
-					<a
-						href={item.href}
-						class="flex items-center gap-3 px-3 py-2 text-sm transition-colors
-							{isActive(item.href)
-								? 'bg-accent/10 text-accent border-r-2 border-accent'
-								: 'text-surface-400 hover:bg-surface-800 hover:text-surface-200'}"
-					>
-						<span class="text-base">{item.icon}</span>
-						{#if !sidebarCollapsed}
-							<span>{item.label}</span>
-						{/if}
-					</a>
-				{/each}
-			</div>
-
-			<div class="border-t border-surface-800 px-3 py-2">
-				<!-- WS connection status -->
-				<div class="flex items-center gap-2 mb-1">
-					<span class="h-2 w-2 rounded-full {wsStatusDot(wsStore.status)}"></span>
-					{#if !sidebarCollapsed}
-						<span class="text-xs text-surface-600">
-							{wsStore.status === 'authenticated' ? 'Conectado' : wsStore.status === 'connecting' ? 'Conectando...' : wsStore.status === 'error' ? 'Erro WS' : 'Desconectado'}
-						</span>
-					{/if}
-				</div>
-				{#if !sidebarCollapsed}
-					<div class="text-xs text-surface-500 truncate">{authStore.userName}</div>
-					<div class="text-xs text-surface-600">{authStore.userRoles.join(', ')}</div>
-				{/if}
-				<button
-					onclick={logout}
-					class="mt-1 w-full rounded px-2 py-1 text-xs text-surface-400 hover:bg-surface-800 hover:text-surface-200"
-				>
-					{sidebarCollapsed ? '⏻' : 'Sair'}
-				</button>
-			</div>
-		</nav>
-	{/if}
-
-	<!-- Main content -->
-	<main class="flex-1 overflow-y-auto">
+{#if authStore.isAuthenticated}
+	<AppShell {crumbs} {navBadges} userName={authStore.userName} userRoles={authStore.userRoles} onLogout={logout}>
 		{@render children()}
-	</main>
-</div>
+	</AppShell>
+{:else}
+	{@render children()}
+{/if}
 
-<!-- Session expiry warning -->
 {#if authStore.showExpiryWarning}
-	<div class="fixed top-0 left-0 right-0 z-50 bg-warning px-4 py-2 text-center text-sm font-medium text-surface-950">
-		Sessão expira em breve — faça login novamente para continuar.
-		<button
-			onclick={logout}
-			class="ml-2 underline"
-		>
-			Renovar agora
-		</button>
+	<div class="env-badge neg" style="position: fixed; top: 0; left: 0; right: 0; z-index: 50; text-align: center; padding: 8px;">
+		Sessão expira em breve - faça login novamente para continuar.
+		<button onclick={logout} class="btn-link" style="margin-left: 8px;">Renovar agora</button>
 	</div>
 {/if}
 
-<!-- Toast notifications -->
-<div class="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
+<div style="position: fixed; bottom: 16px; right: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px;">
 	{#each notifications.items as notification (notification.id)}
-		<div class="flex items-center gap-2 rounded-lg px-4 py-2 text-sm shadow-lg {typeColor(notification.type)}">
-			<span>{notification.message}</span>
-			<button
-				onclick={() => notifications.remove(notification.id)}
-				class="ml-2 opacity-70 hover:opacity-100"
-			>
-				✕
-			</button>
+		<div class={typeColor(notification.type)} style="padding: 10px 14px; box-shadow: var(--sh-pop);">
+			{notification.message}
+			<button onclick={() => notifications.remove(notification.id)} class="btn-ghost btn-sm" style="margin-left: 8px;">x</button>
 		</div>
 	{/each}
 </div>

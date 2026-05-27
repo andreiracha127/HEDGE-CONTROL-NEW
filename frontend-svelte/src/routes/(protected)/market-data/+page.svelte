@@ -1,182 +1,131 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate, formatPrice } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { describeApiError } from '$lib/api/errors';
-	import EChart from '$lib/components/chart/EChart.svelte';
-	import type { MarketPrice } from '$lib/api/types/entities';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	let { data } = $props();
+	const commodities = $derived(data.commodities);
 
-	let prices = $state<MarketPrice[]>([]);
-	let isLoading = $state(true);
-	let isIngesting = $state(false);
-	let isRiskManager = $derived(authStore.hasRole('risk_manager'));
-	let abortController: AbortController;
+	const providers = [
+		{ p: 'Refinitiv (LSEG)', sla: 99.97, status: 'pos' as const  },
+		{ p: 'LME oficial',      sla: 99.91, status: 'pos' as const  },
+		{ p: 'B3 (FX)',          sla: 99.99, status: 'pos' as const  },
+		{ p: 'Bloomberg BBG',    sla: 98.40, status: 'warn' as const },
+		{ p: 'CME Group',        sla: 99.85, status: 'pos' as const  },
+	];
 
-	// J-A6-06: /market-data/westmetall/aluminum/cash-settlement/prices
-	// returns `CashSettlementPriceRead[]` directly — `price_usd` is a
-	// Decimal-as-string with six fractional digits. Discard rows that
-	// lack the required identifiers/economics instead of zeroing them.
-	function isValidMarketPrice(row: unknown): row is MarketPrice {
-		if (!row || typeof row !== 'object') return false;
-		const r = row as Record<string, unknown>;
-		return (
-			typeof r.id === 'string' &&
-			typeof r.settlement_date === 'string' &&
-			typeof r.price_usd === 'string'
-		);
+	const forward: [string, number, number, number, string, 'alta' | 'média' | 'baixa', number][] = [
+		['jun/26', 2643, 2648, 2645.5, '+0,00 %', 'alta',  12],
+		['jul/26', 2651, 2657, 2654.0, '+0,32 %', 'alta',   8],
+		['ago/26', 2659, 2666, 2662.5, '+0,64 %', 'alta',   5],
+		['set/26', 2667, 2675, 2671.0, '+0,96 %', 'média',  3],
+		['out/26', 2675, 2684, 2679.5, '+1,29 %', 'média',  1],
+		['nov/26', 2683, 2693, 2688.0, '+1,61 %', 'baixa',  0],
+		['dez/26', 2691, 2702, 2696.5, '+1,93 %', 'baixa',  0],
+	];
+
+	function liquidityKind(l: 'alta' | 'média' | 'baixa'): 'pos' | 'warn' | 'neutral' {
+		if (l === 'alta') return 'pos';
+		if (l === 'média') return 'warn';
+		return 'neutral';
 	}
-
-	async function loadPrices(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const res = await apiFetch('/market-data/westmetall/aluminum/cash-settlement/prices?limit=90', { signal });
-			if (res.ok) {
-				const data: unknown = await res.json();
-				const arr = Array.isArray(data) ? data : [];
-				prices = arr.filter(isValidMarketPrice);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar market data');
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	async function triggerIngest() {
-		isIngesting = true;
-		try {
-			const res = await apiFetch('/market-data/westmetall/aluminum/cash-settlement/ingest', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ settlement_date: new Date().toISOString().split('T')[0] }),
-			});
-			if (res.ok) {
-				notifications.success('Ingestão iniciada');
-				await loadPrices();
-			} else {
-				const message = await describeApiError(res);
-				notifications.error(`Falha na ingestão de market data: ${message}`);
-			}
-		} catch (e) {
-			notifications.error(
-				`Erro ao iniciar ingestão: ${e instanceof Error ? e.message : 'desconhecido'}`,
-			);
-		} finally {
-			isIngesting = false;
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadPrices(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
-
-	// Chronological ordering for both the chart and the row-to-row delta
-	// computation in the table.
-	let sortedPrices = $derived(
-		[...prices].sort(
-			(a, b) =>
-				new Date(a.settlement_date).getTime() -
-				new Date(b.settlement_date).getTime(),
-		),
-	);
-
-	// `price_usd` is a six-decimal Decimal-as-string. The chart axis is
-	// a visual aid where ~15 sig-fig IEEE-754 precision is acceptable
-	// (the institutional precision concern is the tabular display, which
-	// renders the raw string via formatPrice). Drop rows whose numeric
-	// parse fails — those would otherwise plot as NaN points.
-	let chartOptions = $derived(() => {
-		if (sortedPrices.length === 0) return {};
-		return {
-			tooltip: { trigger: 'axis' as const },
-			xAxis: {
-				type: 'category' as const,
-				data: sortedPrices.map((p) => p.settlement_date),
-			},
-			yAxis: { type: 'value' as const, name: 'USD/MT' },
-			series: [{
-				name: 'LME Aluminium',
-				type: 'line' as const,
-				data: sortedPrices.map((p) => Number(p.price_usd)),
-				smooth: true,
-				itemStyle: { color: '#3b82f6' },
-				areaStyle: { opacity: 0.05 },
-			}],
-			dataZoom: [{ type: 'inside' as const }, { type: 'slider' as const }],
-		};
-	});
-
-	// Most-recent-first for the table view, with the row-to-row change
-	// computed against the previous chronological row. `change` is a
-	// derived delta of two USD prices; rendered with two fractional
-	// digits (settlement-price precision is preserved separately on the
-	// `price_usd` column itself).
-	let pricesForTable = $derived(
-		sortedPrices
-			.map((p, idx, arr) => {
-				const prev = idx > 0 ? arr[idx - 1] : null;
-				const prevN = prev ? Number(prev.price_usd) : Number.NaN;
-				const curN = Number(p.price_usd);
-				const change =
-					Number.isFinite(prevN) && Number.isFinite(curN)
-						? curN - prevN
-						: null;
-				return { ...p, change };
-			})
-			.reverse(),
-	);
 </script>
 
-<div class="p-6">
-	<div class="flex items-center justify-between">
-		<h1 class="text-lg font-semibold text-surface-200">Market Data</h1>
-		{#if isRiskManager}
-			<button
-				onclick={triggerIngest}
-				disabled={isIngesting}
-				class="rounded border border-surface-700 px-3 py-1.5 text-sm text-surface-400 hover:bg-surface-800 disabled:opacity-50"
-			>
-				{isIngesting ? 'Importando...' : 'Importar Preços'}
-			</button>
-		{/if}
+<div class="page">
+	<div class="page-head">
+		<div>
+			<h1 class="page-title">Dados de mercado</h1>
+			<div class="page-sub">Cotações, curvas e provedores · atualizado 09:14</div>
+		</div>
+		<div class="page-actions">
+			<Badge kind="pos" dot>Refinitiv ao vivo</Badge>
+			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Atualizar</button>
+		</div>
 	</div>
 
-	{#if isLoading}
-		<div class="mt-4 text-surface-500">Carregando...</div>
-	{:else if prices.length > 0}
-		<div class="mt-4">
-			<EChart options={chartOptions()} style="width:100%;height:400px" />
-		</div>
-
-		<div class="mt-6 overflow-x-auto rounded border border-surface-800">
-			<table class="w-full text-sm">
+	<div class="grid-7-5" style="margin-bottom: 16px;">
+		<Card title="Spot" sub="Última cotação · USD" noPad>
+			<table class="tbl">
 				<thead>
-					<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-						<th class="px-3 py-2">Data</th>
-						<th class="px-3 py-2">Preço (USD/MT)</th>
-						<th class="px-3 py-2">Variação</th>
+					<tr>
+						<th>Commodity</th>
+						<th class="num">Última</th>
+						<th class="num">Bid</th>
+						<th class="num">Ask</th>
+						<th class="num">Spread</th>
+						<th class="num">Δ Dia</th>
+						<th>Provedor</th>
+						<th>Última atualização</th>
 					</tr>
 				</thead>
 				<tbody>
-					{#each pricesForTable.slice(0, 30) as price (price.id)}
-						<tr class="border-b border-surface-800/50">
-							<td class="px-3 py-2 text-surface-400 text-xs">{formatDate(price.settlement_date)}</td>
-							<td class="px-3 py-2 tabular-nums text-surface-200" data-testid="market-price-usd">{formatPrice(price.price_usd, 'USD/MT')}</td>
-							<td class="px-3 py-2 tabular-nums text-xs {price.change != null && price.change >= 0 ? 'text-success' : 'text-danger'}">
-								{price.change != null ? (price.change >= 0 ? '+' : '') + formatNumber(price.change) : '—'}
+					{#each commodities as c (c.code)}
+						{@const chg = ((c.last - c.prev) / c.prev) * 100}
+						{@const spread = c.code === 'USDBRL' ? 0.0005 : 1.5}
+						{@const bid = c.last - spread / 2}
+						{@const ask = c.last + spread / 2}
+						{@const digits = c.code === 'USDBRL' ? 4 : 2}
+						<tr>
+							<td class="strong">
+								<CommodityChip code={c.code}/>
+								<div style="font-size: 11px; color: var(--muted); font-weight: 400; margin-top: 1px;">{c.name}</div>
 							</td>
+							<td class="num strong">{c.last.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}</td>
+							<td class="num">{bid.toFixed(digits)}</td>
+							<td class="num">{ask.toFixed(digits)}</td>
+							<td class="num">{spread.toFixed(digits)}</td>
+							<td class="num" style="color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{chg >= 0 ? '+' : ''}{chg.toFixed(2)} %
+							</td>
+							<td><Badge kind="neutral">{c.code === 'USDBRL' ? 'B3' : 'Refinitiv'}</Badge></td>
+							<td style="color: var(--muted); font-size: 12px;">27/05 09:14:08</td>
 						</tr>
 					{/each}
 				</tbody>
 			</table>
-		</div>
-	{:else}
-		<div class="mt-4 text-surface-500">Nenhum dado de preço disponível</div>
-	{/if}
+		</Card>
+
+		<Card title="Status dos provedores" sub="Disponibilidade · 24h">
+			<div class="stack" style="gap: 8px;">
+				{#each providers as p (p.p)}
+					<div class="row gap-3" style="padding: 8px 0; border-bottom: 1px solid var(--line-soft);">
+						<div style="flex: 1;">
+							<div style="font-size: 12.5px; font-weight: 500;">{p.p}</div>
+							<div style="font-size: 11px; color: var(--muted);">SLA {p.sla.toFixed(2)} %</div>
+						</div>
+						<Badge kind={p.status} dot>{p.status === 'pos' ? 'Operacional' : 'Atenção'}</Badge>
+					</div>
+				{/each}
+			</div>
+		</Card>
+	</div>
+
+	<Card title="Curva forward · AL-LME" sub="Preço por janela de entrega · USD/t">
+		<table class="tbl tbl-tight">
+			<thead>
+				<tr>
+					<th>Janela</th>
+					<th class="num">Bid</th>
+					<th class="num">Ask</th>
+					<th class="num">Mid</th>
+					<th class="num">Contango / Backwardation</th>
+					<th>Liquidez</th>
+					<th>Aberto na plataforma</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each forward as [w, b, a, m, contango, liquidity, n] (w)}
+					<tr>
+						<td class="strong">{w}</td>
+						<td class="num">{b.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+						<td class="num">{a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+						<td class="num strong">{m.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+						<td class="num" style="color: var(--info);">{contango}</td>
+						<td><Badge kind={liquidityKind(liquidity)}>{liquidity}</Badge></td>
+						<td class="num">{n}</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</Card>
 </div>

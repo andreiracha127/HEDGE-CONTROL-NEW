@@ -27,7 +27,7 @@ export function createSvelteTable<TData extends RowData>(
 
 	const table = createTable({
 		...optionsFn(),
-		state: { ...(tableState as TableState), ...optionsFn().state },
+		state: { ...optionsFn().state },
 		onStateChange: handleStateChange,
 		renderFallbackValue: null,
 	} as TableOptionsResolved<TData>);

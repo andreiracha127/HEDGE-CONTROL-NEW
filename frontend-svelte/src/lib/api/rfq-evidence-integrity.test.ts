@@ -28,6 +28,8 @@ import { resolve } from 'node:path';
 const ROUTES = resolve(process.cwd(), 'src', 'routes');
 const RFQ_NEW = resolve(ROUTES, '(protected)', 'rfq', 'new', '+page.svelte');
 const RFQ_DETAIL = resolve(ROUTES, '(protected)', 'rfq', '[id]', '+page.svelte');
+const RFQ_DETAIL_LOAD = resolve(ROUTES, '(protected)', 'rfq', '[id]', '+page.ts');
+const ROUTE_DATA = resolve(process.cwd(), 'src', 'lib', 'alcast', 'route-data.ts');
 
 function read(path: string): string {
 	return readFileSync(path, 'utf8');
@@ -58,7 +60,7 @@ describe('RFQ create page — actor identity (J-A6-04 slice)', () => {
 	it('POST /rfqs body uses canonical invitations mapping and not legacy counterparty_ids', () => {
 		expect(source).not.toMatch(/counterparty_ids\s*:/);
 		expect(source).toMatch(/invitations\s*:/);
-		expect(source).toMatch(/selectedCounterpartyIds\.map\(\(id\)\s*=>\s*\(\{\s*counterparty_id:\s*id\s*\}\)\)/);
+		expect(source).toMatch(/selectedCounterparties\.map\(\(cp\)\s*=>\s*\(\{\s*counterparty_id:\s*cp\.id/);
 	});
 });
 
@@ -73,22 +75,13 @@ describe('RFQ detail page — actor identity (J-A6-04 slice)', () => {
 		expect(source).not.toMatch(/user_id\s*:\s*authStore\.userName/);
 	});
 
-	it('exposes a requireActorSub helper that pulls sub from authStore', () => {
-		expect(source).toMatch(/function\s+requireActorSub\s*\(/);
-		expect(source).toMatch(/authStore\.userSub/);
+	it('does not wire frontend actor evidence into detail mutations', () => {
+		expect(source).not.toMatch(/client\.(POST|PUT|PATCH|DELETE)\(/);
+		expect(source).not.toMatch(/apiFetch\([^)]*method\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/);
 	});
 
-	it('award, reject, cancel, refresh all gate on requireActorSub before apiFetch', () => {
-		// Each mutation function must call requireActorSub() and early-return
-		// when null, BEFORE apiFetch is dispatched. We assert the helper
-		// appears at least four times — once per gated mutation.
-		const requireOccurrences = source.match(/requireActorSub\s*\(\s*\)/g) ?? [];
-		expect(requireOccurrences.length).toBeGreaterThanOrEqual(4);
+	it('does not send user_id from the detail page', () => {
 		expect(source).not.toMatch(/user_id\s*:/);
-	});
-
-	it('requireActorSub raises an explicit auth-error notification on missing sub', () => {
-		expect(source).toMatch(/notifications\.error\(\s*['"`][^'"`]*sub[^'"`]*['"`]/i);
 	});
 });
 
@@ -103,13 +96,14 @@ describe('RFQ mutation bodies — backend-derived actor identity (Cluster 2)', (
 
 	it('keeps the local actor-sub preflight on create and existing detail mutations', () => {
 		expect(createSource).toMatch(/authStore\.userSub/);
-		const requireOccurrences = detailSource.match(/requireActorSub\s*\(\s*\)/g) ?? [];
-		expect(requireOccurrences.length).toBeGreaterThanOrEqual(4);
+		expect(detailSource).not.toMatch(/client\.(POST|PUT|PATCH|DELETE)\(/);
 	});
 });
 
 describe('RFQ detail page — single-parse + evidence preservation (J-A6-12 slice)', () => {
 	const source = read(RFQ_DETAIL);
+	const loadSource = read(RFQ_DETAIL_LOAD);
+	const routeDataSource = read(ROUTE_DATA);
 
 	it('does not call quotesRes.json() twice in the same expression', () => {
 		// The previous bug pattern was:
@@ -120,9 +114,11 @@ describe('RFQ detail page — single-parse + evidence preservation (J-A6-12 slic
 		expect(source).not.toMatch(/eventsRes\.json\(\)[\s\S]{0,200}eventsRes\.json\(\)/);
 	});
 
-	it('routes list-body parsing through the single-parse helper', () => {
-		expect(source).toMatch(/parseListBodyOnce\s*\(\s*quotesRes\s*\)/);
-		expect(source).toMatch(/parseListBodyOnce\s*\(\s*eventsRes\s*\)/);
+	it('routes evidence list loading through SvelteKit load and the shared items helper', () => {
+		expect(loadSource).toContain("client.GET('/rfqs/{rfq_id}/quotes'");
+		expect(loadSource).toContain("client.GET('/rfqs/{rfq_id}/state-events'");
+		expect(loadSource).toMatch(/items<.*>\(requireData\(quotesResult/);
+		expect(loadSource).toMatch(/items\(requireData\(eventsResult/);
 	});
 
 	it('does NOT replace quotes with [] on non-2xx reload', () => {
@@ -132,43 +128,19 @@ describe('RFQ detail page — single-parse + evidence preservation (J-A6-12 slic
 		expect(source).not.toMatch(/stateEvents\s*=\s*eventsRes\.ok\s*\?[\s\S]*?:\s*\[\s*\]/);
 	});
 
-	it('surfaces an explicit error notification on non-2xx quote/state-event reload', () => {
-		// Both list-load failures must call notifications.error with a
-		// "Falha ao recarregar ..." message, so the user knows the
-		// preserved evidence is stale.
-		expect(source).toMatch(/Falha ao recarregar cotações/);
-		expect(source).toMatch(/Falha ao recarregar timeline/);
+	it('surfaces non-2xx quote/state-event errors through the route error boundary', () => {
+		expect(loadSource).toContain('Failed to load RFQ quotes');
+		expect(loadSource).toContain('Failed to load RFQ state events');
 	});
 
 	it('resets evidence on cross-RFQ navigation so previous RFQ data does not leak under a new RFQ header', () => {
-		// Codex P2: SvelteKit reuses this component when navigating from
-		// /rfq/A to /rfq/B. The preservation branch above is correct for
-		// SAME-RFQ reloads but would otherwise display A's quotes /
-		// timeline under B's header if B's /quotes or /state-events
-		// returns non-2xx. loadAll() must therefore detect a fresh RFQ
-		// via a non-reactive route-id marker and clear stale evidence at
-		// the top without reading `rfq` in the $effect-triggered sync path.
-		expect(source).toMatch(/loadedEvidenceRfqId\s*!==\s*targetRfqId/);
-		expect(source).not.toMatch(/rfq\?\.id\s*!==\s*rfqId|rfq\.id\s*!==\s*rfqId/);
-		expect(source).toMatch(/isFreshRfq/);
-		// And on a fresh RFQ load, all evidence collections must be
-		// reset to their initial empty values BEFORE the await.
-		const freshBlock = source.match(/if\s*\(\s*isFreshRfq\s*\)\s*\{([\s\S]*?)\}/);
-		expect(freshBlock, 'isFreshRfq reset block must exist').toBeTruthy();
-		const block = freshBlock![1];
-		expect(block).toMatch(/loadedEvidenceRfqId\s*=\s*targetRfqId/);
-		expect(block).toMatch(/rfq\s*=\s*null/);
-		expect(block).toMatch(/invitations\s*=\s*\[\s*\]/);
-		expect(block).toMatch(/quotes\s*=\s*\[\s*\]/);
-		expect(block).toMatch(/stateEvents\s*=\s*\[\s*\]/);
-		expect(block).toMatch(/ranking\s*=\s*null/);
+		expect(loadSource).toContain('params.id');
+		expect(source).toContain("const id = $derived(page.params.id ?? '')");
+		expect(source).toMatch(/rfqs\.find\(\(r\) => r\.id === id\)/);
 	});
 
 	it('parseListBodyOnce coerces both bare-array and {items:[]} backend shapes', () => {
-		// The backend canonical /quotes and /state-events return bare lists;
-		// older paginated envelopes use { items: [...] }. Helper must accept
-		// both without re-reading the body.
-		expect(source).toMatch(/Array\.isArray\(\s*body\s*\)/);
-		expect(source).toMatch(/\(body as \{ items\??\:[\s\S]*?\}\)\.items/);
+		expect(routeDataSource).toMatch(/Array\.isArray\(\s*data\s*\)/);
+		expect(routeDataSource).toMatch(/record\.items/);
 	});
 });

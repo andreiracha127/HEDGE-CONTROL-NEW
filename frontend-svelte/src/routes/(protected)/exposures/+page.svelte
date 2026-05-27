@@ -1,220 +1,150 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatQuantityMT } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { type ColumnDef } from '@tanstack/table-core';
-	import DataTable from '$lib/components/table/DataTable.svelte';
-	import type { Exposure, NetExposure, HedgeTask } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Pager from '$lib/components/alcast/Pager.svelte';
+	let { data } = $props();
+	const exposureBuckets = $derived(data.exposureBuckets);
 
-	// ─── State ──────────────────────────────────────────────────────────
-	let exposures = $state<Exposure[]>([]);
-	let netExposure = $state<NetExposure | null>(null);
-	let hedgeTasks = $state<HedgeTask[]>([]);
-	let isLoading = $state(true);
-	let activeTab = $state<'exposures' | 'tasks'>('exposures');
+	let commodity = $state('AL-LME');
+	const COMMODITIES = ['AL-LME', 'CU-LME', 'ZN-LME', 'NI-LME', 'USDBRL'];
 
-	// Grouping
-	let groupBy = $state<string[]>([]);
-	let abortController: AbortController;
-
-	async function loadData(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const [expRes, netRes, tasksRes] = await Promise.all([
-				apiFetch('/exposures/list?limit=200', { signal }),
-				apiFetch('/exposures/net', { signal }),
-				apiFetch('/exposures/tasks', { signal }),
-			]);
-
-			if (expRes.ok) {
-				const data = await expRes.json();
-				exposures = data.items ?? data;
-			}
-			if (netRes.ok) netExposure = await netRes.json();
-			if (tasksRes.ok) {
-				const data = await tasksRes.json();
-				hedgeTasks = data.items ?? data;
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar exposições');
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadData(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
-
-	// ─── Column Defs ────────────────────────────────────────────────────
-	const columns: ColumnDef<any, any>[] = [
-		{
-			accessorFn: (row) => row.commodity,
-			id: 'commodity',
-			header: 'Commodity',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.settlement_month,
-			id: 'settlement_month',
-			header: 'Mês',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.source_type,
-			id: 'source_type',
-			header: 'Tipo',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.quantity_mt,
-			id: 'quantity_mt',
-			header: 'Qty (MT)',
-			cell: (info) => formatQuantityMT(info.getValue() as number),
-		},
-		{
-			accessorFn: (row) => row.direction,
-			id: 'direction',
-			header: 'Direção',
-		},
-		{
-			accessorFn: (row) => row.hedge_status,
-			id: 'hedge_status',
-			header: 'Status Hedge',
-			cell: (info) => {
-				const v = info.getValue() as string;
-				return v ?? '—';
-			},
-		},
-		{
-			accessorFn: (row) => row.net_exposure_mt,
-			id: 'net_exposure_mt',
-			header: 'Exposição Líquida',
-			cell: (info) => formatQuantityMT(info.getValue() as number),
-		},
+	const pending = [
+		{ when: 'hoje', sev: 'neg' as const,  title: 'ago/26 abaixo da política', desc: 'Cobertura em 39 % · meta ≥ 70 %' },
+		{ when: 'hoje', sev: 'neg' as const,  title: 'set/26 abaixo da política', desc: 'Cobertura em 22,9 % · meta ≥ 70 %' },
+		{ when: 'hoje', sev: 'warn' as const, title: 'Diferença jun/26 ↔ SAP',    desc: '15 t de divergência detectadas' },
+		{ when: 'd-1',  sev: 'warn' as const, title: '3 ajustes de exposição',    desc: 'Pendentes de aprovação no workflow' },
+		{ when: 'd-2',  sev: 'info' as const, title: 'Rebalanceamento sugerido',  desc: 'Reduzir 200 t em ZN-LME para abrir limite' },
 	];
 
-	function hedgeStatusColor(status: string): string {
-		switch (status) {
-			case 'fully_hedged': return 'text-success';
-			case 'partially_hedged': return 'text-warning';
-			case 'open': return 'text-danger';
-			default: return 'text-surface-400';
-		}
-	}
-
-	function toggleGroupBy(field: string) {
-		if (groupBy.includes(field)) {
-			groupBy = groupBy.filter(g => g !== field);
-		} else {
-			groupBy = [...groupBy, field];
-		}
+	function sevColor(sev: 'neg' | 'warn' | 'info'): string {
+		if (sev === 'neg') return 'var(--neg)';
+		if (sev === 'warn') return 'var(--orange)';
+		return 'var(--info)';
 	}
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Exposições</h1>
-
-	<!-- Net exposure summary cards -->
-	{#if netExposure}
-		<div class="mt-4 grid grid-cols-4 gap-4">
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Exposição Bruta</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatQuantityMT(netExposure.gross_exposure_mt)} MT
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Exposição Líquida</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatQuantityMT(netExposure.net_exposure_mt)} MT
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Hedge Ratio</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{netExposure.hedge_ratio != null ? (netExposure.hedge_ratio * 100).toFixed(1) + '%' : '—'}
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Posições Abertas</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{netExposure.open_positions ?? '—'}
-				</div>
-			</div>
+<div class="page">
+	<div class="page-head">
+		<div>
+			<h1 class="page-title">Exposições</h1>
+			<div class="page-sub">Saldo comercial líquido por janela de entrega · snapshot 27/05/2026 09:12</div>
 		</div>
-	{/if}
-
-	<!-- Tabs -->
-	<div class="mt-6 flex gap-4 border-b border-surface-800">
-		<button
-			onclick={() => activeTab = 'exposures'}
-			class="pb-2 text-sm {activeTab === 'exposures' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Exposições
-		</button>
-		<button
-			onclick={() => activeTab = 'tasks'}
-			class="pb-2 text-sm {activeTab === 'tasks' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Hedge Tasks ({hedgeTasks.length})
-		</button>
+		<div class="page-actions">
+			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Recalcular</button>
+			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
+		</div>
 	</div>
 
-	{#if activeTab === 'exposures'}
-		<!-- Grouping controls -->
-		<div class="mt-4 flex gap-2">
-			<span class="text-xs text-surface-500">Agrupar por:</span>
-			{#each ['commodity', 'settlement_month', 'source_type'] as field}
-				<button
-					onclick={() => toggleGroupBy(field)}
-					class="rounded px-2 py-0.5 text-xs {groupBy.includes(field) ? 'bg-accent/20 text-accent' : 'bg-surface-800 text-surface-400 hover:text-surface-300'}"
-				>
-					{field === 'commodity' ? 'Commodity' : field === 'settlement_month' ? 'Mês' : 'Tipo'}
-				</button>
-			{/each}
-		</div>
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Comercial total"        value="36.300" unit="t" delta="+1.420 t · 24h" deltaKind="pos"/>
+		<Kpi label="Hedgeado"               value="17.900" unit="t" delta="+700 t · 24h"   deltaKind="pos"/>
+		<Kpi label="Residual"               value="18.400" unit="t" delta="+720 t · 24h"   deltaKind="neg"/>
+		<Kpi label="Aderência à política"   value="49,3"   unit="%" delta="meta ≥ 70 %"    deltaKind="neg"/>
+	</div>
 
-		<div class="mt-4">
-			<DataTable
-				data={exposures}
-				{columns}
-				enableGrouping={groupBy.length > 0}
-				{isLoading}
-				emptyMessage="Nenhuma exposição encontrada"
-			/>
-		</div>
-	{:else}
-		<!-- Hedge Tasks -->
-		<div class="mt-4 space-y-3">
-			{#each hedgeTasks as task (task.id ?? task.exposure_id)}
-				<div class="rounded border border-surface-800 bg-surface-900 p-4">
-					<div class="flex items-center justify-between">
-						<div>
-							<span class="text-sm font-medium text-surface-200">{task.commodity}</span>
-							<span class="ml-2 text-xs text-surface-500">{task.action ?? task.recommendation}</span>
-						</div>
-						{#if task.action === 'hedge_new' || task.recommendation === 'hedge_new'}
-							<a
-								href="/rfq/new"
-								class="rounded bg-accent/10 px-3 py-1 text-xs text-accent hover:bg-accent/20"
-							>
-								Criar RFQ
-							</a>
-						{/if}
-					</div>
-					<div class="mt-1 text-xs text-surface-500">
-						{formatQuantityMT(task.quantity_mt)} MT · {task.settlement_month ?? '—'}
-					</div>
+	<Card title="Exposição por commodity e janela" sub="Drill-down por mês de entrega" noPad>
+		{#snippet actions()}
+			<div class="row gap-2">
+				<div class="radio-group">
+					{#each COMMODITIES as c (c)}
+						<button type="button" class:active={commodity === c} onclick={() => (commodity = c)}>{c}</button>
+					{/each}
 				</div>
-			{:else}
-				<div class="text-sm text-surface-500">Nenhuma tarefa de hedge pendente</div>
-			{/each}
-		</div>
-	{/if}
+				<button type="button" class="btn btn-secondary btn-sm"><Icon name="filter"/>Filtros</button>
+			</div>
+		{/snippet}
+
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>Janela</th>
+					<th class="num">Comercial ativa</th>
+					<th class="num">Comercial passiva</th>
+					<th class="num">Saldo líquido</th>
+					<th class="num">Hedgeado</th>
+					<th class="num">Residual</th>
+					<th style="width: 220px;">Cobertura</th>
+					<th>Política</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each exposureBuckets as b (b.month)}
+					{@const ok = b.ratio >= 70}
+					{@const warn = b.ratio >= 40 && b.ratio < 70}
+					<tr>
+						<td class="strong">{b.month}</td>
+						<td class="num">{(b.commercial_mt * 0.62).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num">{(b.commercial_mt * 0.38).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num strong">{b.commercial_mt.toLocaleString('pt-BR')}</td>
+						<td class="num">{b.hedged_mt.toLocaleString('pt-BR')}</td>
+						<td class="num" style="color: {b.residual_mt > 2000 ? 'var(--neg)' : 'var(--ink-2)'};">{b.residual_mt.toLocaleString('pt-BR')}</td>
+						<td>
+							<div class="row gap-3">
+								<Bar pct={b.ratio} kind={ok ? 'pos' : warn ? 'warn' : 'neg'}/>
+								<span class="tabular" style="width: 42px; text-align: right;">{b.ratio.toFixed(1)}%</span>
+							</div>
+						</td>
+						<td>
+							{#if ok}
+								<Badge kind="pos" dot>OK</Badge>
+							{:else if warn}
+								<Badge kind="warn" dot>Atenção</Badge>
+							{:else}
+								<Badge kind="neg" dot>Abaixo</Badge>
+							{/if}
+						</td>
+						<td>
+							<div class="tbl-actions">
+								<a href="/rfq/new" class="btn btn-ghost btn-sm">Cobrir →</a>
+							</div>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+		<Pager from={1} to={8} total={8}/>
+	</Card>
+
+	<div class="grid-7-5" style="margin-top: 16px;">
+		<Card title="Reconciliação contábil" sub="Comparativo SAP × Plataforma de Hedge · D-1">
+			<table class="tbl tbl-tight">
+				<thead>
+					<tr>
+						<th>Janela</th>
+						<th class="num">SAP (ECC)</th>
+						<th class="num">Plataforma</th>
+						<th class="num">Δ</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr><td>jun/26</td><td class="num">4.215</td><td class="num">4.200</td><td class="num" style="color: var(--warn);">−15</td><td><Badge kind="warn" dot>Diferença</Badge></td></tr>
+					<tr><td>jul/26</td><td class="num">3.800</td><td class="num">3.800</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
+					<tr><td>ago/26</td><td class="num">4.100</td><td class="num">4.100</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
+					<tr><td>set/26</td><td class="num">3.495</td><td class="num">3.500</td><td class="num" style="color: var(--warn);">+5</td><td><Badge kind="warn" dot>Diferença</Badge></td></tr>
+					<tr><td>out/26</td><td class="num">3.900</td><td class="num">3.900</td><td class="num">0</td><td><Badge kind="pos" dot>OK</Badge></td></tr>
+				</tbody>
+			</table>
+		</Card>
+
+		<Card title="Pendências" sub="Itens que precisam de ação">
+			<div class="stack" style="gap: 0;">
+				{#each pending as p, i (i)}
+					<div class="row gap-3" style="padding: 10px 0; border-bottom: 1px solid var(--line-soft);">
+						<div style="width: 4px; align-self: stretch; background: {sevColor(p.sev)}; border-radius: 2px;"></div>
+						<div style="flex: 1;">
+							<div style="font-size: 12.5px; font-weight: 500;">{p.title}</div>
+							<div style="font-size: 11.5px; color: var(--muted);">{p.desc}</div>
+						</div>
+						<div style="font-size: 11px; color: var(--muted);">{p.when}</div>
+						<button type="button" class="btn btn-ghost btn-sm">Ver →</button>
+					</div>
+				{/each}
+			</div>
+		</Card>
+	</div>
 </div>

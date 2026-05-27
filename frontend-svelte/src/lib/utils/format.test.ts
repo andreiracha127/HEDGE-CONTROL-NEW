@@ -136,11 +136,11 @@ describe('stateLabel', () => {
 
 describe('stateColor', () => {
 	it('returns color class for known states', () => {
-		expect(stateColor('AWARDED')).toContain('success');
+		expect(stateColor('AWARDED')).toBe('badge pos');
 	});
 
 	it('returns fallback for unknown state', () => {
-		expect(stateColor('UNKNOWN')).toContain('surface');
+		expect(stateColor('UNKNOWN')).toBe('badge neutral');
 	});
 });
 
@@ -165,7 +165,7 @@ describe('directionLabel', () => {
 
 describe('directionColor', () => {
 	it('returns correct color classes', () => {
-		expect(directionColor('BUY')).toBe('text-success');
-		expect(directionColor('SELL')).toBe('text-danger');
+		expect(directionColor('BUY')).toBe('badge pos');
+		expect(directionColor('SELL')).toBe('badge neg');
 	});
 });

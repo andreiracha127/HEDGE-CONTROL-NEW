@@ -1,98 +1,82 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { apiFetch } from '$lib/api/fetch';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import type { Counterparty } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	let { data } = $props();
+	const counterparties = $derived(data.counterparties);
 
-	let counterparties = $state<Counterparty[]>([]);
-	let isLoading = $state(true);
-	let search = $state('');
-	let abortController: AbortController;
-
-	async function loadCounterparties(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const res = await apiFetch('/counterparties?limit=200', { signal });
-			if (res.ok) {
-				const data = await res.json();
-				counterparties = data.items ?? data;
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar contrapartes');
-		} finally {
-			isLoading = false;
-		}
+	// Deterministic per-row pseudo-data so the table doesn't change across renders.
+	function spread(seed: number): string {
+		const v = 1.4 + ((seed * 9301 + 49297) % 1800) / 1000;
+		return v.toFixed(1) + ' bps';
 	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadCounterparties(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
-
-	let filtered = $derived(
-		counterparties.filter((cp) => {
-			if (!search) return true;
-			const q = search.toLowerCase();
-			return cp.name?.toLowerCase().includes(q) || cp.short_name?.toLowerCase().includes(q);
-		})
-	);
 </script>
 
-<div class="p-6">
-	<div class="flex items-center justify-between">
-		<h1 class="text-lg font-semibold text-surface-200">Contrapartes</h1>
-		{#if authStore.hasAnyRole('trader', 'risk_manager')}
-			<a href="/counterparties/new" class="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover">
-				+ Nova Contraparte
-			</a>
-		{/if}
+<div class="page">
+	<div class="page-head">
+		<div>
+			<h1 class="page-title">Contrapartes</h1>
+			<div class="page-sub">Limites de crédito, rating e exposição corrente</div>
+		</div>
+		<div class="page-actions">
+			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
+			<a href="/counterparties/new" class="btn btn-primary"><Icon name="plus"/>Nova contraparte</a>
+		</div>
 	</div>
 
-	<input
-		type="text"
-		bind:value={search}
-		placeholder="Buscar..."
-		class="mt-4 w-64 rounded border border-surface-700 bg-surface-800 px-3 py-1.5 text-sm text-surface-200 placeholder-surface-600"
-	/>
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Contrapartes ativas"     value="6"          delta="1 em análise"                        deltaKind="flat"/>
+		<Kpi label="Limite agregado"         value="US$ 62,0 M" delta="utilizado 53 %"                       deltaKind="flat"/>
+		<Kpi label="Concentração top-1"      value="24,1" unit="%" delta="JPMorgan · dentro do limite (≤ 30 %)" deltaKind="pos"/>
+		<Kpi label="Spread médio"            value="2,1"  unit="bps" delta="−0,4 bps vs mês"/>
+	</div>
 
-	<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-		<table class="w-full text-sm">
+	<Card noPad>
+		<table class="tbl">
 			<thead>
-				<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-					<th class="px-3 py-2">Nome</th>
-					<th class="px-3 py-2">Abreviação</th>
-					<th class="px-3 py-2">Tipo</th>
-					<th class="px-3 py-2">Telefone</th>
-					<th class="px-3 py-2">KYC</th>
+				<tr>
+					<th>Contraparte</th>
+					<th>Rating</th>
+					<th class="num">Limite</th>
+					<th class="num">Utilizado</th>
+					<th style="width: 200px;">Utilização</th>
+					<th class="num">Contratos</th>
+					<th class="num">MTM (USD)</th>
+					<th class="num">Spread médio</th>
+					<th>Status</th>
+					<th></th>
 				</tr>
 			</thead>
 			<tbody>
-				{#each filtered as cp (cp.id)}
-					<tr
-						onclick={() => goto(`/counterparties/${cp.id}`)}
-						class="border-b border-surface-800/50 cursor-pointer hover:bg-surface-800/30"
-					>
-						<td class="px-3 py-2 text-surface-200">{cp.name}</td>
-						<td class="px-3 py-2 text-surface-400">{cp.short_name ?? '—'}</td>
-						<td class="px-3 py-2 text-xs text-surface-400">{cp.type ?? '—'}</td>
-						<td class="px-3 py-2 font-mono text-xs text-surface-400">{cp.whatsapp_phone ?? cp.phone ?? '—'}</td>
-						<td class="px-3 py-2">
-							<span class="rounded px-1.5 py-0.5 text-xs {cp.kyc_status === 'approved' ? 'bg-success/20 text-success' : cp.kyc_status === 'pending' ? 'bg-warning/20 text-warning' : 'bg-surface-700 text-surface-400'}">
-								{cp.kyc_status ?? '—'}
-							</span>
+				{#each counterparties as cp, idx (cp.id)}
+					{@const pct = (cp.used / cp.limit) * 100}
+					<tr>
+						<td class="strong">
+							<a href={`/counterparties/${cp.short}`}>
+								<div>{cp.name}</div>
+								<div style="font-size: 11px; color: var(--muted); font-weight: 400;">{cp.short} · {cp.id}</div>
+							</a>
 						</td>
+						<td><Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{cp.rating}</Badge></td>
+						<td class="num">US$ {(cp.limit / 1_000_000).toFixed(1)} M</td>
+						<td class="num strong">US$ {(cp.used / 1_000_000).toFixed(1)} M</td>
+						<td>
+							<div class="row gap-3">
+								<Bar pct={pct} kind={pct > 80 ? 'neg' : pct > 60 ? 'warn' : 'pos'}/>
+								<span class="tabular" style="width: 42px; text-align: right;">{pct.toFixed(0)}%</span>
+							</div>
+						</td>
+						<td class="num">{Math.floor(cp.used / 600_000)}</td>
+						<td class="num strong" style="color: var(--pos);">+{Math.floor(cp.used * 0.004).toLocaleString('en-US')}</td>
+						<td class="num">{spread(idx + 1)}</td>
+						<td><StatePill state={cp.status}/></td>
+						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
-				{:else}
-					{#if !isLoading}
-						<tr><td colspan="5" class="px-3 py-8 text-center text-surface-500">Nenhuma contraparte encontrada</td></tr>
-					{/if}
 				{/each}
 			</tbody>
 		</table>
-	</div>
+	</Card>
 </div>
