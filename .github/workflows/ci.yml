@@ -194,6 +194,11 @@ jobs:
             exit 1
           fi
 
+      - name: Run app migrations for E2E stack
+        run: |
+          docker compose exec -T backend python -m alembic upgrade head
+          docker compose exec -T backend python -m alembic current | grep -F "047_finance_pipeline_hb3_hardening (head)"
+
       - name: Check schema drift
         working-directory: frontend-svelte
         run: bash scripts/check-schema-drift.sh
@@ -289,6 +294,11 @@ jobs:
             docker compose logs backend
             exit 1
           fi
+
+      - name: Run app migrations for full E2E stack
+        run: |
+          docker compose exec -T backend python -m alembic upgrade head
+          docker compose exec -T backend python -m alembic current | grep -F "047_finance_pipeline_hb3_hardening (head)"
 
       - name: Build and serve frontend
         working-directory: frontend-svelte
