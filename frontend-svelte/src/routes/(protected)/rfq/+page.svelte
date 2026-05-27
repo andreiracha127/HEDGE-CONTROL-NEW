@@ -96,7 +96,7 @@
 	<!-- Header -->
 	<div class="flex items-center justify-between">
 		<h1 class="text-lg font-semibold text-surface-200">RFQs</h1>
-		{#if authStore.hasRole('trader')}
+		{#if authStore.hasRole('risk_manager')}
 			<a
 				href="/rfq/new"
 				class="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"

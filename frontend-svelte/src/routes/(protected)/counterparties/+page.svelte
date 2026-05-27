@@ -3,6 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { apiFetch } from '$lib/api/fetch';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Counterparty } from '$lib/api/types/entities';
 
 	let counterparties = $state<Counterparty[]>([]);
@@ -43,7 +44,14 @@
 </script>
 
 <div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Contrapartes</h1>
+	<div class="flex items-center justify-between">
+		<h1 class="text-lg font-semibold text-surface-200">Contrapartes</h1>
+		{#if authStore.hasAnyRole('trader', 'risk_manager')}
+			<a href="/counterparties/new" class="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover">
+				+ Nova Contraparte
+			</a>
+		{/if}
+	</div>
 
 	<input
 		type="text"

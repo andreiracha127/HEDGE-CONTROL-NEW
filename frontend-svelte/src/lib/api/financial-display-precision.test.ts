@@ -182,11 +182,13 @@ describe('RFQ create page — J-A6-11 MT quantity precision', () => {
 	});
 
 	it('submits the canonical decimal string in both preview and create payloads', () => {
-		// Both fetch bodies must read from `quantityValidation.canonical`
+		// Both outbound shapes must read from `quantityValidation.canonical`
 		// — the raw user-typed decimal string — never a numeric variable.
-		const previewBlock = source.match(/loadPreview\(\)[\s\S]*?body:\s*JSON\.stringify\([\s\S]*?\}\)/);
+		// Preview now routes through RFQ engine legs, so the invariant lives
+		// in `buildLegPayload()`.
+		const previewBlock = source.match(/function buildLegPayload\([\s\S]*?\n\t\}/);
 		const submitBlock = source.match(/handleSubmit\([\s\S]*?body:\s*JSON\.stringify\(body\)/);
-		expect(previewBlock, 'loadPreview body must be present').toBeTruthy();
+		expect(previewBlock, 'buildLegPayload must be present').toBeTruthy();
 		expect(submitBlock, 'handleSubmit body must be present').toBeTruthy();
 		expect(previewBlock![0]).toMatch(/quantity_mt:\s*quantityValidation\.canonical/);
 		expect(submitBlock![0]).toMatch(/quantity_mt:\s*quantityValidation\.canonical/);

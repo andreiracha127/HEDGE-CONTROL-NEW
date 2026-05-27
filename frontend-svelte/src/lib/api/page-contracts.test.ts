@@ -176,6 +176,36 @@ describe('RFQ detail mutations', () => {
 	});
 });
 
+describe('RFQ list create affordance', () => {
+	const source = read('(protected)/rfq/+page.svelte');
+
+	it('shows the new RFQ entry point to risk_manager users, matching POST /rfqs authorization', () => {
+		expect(source).toContain('href="/rfq/new"');
+		expect(source).toMatch(/authStore\.hasRole\(\s*['"]risk_manager['"]\s*\)/);
+		expect(source).not.toMatch(/authStore\.hasRole\(\s*['"]trader['"]\s*\)[\s\S]{0,160}href="\/rfq\/new"/);
+	});
+});
+
+describe('Counterparty create affordance', () => {
+	const listSource = read('(protected)/counterparties/+page.svelte');
+
+	it('shows the new counterparty entry point to roles allowed by POST /counterparties', () => {
+		expect(listSource).toContain('href="/counterparties/new"');
+		expect(listSource).toMatch(/authStore\.hasAnyRole\(\s*['"]trader['"]\s*,\s*['"]risk_manager['"]\s*\)/);
+		expect(listSource).toContain('+ Nova Contraparte');
+	});
+
+	it('has a routed create page that posts the current CounterpartyCreate shape', () => {
+		const createSource = read('(protected)/counterparties/new/+page.svelte');
+		expect(createSource).toContain("apiFetch('/counterparties'");
+		expect(createSource).toContain("method: 'POST'");
+		expect(createSource).toContain('type,');
+		expect(createSource).toContain('name: name.trim()');
+		expect(createSource).toContain('country: country.trim().toUpperCase()');
+		expect(createSource).not.toMatch(/kyc_status\s*:/);
+	});
+});
+
 describe('market-data ingest mutation', () => {
 	const source = read('(protected)/market-data/+page.svelte');
 
