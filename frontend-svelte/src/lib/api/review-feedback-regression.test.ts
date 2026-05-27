@@ -139,12 +139,16 @@ describe('latest review feedback regressions', () => {
 		const rfqCreate = readRoute('(protected)/rfq/new/+page.svelte');
 
 		expect(cashflow).toContain('function fmtBrl');
+		expect(cashflow).toContain('const cpConcentration = $derived');
+		expect(cashflow).toContain('<Bar pct={r.pct}');
 		expect(cashflow).not.toContain('amount_usd * 5.124');
+		expect(cashflow).not.toContain("'JPM'");
 		expect(contractDetail).toContain('const today = new Date()');
 		expect(contractDetail).toContain("c.status === 'partially_settled'");
 		expect(contractDetail).toContain('href={`/rfq/${c.rfq_id}`}');
 		expect(contractDetail).not.toContain("c.status === 'maturing'");
 		expect(contractDetail).not.toContain('RFQ-2026-0177');
+		expect(contractDetail).not.toContain('ORD-2026-0419');
 		expect(rfqCreate).toContain('<dt>Alçada</dt><dd>Risk Manager</dd>');
 		expect(rfqCreate).not.toContain('Trader · até US$ 5 M');
 	});

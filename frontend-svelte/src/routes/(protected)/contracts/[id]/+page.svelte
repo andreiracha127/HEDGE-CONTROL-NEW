@@ -249,9 +249,8 @@
 			<div class="stack gap-4">
 				<Card title="Cronograma">
 					<div class="feed">
-						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Contrato assinado · ORD-2026-0419 ↘ <strong>{c.id}</strong></div><div class="row gap-2"><span class="when">26/05 09:02</span><span class="who">· R. Almeida</span></div></div></div>
-						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Aprovação concedida · APR-2026-0096</div><div class="row gap-2"><span class="when">26/05 13:45</span><span class="who">· A. Costa</span></div></div></div>
-						<div class="feed-item info"><div class="icon"></div><div><div class="what">MTM atualizado · +US$ 1.420</div><div class="row gap-2"><span class="when">27/05 09:14</span><span class="who">· Sistema</span></div></div></div>
+						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Contrato carregado · <strong>{c.id}</strong></div><div class="row gap-2"><span class="when">{fmtDate(c.created_at ?? c.traded)}</span><span class="who">· {c.cp}</span></div></div></div>
+						<div class="feed-item info"><div class="icon"></div><div><div class="what">MTM atual · {fmtUsd(c.mtm)}</div><div class="row gap-2"><span class="when">última marcação carregada</span><span class="who">· Sistema</span></div></div></div>
 						<div class="feed-item info"><div class="icon"></div><div><div class="what">Liquidação financeira · {c.cp}</div><div class="row gap-2"><span class="when">{fmtDate(settleDate)}</span><span class="who">· Agendado</span></div></div></div>
 					</div>
 				</Card>

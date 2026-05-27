@@ -48,13 +48,18 @@
 			.sort((a, b) => Date.parse(a.date) - Date.parse(b.date))[0] ?? null,
 	);
 
-	const cpConcentration = [
-		{ cp: 'ITAU', v:  40425, pct: 19 },
-		{ cp: 'JPM',  v: 123250, pct: 57 },
-		{ cp: 'BTG',  v:  17000, pct:  8 },
-		{ cp: 'SANT', v:  15300, pct:  7 },
-		{ cp: 'BRAD', v:  21148, pct: 10 },
-	];
+	const cpConcentration = $derived.by(() => {
+		const totals = new Map<string, number>();
+		for (const c of cashflow90d) {
+			const cp = c.cp || '—';
+			totals.set(cp, (totals.get(cp) ?? 0) + Math.max(c.amount_usd, 0));
+		}
+		const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+		return [...totals.entries()]
+			.map(([cp, v]) => ({ cp, v, pct: total > 0 ? (v / total) * 100 : 0 }))
+			.sort((a, b) => b.v - a.v)
+			.slice(0, 5);
+	});
 
 	function fmtUsd(value: number): string {
 		const prefix = value >= 0 ? '+US$ ' : '-US$ ';
@@ -126,7 +131,7 @@
 					<div>
 						<div class="row gap-3" style="font-size: 12.5px; margin-bottom: 4px;">
 							<span style="width: 60px; font-weight: 500;">{r.cp}</span>
-							<Bar pct={r.pct * 1.5} kind={r.pct > 40 ? 'warn' : 'pos'}/>
+							<Bar pct={r.pct} kind={r.pct > 40 ? 'warn' : 'pos'}/>
 							<span class="tabular" style="width: 90px; text-align: right;">US$ {(r.v / 1000).toFixed(1)}k</span>
 							<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct}%</span>
 						</div>
@@ -135,8 +140,8 @@
 			</div>
 			<div class="divider"></div>
 			<div class="row gap-2" style="font-size: 11.5px;">
-				<Badge kind="warn" dot>Concentração JPM</Badge>
-				<span style="color: var(--muted);">57 % do fluxo · acima do alerta (≥ 50 %)</span>
+				<Badge kind={cpConcentration[0]?.pct > 50 ? 'warn' : 'pos'} dot>Concentração</Badge>
+				<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem inflows no horizonte'}</span>
 			</div>
 		</Card>
 	</div>
