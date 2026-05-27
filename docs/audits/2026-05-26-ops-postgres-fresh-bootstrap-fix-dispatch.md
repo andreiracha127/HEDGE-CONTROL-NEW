@@ -36,11 +36,19 @@ This PR does NOT:
 
 Empty for the code PR itself. The executor's branch opens against current `main` HEAD post-dispatch-merge and runs without infrastructure changes.
 
-Two operational pre-conditions exist BUT they belong to the executor's local validation, not to the PR contents:
+Three operational pre-conditions exist BUT they belong to the executor's local validation, not to the PR contents:
 
-1. **Docker stack must be running locally for the executor's smoke validation.** Before pushing, the executor MUST run `docker compose up -d db` from the repo root (NOT from `backend/`; the docker-compose.yml is at root) and verify the container is `healthy` via `docker ps`. Then `cd backend && python -m alembic upgrade head` MUST complete with exit 0 and `python -m alembic current` MUST return `047_finance_pipeline_hb3_hardening (head)`. If either fails, the patches are incomplete or wrong — debug locally before pushing.
+1. **`DATABASE_URL` env var.** Every `alembic` invocation in this dispatch's verification flows requires `DATABASE_URL` to be set in the executor's shell environment (`backend/app/core/database.py::get_database_url()` reads `os.environ["DATABASE_URL"]` and raises `RuntimeError("DATABASE_URL is required")` if unset — alembic env.py imports this function at module load). Local validation flow uses the same URL as the docker-compose `db` service exposed port:
 
-2. **The unpatched chain leaves a partial `alembic_version` row on failure.** SQLAlchemy/alembic wraps each migration in its own transaction; when `026` or `047` fails, all preceding migrations have already committed. The executor's local validation must either (a) drop and recreate the database between attempts (`docker compose down -v && docker compose up -d db`), OR (b) confirm the docker volume was empty before the first attempt. Skipping this leads to false-passes ("the chain ran cleanly" when in fact some revisions were already at head before the run).
+   ```bash
+   export DATABASE_URL=postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol
+   ```
+
+   Set this once at the top of the executor's terminal session. All subsequent `python -m alembic` commands in this dispatch assume this env var is exported. The CI job (§4.5) sets it inline at the job-step level via the `env:` block.
+
+2. **Docker stack must be running locally for the executor's smoke validation.** Before pushing, the executor MUST run `docker compose up -d db` from the repo root (NOT from `backend/`; the docker-compose.yml is at root) and verify the container is `healthy` via `docker ps`. Then `cd backend && python -m alembic upgrade head` MUST complete with exit 0 and `python -m alembic current` MUST return `047_finance_pipeline_hb3_hardening (head)`. If either fails, the patches are incomplete or wrong — debug locally before pushing.
+
+3. **The unpatched chain leaves a partial `alembic_version` row on failure.** SQLAlchemy/alembic wraps each migration in its own transaction; when `026`, `046`, or `047` fails, all preceding migrations have already committed. The executor's local validation must either (a) drop and recreate the database between attempts (`docker compose down -v && docker compose up -d db`), OR (b) confirm the docker volume was empty before the first attempt. Skipping this leads to false-passes ("the chain ran cleanly" when in fact some revisions were already at head before the run).
 
 ## §4 Backend changes
 
@@ -73,31 +81,53 @@ The `checkfirst=True` keyword makes the call idempotent for any operator who som
 
 ### §4.2 Patch 2 — `backend/alembic/versions/026_classification_invariant.py`
 
-**Locus:** the `_backfill_inconsistent_classifications()` helper, inside the `sa.text(...)` block at the `SET classification = CASE ... END` portion (currently around lines 38–46).
+**Locus:** the `_backfill_inconsistent_classifications()` helper, full body (currently around lines 33–53). The patch introduces a dialect guard around the cast expression so the SQL is correct on both Postgres (CAST to named ENUM, required) and SQLite (plain text literal, required because SQLite applies NUMERIC type affinity to unknown CAST type names per https://www.sqlite.org/lang_expr.html#castexpr and would coerce `'long'` to `0`).
 
 **Patch shape:**
 
 ```python
+def _backfill_inconsistent_classifications(bind) -> int:
+    """Canonicalize drifted rows using fixed_leg_side as source of truth."""
+    if bind.dialect.name == "postgresql":
+        long_expr = "CAST('long' AS hedge_classification)"
+        short_expr = "CAST('short' AS hedge_classification)"
+    else:
+        # SQLite (test dialect): no named ENUM type — plain text literals.
+        # Casting to an unknown type name on SQLite triggers NUMERIC affinity
+        # coercion, which would write 0 into the classification column.
+        long_expr = "'long'"
+        short_expr = "'short'"
+
     result = bind.execute(
         sa.text(
-            """
+            f"""
             UPDATE hedge_contracts
             SET classification = CASE fixed_leg_side
-                WHEN 'buy' THEN CAST('long' AS hedge_classification)
-                WHEN 'sell' THEN CAST('short' AS hedge_classification)
+                WHEN 'buy' THEN {long_expr}
+                WHEN 'sell' THEN {short_expr}
             END
             WHERE (fixed_leg_side = 'buy' AND classification <> 'long')
                OR (fixed_leg_side = 'sell' AND classification <> 'short')
             """
         )
     )
+    corrected = int(result.rowcount or 0)
+    logger.warning(
+        "classification invariant backfill corrected %s hedge_contracts rows",
+        corrected,
+    )
+    return corrected
 ```
 
-**Rationale (binding for §10 acceptance):** Postgres rejects `SET <enum_col> = <text_literal>` at plan-time (the planner cannot infer the cast direction across a `CASE` whose result type derives from a union of branch types). The fix is to make the cast explicit on the branch literals. The `WHERE` clause comparisons (`classification <> 'long'`, `fixed_leg_side = 'buy'`) are NOT changed because Postgres applies implicit text-to-enum coercion in equality predicates (the column is the enum side, the literal is text; the planner promotes the literal). Only the `SET` is strict.
+**Rationale (binding for §10 acceptance):** Postgres rejects `SET <enum_col> = <text_literal>` at plan-time (the planner cannot infer the cast direction across a `CASE` whose result type derives from a union of branch types). The fix on Postgres is to make the cast explicit on the branch literals. The `WHERE` clause comparisons (`classification <> 'long'`, `fixed_leg_side = 'buy'`) are NOT changed because Postgres applies implicit text-to-enum coercion in equality predicates (the column is the enum side, the literal is text; the planner promotes the literal). Only the `SET` is strict.
+
+On SQLite, the SAME `CAST('long' AS hedge_classification)` expression would be evaluated under SQLite's type-affinity rules for unknown type names (NUMERIC affinity by default), which would coerce the text `'long'` into a numeric (likely `0`) — silently corrupting the backfill IF the backfill ever ran against populated SQLite data. The dialect guard ensures SQLite gets plain text literals. The `bind.dialect.name == "postgresql"` check is the same primitive used elsewhere in this file (the existing `is_pg = bind.dialect.name == "postgresql"` in `upgrade()` for the CHECK constraint branch); the patch reuses that idiom.
+
+The f-string interpolation is safe: `long_expr` and `short_expr` are derived from hard-coded values inside the function body, never from external input. The use of `sa.text(...)` over composed SQLAlchemy expressions matches the existing migration's idiom.
 
 **Identifier scope note (institutional clarification):** the bare ENUM name `hedge_classification` inside the `sa.text(...)` raw SQL string is a **Postgres-resolved identifier**, not a Python identifier. Migration `026` does NOT import or declare `hedge_classification = sa.Enum(...)` at the Python level, and it does NOT need to: SQLAlchemy passes the SQL string through to psycopg, which sends it verbatim to Postgres, which looks up the type via the `pg_type` catalog. The type was created by an earlier migration (specifically the `CREATE TYPE hedge_classification AS ENUM (...)` emitted by SQLAlchemy's auto-create cascade when an earlier migration first referenced it inside an `op.create_table(...)` call referencing the `hedge_classification` named ENUM, around the early-Phase-A1 cycle) and persists across migration boundaries within the same database. The patch was validated end-to-end against a fresh Postgres 16 container at dispatch-authoring time: `alembic upgrade head` runs through `026` cleanly with the `CAST(... AS hedge_classification)` form, and `psql -d hedgecontrol -c "SELECT typname FROM pg_type WHERE typname = 'hedge_classification';"` returns the type at the moment `026` executes. The executor MUST NOT add `hedge_classification = sa.Enum(..., create_type=False)` at the top of `026` to "make the identifier explicit at the Python level" — that would create a fresh Python type instance whose only role would be to mislead a future reader into thinking the migration creates or owns the type. The cross-migration dependency on `hedge_classification` existing in `pg_type` is INTENTIONAL and is the same pattern every alembic chain uses for raw-SQL-against-named-types references (see also Postgres' `CREATE TYPE` persistence semantics: types live in the schema catalog independent of any migration's transactional boundary, except for the rare DROP TYPE case).
 
-The SQLite test dialect ignores the `CAST(... AS hedge_classification)` because SQLite resolves the cast to the value itself (SQLite has no `hedge_classification` type; it stores ENUM values as text). The test suite continues to pass; this is the same `with_variant`-style safety that DDL rule 16 already prescribes for `JSONB`, `INET`, etc.
+The dialect-branch is the canonical pattern (DDL rule 16's `with_variant`-style safety, here applied to a runtime SQL expression rather than a column type). Without it, SQLite would apply NUMERIC affinity coercion under the unknown CAST type name and silently corrupt any drift backfill that actually ran on SQLite data — a latent risk the original SQLite test runs never surfaced because the autouse fixture in `backend/tests/conftest.py` keeps `hedge_contracts` empty between tests (zero-rows WHERE means CAST is never evaluated against actual data).
 
 **Empty-table sanity check:** on a fresh DB, `hedge_contracts` has zero rows. Postgres still plans the UPDATE (planning happens before row scan), so the type mismatch is rejected regardless of row count. The patch fixes both the empty-table and populated-table paths.
 
@@ -261,7 +291,7 @@ The executor MUST verify locally before pushing:
 
 1. `cd backend && python -m pytest -x -q` — full backend suite continues to pass (1494+ tests on SQLite). Regression here is blocking.
 2. `cd backend && python -m pytest tests/test_alembic_chain.py -v` — chain test continues to pass (single head invariant). Regression here is blocking.
-3. Local docker stack: `docker compose down -v && docker compose up -d db` (fresh volume), then `cd backend && python -m alembic upgrade head` returns exit 0 with no errors in output, then `python -m alembic current` reports `047_finance_pipeline_hb3_hardening (head)`.
+3. Local docker stack: `docker compose down -v && docker compose up -d db` (fresh volume), then with `DATABASE_URL` exported per §3 pre-step 1, `cd backend && python -m alembic upgrade head` returns exit 0 with no errors in output, then `python -m alembic current` reports `047_finance_pipeline_hb3_hardening (head)`.
 4. The new CI job runs green on the executor's PR.
 
 The pre-existing backend test suite MUST NOT be edited. The executor MUST NOT add a `test_alembic_postgres_fresh.py` to `backend/tests/` — it would either require docker (breaks unit-test isolation) or duplicate the CI job at higher cost.
@@ -303,9 +333,17 @@ The pre-existing migration audit trail (alembic's own `alembic_version` table) i
 
 ## §10 Acceptance criteria
 
+**Setup for the verification commands below.** Several criteria use `$BASE` as the branch's divergence point from `main`. Define it once at the top of the verification terminal session:
+
+```bash
+BASE=$(git merge-base origin/main HEAD)
+```
+
+`origin/main` is the upstream main as of the verification time; `HEAD` is the executor branch tip. This yields a deterministic SHA both reviewers and the executor see identically.
+
 The PR is mergeable iff ALL of the following are simultaneously true:
 
-1. **Fresh-Postgres bootstrap succeeds.** A clean `docker compose down -v && docker compose up -d db && cd backend && python -m alembic upgrade head` sequence returns exit 0 and `python -m alembic current` reports `047_finance_pipeline_hb3_hardening (head)`.
+1. **Fresh-Postgres bootstrap succeeds.** With `DATABASE_URL` exported per §3 pre-step 1, a clean `docker compose down -v && docker compose up -d db && cd backend && python -m alembic upgrade head` sequence returns exit 0 and `python -m alembic current` reports `047_finance_pipeline_hb3_hardening (head)`.
 
 2. **The new CI job runs green on the PR.** The `alembic-fresh-postgres` job in `.github/workflows/ci.yml` completes successfully on the PR's head SHA. The job's `Verify single head reached` step matches `047_finance_pipeline_hb3_hardening (head)` literally.
 
@@ -313,7 +351,7 @@ The PR is mergeable iff ALL of the following are simultaneously true:
 
 4. **`backend/tests/test_alembic_chain.py` passes.** Single-head invariant preserved. No revision file added or renamed.
 
-5. **`git diff --stat <base>..HEAD` shows exactly 7 files modified:** the four migration files (`88c13cd6dd8e_fase1_core_domain.py`, `026_classification_invariant.py`, `046_workflow_approval_gate.py`, `047_finance_pipeline_hb3_hardening.py`), `.github/workflows/ci.yml`, `CLAUDE.md`, `docs/dev-setup.md`. No other files. If an 8th file shows up (other than this dispatch's parent file at `docs/audits/2026-05-26-ops-postgres-fresh-bootstrap-fix-dispatch.md` which is OUT of the executor's diff because it landed in the dispatch PR), the executor MUST justify it in the PR body or revert.
+5. **`git diff --stat $BASE..HEAD` shows exactly 7 files modified:** the four migration files (`88c13cd6dd8e_fase1_core_domain.py`, `026_classification_invariant.py`, `046_workflow_approval_gate.py`, `047_finance_pipeline_hb3_hardening.py`), `.github/workflows/ci.yml`, `CLAUDE.md`, `docs/dev-setup.md`. No other files. If an 8th file shows up (other than this dispatch's parent file at `docs/audits/2026-05-26-ops-postgres-fresh-bootstrap-fix-dispatch.md` which is OUT of the executor's diff because it landed in the dispatch PR), the executor MUST justify it in the PR body or revert.
 
 6. **The `CAST(... AS hedge_classification)` form is used in patch 2**, not the `::hedge_classification` Postgres shorthand. Grep verification: `grep -F "CAST(" backend/alembic/versions/026_classification_invariant.py` returns 2 lines; `grep -F "::hedge_classification" backend/alembic/versions/026_classification_invariant.py` returns 0 lines.
 
@@ -321,11 +359,11 @@ The PR is mergeable iff ALL of the following are simultaneously true:
 
 8. **Patch 4 keeps exactly one explicit `.create(` call in `047`'s `upgrade()`.** Grep verification: `grep -cE "\.create\(bind.*checkfirst=True\)" backend/alembic/versions/047_finance_pipeline_hb3_hardening.py` returns `1` (only `trigger_source_enum.create(bind, checkfirst=True)` remains in upgrade; downgrade keeps its three `.drop()` calls).
 
-9. **No new alembic revision files.** `find backend/alembic/versions/ -name '*.py' -newer <branch-base>` returns empty.
+9. **No new alembic revision files.** `git diff --name-only --diff-filter=A $BASE..HEAD -- backend/alembic/versions/` returns empty (no Added files under the migrations directory; the four patched files appear under `--diff-filter=M`, NOT `A`).
 
-10. **No model, service, route, or schema file modified.** `git diff --stat <base>..HEAD -- backend/app/` is empty (no entries under `backend/app/`).
+10. **No model, service, route, or schema file modified.** `git diff --stat $BASE..HEAD -- backend/app/` is empty (no entries under `backend/app/`).
 
-11. **No frontend file modified.** `git diff --stat <base>..HEAD -- frontend-svelte/` is empty.
+11. **No frontend file modified.** `git diff --stat $BASE..HEAD -- frontend-svelte/` is empty.
 
 12. **Pre-push hook v2 passes.** This dispatch and the executor PR's content are within the hook's purview (dispatch markdown for the dispatch PR; code+migrations for the executor PR). Any P1 surfaced is absorbed before merge.
 
@@ -379,6 +417,7 @@ No chain ancestry changes, no new migration files, no application code
 touched. Chain head remains `047_finance_pipeline_hb3_hardening`.
 
 ## Test plan
+- [ ] `export DATABASE_URL=postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol`
 - [ ] `docker compose down -v && docker compose up -d db` (fresh volume)
 - [ ] `cd backend && python -m alembic upgrade head` returns exit 0
 - [ ] `python -m alembic current` reports `047_finance_pipeline_hb3_hardening (head)`
