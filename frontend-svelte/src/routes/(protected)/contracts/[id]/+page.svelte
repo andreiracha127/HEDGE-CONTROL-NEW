@@ -23,12 +23,7 @@
 	const c = $derived(contracts.find((x) => x.id === id) ?? contracts[0]);
 	let tab = $state<'resumo' | 'legs' | 'cashflow' | 'mtm' | 'docs'>('resumo');
 
-	const mid = $derived.by(() => {
-		if (c.commodity === 'AL-LME') return 2645.5;
-		if (c.commodity === 'CU-LME') return 9412.0;
-		if (c.commodity === 'ZN-LME') return 2812.5;
-		return c.price ?? null;
-	});
+	const mid = $derived(asNumber(c.market_mid ?? c.mid_price ?? c.price_quote?.value ?? optionalData.mtm?.price_quote?.value ?? optionalData.mtm?.price_value));
 
 	let now = $state(Date.now());
 	$effect(() => {
@@ -44,6 +39,11 @@
 		return Number.isFinite(timestamp) ? Math.round((timestamp - now) / 86_400_000) : null;
 	});
 	const notional = $derived(c.qty == null || c.price == null ? null : c.qty * c.price);
+	const initialMarginRate = $derived(normalizeRate(c.initial_margin_pct ?? c.margin_rate ?? c.initial_margin_rate));
+	const initialMargin = $derived(
+		asNumber(c.initial_margin_usd ?? c.initial_margin_value) ??
+			(notional != null && initialMarginRate != null ? notional * initialMarginRate : null),
+	);
 	const cpName = $derived(
 		counterparties.find((x) => x.short === c.cp)?.name ?? c.cp,
 	);
@@ -77,9 +77,25 @@
 		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
 
+	function fmtUnsignedUsd(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `US$ ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+	}
+
+	function fmtRate(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '';
+		return ` (${(value * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%)`;
+	}
+
 	function asNumber(value: unknown): number | null {
 		const n = Number(value);
 		return Number.isFinite(n) ? n : null;
+	}
+
+	function normalizeRate(value: unknown): number | null {
+		const n = asNumber(value);
+		if (n == null) return null;
+		return n > 1 ? n / 100 : n;
 	}
 
 	function mtmValue(row: Record<string, any>): number | null {
@@ -219,7 +235,7 @@
 							{fmtPrice(c)} {c.price == null ? '' : fmtPriceUnit(c)}
 						</dd>
 						<dt>Preço variável</dt><dd>LME Average · mês de liquidação</dd>
-						<dt>Contratação</dt><dd>26/05/2026 09:02</dd>
+						<dt>Contratação</dt><dd>{fmtDate(c.created_at ?? c.traded)}</dd>
 						<dt>Liquidação</dt><dd>{fmtSettleWithDays()}</dd>
 						<dt>Contraparte</dt><dd><a href={`/counterparties/${c.cp}`}>{cpName}</a></dd>
 						<dt>RFQ origem</dt>
@@ -232,7 +248,7 @@
 						</dd>
 						<dt>Política contábil</dt><dd>Hedge accounting (IFRS 9)</dd>
 						<dt>Margem inicial</dt>
-						<dd class="tabular">{notional == null ? '—' : `US$ ${(notional * 0.1).toLocaleString('en-US', { maximumFractionDigits: 0 })} (10%)`}</dd>
+						<dd class="tabular">{initialMargin == null ? '—' : `${fmtUnsignedUsd(initialMargin)}${fmtRate(initialMarginRate)}`}</dd>
 					</dl>
 				</Card>
 

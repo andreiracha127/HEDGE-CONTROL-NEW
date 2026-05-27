@@ -153,7 +153,14 @@ describe('latest review feedback regressions', () => {
 		expect(contractDetail).not.toContain('APR-2026-0096');
 		expect(contractDetail).not.toContain('A. Costa · Risco');
 		expect(contractDetail).not.toContain("['27/05'");
-		expect(contractDetail).toContain('Nenhum histórico de MTM carregado');
+		expect(contractDetail).not.toContain('2645.5');
+		expect(contractDetail).not.toContain('9412.0');
+		expect(contractDetail).not.toContain('2812.5');
+		expect(contractDetail).not.toContain('26/05/2026 09:02');
+		expect(contractDetail).not.toContain('notional * 0.1');
+		expect(contractDetail).toContain('c.market_mid');
+		expect(contractDetail).toContain('initialMarginRate');
+		expect(contractDetail).toContain('Nenhum histórico de MTM carregado para este contrato');
 		expect(rfqCreate).toContain('<dt>Alçada</dt><dd>Risk Manager</dd>');
 		expect(rfqCreate).not.toContain('Trader · até US$ 5 M');
 	});
