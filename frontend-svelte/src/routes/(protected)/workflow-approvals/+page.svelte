@@ -38,6 +38,7 @@
 		}, 0),
 	);
 	const canAct = $derived(authStore.hasAnyRole('risk_manager', 'auditor'));
+	const actionableApprovals = $derived(pendingApprovals.filter((approval) => canActOn(approval)));
 
 	let acting = $state<string | null>(null);
 	let rejecting = $state<string | null>(null);
@@ -63,6 +64,14 @@
 			hedge_contract_settle: 'Liquidacao de contrato',
 		};
 		return labels[value] ?? value;
+	}
+
+	function requiredApproverRole(mutationType: string): 'risk_manager' | 'auditor' {
+		return mutationType === 'hedge_contract_settle' ? 'auditor' : 'risk_manager';
+	}
+
+	function canActOn(approval: Approval): boolean {
+		return authStore.hasRole(requiredApproverRole(approval.mutation_type));
 	}
 
 	function thresholdLabel(value: string): string {
@@ -146,7 +155,7 @@
 		<Kpi label="Pendentes" value={String(pendingApprovals.length)} delta={`${expiringSoon} vencendo em 24h`} deltaKind={expiringSoon > 0 ? 'neg' : 'flat'}/>
 		<Kpi label="Maior alçada" value={money(highestThreshold)} delta="limite solicitado"/>
 		<Kpi label="Carregadas" value={String(approvals.length)} delta="endpoint /workflow-approvals"/>
-		<Kpi label="Permissão" value={canAct ? 'Ativa' : 'Restrita'} delta="risk_manager ou auditor" deltaKind={canAct ? 'pos' : 'neg'}/>
+		<Kpi label="Permissão" value={canAct ? 'Ativa' : 'Restrita'} delta={`${actionableApprovals.length} acionável(is) pelo perfil`} deltaKind={canAct ? 'pos' : 'neg'}/>
 	</div>
 
 	{#if approvals.length === 0}
@@ -187,7 +196,7 @@
 						{/if}
 					</div>
 					<div class="row gap-2">
-						{#if approval.status === 'pending' && canAct}
+						{#if approval.status === 'pending' && canActOn(approval)}
 							<button
 								type="button"
 								class="btn btn-danger"

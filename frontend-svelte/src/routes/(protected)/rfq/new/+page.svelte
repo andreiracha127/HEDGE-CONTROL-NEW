@@ -48,13 +48,14 @@
 	let cpSearch = $state('');
 
 	const showLeg2 = $derived(tradeType === 'Swap');
-	const legsReady = $derived(!!leg1.priceType && (!showLeg2 || !!leg2.priceType));
+	const legsReady = $derived(legFieldsReady(leg1) && (!showLeg2 || legFieldsReady(leg2)));
 	const direction = $derived(leg1.side === 'sell' ? 'SELL' : 'BUY');
 	const quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
 	const rfqRoleReady = $derived(authStore.hasRole('risk_manager'));
-	const datesReady = $derived(!!leg1.startDate && !!leg1.endDate);
+	const deliveryWindow = $derived(legDeliveryWindow(leg1));
+	const datesReady = $derived(deliveryWindow != null);
 	const intentReady = $derived(
 		intent === 'GLOBAL_POSITION' ||
 			(intent === 'COMMERCIAL_HEDGE' && !!orderId) ||
@@ -77,6 +78,37 @@
 
 	function canReceiveRfq(cp: Record<string, any>): boolean {
 		return cp.is_active !== false && cp.kyc_status === 'approved' && !!cp.whatsapp_phone;
+	}
+
+	function monthNumber(monthName: string): number | null {
+		const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+		const index = months.indexOf(monthName);
+		return index >= 0 ? index + 1 : null;
+	}
+
+	function monthWindow(leg: Leg): { start: string; end: string } | null {
+		const month = monthNumber(leg.monthName);
+		if (!month || !Number.isFinite(leg.year)) return null;
+		const start = `${leg.year}-${String(month).padStart(2, '0')}-01`;
+		const endDate = new Date(Date.UTC(leg.year, month, 0));
+		const end = `${leg.year}-${String(month).padStart(2, '0')}-${String(endDate.getUTCDate()).padStart(2, '0')}`;
+		return { start, end };
+	}
+
+	function legDeliveryWindow(leg: Leg): { start: string; end: string } | null {
+		if (leg.priceType === 'AVG') return monthWindow(leg);
+		if (leg.priceType === 'AVGInter' && leg.startDate && leg.endDate) return { start: leg.startDate, end: leg.endDate };
+		if ((leg.priceType === 'Fix' || leg.priceType === 'C2R') && leg.fixingDate) return { start: leg.fixingDate, end: leg.fixingDate };
+		return null;
+	}
+
+	function legFieldsReady(leg: Leg): boolean {
+		if (!leg.priceType) return false;
+		if (leg.priceType === 'AVG') return monthWindow(leg) != null;
+		if (leg.priceType === 'AVGInter') return !!leg.startDate && !!leg.endDate;
+		if (leg.priceType === 'C2R') return !!leg.fixingDate;
+		if (leg.orderType === 'Limit') return !!leg.limitPrice;
+		return true;
 	}
 
 	$effect(() => {
@@ -224,8 +256,8 @@
 			submitting = false;
 			return;
 		}
-		const deliveryStart = leg1.startDate;
-		const deliveryEnd = leg1.endDate;
+		const deliveryStart = deliveryWindow?.start ?? '';
+		const deliveryEnd = deliveryWindow?.end ?? deliveryStart;
 		const { data: created, error: apiError } = await client.POST('/rfqs', {
 			body: {
 				commodity,

@@ -1,5 +1,7 @@
 import { client } from '$lib/api/client';
 
+export const ssr = false;
+
 const safeCount = (result: PromiseSettledResult<{ data?: unknown }>): number | null => {
 	if (result.status !== 'fulfilled' || !result.value.data) return null;
 	const data = result.value.data as { total?: number; items?: unknown[] };

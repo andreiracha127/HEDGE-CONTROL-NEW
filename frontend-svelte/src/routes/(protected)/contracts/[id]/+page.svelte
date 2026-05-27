@@ -23,7 +23,7 @@
 		if (c.commodity === 'CU-LME') return 9412.0;
 		if (c.commodity === 'ZN-LME') return 2812.5;
 		if (c.commodity === 'USDBRL') return 5.124;
-		return c.price;
+		return c.price ?? null;
 	});
 
 	const today = new Date(2026, 4, 27);
@@ -33,7 +33,7 @@
 		const timestamp = new Date(settleDate).getTime();
 		return Number.isFinite(timestamp) ? Math.round((timestamp - today.getTime()) / 86_400_000) : null;
 	});
-	const notional = $derived(c.qty * c.price);
+	const notional = $derived(c.qty == null || c.price == null ? null : c.qty * c.price);
 	const cpName = $derived(
 		counterparties.find((x) => x.short === c.cp)?.name ?? c.cp,
 	);
@@ -47,8 +47,29 @@
 	];
 
 	function fmtQty(contract: Contract): string {
+		if (contract.qty == null) return '—';
 		if (contract.commodity === 'USDBRL') return contract.qty.toLocaleString('pt-BR') + ' USD';
 		return contract.qty.toLocaleString('pt-BR') + ' MT';
+	}
+
+	function fmtPrice(contract: Contract): string {
+		if (contract.price == null) return '—';
+		return contract.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(contract) });
+	}
+
+	function fmtNumber(value: number | null | undefined, digits = 0): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return value.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+	}
+
+	function fmtUsd(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+	}
+
+	function priceDelta(): number | null {
+		if (mid == null || c.price == null) return null;
+		return mid - c.price;
 	}
 
 	function fmtPriceUnit(contract: Contract): string {
@@ -103,7 +124,7 @@
 				{/if}
 			</div>
 			<div class="page-sub" style="margin-top: 6px;">
-				{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa × {c.var_leg === 'buy' ? 'Compra' : 'Venda'} variável · {c.qty.toLocaleString('pt-BR')} {c.commodity === 'USDBRL' ? 'USD' : 'MT'} · {c.cp} · liquidação {fmtDate(settleDate)}
+				{c.fixed_leg === 'buy' ? 'Compra' : 'Venda'} fixa × {c.var_leg === 'buy' ? 'Compra' : 'Venda'} variável · {fmtQty(c)} · {c.cp} · liquidação {fmtDate(settleDate)}
 			</div>
 		</div>
 		<div class="page-actions">
@@ -120,21 +141,21 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="Notional"
-			value={`US$ ${(notional / 1_000_000).toFixed(2)}`}
+			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toFixed(2)}`}
 			unit="M"
-			delta={`${c.qty.toLocaleString('pt-BR')} ${c.commodity === 'USDBRL' ? 'USD' : 'MT'} @ ${c.price}`}
+			delta={`${fmtQty(c)} @ ${fmtPrice(c)}`}
 		/>
 		<Kpi
 			label="MTM atual"
-			value={(c.mtm >= 0 ? '+US$ ' : '−US$ ') + Math.abs(c.mtm).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+			value={fmtUsd(c.mtm)}
 			delta="+US$ 1.420 1d"
-			deltaKind={c.mtm >= 0 ? 'pos' : 'neg'}
+			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
 		/>
 		<Kpi
 			label="P&L desde a contratação"
-			value={(c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toFixed(2) + ' %'}
-			delta={'preço mid ' + mid.toFixed(2)}
-			deltaKind={c.mtm >= 0 ? 'pos' : 'neg'}
+			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toFixed(2) + ' %'}
+			delta={'preço mid ' + fmtNumber(mid, priceDigits(c))}
+			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
 		/>
 		<Kpi
 			label="Dias até liquidação"
@@ -159,10 +180,10 @@
 						<dt>Tipo</dt><dd>{c.type}</dd>
 						<dt>Commodity</dt><dd>{c.commodity}</dd>
 						<dt>Quantidade</dt><dd class="tabular">{fmtQty(c)}</dd>
-						<dt>Notional</dt><dd class="tabular">US$ {notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}</dd>
+						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}</dd>
 						<dt>Preço fixo</dt>
 						<dd class="tabular strong">
-							{c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c) })} {fmtPriceUnit(c)}
+							{fmtPrice(c)} {c.price == null ? '' : fmtPriceUnit(c)}
 						</dd>
 						<dt>Preço variável</dt><dd>LME Average · mês de liquidação</dd>
 						<dt>Contratação</dt><dd>26/05/2026 09:02</dd>
@@ -171,7 +192,7 @@
 						<dt>RFQ origem</dt><dd class="mono"><a href="/rfq/RFQ-2026-0177">RFQ-2026-0177</a></dd>
 						<dt>Política contábil</dt><dd>Hedge accounting (IFRS 9)</dd>
 						<dt>Margem inicial</dt>
-						<dd class="tabular">US$ {(notional * 0.1).toLocaleString('en-US', { maximumFractionDigits: 0 })} (10%)</dd>
+						<dd class="tabular">{notional == null ? '—' : `US$ ${(notional * 0.1).toLocaleString('en-US', { maximumFractionDigits: 0 })} (10%)`}</dd>
 					</dl>
 				</Card>
 
@@ -186,7 +207,7 @@
 							</div>
 							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço fixo</div>
 							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
-								{c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c) })}
+								{fmtPrice(c)}
 							</div>
 							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · contratual</div>
 						</div>
@@ -199,7 +220,7 @@
 							</div>
 							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço mid de mercado</div>
 							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
-								{mid.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c) })}
+								{fmtNumber(mid, priceDigits(c))}
 							</div>
 							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · LME 11:30 BST</div>
 						</div>
@@ -207,13 +228,13 @@
 					<div class="divider"></div>
 					<div class="row gap-3" style="align-items: baseline;">
 						<span style="font-size: 12px; color: var(--muted);">Δ Preço:</span>
-						<span class="tabular" style="font-size: 14px; font-weight: 500; color: {mid > c.price ? 'var(--pos)' : 'var(--neg)'};">
-							{mid >= c.price ? '+' : ''}{(mid - c.price).toFixed(priceDigits(c))}
+						<span class="tabular" style="font-size: 14px; font-weight: 500; color: {priceDelta() == null ? 'var(--muted)' : priceDelta()! >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toFixed(priceDigits(c))}`}
 						</span>
 						<span style="font-size: 12px; color: var(--muted);">·</span>
 						<span style="font-size: 12px; color: var(--muted);">MTM:</span>
-						<span class="tabular strong" style="font-size: 14px; color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{c.mtm >= 0 ? '+' : ''}US$ {c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+						<span class="tabular strong" style="font-size: 14px; color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{fmtUsd(c.mtm)}
 						</span>
 					</div>
 				</Card>
@@ -278,7 +299,7 @@
 						<td><DirectionBadge dir={c.fixed_leg}/></td>
 						<td><Badge kind="info">Fix</Badge></td>
 						<td class="num">{c.qty.toLocaleString('pt-BR')} MT</td>
-						<td class="num strong">{c.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
+						<td class="num strong">{fmtPrice(c)}</td>
 						<td>{fmtDate(settleDate)} · fixing</td>
 						<td>LME Official Settlement</td>
 					</tr>

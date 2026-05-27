@@ -12,24 +12,50 @@
 
 	let tab = $state<'active' | 'maturing' | 'settled'>('active');
 	const OPEN_CONTRACT_STATUSES = new Set(['active', 'partially_settled']);
-
-	const TABS: [typeof tab, string, number][] = [
-		['active',   'Ativos',     84],
-		['maturing', 'Vencendo',    9],
-		['settled',  'Liquidados', 412],
-	];
+	const maturingContracts = $derived(
+		contracts.filter((contract) => {
+			if (contract.status === 'partially_settled') return true;
+			const settleMs = contract.settle ? Date.parse(contract.settle) : Number.NaN;
+			if (!Number.isFinite(settleMs) || contract.status !== 'active') return false;
+			const now = Date.now();
+			const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+			return settleMs >= now && settleMs <= now + thirtyDays;
+		}),
+	);
+	const activeContracts = $derived(contracts.filter((contract) => OPEN_CONTRACT_STATUSES.has(contract.status)));
+	const settledContracts = $derived(contracts.filter((contract) => contract.status === 'settled'));
+	const TABS = $derived<[typeof tab, string, number][]>([
+		['active',   'Ativos',     activeContracts.length],
+		['maturing', 'Vencendo',   maturingContracts.length],
+		['settled',  'Liquidados', settledContracts.length],
+	]);
 	const filteredContracts = $derived(
 		contracts.filter((contract) => {
 			const status = contract.status;
 			if (tab === 'active') return OPEN_CONTRACT_STATUSES.has(status);
 			if (tab === 'settled') return status === 'settled';
-			if (status === 'partially_settled') return true;
-			const settleMs = contract.settle ? Date.parse(contract.settle) : Number.NaN;
-			if (!Number.isFinite(settleMs) || status !== 'active') return false;
-			const now = Date.now();
-			const thirtyDays = 30 * 24 * 60 * 60 * 1000;
-			return settleMs >= now && settleMs <= now + thirtyDays;
+			return maturingContracts.includes(contract);
 		}),
+	);
+	const totalNotional = $derived(
+		contracts.reduce((sum, contract) => {
+			const qty = Number(contract.qty);
+			const price = Number(contract.price);
+			return Number.isFinite(qty) && Number.isFinite(price) ? sum + Math.abs(qty * price) : sum;
+		}, 0),
+	);
+	const aggregateMtm = $derived(
+		contracts.reduce((sum, contract) => {
+			const mtm = Number(contract.mtm);
+			return Number.isFinite(mtm) ? sum + mtm : sum;
+		}, 0),
+	);
+	const maturingNotional = $derived(
+		maturingContracts.reduce((sum, contract) => {
+			const qty = Number(contract.qty);
+			const price = Number(contract.price);
+			return Number.isFinite(qty) && Number.isFinite(price) ? sum + Math.abs(qty * price) : sum;
+		}, 0),
 	);
 
 	function fmtQty(c: Contract): string {
@@ -52,6 +78,10 @@
 		if (value == null) return '—';
 		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
+
+	function fmtUsdMillions(value: number): string {
+		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
+	}
 </script>
 
 <div class="page">
@@ -66,10 +96,10 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Contratos ativos"                  value="84"           delta="9 vencendo em 30d"        deltaKind="flat"/>
-		<Kpi label="Notional total"                    value="US$ 192,4 M"  delta="+US$ 24,1 M MTD"          deltaKind="pos"/>
-		<Kpi label="MTM agregado"                      value="+US$ 204.165" delta="+US$ 18.460 1d"           deltaKind="pos"/>
-		<Kpi label="Contratos no vencimento (30d)"     value="9"            delta="Notional US$ 14,2 M"      deltaKind="flat"/>
+		<Kpi label="Contratos ativos"                  value={String(activeContracts.length)} delta={`${maturingContracts.length} vencendo em 30d`} deltaKind="flat"/>
+		<Kpi label="Notional total"                    value={fmtUsdMillions(totalNotional)}  delta={`${contracts.length} contrato(s)`}             deltaKind="flat"/>
+		<Kpi label="MTM agregado"                      value={`${aggregateMtm >= 0 ? '+US$ ' : '-US$ '}${Math.abs(aggregateMtm).toLocaleString('en-US', { maximumFractionDigits: 0 })}`} delta="carteira carregada" deltaKind={aggregateMtm >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="Contratos no vencimento (30d)"     value={String(maturingContracts.length)} delta={`Notional ${fmtUsdMillions(maturingNotional)}`} deltaKind="flat"/>
 	</div>
 
 	<Card noPad>

@@ -145,7 +145,7 @@ describe('design-port create affordances', () => {
 
 	it('requires the second swap leg before RFQ submit', () => {
 		const source = read('(protected)/rfq/new/+page.svelte');
-		expect(source).toContain('const legsReady = $derived(!!leg1.priceType && (!showLeg2 || !!leg2.priceType))');
+		expect(source).toContain('const legsReady = $derived(legFieldsReady(leg1) && (!showLeg2 || legFieldsReady(leg2)))');
 		expect(source).toContain('!legsReady');
 	});
 

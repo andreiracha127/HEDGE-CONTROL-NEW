@@ -69,7 +69,8 @@ describe('latest review feedback regressions', () => {
 
 		expect(source).toContain('const intentReady = $derived');
 		expect(source).toContain("const rfqRoleReady = $derived(authStore.hasRole('risk_manager'))");
-		expect(source).toContain('const datesReady = $derived(!!leg1.startDate && !!leg1.endDate)');
+		expect(source).toContain('const datesReady = $derived(deliveryWindow != null)');
+		expect(source).toContain('function legFieldsReady');
 		expect(source).toContain("client.POST('/rfqs/preview-text'");
 		expect(source).toContain('text_en: preview.text_en ?? preview.text');
 		expect(source).toContain('text_pt: preview.text_pt ?? preview.text');

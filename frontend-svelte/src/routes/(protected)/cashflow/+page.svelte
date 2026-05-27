@@ -31,6 +31,22 @@
 	const maxAbs = $derived(
 		Math.max(1, ...months.map((m) => Math.max(byMonth[m].inflow, -byMonth[m].outflow))),
 	);
+	const cashflow90d = $derived.by(() => {
+		const now = Date.now();
+		const horizon = now + 90 * 24 * 60 * 60 * 1000;
+		return cashflow.filter((c) => {
+			const timestamp = Date.parse(c.date);
+			return Number.isFinite(timestamp) && timestamp >= now && timestamp <= horizon;
+		});
+	});
+	const projectedInflow90d = $derived(cashflow90d.reduce((sum, c) => sum + Math.max(c.amount_usd, 0), 0));
+	const projectedOutflow90d = $derived(cashflow90d.reduce((sum, c) => sum + Math.min(c.amount_usd, 0), 0));
+	const projectedNet90d = $derived(projectedInflow90d + projectedOutflow90d);
+	const nextSettlement = $derived.by(() =>
+		[...cashflow]
+			.filter((c) => Number.isFinite(Date.parse(c.date)))
+			.sort((a, b) => Date.parse(a.date) - Date.parse(b.date))[0] ?? null,
+	);
 
 	const cpConcentration = [
 		{ cp: 'ITAU', v:  40425, pct: 19 },
@@ -39,6 +55,18 @@
 		{ cp: 'SANT', v:  15300, pct:  7 },
 		{ cp: 'BRAD', v:  21148, pct: 10 },
 	];
+
+	function fmtUsd(value: number): string {
+		const prefix = value >= 0 ? '+US$ ' : '-US$ ';
+		return prefix + Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+	}
+
+	function fmtShortDate(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		const parts = date.split('-');
+		return parts.length === 3 ? `${parts[2]}/${parts[1]}` : '—';
+	}
 </script>
 
 <div class="page">
@@ -54,10 +82,10 @@
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Inflow projetado (90d)"  value="+US$ 216.865"         delta="9 liquidações"             deltaKind="pos"/>
-		<Kpi label="Outflow projetado (90d)" value="−US$ 1.260"           delta="1 liquidação"              deltaKind="neg"/>
-		<Kpi label="Net (90d)"               value="+US$ 215.605"         delta="vs mês anterior +18 %"     deltaKind="pos"/>
-		<Kpi label="Próxima liquidação"      value="29/05"                delta="CT-2026-0110 · BTG"        deltaKind="flat"/>
+		<Kpi label="Inflow projetado (90d)"  value={fmtUsd(projectedInflow90d)}  delta={`${cashflow90d.filter((c) => c.amount_usd > 0).length} liquidação(ões)`} deltaKind="pos"/>
+		<Kpi label="Outflow projetado (90d)" value={fmtUsd(projectedOutflow90d)} delta={`${cashflow90d.filter((c) => c.amount_usd < 0).length} liquidação(ões)`} deltaKind="neg"/>
+		<Kpi label="Net (90d)"               value={fmtUsd(projectedNet90d)}     delta={`${cashflow90d.length} evento(s)`}                    deltaKind={projectedNet90d >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="Próxima liquidação"      value={fmtShortDate(nextSettlement?.date)} delta={nextSettlement ? `${nextSettlement.desc} · ${nextSettlement.cp}` : 'sem eventos'} deltaKind="flat"/>
 	</div>
 
 	<div class="grid-7-5" style="margin-bottom: 16px;">
