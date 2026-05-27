@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { loginAsTrader } from './helpers';
+import { loginAsRiskManager } from './helpers';
 
 test.describe('RFQ Lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
-		await loginAsTrader(page);
+		await loginAsRiskManager(page);
 	});
 
 	test('navigates to RFQ board from dashboard', async ({ page }) => {
@@ -31,7 +31,7 @@ test.describe('RFQ Lifecycle', () => {
 		await page.goto('/rfq/new');
 		// Key form elements
 		await expect(page.getByLabel('Commodity')).toBeVisible();
-		await expect(page.getByRole('spinbutton')).toBeVisible();
+		await expect(page.getByLabel('Quantidade')).toBeVisible();
 		await expect(page.getByRole('button', { name: /Enviar a/ })).toBeVisible();
 	});
 });

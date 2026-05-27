@@ -56,6 +56,12 @@ export async function loginAsTrader(page: Page): Promise<void> {
 	await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 }
 
+export async function loginAsRiskManager(page: Page): Promise<void> {
+	await seedCookieSession(page, ['risk_manager']);
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
+}
+
 export async function loginAsAdmin(page: Page): Promise<void> {
 	await seedCookieSession(page, ['trader', 'risk_manager']);
 	await page.goto('/');

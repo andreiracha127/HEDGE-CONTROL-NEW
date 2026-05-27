@@ -38,8 +38,10 @@ describe('design-port financial endpoint wiring', () => {
 describe('RFQ create page — MT quantity precision', () => {
 	const source = read('(protected)/rfq/new/+page.svelte');
 
-	it('declares step="0.001" and validates quantity before submit', () => {
-		expect(source).toContain('step="0.001"');
+	it('keeps quantity as a decimal text value and validates before submit', () => {
+		expect(source).toContain('type="text"');
+		expect(source).toContain('inputmode="decimal"');
+		expect(source).not.toContain('step="0.001"');
 		expect(source).toContain('validateMtQuantity');
 		expect(source).toContain("import { validateMtQuantity } from '$lib/rfq/quantity'");
 		expect(source).toMatch(/quantityMtRaw\s*=\s*\$state<string>/);

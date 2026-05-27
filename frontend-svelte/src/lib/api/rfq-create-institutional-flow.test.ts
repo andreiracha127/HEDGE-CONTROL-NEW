@@ -84,8 +84,9 @@ describe('RFQ create page — production submit contract', () => {
 	it('generates preview text from the leg editor before POST /rfqs', () => {
 		expect(source).toContain("client.POST('/rfqs/preview-text'");
 		expect(source).toContain('body: buildPreviewPayload()');
-		expect(source).toContain('text_en: preview.text_en ?? preview.text');
-		expect(source).toContain('text_pt: preview.text_pt ?? preview.text');
+		expect(source).toContain('text_en: preview.text_en');
+		expect(source).toContain('text_pt: preview.text_pt');
+		expect(source).not.toMatch(/preview\.text(?!_)/);
 	});
 
 	it('requires intent references before enabling submit', () => {
@@ -97,7 +98,9 @@ describe('RFQ create page — production submit contract', () => {
 	});
 
 	it('validates MT quantity at three-decimal precision before preview or submit', () => {
-		expect(source).toContain('step="0.001"');
+		expect(source).toContain('type="text"');
+		expect(source).toContain('inputmode="decimal"');
+		expect(source).not.toContain('step="0.001"');
 		expect(source).toContain('validateMtQuantity');
 		expect(source).toMatch(/quantityMtRaw\s*=\s*\$state<string>/);
 		expect(source).toContain('data-testid="rfq-preview-button"');

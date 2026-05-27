@@ -24,7 +24,7 @@ describe('latest review feedback regressions', () => {
 		const source = readRoute('(protected)/+page.ts');
 
 		expect(source).toContain("client.GET('/exposures/list'");
-		expect(source).toContain('optionalData(exposureListResult.status');
+		expect(source).toContain("optionalData(exposureListResult.status === 'fulfilled' ? exposureListResult.value : null)");
 		expect(source).toContain('exposureBuckets: exposureBucketsFrom(exposureList)');
 		expect(source).not.toContain('exposureBuckets: exposureBucketsFrom(globalExposure)');
 	});
@@ -72,8 +72,9 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('const datesReady = $derived(deliveryWindow != null)');
 		expect(source).toContain('function legFieldsReady');
 		expect(source).toContain("client.POST('/rfqs/preview-text'");
-		expect(source).toContain('text_en: preview.text_en ?? preview.text');
-		expect(source).toContain('text_pt: preview.text_pt ?? preview.text');
+		expect(source).toContain('text_en: preview.text_en');
+		expect(source).toContain('text_pt: preview.text_pt');
+		expect(source).not.toMatch(/preview\.text(?!_)/);
 		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
 		expect(source).not.toContain("new Date().toISOString().slice(0, 10)");
 	});

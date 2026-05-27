@@ -107,6 +107,7 @@
 		if (leg.priceType === 'AVG') return monthWindow(leg) != null;
 		if (leg.priceType === 'AVGInter') return !!leg.startDate && !!leg.endDate;
 		if (leg.priceType === 'C2R') return !!leg.fixingDate;
+		if (leg.priceType === 'Fix') return !!leg.fixingDate;
 		if (leg.orderType === 'Limit') return !!leg.limitPrice;
 		return true;
 	}
@@ -266,8 +267,8 @@
 				quantity_mt: quantityValidation.canonical,
 				delivery_window_start: deliveryStart,
 				delivery_window_end: deliveryEnd,
-				text_en: preview.text_en ?? preview.text,
-				text_pt: preview.text_pt ?? preview.text,
+				text_en: preview.text_en,
+				text_pt: preview.text_pt,
 				invitations: selectedCounterparties.map((cp) => ({
 					counterparty_id: cp.id,
 					channel: 'whatsapp',
@@ -341,7 +342,7 @@
 					</div>
 
 					<div class="field">
-						<label class="field-label" for="rfq-quantity">
+						<label class="field-label">
 							Intenção <span class="req">*</span>
 							<InfoTip width={280}>
 								<strong>Posição global:</strong> tomada de posição direcional · sujeita a limites de risco.<br/><br/>
@@ -365,7 +366,7 @@
 					</div>
 
 					<div class="field">
-						<label class="field-label">
+						<label class="field-label" for="rfq-quantity">
 							Quantidade <span class="req">*</span>
 							<InfoTip>Lote LME mínimo: 25 MT · padrão: 250 MT.</InfoTip>
 						</label>
@@ -373,8 +374,8 @@
 							<input
 								id="rfq-quantity"
 								class="input"
-								type="number"
-								step="0.001"
+								type="text"
+								inputmode="decimal"
 								aria-invalid={quantityError != null}
 								bind:value={quantityMtRaw}
 							/>
