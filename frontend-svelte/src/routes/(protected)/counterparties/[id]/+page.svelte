@@ -10,13 +10,13 @@
 	type Contract = Record<string, any>;
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
-	const contracts = $derived(data.contracts);
+	const contracts = $derived((data.contracts ?? []) as Contract[]);
 
 	const id = $derived(page.params.id ?? '');
 	const cp = $derived(counterparties.find((c) => c.id === id || c.short === id) ?? counterparties[0]);
 	let tab = $state<'resumo' | 'contratos' | 'limites' | 'atividade'>('resumo');
 
-	const usePct = $derived((cp.used / cp.limit) * 100);
+	const usePct = $derived(cp.limit > 0 ? (cp.used / cp.limit) * 100 : 0);
 	const cpContracts = $derived<Contract[]>(contracts.filter((c) => c.counterparty_id === cp.id || c.cp_id === cp.id || c.cp === cp.short));
 	const mtm = $derived(cpContracts.reduce((s, c) => s + (Number(c.mtm) || 0), 0));
 

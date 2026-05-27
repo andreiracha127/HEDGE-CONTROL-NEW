@@ -7,6 +7,7 @@
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import { client } from '$lib/api/client';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
@@ -18,6 +19,10 @@
 	const rfq = $derived(rfqs.find((r) => r.id === id) ?? rfqs[0]);
 	const quotes = $derived(sampleQuotes);
 	const best = $derived(quotes.find((q) => q.status === 'best'));
+	const canManageRfq = $derived(authStore.hasRole('risk_manager'));
+	const canCancelRfq = $derived(canManageRfq && ['CREATED', 'SENT'].includes(rfq.state));
+	const canRefreshRfq = $derived(canManageRfq && ['SENT', 'QUOTED'].includes(rfq.state));
+	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && !!best);
 	const mid = 2645.5;
 
 	function vsMid(price: number | null): number | null {
@@ -66,7 +71,7 @@
 	}
 
 	async function cancelRfq() {
-		if (!rfq?.id || actionBusy) return;
+		if (!rfq?.id || actionBusy || !canCancelRfq) return;
 		actionBusy = 'cancel';
 		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/cancel', {
 			params: { path: { rfq_id: rfq.id } },
@@ -76,7 +81,7 @@
 	}
 
 	async function refreshRfq() {
-		if (!rfq?.id || actionBusy) return;
+		if (!rfq?.id || actionBusy || !canRefreshRfq) return;
 		actionBusy = 'refresh';
 		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/refresh', {
 			params: { path: { rfq_id: rfq.id } },
@@ -86,7 +91,7 @@
 	}
 
 	async function awardRfq() {
-		if (!rfq?.id || actionBusy) return;
+		if (!rfq?.id || actionBusy || !canAwardRfq) return;
 		actionBusy = 'award';
 		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/award', {
 			params: { path: { rfq_id: rfq.id } },
@@ -117,9 +122,9 @@
 		</div>
 		<div class="page-actions">
 			<StatePill state={rfq.state}/>
-			<button type="button" class="btn btn-secondary" onclick={cancelRfq} disabled={actionBusy !== null}>Cancelar RFQ</button>
-			<button type="button" class="btn btn-secondary" onclick={refreshRfq} disabled={actionBusy !== null}>Reenviar</button>
-			<button type="button" class="btn btn-accent" onclick={awardRfq} disabled={actionBusy !== null || !best}>
+			<button type="button" class="btn btn-secondary" onclick={cancelRfq} disabled={actionBusy !== null || !canCancelRfq}>Cancelar RFQ</button>
+			<button type="button" class="btn btn-secondary" onclick={refreshRfq} disabled={actionBusy !== null || !canRefreshRfq}>Reenviar</button>
+			<button type="button" class="btn btn-accent" onclick={awardRfq} disabled={actionBusy !== null || !canAwardRfq}>
 				<Icon name="bolt"/>Fechar com melhor cotação
 			</button>
 		</div>
@@ -183,9 +188,9 @@
 								<td><StatePill state={q.status}/></td>
 								<td>
 									{#if isBest}
-										<button type="button" class="btn btn-accent btn-sm" onclick={awardRfq} disabled={actionBusy !== null}>Fechar →</button>
+										<button type="button" class="btn btn-accent btn-sm" onclick={awardRfq} disabled={actionBusy !== null || !canAwardRfq}>Fechar →</button>
 									{:else if isPending}
-										<button type="button" class="btn btn-ghost btn-sm" onclick={refreshRfq} disabled={actionBusy !== null}>Lembrar</button>
+										<button type="button" class="btn btn-ghost btn-sm" onclick={refreshRfq} disabled={actionBusy !== null || !canRefreshRfq}>Lembrar</button>
 									{:else}
 										<span style="color: var(--muted);">—</span>
 									{/if}

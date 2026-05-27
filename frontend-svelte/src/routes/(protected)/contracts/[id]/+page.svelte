@@ -44,9 +44,13 @@
 		asNumber(c.initial_margin_usd ?? c.initial_margin_value) ??
 			(notional != null && initialMarginRate != null ? notional * initialMarginRate : null),
 	);
-	const cpName = $derived(
-		counterparties.find((x) => x.short === c.cp)?.name ?? c.cp,
+	const counterparty = $derived(
+		counterparties.find(
+			(x) => x.id === c.counterparty_id || x.id === c.cp || x.short === c.cp || x.name === c.cp,
+		) ?? null,
 	);
+	const cpId = $derived(counterparty?.id ?? c.counterparty_id ?? c.cp_id ?? c.cp);
+	const cpName = $derived(counterparty?.name ?? c.counterparty_name ?? c.cp);
 
 	const TABS: [typeof tab, string][] = [
 		['resumo',   'Resumo'],
@@ -252,7 +256,7 @@
 						<dt>Preço variável</dt><dd>LME Average · mês de liquidação</dd>
 						<dt>Contratação</dt><dd>{fmtDate(c.created_at ?? c.traded)}</dd>
 						<dt>Liquidação</dt><dd>{fmtSettleWithDays()}</dd>
-						<dt>Contraparte</dt><dd><a href={`/counterparties/${c.cp}`}>{cpName}</a></dd>
+						<dt>Contraparte</dt><dd><a href={`/counterparties/${cpId}`}>{cpName}</a></dd>
 						<dt>RFQ origem</dt>
 						<dd class="mono">
 							{#if c.rfq_id}

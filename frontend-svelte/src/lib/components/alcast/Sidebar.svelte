@@ -41,6 +41,7 @@
 		}
 		return 'Unknown';
 	});
+	const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
 
 	const initials = $derived(
 		userName
@@ -65,13 +66,15 @@
 		},
 		{
 			label: 'Análise',
-			items: [
-				{ key: 'cashflow', label: 'Fluxo de caixa', icon: 'coins', badge: null, href: '/cashflow' },
-				{ key: 'pnl', label: 'P&L', icon: 'chart', badge: null, href: '/analytics/pnl' },
-				{ key: 'mtm', label: 'MTM e cenário', icon: 'scale', badge: null, href: '/analytics/mtm' },
-				{ key: 'whatif', label: 'What-if', icon: 'bolt', badge: null, href: '/analytics/what-if' },
-				{ key: 'market', label: 'Dados de mercado', icon: 'globe', badge: null, href: '/market-data' },
-			],
+			items: canUseAnalysis
+				? [
+					{ key: 'cashflow', label: 'Fluxo de caixa', icon: 'coins', badge: null, href: '/cashflow' },
+					{ key: 'pnl', label: 'P&L', icon: 'chart', badge: null, href: '/analytics/pnl' },
+					{ key: 'mtm', label: 'MTM e cenário', icon: 'scale', badge: null, href: '/analytics/mtm' },
+					{ key: 'whatif', label: 'What-if', icon: 'bolt', badge: null, href: '/analytics/what-if' },
+					{ key: 'market', label: 'Dados de mercado', icon: 'globe', badge: null, href: '/market-data' },
+				]
+				: [],
 		},
 		{
 			label: 'Governança',
@@ -101,6 +104,7 @@
 	</div>
 
 	{#each nav as section (section.label)}
+		{#if section.items.length > 0}
 		<div class="sidebar-section">
 			<div class="sidebar-section-label">{section.label}</div>
 			<nav class="sidebar-nav">
@@ -115,6 +119,7 @@
 				{/each}
 			</nav>
 		</div>
+		{/if}
 	{/each}
 
 	<div class="sb-foot">

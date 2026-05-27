@@ -121,6 +121,8 @@ describe('latest review feedback regressions', () => {
 		expect(loader).toContain("rfq.intent === 'SPREAD'");
 		expect(loader).toContain('spreadBest.buy_quote?.id');
 		expect(source).toContain("rfq.direction === 'SELL' ? (price - mid) * rfq.qty : (mid - price) * rfq.qty");
+		expect(source).toContain("const canManageRfq = $derived(authStore.hasRole('risk_manager'))");
+		expect(source).toContain("rfq.state === 'QUOTED' && !!best");
 		expect(source).toContain('const stateEvents = $derived(data.stateEvents ?? [])');
 		expect(source).toContain('{#each stateEvents as event');
 		expect(source).not.toContain('Cotou 2.638,50');
@@ -149,6 +151,31 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('const submittedNotes = $derived.by');
 		expect(source).toContain('Referencia ERP/SAP');
 		expect(source).toContain('notes: submittedNotes');
+	});
+
+	it('resolves contract counterparties through stable ids', () => {
+		const source = readRoute('(protected)/contracts/[id]/+page.svelte');
+
+		expect(source).toContain('x.id === c.counterparty_id');
+		expect(source).toContain('const cpId = $derived');
+		expect(source).toContain('href={`/counterparties/${cpId}`}');
+		expect(source).not.toContain('href={`/counterparties/${c.cp}`}');
+	});
+
+	it('does not load hedge contracts from trader counterparty detail', () => {
+		const loader = readRoute('(protected)/counterparties/[id]/+page.ts');
+
+		expect(loader).toContain("client.GET('/counterparties/{counterparty_id}'");
+		expect(loader).not.toContain("client.GET('/contracts/hedge'");
+		expect(loader).toContain('contracts: []');
+	});
+
+	it('filters risk-only analysis links by role in the sidebar', () => {
+		const source = readFileSync(resolve(process.cwd(), 'src', 'lib', 'components', 'alcast', 'Sidebar.svelte'), 'utf8');
+
+		expect(source).toContain("const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'))");
+		expect(source).toContain('items: canUseAnalysis');
+		expect(source).toContain('{#if section.items.length > 0}');
 	});
 
 	it('preserves variable-order entry prices in order creation payloads', () => {
