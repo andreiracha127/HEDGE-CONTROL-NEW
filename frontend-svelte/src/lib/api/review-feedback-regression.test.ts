@@ -149,6 +149,10 @@ describe('latest review feedback regressions', () => {
 		expect(contractDetail).not.toContain("c.status === 'maturing'");
 		expect(contractDetail).not.toContain('RFQ-2026-0177');
 		expect(contractDetail).not.toContain('ORD-2026-0419');
+		expect(contractDetail).not.toContain('APR-2026-0096');
+		expect(contractDetail).not.toContain('A. Costa · Risco');
+		expect(contractDetail).not.toContain("['27/05'");
+		expect(contractDetail).toContain('Nenhum histórico de MTM carregado');
 		expect(rfqCreate).toContain('<dt>Alçada</dt><dd>Risk Manager</dd>');
 		expect(rfqCreate).not.toContain('Trader · até US$ 5 M');
 	});

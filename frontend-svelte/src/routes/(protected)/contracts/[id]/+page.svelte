@@ -13,6 +13,11 @@
 	const contracts = $derived(data.contracts);
 	const counterparties = $derived(data.counterparties);
 	const cashflows = $derived(data.cashflow ?? []);
+	const optionalData = $derived(data as Record<string, any>);
+	const approval = $derived((optionalData.approval ?? null) as Record<string, any> | null);
+	const documents = $derived((optionalData.documents ?? []) as Record<string, any>[]);
+	const documentEvents = $derived((optionalData.documentEvents ?? optionalData.document_history ?? []) as Record<string, any>[]);
+	const mtmHistory = $derived((optionalData.mtmHistory ?? optionalData.mtm_history ?? []) as Record<string, any>[]);
 
 	const id = $derived(page.params.id ?? '');
 	const c = $derived(contracts.find((x) => x.id === id) ?? contracts[0]);
@@ -65,6 +70,29 @@
 		if (value == null || !Number.isFinite(value)) return '—';
 		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
+
+	function asNumber(value: unknown): number | null {
+		const n = Number(value);
+		return Number.isFinite(n) ? n : null;
+	}
+
+	function mtmValue(row: Record<string, any>): number | null {
+		return asNumber(row.mtm ?? row.mtm_value ?? row.value_usd);
+	}
+
+	function midValue(row: Record<string, any>): number | null {
+		return asNumber(row.mid ?? row.mid_price ?? row.price_mid ?? row.price);
+	}
+
+	function mtmDelta(row: Record<string, any>, index: number): number | null {
+		const explicit = asNumber(row.day_delta ?? row.delta_day ?? row.delta);
+		if (explicit != null) return explicit;
+		const current = mtmValue(row);
+		const previous = mtmHistory[index + 1] ? mtmValue(mtmHistory[index + 1]) : null;
+		return current != null && previous != null ? current - previous : null;
+	}
+
+	const latestMtmDelta = $derived(mtmHistory.length ? mtmDelta(mtmHistory[0], 0) : null);
 
 	function priceDelta(): number | null {
 		if (mid == null || c.price == null) return null;
@@ -147,7 +175,7 @@
 		<Kpi
 			label="MTM atual"
 			value={fmtUsd(c.mtm)}
-			delta="+US$ 1.420 1d"
+			delta={latestMtmDelta == null ? 'sem histórico carregado' : `${fmtUsd(latestMtmDelta)} 1d`}
 			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
 		/>
 		<Kpi
@@ -257,29 +285,28 @@
 
 				<Card title="Documentação">
 					<div class="stack gap-2">
-						{#each [
-							{ name: 'Confirmação ISDA',     size: '142 KB' },
-							{ name: 'Term sheet',           size: '86 KB' },
-							{ name: 'Anexo de garantia',    size: '48 KB' },
-							{ name: 'Marcação MTM diária',  size: '2,1 MB' },
-						] as d (d.name)}
+						{#if documents.length}
+						{#each documents as d, i (d.id ?? d.name ?? i)}
 							<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
 								<Icon name="doc"/>
-								<span style="flex: 1;">{d.name}</span>
-								<span style="color: var(--muted); font-size: 11px;">{d.size}</span>
+								<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
+								<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
 								<Icon name="download"/>
 							</button>
 						{/each}
+						{:else}
+							<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
+						{/if}
 					</div>
 				</Card>
 
 				<Card title="Aprovação">
 					<dl class="kv">
-						<dt>Status</dt><dd><Badge kind="pos" dot>Concedida</Badge></dd>
-						<dt>ID</dt><dd class="mono">APR-2026-0096</dd>
-						<dt>Aprovador</dt><dd>A. Costa · Risco</dd>
-						<dt>Em</dt><dd>26/05 13:45</dd>
-						<dt>Política</dt><dd>Hedge §4.1 · Notional ≤ US$ 5 M</dd>
+						<dt>Status</dt><dd><Badge kind={approval ? 'pos' : 'neutral'} dot>{approval?.status ?? approval?.state ?? 'Não carregada'}</Badge></dd>
+						<dt>ID</dt><dd class="mono">{approval?.id ?? approval?.approval_id ?? '—'}</dd>
+						<dt>Aprovador</dt><dd>{approval?.approver_name ?? approval?.approver ?? approval?.approver_role ?? '—'}</dd>
+						<dt>Em</dt><dd>{fmtDate(approval?.approved_at ?? approval?.updated_at ?? approval?.created_at)}</dd>
+						<dt>Política</dt><dd>{approval?.policy ?? approval?.policy_name ?? '—'}</dd>
 					</dl>
 				</Card>
 			</div>
@@ -371,24 +398,25 @@
 					</tr>
 				</thead>
 				<tbody>
-					{#each [
-						['27/05', mid,       c.mtm,         1420 ],
-						['26/05', mid - 0.5, c.mtm - 1420, -240  ],
-						['25/05', mid - 0.3, c.mtm - 1180,  820  ],
-						['22/05', mid - 1.8, c.mtm - 2000,  1100 ],
-						['21/05', mid - 2.5, c.mtm - 3100, -560  ],
-					] as [d, p, m, dDay], i (i)}
+					{#if mtmHistory.length}
+					{#each mtmHistory as row, i (row.id ?? row.date ?? row.as_of_date ?? i)}
+						{@const p = midValue(row)}
+						{@const m = mtmValue(row)}
+						{@const dDay = mtmDelta(row, i)}
 						<tr>
-							<td>{d}</td>
-							<td class="num tabular">{(p as number).toFixed(priceDigits(c))}</td>
-							<td class="num tabular strong" style="color: {(m as number) >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{(m as number) >= 0 ? '+' : ''}{(m as number).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							<td>{fmtDate(row.date ?? row.as_of_date ?? row.created_at)}</td>
+							<td class="num tabular">{p == null ? '—' : p.toFixed(priceDigits(c))}</td>
+							<td class="num tabular strong" style="color: {m == null || m >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{fmtUsd(m)}
 							</td>
-							<td class="num tabular" style="color: {(dDay as number) >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{(dDay as number) >= 0 ? '+' : ''}{(dDay as number).toLocaleString('en-US')}
+							<td class="num tabular" style="color: {dDay == null || dDay >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{fmtUsd(dDay)}
 							</td>
 						</tr>
 					{/each}
+					{:else}
+						<tr><td colspan="4" class="tbl-empty">Nenhum histórico de MTM carregado para este contrato</td></tr>
+					{/if}
 				</tbody>
 			</table>
 		</Card>
@@ -396,27 +424,29 @@
 		<div class="grid-2">
 			<Card title="Documentos do contrato">
 				<div class="stack gap-2">
-					{#each [
-						{ name: 'Confirmação ISDA · assinada',         size: '142 KB' },
-						{ name: 'Term sheet',                          size: '86 KB' },
-						{ name: 'Anexo de garantia',                   size: '48 KB' },
-						{ name: 'Documentação hedge accounting',       size: '218 KB' },
-						{ name: 'Trilha de aprovação',                 size: '32 KB' },
-					] as d (d.name)}
+					{#if documents.length}
+					{#each documents as d, i (d.id ?? d.name ?? i)}
 						<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
 							<Icon name="doc"/>
-							<span style="flex: 1;">{d.name}</span>
-							<span style="color: var(--muted); font-size: 11px;">{d.size}</span>
+							<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
+							<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
 							<Icon name="download"/>
 						</button>
 					{/each}
+					{:else}
+						<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
+					{/if}
 				</div>
 			</Card>
 			<Card title="Histórico de versões">
 				<div class="feed">
-					<div class="feed-item pos"><div class="icon"></div><div><div class="what">Versão final aprovada · v3</div><div class="row gap-2"><span class="when">26/05 13:45</span><span class="who">· A. Costa</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Ajuste no anexo de garantia · v2</div><div class="row gap-2"><span class="when">26/05 11:20</span><span class="who">· R. Almeida</span></div></div></div>
-					<div class="feed-item info"><div class="icon"></div><div><div class="what">Confirmação inicial gerada · v1</div><div class="row gap-2"><span class="when">26/05 09:02</span><span class="who">· R. Almeida</span></div></div></div>
+					{#if documentEvents.length}
+					{#each documentEvents as event, i (event.id ?? event.version ?? i)}
+						<div class="feed-item info"><div class="icon"></div><div><div class="what">{event.description ?? event.title ?? 'Evento documental'}{event.version ? ` · ${event.version}` : ''}</div><div class="row gap-2"><span class="when">{fmtDate(event.created_at ?? event.date)}</span><span class="who">· {event.actor ?? event.user ?? 'Sistema'}</span></div></div></div>
+					{/each}
+					{:else}
+						<div class="tbl-empty">Nenhum histórico documental carregado para este contrato</div>
+					{/if}
 				</div>
 			</Card>
 		</div>

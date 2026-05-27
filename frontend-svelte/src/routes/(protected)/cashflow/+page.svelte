@@ -18,7 +18,8 @@
 	const byMonth = $derived.by(() => {
 		const map: Record<string, MonthAgg> = {};
 		for (const c of cashflow) {
-			const k = c.date.slice(0, 7);
+			const k = c.date?.slice(0, 7);
+			if (!k) continue;
 			if (!map[k]) map[k] = { inflow: 0, outflow: 0, count: 0 };
 			if (c.amount_usd > 0) map[k].inflow += c.amount_usd;
 			else map[k].outflow += c.amount_usd;
@@ -133,7 +134,7 @@
 							<span style="width: 60px; font-weight: 500;">{r.cp}</span>
 							<Bar pct={r.pct} kind={r.pct > 40 ? 'warn' : 'pos'}/>
 							<span class="tabular" style="width: 90px; text-align: right;">US$ {(r.v / 1000).toFixed(1)}k</span>
-							<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct}%</span>
+							<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct.toFixed(1)}%</span>
 						</div>
 					</div>
 				{/each}
@@ -167,7 +168,7 @@
 			<tbody>
 				{#each cashflow as c, i (i)}
 					<tr>
-						<td class="strong">{c.date.split('-').reverse().join('/')}</td>
+						<td class="strong">{fmtShortDate(c.date)}</td>
 						<td>{c.desc}</td>
 						<td><CommodityChip code={c.commodity}/></td>
 						<td>{c.cp}</td>
