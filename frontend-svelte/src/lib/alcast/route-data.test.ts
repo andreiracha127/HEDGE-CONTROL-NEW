@@ -41,6 +41,24 @@ describe('exposureBucketsFrom', () => {
 
 		expect(bucket.ratio).toBe(40);
 	});
+
+	it('aggregates live exposure-list detail rows into one bucket per month', () => {
+		const buckets = exposureBucketsFrom({
+			items: [
+				{ settlement_month: '2026-06', original_tons: '1000', hedged_tons: '250', open_tons: '750' },
+				{ settlement_month: '2026-06', original_tons: '500', hedged_tons: '250', open_tons: '250' },
+			],
+		});
+
+		expect(buckets).toHaveLength(1);
+		expect(buckets[0]).toMatchObject({
+			month: '2026-06',
+			commercial_mt: 1500,
+			hedged_mt: 500,
+			residual_mt: 1000,
+		});
+		expect(buckets[0].ratio).toBeCloseTo(33.333, 3);
+	});
 });
 
 describe('live API row normalizers', () => {
@@ -82,6 +100,13 @@ describe('live API row normalizers', () => {
 			id: '4d7a5353-9823-41a5-b63c-13f9a946c4c1',
 			short: 'ITAU',
 		});
+	});
+
+	it('marks non-approved KYC counterparties as unavailable for RFQ selection', () => {
+		expect(normalizeCounterparty({ kyc_status: 'pending', is_active: true })).toMatchObject({ status: 'review' });
+		expect(normalizeCounterparty({ kyc_status: 'expired', is_active: true })).toMatchObject({ status: 'suspended' });
+		expect(normalizeCounterparty({ kyc_status: 'rejected', is_active: true })).toMatchObject({ status: 'suspended' });
+		expect(normalizeCounterparty({ kyc_status: 'approved', is_active: true })).toMatchObject({ status: 'active' });
 	});
 
 	it('keeps missing previous market prices unavailable instead of fabricating zero', () => {

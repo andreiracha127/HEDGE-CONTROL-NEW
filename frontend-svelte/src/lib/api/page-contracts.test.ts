@@ -124,4 +124,37 @@ describe('design-port create affordances', () => {
 		expect(source).not.toContain('CT-2026-0111');
 		expect(source).not.toContain('+US$ 517.045');
 	});
+
+	it('joins counterparty detail contracts by counterparty UUID', () => {
+		const source = read('(protected)/counterparties/[id]/+page.svelte');
+		expect(source).toContain('c.counterparty_id === cp.id');
+		expect(source).not.toContain('contracts.filter((c) => c.cp === cp.short)');
+	});
+
+	it('renders MTM analytics rows with null-safe MTM placeholders', () => {
+		const source = read('(protected)/analytics/mtm/+page.svelte');
+		expect(source).toContain('function fmtMtm');
+		expect(source).not.toContain('c.mtm.toLocaleString');
+	});
+
+	it('does not link normal orders to placeholder RFQs', () => {
+		const source = read('(protected)/orders/+page.svelte');
+		expect(source).toContain('{#if o.rfq_id}');
+		expect(source).not.toContain('href={`/rfq/${o.rfq}`}');
+	});
+
+	it('requires the second swap leg before RFQ submit', () => {
+		const source = read('(protected)/rfq/new/+page.svelte');
+		expect(source).toContain('const legsReady = $derived(!!leg1.priceType && (!showLeg2 || !!leg2.priceType))');
+		expect(source).toContain('!legsReady');
+	});
+
+	it('filters order and contract tabs against displayed rows', () => {
+		const orders = read('(protected)/orders/+page.svelte');
+		const contracts = read('(protected)/contracts/+page.svelte');
+		expect(orders).toContain('const filteredOrders = $derived');
+		expect(orders).toContain('{#each filteredOrders as o (o.id)}');
+		expect(contracts).toContain('const filteredContracts = $derived');
+		expect(contracts).toContain('{#each filteredContracts as c (c.id)}');
+	});
 });

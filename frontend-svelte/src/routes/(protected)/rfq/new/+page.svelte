@@ -48,11 +48,12 @@
 	let cpSearch = $state('');
 
 	const showLeg2 = $derived(tradeType === 'Swap');
+	const legsReady = $derived(!!leg1.priceType && (!showLeg2 || !!leg2.priceType));
 	const direction = $derived(leg1.side === 'sell' ? 'SELL' : 'BUY');
 	const quantityValidation = $derived(validateMtQuantity(quantityMtRaw));
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
-	const selectedCounterparties = $derived(counterparties.filter((cp) => cps.includes(cp.id)));
+	const selectedCounterparties = $derived(counterparties.filter((cp) => cp.status === 'active' && cps.includes(cp.id)));
 	const cpList = $derived(
 		counterparties.filter(
 			(cp) =>
@@ -68,7 +69,7 @@
 
 	$effect(() => {
 		if (!initializedCounterparties && counterparties.length > 0) {
-			cps = counterparties.slice(0, 4).map((cp) => cp.id);
+			cps = counterparties.filter((cp) => cp.status === 'active').slice(0, 4).map((cp) => cp.id);
 			initializedCounterparties = true;
 		}
 	});
@@ -115,6 +116,10 @@
 		}
 		if (!quantityValidation.ok) {
 			notifications.error(quantityValidation.reason);
+			return;
+		}
+		if (!legsReady) {
+			notifications.error('Configure todas as pernas obrigatórias antes de enviar a RFQ.');
 			return;
 		}
 		if (selectedCounterparties.length === 0) {
@@ -178,7 +183,7 @@
 				class="btn btn-primary"
 				onclick={submit}
 				data-testid="rfq-submit-button"
-				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !leg1.priceType}
+				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady}
 			>
 				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`}
 			</button>
@@ -307,7 +312,7 @@
 					{#each cpList as cp (cp.id)}
 						{@const on = cps.includes(cp.id)}
 						{@const usePct = (cp.used / cp.limit) * 100}
-						{@const disabled = cp.status === 'review'}
+						{@const disabled = cp.status !== 'active'}
 						<button
 							type="button"
 							{disabled}

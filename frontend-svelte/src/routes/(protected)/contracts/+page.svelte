@@ -17,6 +17,18 @@
 		['maturing', 'Vencendo',    9],
 		['settled',  'Liquidados', 412],
 	];
+	const filteredContracts = $derived(
+		contracts.filter((contract) => {
+			const status = contract.status;
+			if (tab === 'active') return status === 'active';
+			if (tab === 'settled') return status === 'settled';
+			const settleMs = contract.settle ? Date.parse(contract.settle) : Number.NaN;
+			if (!Number.isFinite(settleMs) || status !== 'active') return false;
+			const now = Date.now();
+			const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+			return settleMs >= now && settleMs <= now + thirtyDays;
+		}),
+	);
 
 	function fmtQty(c: Contract): string {
 		if (c.qty == null) return '—';
@@ -90,7 +102,7 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each contracts as c (c.id)}
+				{#each filteredContracts as c (c.id)}
 					<tr>
 						<td class="strong mono"><a href={`/contracts/${c.id}`}>{c.id}</a></td>
 						<td><CommodityChip code={c.commodity}/></td>
@@ -113,8 +125,11 @@
 						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
 				{/each}
+				{#if filteredContracts.length === 0}
+					<tr><td colspan="11" class="tbl-empty">Nenhum contrato para o filtro selecionado</td></tr>
+				{/if}
 			</tbody>
 		</table>
-		<Pager from={1} to={9} total={84}/>
+		<Pager from={filteredContracts.length > 0 ? 1 : 0} to={filteredContracts.length} total={filteredContracts.length}/>
 	</Card>
 </div>

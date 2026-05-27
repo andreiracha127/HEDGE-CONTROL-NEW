@@ -111,13 +111,23 @@ export function normalizeContract(row: Record<string, any>): Record<string, any>
 export function normalizeCounterparty(row: Record<string, any>): Record<string, any> {
 	const limit = numberOrNull(row.credit_limit_usd ?? row.limit) ?? 0;
 	const used = numberOrNull(row.credit_used_usd ?? row.used) ?? 0;
+	const kycStatus = row.kyc_status;
+	const status =
+		row.status ??
+		(row.is_active === false
+			? 'suspended'
+			: kycStatus === 'pending' || kycStatus === 'review'
+				? 'review'
+				: kycStatus === 'expired' || kycStatus === 'rejected'
+					? 'suspended'
+					: 'active');
 	return {
 		...row,
 		short: row.short_name ?? row.short ?? row.id,
 		rating: row.rating ?? row.risk_rating ?? '—',
 		limit,
 		used,
-		status: row.status ?? (row.is_active === false ? 'suspended' : row.kyc_status === 'review' ? 'review' : 'active'),
+		status,
 	};
 }
 
@@ -163,7 +173,7 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 
 export function exposureBucketsFrom(data: unknown) {
 	const rows = items<Record<string, any>>(data);
-	return rows.map((row) => {
+	const normalized = rows.map((row) => {
 		const commercialMt =
 			numberOrNull(row.commercial_mt ?? row.commercial_net_mt ?? row.original_tons ?? row.quantity_mt) ?? 0;
 		const hedgedMt = numberOrNull(row.hedged_mt ?? row.hedge_mt ?? row.hedged_tons) ?? 0;
@@ -193,5 +203,22 @@ export function exposureBucketsFrom(data: unknown) {
 			ratio,
 		};
 	});
+	const byMonth = new Map<string, Record<string, any>>();
+	for (const bucket of normalized) {
+		const key = bucket.month || '—';
+		const existing = byMonth.get(key);
+		if (!existing) {
+			byMonth.set(key, { ...bucket, month: key });
+			continue;
+		}
+		existing.commercial_mt += bucket.commercial_mt;
+		existing.hedged_mt += bucket.hedged_mt;
+		existing.residual_mt += bucket.residual_mt;
+		existing.ratio =
+			existing.commercial_mt !== 0
+				? (existing.hedged_mt / Math.abs(existing.commercial_mt)) * 100
+				: 0;
+	}
+	return Array.from(byMonth.values());
 }
 

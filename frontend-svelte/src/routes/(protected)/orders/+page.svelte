@@ -20,6 +20,14 @@
 		['pending',   'Pendentes',   4],
 		['cancelled', 'Canceladas',  2],
 	];
+	const filteredOrders = $derived(
+		orders.filter((order) => {
+			const statusOk = tab === 'all' || order.status === tab;
+			const direction = String(order.direction ?? '').toLowerCase();
+			const dirOk = dir === 'all' || direction === dir;
+			return statusOk && dirOk;
+		}),
+	);
 
 	function fmtQty(order: Record<string, any>): string {
 		if (order.commodity === 'USDBRL') return formatPrice(order.quantity_mt ?? order.qty, 'USD');
@@ -86,10 +94,16 @@
 				</tr>
 			</thead>
 			<tbody>
-				{#each orders as o (o.id)}
+				{#each filteredOrders as o (o.id)}
 					<tr style="cursor: default;">
 						<td class="strong mono">{o.id}</td>
-						<td class="mono"><a href={`/rfq/${o.rfq}`}>{o.rfq}</a></td>
+						<td class="mono">
+							{#if o.rfq_id}
+								<a href={`/rfq/${o.rfq_id}`}>{o.rfq}</a>
+							{:else}
+								<span style="color: var(--muted);">—</span>
+							{/if}
+						</td>
 						<td><CommodityChip code={o.commodity}/></td>
 						<td><DirectionBadge dir={o.direction}/></td>
 						<td class="num">{fmtQty(o)}</td>
@@ -104,8 +118,11 @@
 						</td>
 					</tr>
 				{/each}
+				{#if filteredOrders.length === 0}
+					<tr><td colspan="10" class="tbl-empty">Nenhuma ordem para o filtro selecionado</td></tr>
+				{/if}
 			</tbody>
 		</table>
-		<Pager from={1} to={8} total={47}/>
+		<Pager from={filteredOrders.length > 0 ? 1 : 0} to={filteredOrders.length} total={filteredOrders.length}/>
 	</Card>
 </div>

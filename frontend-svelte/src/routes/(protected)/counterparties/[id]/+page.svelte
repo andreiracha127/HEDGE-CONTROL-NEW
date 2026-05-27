@@ -17,17 +17,28 @@
 	let tab = $state<'resumo' | 'contratos' | 'limites' | 'atividade'>('resumo');
 
 	const usePct = $derived((cp.used / cp.limit) * 100);
-	const cpContracts = $derived<Contract[]>(contracts.filter((c) => c.cp === cp.short));
-	const mtm = $derived(cpContracts.reduce((s, c) => s + c.mtm, 0));
+	const cpContracts = $derived<Contract[]>(contracts.filter((c) => c.counterparty_id === cp.id || c.cp_id === cp.id || c.cp === cp.short));
+	const mtm = $derived(cpContracts.reduce((s, c) => s + (Number(c.mtm) || 0), 0));
 
 	function fmtQty(c: Contract): string {
+		if (c.qty == null) return '—';
 		if (c.commodity === 'USDBRL') return 'US$ ' + (c.qty / 1_000_000).toFixed(1) + ' M';
 		return c.qty.toLocaleString('pt-BR') + ' t';
 	}
 
 	function fmtPrice(c: Contract): string {
+		if (c.price == null) return '—';
 		const digits = c.commodity === 'USDBRL' ? 4 : 2;
 		return c.price.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+	}
+
+	function fmtDate(value: string | null | undefined): string {
+		return value ? value.split('-').reverse().join('/') : '—';
+	}
+
+	function fmtMtm(value: number | null | undefined): string {
+		if (value == null) return '—';
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
 </script>
 
@@ -193,9 +204,9 @@
 								<td>{c.type}</td>
 								<td class="num">{fmtQty(c)}</td>
 								<td class="num">{fmtPrice(c)}</td>
-								<td>{c.settle.split('-').reverse().join('/')}</td>
-								<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-									{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+								<td>{fmtDate(c.settle)}</td>
+								<td class="num strong" style="color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+									{fmtMtm(c.mtm)}
 								</td>
 								<td><StatePill state={c.status}/></td>
 							</tr>

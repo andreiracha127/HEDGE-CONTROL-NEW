@@ -20,6 +20,7 @@
 	}
 
 	function fmtQty(c: Contract): string {
+		if (c.qty == null) return '—';
 		if (c.commodity === 'USDBRL') return (c.qty / 1_000_000).toFixed(1) + ' M';
 		return c.qty.toLocaleString('pt-BR');
 	}
@@ -28,6 +29,11 @@
 		const mid = midFor(c.commodity);
 		const scenarioMid = mid * 0.97;
 		return c.fixed_leg === 'buy' ? (scenarioMid - c.price) * c.qty : (c.price - scenarioMid) * c.qty;
+	}
+
+	function fmtMtm(value: number | null | undefined): string {
+		if (value == null) return '—';
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
 
 	const sliders = [
@@ -92,8 +98,8 @@
 							<td class="num" style="color: {mid > c.price ? 'var(--pos)' : 'var(--neg)'};">
 								{mid >= c.price ? '+' : ''}{(mid - c.price).toFixed(priceDigits(c))}
 							</td>
-							<td class="num strong" style="color: {c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-								{c.mtm >= 0 ? '+' : ''}{c.mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							<td class="num strong" style="color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{fmtMtm(c.mtm)}
 							</td>
 							<td class="num" style="color: {scen >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 								{scen >= 0 ? '+' : ''}{scen.toLocaleString('en-US', { maximumFractionDigits: 0 })}
