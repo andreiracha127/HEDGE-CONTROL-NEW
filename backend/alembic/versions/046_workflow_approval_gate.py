@@ -131,10 +131,10 @@ def upgrade() -> None:
     op.bulk_insert(
         sa.table(
             "approval_policy",
-            sa.column("mutation_type", sa.String),
-            sa.column("required_approver_roles", sa.JSON),
-            sa.column("fallback_when_requester_is", sa.JSON),
-            sa.column("threshold_dimension", sa.String),
+            sa.column("mutation_type", mutation_type_enum),
+            sa.column("required_approver_roles", _json_type()),
+            sa.column("fallback_when_requester_is", _json_type()),
+            sa.column("threshold_dimension", threshold_dimension_enum),
         ),
         [
             {
