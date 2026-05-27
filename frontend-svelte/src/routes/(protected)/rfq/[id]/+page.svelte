@@ -1,13 +1,17 @@
 <script lang="ts">
+	import { invalidateAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import { client } from '$lib/api/client';
+	import { notifications } from '$lib/stores/notifications.svelte';
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
 	const sampleQuotes = $derived(data.quotes);
+	let actionBusy = $state<'cancel' | 'refresh' | 'award' | null>(null);
 
 	const id = $derived(page.params.id ?? '');
 	const rfq = $derived(rfqs.find((r) => r.id === id) ?? rfqs[0]);
@@ -18,6 +22,50 @@
 	function vsMid(price: number | null): number | null {
 		if (price == null) return null;
 		return ((price - mid) / mid) * 100;
+	}
+
+	function errorDetail(detail: unknown): string {
+		return typeof detail === 'string' ? detail : 'erro desconhecido';
+	}
+
+	async function handleActionResult(apiError: { detail?: unknown } | undefined, success: string) {
+		actionBusy = null;
+		if (apiError) {
+			notifications.error(`Falha na ação da RFQ: ${errorDetail(apiError.detail)}`);
+			return;
+		}
+		notifications.success(success);
+		await invalidateAll();
+	}
+
+	async function cancelRfq() {
+		if (!rfq?.id || actionBusy) return;
+		actionBusy = 'cancel';
+		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/cancel', {
+			params: { path: { rfq_id: rfq.id } },
+			body: {},
+		});
+		await handleActionResult(apiError, 'RFQ cancelada');
+	}
+
+	async function refreshRfq() {
+		if (!rfq?.id || actionBusy) return;
+		actionBusy = 'refresh';
+		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/refresh', {
+			params: { path: { rfq_id: rfq.id } },
+			body: {},
+		});
+		await handleActionResult(apiError, 'RFQ reenviada');
+	}
+
+	async function awardRfq() {
+		if (!rfq?.id || actionBusy) return;
+		actionBusy = 'award';
+		const { error: apiError } = await client.POST('/rfqs/{rfq_id}/actions/award', {
+			params: { path: { rfq_id: rfq.id } },
+			body: {},
+		});
+		await handleActionResult(apiError, 'RFQ fechada com a melhor cotação elegível');
 	}
 
 	const docs = [
@@ -42,9 +90,11 @@
 		</div>
 		<div class="page-actions">
 			<StatePill state={rfq.state}/>
-			<button type="button" class="btn btn-secondary">Cancelar RFQ</button>
-			<button type="button" class="btn btn-secondary">Reenviar</button>
-			<button type="button" class="btn btn-accent"><Icon name="bolt"/>Fechar com melhor cotação</button>
+			<button type="button" class="btn btn-secondary" onclick={cancelRfq} disabled={actionBusy !== null}>Cancelar RFQ</button>
+			<button type="button" class="btn btn-secondary" onclick={refreshRfq} disabled={actionBusy !== null}>Reenviar</button>
+			<button type="button" class="btn btn-accent" onclick={awardRfq} disabled={actionBusy !== null || !best}>
+				<Icon name="bolt"/>Fechar com melhor cotação
+			</button>
 		</div>
 	</div>
 
@@ -106,11 +156,11 @@
 								<td><StatePill state={q.status}/></td>
 								<td>
 									{#if !isPending && !isBest}
-										<button type="button" class="btn btn-secondary btn-sm">Fechar</button>
+										<button type="button" class="btn btn-secondary btn-sm" onclick={awardRfq} disabled={actionBusy !== null}>Fechar</button>
 									{:else if isBest}
-										<button type="button" class="btn btn-accent btn-sm">Fechar →</button>
+										<button type="button" class="btn btn-accent btn-sm" onclick={awardRfq} disabled={actionBusy !== null}>Fechar →</button>
 									{:else}
-										<button type="button" class="btn btn-ghost btn-sm">Lembrar</button>
+										<button type="button" class="btn btn-ghost btn-sm" onclick={refreshRfq} disabled={actionBusy !== null}>Lembrar</button>
 									{/if}
 								</td>
 							</tr>

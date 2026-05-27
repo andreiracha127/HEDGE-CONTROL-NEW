@@ -75,8 +75,10 @@ describe('RFQ detail page — actor identity (J-A6-04 slice)', () => {
 		expect(source).not.toMatch(/user_id\s*:\s*authStore\.userName/);
 	});
 
-	it('does not wire frontend actor evidence into detail mutations', () => {
-		expect(source).not.toMatch(/client\.(POST|PUT|PATCH|DELETE)\(/);
+	it('wires detail mutations without frontend actor evidence', () => {
+		expect(source).toMatch(/client\.POST\('\/rfqs\/\{rfq_id\}\/actions\/cancel'/);
+		expect(source).toMatch(/client\.POST\('\/rfqs\/\{rfq_id\}\/actions\/refresh'/);
+		expect(source).toMatch(/client\.POST\('\/rfqs\/\{rfq_id\}\/actions\/award'/);
 		expect(source).not.toMatch(/apiFetch\([^)]*method\s*:\s*['"](POST|PUT|DELETE|PATCH)['"]/);
 	});
 
@@ -94,9 +96,11 @@ describe('RFQ mutation bodies — backend-derived actor identity (Cluster 2)', (
 		expect(detailSource).not.toMatch(/user_id\s*:/);
 	});
 
-	it('keeps the local actor-sub preflight on create and existing detail mutations', () => {
+	it('keeps the local actor-sub preflight on create and backend-derived actor evidence on detail mutations', () => {
 		expect(createSource).toMatch(/authStore\.userSub/);
-		expect(detailSource).not.toMatch(/client\.(POST|PUT|PATCH|DELETE)\(/);
+		expect(detailSource).toMatch(/client\.POST\('\/rfqs\/\{rfq_id\}\/actions\//);
+		expect(detailSource).not.toMatch(/authStore\.userSub/);
+		expect(detailSource).not.toMatch(/user_id\s*:/);
 	});
 });
 

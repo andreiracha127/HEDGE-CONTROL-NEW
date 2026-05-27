@@ -51,7 +51,6 @@
 				counterparty_name: selectedCounterparty?.name ?? cp,
 				delivery_date_start: delivery,
 				delivery_date_end: delivery,
-				reference_month: reference || null,
 				notes,
 			},
 		});

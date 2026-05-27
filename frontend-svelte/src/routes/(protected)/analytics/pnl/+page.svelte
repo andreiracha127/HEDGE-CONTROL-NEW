@@ -5,32 +5,71 @@
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
 
+	let { data } = $props();
 	let period = $state<'MTD' | 'QTD' | 'YTD' | 'Custom'>('MTD');
+	const pnl = $derived(data.pnl);
+	const totals = $derived(pnl.totals);
+	const deals = $derived(pnl.deals ?? []);
 
-	const data: [number, number][] = [
-		[ 1,  12], [ 2,  18], [ 3,  -4], [ 4,  22], [ 5,  14], [ 6,   8], [ 7, -12],
-		[ 8,  24], [ 9,  31], [10,  16], [11,  22], [12,  35], [13,  18], [14,  -8],
-		[15,  28], [16,  32], [17,  18], [18,  26], [19,  14], [20,  38], [21,  28],
-		[22,  16], [23,  -6], [24,  42], [25,  38], [26,  21], [27,  18],
-	];
-	const maxAbs = Math.max(...data.map((d) => Math.abs(d[1])));
+	const money = (value: unknown): number => {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : 0;
+	};
 
-	const attribution = [
-		{ code: 'AL-LME', realized: '+248.120', mtm: '+128.025', total: '+376.145', kind: 'pos' as const },
-		{ code: 'USDBRL', realized:  '+58.420', mtm:  '+85.500', total: '+143.920', kind: 'pos' as const },
-		{ code: 'CU-LME', realized:   '+6.340', mtm:   '+3.200', total:   '+9.540', kind: 'pos' as const },
-		{ code: 'ZN-LME', realized:        '0', mtm:   '−1.260', total:   '−1.260', kind: 'neg' as const },
-		{ code: 'NI-LME', realized:        '0', mtm:  '−11.300', total:  '−11.300', kind: 'neg' as const },
-	];
+	function fmtUsd(value: unknown): string {
+		const amount = money(value);
+		const sign = amount > 0 ? '+' : amount < 0 ? '-' : '';
+		return `${sign}US$ ${Math.abs(amount).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+	}
 
-	const topContrib: { id: string; commodity: string; cp: string; notional: string; fixed: string; current: string; pnl: string; kind: 'pos' | 'neg'; contrib: number }[] = [
-		{ id: 'CT-2026-0111', commodity: 'AL-LME', cp: 'JPM',  notional:  '5.204.000', fixed: '2.602,00', current: '2.645,50', pnl: '+87.000', kind: 'pos', contrib: 100 },
-		{ id: 'CT-2026-0112', commodity: 'USDBRL', cp: 'BRAD', notional:  '7.638.000', fixed: '5,0920',   current: '5,1240',   pnl: '+48.000', kind: 'pos', contrib:  55 },
-		{ id: 'CT-2026-0117', commodity: 'USDBRL', cp: 'JPM',  notional: '15.334.500', fixed: '5,1115',   current: '5,1240',   pnl: '+37.500', kind: 'pos', contrib:  43 },
-		{ id: 'CT-2026-0118', commodity: 'AL-LME', cp: 'ITAU', notional:  '3.946.500', fixed: '2.631,00', current: '2.645,30', pnl: '+21.450', kind: 'pos', contrib:  25 },
-		{ id: 'CT-2026-0116', commodity: 'AL-LME', cp: 'SANT', notional:  '2.365.650', fixed: '2.628,50', current: '2.645,50', pnl: '+15.300', kind: 'pos', contrib:  18 },
-		{ id: 'CT-2026-0110', commodity: 'AL-LME', cp: 'BTG',  notional:  '3.186.000', fixed: '2.655,00', current: '2.645,50', pnl: '−11.400', kind: 'neg', contrib:  13 },
-	];
+	function fmtNumber(value: unknown, digits = 2): string {
+		return money(value).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+	}
+
+	const dailyBars = $derived.by(() => {
+		const rows = deals.map((deal, idx) => [idx + 1, money(deal.total_pnl)] as [number, number]);
+		return rows.length > 0 ? rows : [[1, 0] as [number, number]];
+	});
+	const maxAbs = $derived(Math.max(1, ...dailyBars.map((d) => Math.abs(d[1]))));
+
+	const attribution = $derived.by(() => {
+		const byCommodity = new Map<string, { code: string; realized: number; mtm: number; total: number; kind: 'pos' | 'neg' }>();
+		for (const deal of deals) {
+			const code = deal.commodity ?? '—';
+			const current = byCommodity.get(code) ?? { code, realized: 0, mtm: 0, total: 0, kind: 'pos' as const };
+			current.realized += money(deal.hedge_pnl_realized);
+			current.mtm += money(deal.hedge_pnl_mtm);
+			current.total += money(deal.total_pnl);
+			current.kind = current.total < 0 ? 'neg' : 'pos';
+			byCommodity.set(code, current);
+		}
+		return Array.from(byCommodity.values()).sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+	});
+
+	const topContrib = $derived.by(() => {
+		const max = Math.max(1, ...deals.flatMap((deal) => deal.financial_items.map((item) => Math.abs(money(item.pnl)))));
+		return deals
+			.flatMap((deal) =>
+				deal.financial_items.map((item) => {
+					const pnlValue = money(item.pnl);
+					const quantity = money(item.quantity_mt);
+					const price = money(item.entry_price);
+					return {
+						id: item.reference ?? String(item.id).slice(0, 8),
+						commodity: deal.commodity,
+						cp: item.classification,
+						notional: fmtNumber(quantity * price, 0),
+						fixed: fmtNumber(item.entry_price),
+						current: item.market_price == null ? '—' : fmtNumber(item.market_price),
+						pnl: fmtUsd(item.pnl),
+						kind: pnlValue < 0 ? 'neg' as const : 'pos' as const,
+						contrib: Math.max(4, Math.round((Math.abs(pnlValue) / max) * 100)),
+					};
+				}),
+			)
+			.sort((a, b) => b.contrib - a.contrib)
+			.slice(0, 8);
+	});
 </script>
 
 <div class="page">
@@ -52,19 +91,19 @@
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
-			label="P&L total MTD"        value="+US$ 517.045"  delta="+2,4 % vs mês anterior" deltaKind="pos"
-			spark={[100, 120, 160, 180, 210, 260, 300, 420, 517]} sparkColor="var(--pos)"
+			label="P&L total MTD"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
+			spark={dailyBars.map(([, v]) => v)} sparkColor={money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'}
 		/>
-		<Kpi label="Realizado"            value="+US$ 312.880"  delta="20 contratos liquidados" deltaKind="pos"/>
-		<Kpi label="Não-realizado (MTM)"  value="+US$ 204.165"  delta="+US$ 18.460 1d"          deltaKind="pos"/>
-		<Kpi label="Sharpe (anualizado)"  value="2,18"          delta="+0,21 vs trimestre"      deltaKind="pos"/>
+		<Kpi label="Realizado"            value={fmtUsd(totals.hedge_pnl_realized)}  delta={`${deals.length} deal(s)`} deltaKind={money(totals.hedge_pnl_realized) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Não-realizado (MTM)"  value={fmtUsd(totals.hedge_pnl_mtm)}       delta="hedges abertos" deltaKind={money(totals.hedge_pnl_mtm) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Resultado físico"     value={fmtUsd(money(totals.physical_revenue) - money(totals.physical_cost))} delta="receita menos custo" deltaKind={money(totals.physical_revenue) - money(totals.physical_cost) < 0 ? 'neg' : 'pos'}/>
 	</div>
 
 	<div class="grid-7-5" style="margin-bottom: 16px;">
-		<Card title="P&L diário · maio/2026" sub="Realizado + variação MTM · USD">
+		<Card title="P&L por deal" sub={`Snapshot ${data.snapshotDate} · USD`}>
 			<div style="height: 200px; position: relative; display: flex; align-items: center;">
 				<div class="row gap-1" style="align-items: stretch; height: 100%; flex: 1; padding: 0 4px;">
-					{#each data as [d, v] (d)}
+					{#each dailyBars as [d, v] (d)}
 						{@const h = (Math.abs(v) / maxAbs) * 80}
 						<div style="flex: 1; display: flex; flex-direction: column; justify-content: center; position: relative; min-width: 0;">
 							{#if v >= 0}
@@ -93,18 +132,21 @@
 					{#each attribution as a (a.code)}
 						<tr>
 							<td class="strong"><CommodityChip code={a.code}/></td>
-							<td class="num">{a.realized}</td>
-							<td class="num">{a.mtm}</td>
-							<td class="num strong" style="color: {a.kind === 'pos' ? 'var(--pos)' : 'var(--neg)'};">{a.total}</td>
+							<td class="num">{fmtUsd(a.realized)}</td>
+							<td class="num">{fmtUsd(a.mtm)}</td>
+							<td class="num strong" style="color: {a.kind === 'pos' ? 'var(--pos)' : 'var(--neg)'};">{fmtUsd(a.total)}</td>
 						</tr>
 					{/each}
+					{#if attribution.length === 0}
+						<tr><td colspan="4" style="color: var(--muted);">Sem deals no período</td></tr>
+					{/if}
 				</tbody>
 				<tfoot>
 					<tr style="border-top: 2px solid var(--line-strong);">
 						<td class="strong">Total</td>
-						<td class="num strong">+312.880</td>
-						<td class="num strong">+204.165</td>
-						<td class="num strong" style="color: var(--pos);">+517.045</td>
+						<td class="num strong">{fmtUsd(totals.hedge_pnl_realized)}</td>
+						<td class="num strong">{fmtUsd(totals.hedge_pnl_mtm)}</td>
+						<td class="num strong" style="color: {money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'};">{fmtUsd(totals.total_pnl)}</td>
 					</tr>
 				</tfoot>
 			</table>
@@ -138,6 +180,9 @@
 						<td><Bar pct={t.contrib} kind={t.kind}/></td>
 					</tr>
 				{/each}
+				{#if topContrib.length === 0}
+					<tr><td colspan="8" style="color: var(--muted);">Sem contribuintes financeiros no período</td></tr>
+				{/if}
 			</tbody>
 		</table>
 	</Card>

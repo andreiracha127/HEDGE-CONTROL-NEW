@@ -55,7 +55,7 @@
 					{@const pct = (cp.used / cp.limit) * 100}
 					<tr>
 						<td class="strong">
-							<a href={`/counterparties/${cp.short}`}>
+							<a href={`/counterparties/${cp.id}`}>
 								<div>{cp.name}</div>
 								<div style="font-size: 11px; color: var(--muted); font-weight: 400;">{cp.short} · {cp.id}</div>
 							</a>

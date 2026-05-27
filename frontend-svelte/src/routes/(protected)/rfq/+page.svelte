@@ -90,7 +90,7 @@
 			<tbody>
 				{#each rfqs as r (r.id)}
 					<tr>
-						<td class="strong mono"><a href={`/rfq/${r.id}`}>{r.id}</a></td>
+						<td class="strong mono"><a href={`/rfq/${r.id}`}>{r.rfq}</a></td>
 						<td>
 							<Badge kind={r.intent === 'COMMERCIAL_HEDGE' ? 'info' : 'neutral'}>
 								{r.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : r.intent === 'SPREAD' ? 'Spread' : 'Posição global'}

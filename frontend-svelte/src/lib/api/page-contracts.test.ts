@@ -41,6 +41,16 @@ describe('design-port route load contracts', () => {
 		expect(source).not.toContain('backendGap');
 	});
 
+	it('wires RFQ detail visible actions to live RFQ mutations', () => {
+		const source = read('(protected)/rfq/[id]/+page.svelte');
+		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/cancel'");
+		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/refresh'");
+		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/award'");
+		expect(source).toMatch(/onclick=\{cancelRfq\}/);
+		expect(source).toMatch(/onclick=\{refreshRfq\}/);
+		expect(source).toMatch(/onclick=\{awardRfq\}/);
+	});
+
 	it('loads market data through the Westmetall settlement-price endpoint', () => {
 		const source = read('(protected)/market-data/+page.ts');
 		expect(source).toContain("client.GET('/market-data/westmetall/aluminum/cash-settlement/prices'");
@@ -95,5 +105,23 @@ describe('design-port create affordances', () => {
 		expect(source).toContain("const endpoint = orderType === 'PO' ? '/orders/purchase' : '/orders/sales'");
 		expect(source).toContain('client.POST(endpoint');
 		expect(source).toContain("goto(`/orders/${created?.id}`)");
+		expect(source).not.toContain('reference_month: reference');
+	});
+
+	it('uses UUID hrefs for live RFQ and counterparty detail routes', () => {
+		const rfq = read('(protected)/rfq/+page.svelte');
+		const counterparties = read('(protected)/counterparties/+page.svelte');
+		expect(rfq).toContain('<a href={`/rfq/${r.id}`}>{r.rfq}</a>');
+		expect(counterparties).toContain('<a href={`/counterparties/${cp.id}`}>');
+		expect(counterparties).not.toContain('/counterparties/${cp.short}');
+	});
+
+	it('renders the loaded P&L breakdown instead of static prototype series', () => {
+		const source = read('(protected)/analytics/pnl/+page.svelte');
+		expect(source).toContain('let { data } = $props();');
+		expect(source).toContain('data.pnl');
+		expect(source).toContain('data.snapshotDate');
+		expect(source).not.toContain('CT-2026-0111');
+		expect(source).not.toContain('+US$ 517.045');
 	});
 });

@@ -5,6 +5,8 @@ import {
 	normalizeCashflow,
 	normalizeCommodity,
 	normalizeContract,
+	normalizeCounterparty,
+	normalizeRfq,
 	normalizeRfqQuote,
 } from './route-data';
 
@@ -65,6 +67,20 @@ describe('live API row normalizers', () => {
 			qty: 100,
 			price: 2638.5,
 			mtm: null,
+		});
+	});
+
+	it('preserves live RFQ UUIDs while exposing rfq_number for display', () => {
+		expect(normalizeRfq({ id: '1f5a2a6d-2d2c-4637-8277-672a6c2ab100', rfq_number: 'RFQ-2026-0007' })).toMatchObject({
+			id: '1f5a2a6d-2d2c-4637-8277-672a6c2ab100',
+			rfq: 'RFQ-2026-0007',
+		});
+	});
+
+	it('preserves live counterparty UUIDs while exposing short_name for display', () => {
+		expect(normalizeCounterparty({ id: '4d7a5353-9823-41a5-b63c-13f9a946c4c1', short_name: 'ITAU' })).toMatchObject({
+			id: '4d7a5353-9823-41a5-b63c-13f9a946c4c1',
+			short: 'ITAU',
 		});
 	});
 

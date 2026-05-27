@@ -41,7 +41,7 @@ const datePart = (value: unknown): string => (typeof value === 'string' ? value.
 export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
-		id: row.rfq_number ?? row.id,
+		id: row.id,
 		rfq: row.rfq_number ?? row.id,
 		qty: row.quantity_mt ?? row.qty,
 		direction: row.direction,
