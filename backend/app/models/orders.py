@@ -28,6 +28,10 @@ from app.core.precision import (
 )
 
 
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    return [member.value for member in enum_cls]
+
+
 class OrderType(enum.Enum):
     sales = "SO"
     purchase = "PO"
@@ -59,7 +63,8 @@ class Order(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     order_type: Mapped[OrderType] = mapped_column(
-        Enum(OrderType, name="order_type"), nullable=False
+        Enum(OrderType, name="order_type", values_callable=_enum_values),
+        nullable=False,
     )
     price_type: Mapped[PriceType] = mapped_column(
         Enum(PriceType, name="price_type"), nullable=False
@@ -71,7 +76,11 @@ class Order(Base):
         Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
     )
     pricing_convention: Mapped[OrderPricingConvention | None] = mapped_column(
-        Enum(OrderPricingConvention, name="order_pricing_convention"),
+        Enum(
+            OrderPricingConvention,
+            name="order_pricing_convention",
+            values_callable=_enum_values,
+        ),
         nullable=True,
     )
     avg_entry_price: Mapped[Decimal | None] = mapped_column(
