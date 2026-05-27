@@ -8,9 +8,10 @@ Create Date: 2026-03-02 14:16:13.794639
 
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
+
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "88c13cd6dd8e"
@@ -25,28 +26,18 @@ counterparty_type = sa.Enum("customer", "supplier", "broker", name="counterparty
 kyc_status = sa.Enum("pending", "approved", "expired", "rejected", name="kyc_status")
 sanctions_status = sa.Enum("clear", "flagged", "blocked", name="sanctions_status")
 risk_rating = sa.Enum("low", "medium", "high", name="risk_rating")
-pricing_type = sa.Enum(
-    "fixed", "average", "avginter", "fix", "c2r", name="pricing_type"
-)
+pricing_type = sa.Enum("fixed", "average", "avginter", "fix", "c2r", name="pricing_type")
 
 exposure_direction = sa.Enum("long", "short", name="exposure_direction")
-exposure_source_type = sa.Enum(
-    "sales_order", "purchase_order", name="exposure_source_type"
-)
+exposure_source_type = sa.Enum("sales_order", "purchase_order", name="exposure_source_type")
 exposure_status = sa.Enum(
     "open", "partially_hedged", "fully_hedged", "cancelled", name="exposure_status"
 )
-hedge_task_action = sa.Enum(
-    "hedge_new", "increase", "decrease", "cancel", name="hedge_task_action"
-)
-hedge_task_status = sa.Enum(
-    "pending", "executed", "cancelled", name="hedge_task_status"
-)
+hedge_task_action = sa.Enum("hedge_new", "increase", "decrease", "cancel", name="hedge_task_action")
+hedge_task_status = sa.Enum("pending", "executed", "cancelled", name="hedge_task_status")
 
 hedge_direction = sa.Enum("buy", "sell", name="hedge_direction")
-hedge_status = sa.Enum(
-    "active", "partially_settled", "settled", "cancelled", name="hedge_status"
-)
+hedge_status = sa.Enum("active", "partially_settled", "settled", "cancelled", name="hedge_status")
 hedge_source_type = sa.Enum("rfq_award", "manual", "auto", name="hedge_source_type")
 
 deal_status = sa.Enum(
@@ -81,14 +72,10 @@ def upgrade() -> None:
         sa.Column("contact_name", sa.String(200), nullable=True),
         sa.Column("contact_email", sa.String(200), nullable=True),
         sa.Column("contact_phone", sa.String(50), nullable=True),
-        sa.Column(
-            "payment_terms_days", sa.Integer(), nullable=False, server_default="30"
-        ),
+        sa.Column("payment_terms_days", sa.Integer(), nullable=False, server_default="30"),
         sa.Column("credit_limit_usd", sa.Numeric(15, 2), nullable=True),
         sa.Column("kyc_status", kyc_status, nullable=False, server_default="pending"),
-        sa.Column(
-            "sanctions_status", sanctions_status, nullable=False, server_default="clear"
-        ),
+        sa.Column("sanctions_status", sanctions_status, nullable=False, server_default="clear"),
         sa.Column("risk_rating", risk_rating, nullable=False, server_default="medium"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
         sa.Column("notes", sa.Text(), nullable=True),
@@ -106,16 +93,15 @@ def upgrade() -> None:
     # ------------------------------------------------------------------
     # 2. orders — add Phase-1 columns
     # ------------------------------------------------------------------
-    op.add_column(
-        "orders", sa.Column("counterparty_id", sa.UUID(as_uuid=True), nullable=True)
-    )
+    # pricing_type is only referenced via ALTER TABLE ADD COLUMN below — SQLAlchemy's
+    # auto-create only fires on CREATE TABLE, so create the enum explicitly first.
+    pricing_type.create(op.get_bind(), checkfirst=True)
+    op.add_column("orders", sa.Column("counterparty_id", sa.UUID(as_uuid=True), nullable=True))
     op.add_column("orders", sa.Column("pricing_type", pricing_type, nullable=True))
     op.add_column("orders", sa.Column("delivery_terms", sa.String(50), nullable=True))
     op.add_column("orders", sa.Column("delivery_date_start", sa.Date(), nullable=True))
     op.add_column("orders", sa.Column("delivery_date_end", sa.Date(), nullable=True))
-    op.add_column(
-        "orders", sa.Column("payment_terms_days", sa.Integer(), nullable=True)
-    )
+    op.add_column("orders", sa.Column("payment_terms_days", sa.Integer(), nullable=True))
     op.add_column(
         "orders",
         sa.Column("currency", sa.String(3), nullable=False, server_default="USD"),
@@ -246,9 +232,7 @@ def upgrade() -> None:
         ),
         sa.Column("recommended_tons", sa.Numeric(15, 3), nullable=False),
         sa.Column("recommended_action", hedge_task_action, nullable=False),
-        sa.Column(
-            "status", hedge_task_status, nullable=False, server_default="pending"
-        ),
+        sa.Column("status", hedge_task_status, nullable=False, server_default="pending"),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -275,9 +259,7 @@ def upgrade() -> None:
         sa.Column("direction", hedge_direction, nullable=False),
         sa.Column("tons", sa.Numeric(15, 3), nullable=False),
         sa.Column("price_per_ton", sa.Numeric(15, 2), nullable=False),
-        sa.Column(
-            "premium_discount", sa.Numeric(15, 2), nullable=False, server_default="0"
-        ),
+        sa.Column("premium_discount", sa.Numeric(15, 2), nullable=False, server_default="0"),
         sa.Column("settlement_date", sa.Date(), nullable=False),
         sa.Column("prompt_date", sa.Date(), nullable=True),
         sa.Column("trade_date", sa.Date(), nullable=False),
@@ -313,12 +295,8 @@ def upgrade() -> None:
         sa.Column("name", sa.String(200), nullable=False),
         sa.Column("commodity", sa.String(20), nullable=False),
         sa.Column("status", deal_status, nullable=False, server_default="open"),
-        sa.Column(
-            "total_physical_tons", sa.Numeric(15, 3), nullable=False, server_default="0"
-        ),
-        sa.Column(
-            "total_hedge_tons", sa.Numeric(15, 3), nullable=False, server_default="0"
-        ),
+        sa.Column("total_physical_tons", sa.Numeric(15, 3), nullable=False, server_default="0"),
+        sa.Column("total_hedge_tons", sa.Numeric(15, 3), nullable=False, server_default="0"),
         sa.Column("hedge_ratio", sa.Numeric(5, 2), nullable=False, server_default="0"),
         sa.Column(
             "created_at",
@@ -367,18 +345,10 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("snapshot_date", sa.Date(), nullable=False),
-        sa.Column(
-            "physical_revenue", sa.Numeric(15, 2), nullable=False, server_default="0"
-        ),
-        sa.Column(
-            "physical_cost", sa.Numeric(15, 2), nullable=False, server_default="0"
-        ),
-        sa.Column(
-            "hedge_pnl_realized", sa.Numeric(15, 2), nullable=False, server_default="0"
-        ),
-        sa.Column(
-            "hedge_pnl_mtm", sa.Numeric(15, 2), nullable=False, server_default="0"
-        ),
+        sa.Column("physical_revenue", sa.Numeric(15, 2), nullable=False, server_default="0"),
+        sa.Column("physical_cost", sa.Numeric(15, 2), nullable=False, server_default="0"),
+        sa.Column("hedge_pnl_realized", sa.Numeric(15, 2), nullable=False, server_default="0"),
+        sa.Column("hedge_pnl_mtm", sa.Numeric(15, 2), nullable=False, server_default="0"),
         sa.Column("total_pnl", sa.Numeric(15, 2), nullable=False, server_default="0"),
         sa.Column("inputs_hash", sa.String(64), nullable=False),
         sa.Column(
@@ -396,9 +366,7 @@ def upgrade() -> None:
         "finance_pipeline_runs",
         sa.Column("id", sa.UUID(as_uuid=True), primary_key=True),
         sa.Column("run_date", sa.Date(), nullable=False),
-        sa.Column(
-            "status", pipeline_run_status, nullable=False, server_default="running"
-        ),
+        sa.Column("status", pipeline_run_status, nullable=False, server_default="running"),
         sa.Column(
             "started_at",
             sa.DateTime(timezone=True),
@@ -432,14 +400,10 @@ def upgrade() -> None:
         ),
         sa.Column("step_number", sa.Integer(), nullable=False),
         sa.Column("step_name", sa.String(50), nullable=False),
-        sa.Column(
-            "status", pipeline_step_status, nullable=False, server_default="pending"
-        ),
+        sa.Column("status", pipeline_step_status, nullable=False, server_default="pending"),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("finished_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column(
-            "records_processed", sa.Integer(), nullable=False, server_default="0"
-        ),
+        sa.Column("records_processed", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_message", sa.Text(), nullable=True),
     )
 

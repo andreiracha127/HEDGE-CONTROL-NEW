@@ -87,6 +87,48 @@ jobs:
       - run: pip install pytest pytest-cov httpx
       - run: pytest -v
 
+  alembic-fresh-postgres:
+    name: "alembic upgrade head against fresh Postgres"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hc
+          POSTGRES_PASSWORD: hc
+          POSTGRES_DB: hedgecontrol
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U hc -d hedgecontrol"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend deps
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply migrations to fresh Postgres
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol
+        run: |
+          python -m alembic upgrade head
+      - name: Verify single head reached
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol
+        run: |
+          python -m alembic current | grep -F "047_finance_pipeline_hb3_hardening (head)"
+
   e2e-smoke:
     name: "E2E: Smoke (pytest journey + RBAC)"
     runs-on: ubuntu-latest

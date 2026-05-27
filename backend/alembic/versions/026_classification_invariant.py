@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision: str = "026_classification_invariant"
 down_revision: Union[str, None] = "025_decimal_primitives"
@@ -32,13 +32,23 @@ logger = logging.getLogger(__name__)
 
 def _backfill_inconsistent_classifications(bind) -> int:
     """Canonicalize drifted rows using fixed_leg_side as source of truth."""
+    if bind.dialect.name == "postgresql":
+        long_expr = "CAST('long' AS hedge_classification)"
+        short_expr = "CAST('short' AS hedge_classification)"
+    else:
+        # SQLite (test dialect): no named ENUM type — plain text literals.
+        # Casting to an unknown type name on SQLite triggers NUMERIC affinity
+        # coercion, which would write 0 into the classification column.
+        long_expr = "'long'"
+        short_expr = "'short'"
+
     result = bind.execute(
         sa.text(
-            """
+            f"""
             UPDATE hedge_contracts
             SET classification = CASE fixed_leg_side
-                WHEN 'buy' THEN 'long'
-                WHEN 'sell' THEN 'short'
+                WHEN 'buy' THEN {long_expr}
+                WHEN 'sell' THEN {short_expr}
             END
             WHERE (fixed_leg_side = 'buy' AND classification <> 'long')
                OR (fixed_leg_side = 'sell' AND classification <> 'short')
