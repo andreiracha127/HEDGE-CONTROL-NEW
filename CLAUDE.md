@@ -126,6 +126,8 @@ API calls go through `src/lib/api/client.ts` (typed via `src/lib/api/schema.d.ts
 
 GitHub Actions (`.github/workflows/ci.yml`): frontend `npm run check` + `npm run test` + `npm run build` (with ECharts bundle-size budget via `frontend-svelte/scripts/check-bundle-size.sh`); backend `pytest -v` on SQLite-in-memory; E2E Playwright against `docker-compose` stack.
 
+A second backend job `alembic-fresh-postgres` brings up a Postgres 16 service and applies the full migration chain end-to-end via `alembic upgrade head` to gate against fresh-bootstrap regressions. SQLite-in-memory unit tests cannot catch Postgres-strict ENUM lifecycle issues (named ENUMs that must be explicitly created before `ALTER TABLE ADD COLUMN`, text literals that need explicit `CAST(... AS <enum_name>)` against ENUM columns, double-create from `op.create_table` auto-cascade after an explicit `.create()`); this job is the durable regression gate for that class.
+
 Production runs on Railway (`docs/runbook-railway.md` — read this before touching deployment config). Services: `Postgres`, `backend` (FastAPI + gunicorn + uvicorn workers, healthcheck `/health`), `scheduler` (`python -m app.scheduler_main`, no public domain), `frontend-svelte` (nginx). Critical env vars (`DATABASE_URL`, `SCHEDULER_DISABLED`, `CORS_ALLOW_ORIGINS`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `AUDIT_SIGNING_KEY`, `APP_ENV`, `JWT_ISSUER`, `JWT_AUDIENCE`, `JWKS_URL`, `VITE_API_BASE_URL`, `VITE_CLERK_PUBLISHABLE_KEY`) are owned by the Railway dashboard, **not** by `railway.json`.
 
 ## Pre-push dispatch review hook
