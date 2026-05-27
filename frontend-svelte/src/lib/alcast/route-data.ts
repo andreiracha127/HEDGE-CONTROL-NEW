@@ -14,6 +14,11 @@ export function requireData<T>(result: ApiResult<T>, message: string): T {
 	return result.data;
 }
 
+export function optionalData<T>(result: ApiResult<T> | null | undefined): T | null {
+	if (!result || result.error || result.data == null) return null;
+	return result.data;
+}
+
 export function items<T = Record<string, unknown>>(data: unknown): T[] {
 	if (Array.isArray(data)) return data as T[];
 	if (data && typeof data === 'object') {

@@ -341,7 +341,7 @@
 					</div>
 
 					<div class="field">
-						<label class="field-label">
+						<label class="field-label" for="rfq-quantity">
 							Intenção <span class="req">*</span>
 							<InfoTip width={280}>
 								<strong>Posição global:</strong> tomada de posição direcional · sujeita a limites de risco.<br/><br/>
@@ -371,6 +371,7 @@
 						</label>
 						<div class="input-suffix">
 							<input
+								id="rfq-quantity"
 								class="input"
 								type="number"
 								step="0.001"

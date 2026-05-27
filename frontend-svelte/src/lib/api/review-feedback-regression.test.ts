@@ -24,7 +24,7 @@ describe('latest review feedback regressions', () => {
 		const source = readRoute('(protected)/+page.ts');
 
 		expect(source).toContain("client.GET('/exposures/list'");
-		expect(source).toContain("requireData(exposureListResult, 'Failed to load exposure buckets')");
+		expect(source).toContain('optionalData(exposureListResult.status');
 		expect(source).toContain('exposureBuckets: exposureBucketsFrom(exposureList)');
 		expect(source).not.toContain('exposureBuckets: exposureBucketsFrom(globalExposure)');
 	});

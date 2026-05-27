@@ -38,5 +38,21 @@ describe('dashboard load', () => {
 		expect((result.globalExposure as any).commercial_net_mt).toBe('10.000');
 		expect(result.exposureBuckets).toMatchObject([{ month: '2026-06', commercial_mt: 1000, hedged_mt: 500, ratio: 50 }]);
 	});
+
+	test('degrades to empty dashboard collections when API data is unavailable', async () => {
+		get
+			.mockResolvedValueOnce({ error: { detail: 'missing table' } })
+			.mockResolvedValueOnce({ error: { detail: 'missing table' } })
+			.mockResolvedValueOnce({ error: { detail: 'missing table' } })
+			.mockResolvedValueOnce({ error: { detail: 'missing table' } });
+
+		const { load } = await import('./+page');
+		const result = await load();
+
+		expect(result.globalExposure).toBeNull();
+		expect(result.rfqs).toEqual([]);
+		expect(result.commodities).toEqual([]);
+		expect(result.exposureBuckets).toEqual([]);
+	});
 });
 
