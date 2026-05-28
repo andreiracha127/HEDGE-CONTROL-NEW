@@ -30,9 +30,11 @@ services:
       SCHEDULER_DISABLED: "true"
       # APP_ENV=development exempts the audit-signing-key boot validator
       # (defense-in-depth Layer 2) for local docker-compose convenience.
+      # CI E2E sets APP_ENV=test so the test-only cleanup router is exposed
+      # and the live OpenAPI contract matches generated frontend types.
       # Production/staging deployments MUST override APP_ENV to "production"
       # or "staging" AND supply a real AUDIT_SIGNING_KEY via secret store.
-      APP_ENV: "development"
+      APP_ENV: ${APP_ENV:-development}
       # Dev-only signing key — clearly non-production. The runtime guard
       # inside AuditTrailService.record (Layer 1) still fails-closed if a
       # production deployment forgets to override this.

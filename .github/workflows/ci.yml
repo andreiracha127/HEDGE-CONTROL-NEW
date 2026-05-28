@@ -193,6 +193,8 @@ jobs:
             docker compose logs backend
             exit 1
           fi
+        env:
+          APP_ENV: test
 
       - name: Run app migrations for E2E stack
         run: |
@@ -294,6 +296,8 @@ jobs:
             docker compose logs backend
             exit 1
           fi
+        env:
+          APP_ENV: test
 
       - name: Run app migrations for full E2E stack
         run: |
