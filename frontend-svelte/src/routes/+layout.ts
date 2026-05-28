@@ -1,4 +1,5 @@
 import { client } from '$lib/api/client';
+import { authStore } from '$lib/stores/auth.svelte';
 
 export const ssr = false;
 
@@ -31,6 +32,16 @@ const countList = async (fetchPage: (cursor?: string) => Promise<ListResult>): P
 };
 
 export const load = async () => {
+	if (!authStore.isAuthenticated) {
+		return {
+			navBadges: {
+				rfqOpen: null,
+				ordersToday: null,
+				approvalsPending: null,
+			},
+		};
+	}
+
 	const [rfqOpen, ordersToday, approvalsPending] = await Promise.all([
 		countList((cursor) => client.GET('/rfqs', { params: { query: { state: 'SENT', limit: 200, cursor } } })),
 		countList((cursor) => client.GET('/orders', { params: { query: { limit: 200, cursor } } })),
