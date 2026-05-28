@@ -44,7 +44,7 @@
 	const deltaValue = $derived(result ? Number(result.delta ?? result.impact ?? 0) : 0);
 	const scenarioMeta = $derived([
 		`${commodity}`,
-		`Price shock ${priceShock >= 0 ? '+' : ''}${priceShock}%`,
+		`Choque de preço ${priceShock >= 0 ? '+' : ''}${priceShock}%`,
 		`Volume ${volumeChange >= 0 ? '+' : ''}${volumeChange}%`,
 	]);
 
@@ -118,8 +118,8 @@
 <div class="page">
 	<PageHeader
 		eyebrow="Análise"
-		title="What-if scenario lab"
-		subtitle="Stress tests sobre P&L, exposição e volume para decisões de hedge."
+		title="Laboratório de cenários"
+		subtitle="Simulações sobre P&L, exposição e volume para decisões de hedge."
 		meta={scenarioMeta}
 		actions={scenarioActions}
 	/>
@@ -140,17 +140,17 @@
 						<div class="field" style="grid-column: 1 / -1;">
 							<label class="field-label" for="wif-commodity">Commodity</label>
 							<select id="wif-commodity" bind:value={commodity} class="select">
-								<option value="ALUMINIUM">Aluminium</option>
-								<option value="COPPER">Copper</option>
-								<option value="ZINC">Zinc</option>
+								<option value="ALUMINIUM">Alumínio</option>
+								<option value="COPPER">Cobre</option>
+								<option value="ZINC">Zinco</option>
 							</select>
 						</div>
 						<div class="field">
-							<label class="field-label" for="wif-price">Price shock (%)</label>
+							<label class="field-label" for="wif-price">Choque de preço (%)</label>
 							<input id="wif-price" type="number" step="0.5" bind:value={priceShock} class="input tabular" />
 						</div>
 						<div class="field">
-							<label class="field-label" for="wif-volume">Volume change (%)</label>
+							<label class="field-label" for="wif-volume">Variação de volume (%)</label>
 							<input id="wif-volume" type="number" step="0.5" bind:value={volumeChange} class="input tabular" />
 						</div>
 					</div>
@@ -191,7 +191,7 @@
 					<EmptyState
 						icon="chart"
 						title="Aguardando execução"
-						message="O gráfico será carregado após a simulação."
+						message="Execute o cenário para comparar base e simulação."
 					/>
 				{/if}
 			</Card>

@@ -26,10 +26,10 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Market data control"
+		eyebrow="Controle de mercado"
 		title="Dados de mercado"
-		subtitle="Cash settlement prices carregados do backend para marcação e execução."
-		meta={[`${commodities.length} cotação(ões)`, 'Westmetall cash settlement', 'Backend sourced']}
+		subtitle="Cotações oficiais para marcação, execução e conciliação."
+		meta={[`${commodities.length} cotação(ões)`, 'Liquidação oficial', 'Fonte: Market Data']}
 		actions={[
 			{ label: 'Atualizar', icon: 'refresh', variant: 'secondary' },
 		]}
@@ -37,12 +37,12 @@
 
 	<div class="institutional-monitoring">
 	<div style="margin-bottom: 16px;">
-		<Card title="Cash settlement" sub="Dados retornados por /market-data/westmetall/aluminum/cash-settlement/prices" noPad>
+		<Card title="Preços de liquidação" sub="Cotações oficiais para marcação" noPad>
 			<table class="tbl">
 				<thead>
 					<tr>
 						<th>Commodity</th>
-						<th>Data de settlement</th>
+						<th>Data de liquidação</th>
 						<th class="num">Preço</th>
 						<th>Unidade</th>
 						<th>Provedor</th>
@@ -66,8 +66,8 @@
 							<td colspan="5">
 								<EmptyState
 									icon="globe"
-									title="Nenhuma cotação carregada"
-									message="A grade será preenchida quando o endpoint de cash settlement retornar dados válidos."
+									title="Nenhuma cotação disponível"
+									message="Nenhuma cotação disponível para os filtros selecionados."
 								/>
 							</td>
 						</tr>

@@ -371,7 +371,10 @@ describe('latest review feedback regressions', () => {
 		expect(orders).toContain('actions={headerActions}');
 		expect(counterparties).toContain("const canCreateCounterparties = $derived(authStore.hasAnyRole('trader', 'risk_manager'))");
 		expect(counterparties).toContain('actions={headerActions}');
-		expect(appShell).toContain('<Topbar {crumbs} {userRoles}/>');
+		expect(appShell).toContain('<Topbar');
+		expect(appShell).toContain('{userRoles}');
+		expect(appShell).toContain('sidebarCollapsed={sidebarCollapsed}');
+		expect(appShell).toContain('onSidebarToggle');
 		expect(topbar).toContain('userRoles = [] as string[]');
 		expect(topbar).toContain("const canCreateOrders = $derived(userRoles.includes('trader'))");
 		expect(topbar).toContain('const commands = $derived.by');

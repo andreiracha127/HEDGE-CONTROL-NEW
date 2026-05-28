@@ -8,6 +8,7 @@ runtime surprise.
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -146,7 +147,24 @@ class Settings(BaseSettings):
         raw = self.cors_allow_origins.strip()
         if not raw:
             return []
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        origins: list[str] = []
+        for origin in [o.strip() for o in raw.split(",") if o.strip()]:
+            for candidate in (origin, self._loopback_origin_variant(origin)):
+                if candidate and candidate not in origins:
+                    origins.append(candidate)
+        return origins
+
+    @staticmethod
+    def _loopback_origin_variant(origin: str) -> str | None:
+        parsed = urlsplit(origin)
+        if parsed.hostname == "localhost":
+            host = "127.0.0.1"
+        elif parsed.hostname == "127.0.0.1":
+            host = "localhost"
+        else:
+            return None
+        netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, "", "", ""))
 
 
 def get_settings() -> Settings:

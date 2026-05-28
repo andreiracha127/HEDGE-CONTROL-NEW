@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 
 const API_BASE = process.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-export const DASHBOARD_HEADING = 'Risk command center';
+export const DASHBOARD_HEADING = 'Centro de comando de risco';
 
 function fakeJwt(payload: Record<string, unknown>): string {
 	const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));

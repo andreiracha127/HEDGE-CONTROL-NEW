@@ -9,6 +9,7 @@
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import { ratingLabel, stateBadge } from '$lib/alcast/presentation';
 	type Contract = Record<string, any>;
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
@@ -77,10 +78,10 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Relationship diligence"
+		eyebrow="Diligência de relacionamento"
 		title={cp.name}
 		subtitle={`${cp.short} · ${fmtText(cp.type)} · ${fmtText(cp.city)} · ${fmtText(cp.country)}`}
-		meta={[cp.id, cp.rating, cp.status, `${usePct.toFixed(0)}% limite utilizado`]}
+		meta={[`Rating ${ratingLabel(cp.rating)}`, stateBadge(cp.status).label, `${usePct.toFixed(0)}% limite utilizado`]}
 		actions={[
 			{ label: 'Editar', variant: 'secondary' },
 			{ label: 'Histórico KYC', variant: 'secondary' },
@@ -90,7 +91,7 @@
 
 	<div class="institutional-counterparty-detail">
 		<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-			<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="credit_limit_usd"/>
+			<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="limite aprovado"/>
 			<Kpi
 				label="Utilização"
 				value={`${usePct.toFixed(0)}`}
@@ -98,11 +99,11 @@
 				delta={`${fmtUsdMillions(cp.used)} em uso`}
 				deltaKind={usePct > 80 ? 'neg' : usePct > 60 ? 'flat' : 'pos'}
 			/>
-			<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="/contracts/hedge"/>
+			<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="relacionamento ativo"/>
 			<Kpi
 				label="MTM (USD)"
 				value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-				delta="mtm_value carregado"
+				delta="marcação consolidada"
 				deltaKind={mtm >= 0 ? 'pos' : 'neg'}
 			/>
 		</div>
@@ -149,7 +150,7 @@
 								<tr>
 									<td>{fmtDate(contract.created_at ?? contract.traded)}</td>
 									<td>Contrato</td>
-									<td class="mono">{contract.id}</td>
+									<td>{contract.contract_number ?? contract.reference ?? 'Contrato sem número'}</td>
 									<td class="num">{fmtQty(contract)}</td>
 									<td><StatePill state={contract.status}/></td>
 								</tr>
@@ -211,13 +212,13 @@
 
 				<Card noPad>
 					<DecisionDossier
-						title="Compliance dossier"
-						verdict={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'Blocked' : cp.kyc_status === 'approved' ? 'Eligible' : 'Review required'}
+						title="Dossiê de compliance"
+						verdict={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'Bloqueada' : cp.kyc_status === 'approved' ? 'Elegível' : 'Revisão necessária'}
 						verdictKind={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'neg' : cp.kyc_status === 'approved' ? 'pos' : 'warn'}
 						items={[
 							{ label: 'KYC', value: fmtText(cp.kyc_status) },
-							{ label: 'Sanctions', value: fmtText(cp.sanctions_status) },
-							{ label: 'Rating', value: fmtText(cp.rating) },
+							{ label: 'Sanções', value: fmtText(cp.sanctions_status) },
+							{ label: 'Rating', value: ratingLabel(cp.rating) },
 							{ label: 'Ativa', value: cp.is_active === true ? 'Sim' : cp.is_active === false ? 'Não' : '—' },
 						]}
 					/>
@@ -237,7 +238,7 @@
 					{#if cpContracts.length}
 						{#each cpContracts as c (c.id)}
 							<tr>
-								<td class="mono strong"><a href={`/contracts/${c.id}`}>{c.id}</a></td>
+								<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? c.reference ?? 'Contrato sem número'}</a></td>
 								<td><CommodityChip code={c.commodity}/></td>
 								<td>{c.type}</td>
 								<td class="num">{fmtQty(c)}</td>

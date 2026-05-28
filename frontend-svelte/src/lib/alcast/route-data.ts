@@ -1,4 +1,12 @@
 import { error } from '@sveltejs/kit';
+import {
+	actionLabel,
+	auditEntityLabel,
+	displayActor,
+	entityDisplayName,
+	safeBusinessText,
+	sourceLabel,
+} from './presentation';
 
 type ApiResult<T = unknown> = {
 	data?: T | null;
@@ -8,8 +16,7 @@ type ApiResult<T = unknown> = {
 
 export function requireData<T>(result: ApiResult<T>, message: string): T {
 	if (result.error) {
-		const detail = typeof result.error.detail === 'string' ? `: ${result.error.detail}` : '';
-		error(result.response?.status ?? result.error.status ?? result.error.statusCode ?? 502, `${message}${detail}`);
+		error(result.response?.status ?? result.error.status ?? result.error.statusCode ?? 502, message);
 	}
 	if (result.data == null) error(result.response?.status ?? 502, message);
 	return result.data;
@@ -75,7 +82,7 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
 		id: row.id,
-		rfq: row.rfq_number ?? row.id,
+		rfq: safeBusinessText(row.rfq_number, 'RFQ sem número'),
 		qty: row.quantity_mt ?? row.qty,
 		direction: row.direction,
 		window: row.delivery_window_start ? datePart(row.delivery_window_start).slice(0, 7) : row.window,
@@ -83,7 +90,7 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 		delivery_end: row.delivery_window_end ?? row.delivery_end,
 		created: row.created_at ?? row.created,
 		quotes: row.quote_count ?? row.quotes ?? row.submitted_quote_count ?? 0,
-		requester: row.created_by ?? row.requester ?? 'Sistema',
+		requester: displayActor(row.created_by ?? row.requester, 'Sistema'),
 	};
 }
 
@@ -106,7 +113,7 @@ export function normalizeRfqQuote(
 
 	return {
 		...row,
-		cp: row.counterparty_short ?? row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
+		cp: entityDisplayName(row, 'Contraparte não informada'),
 		price,
 		spread: price != null && bestPrice != null ? price - bestPrice : null,
 		received: row.received_at ?? row.created_at ?? row.received,
@@ -118,12 +125,12 @@ export function normalizeRfqQuote(
 export function normalizeOrder(row: Record<string, any>): Record<string, any> {
 	return {
 		...row,
-		rfq: row.rfq_number ?? row.rfq_id ?? row.rfq ?? '—',
+		rfq: safeBusinessText(row.rfq_number ?? row.rfq, 'Sem RFQ vinculada'),
 		qty: row.quantity_mt ?? row.qty,
 		direction: row.order_type === 'SO' ? 'SELL' : 'BUY',
 		price: row.avg_entry_price ?? row.price,
-		cp: row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
-		status: row.status ?? '—',
+		cp: entityDisplayName(row, 'Contraparte não informada'),
+		status: safeBusinessText(row.status, 'pending'),
 		traded: row.trade_date ?? row.created_at ?? row.traded,
 		settlement: row.delivery_date_end ?? row.settlement ?? null,
 	};
@@ -137,10 +144,10 @@ export function normalizeContract(row: Record<string, any>): Record<string, any>
 		fixed_leg: row.fixed_leg_side ?? row.fixed_leg ?? null,
 		var_leg: row.variable_leg_side ?? row.var_leg ?? null,
 		price: numberOrNull(row.fixed_price_value ?? row.price),
-		cp: row.counterparty_short ?? row.counterparty_name ?? row.counterparty_id ?? row.cp ?? '—',
+		cp: entityDisplayName(row, 'Contraparte não informada'),
 		settle: row.settlement_date ?? row.prompt_date ?? row.settle,
 		mtm: numberOrNull(row.mtm_value ?? row.mtm),
-		status: row.status ?? '—',
+		status: safeBusinessText(row.status, 'pending'),
 	};
 }
 
@@ -159,7 +166,7 @@ export function normalizeCounterparty(row: Record<string, any>): Record<string, 
 					: 'active');
 	return {
 		...row,
-		short: row.short_name ?? row.short ?? row.id,
+		short: entityDisplayName(row, 'Contraparte sem nome'),
 		rating: row.rating ?? row.risk_rating ?? '—',
 		limit,
 		used,
@@ -172,12 +179,12 @@ export function normalizeCashflow(row: Record<string, any>): Record<string, any>
 	return {
 		...row,
 		date: row.cashflow_date ?? row.price_settlement_date ?? row.settlement_date ?? row.date,
-		desc: row.description ?? `${row.object_type ?? 'cashflow'} ${row.object_id ?? ''}`.trim(),
-		cp: row.counterparty_name ?? row.cp ?? '—',
-		commodity: row.commodity ?? '—',
+		desc: safeBusinessText(row.description, 'Liquidação projetada'),
+		cp: entityDisplayName(row, 'Contraparte não informada'),
+		commodity: safeBusinessText(row.commodity, 'Commodity não informada'),
 		amount_usd: amountUsd,
 		direction: amountUsd < 0 ? 'out' : 'in',
-		status: row.status ?? '—',
+		status: safeBusinessText(row.status, 'projected'),
 	};
 }
 
@@ -192,7 +199,7 @@ export function normalizeCommodity(row: Record<string, any>): Record<string, any
 		last: numberOrNull(row.price_usd ?? row.value ?? row.last),
 		prev: numberOrNull(row.previous_value ?? row.prev),
 		settlement_date: row.settlement_date,
-		provider: row.provider ?? row.source ?? '—',
+		provider: sourceLabel(row.provider ?? row.source),
 	};
 }
 
@@ -201,11 +208,11 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 	return {
 		...row,
 		ts: row.timestamp_utc ?? row.ts,
-		user: row.actor_subject ?? row.user ?? 'Sistema',
-		role: row.actor_role ?? row.role ?? 'System',
-		action: row.event_type ?? row.action,
-		entity: row.entity_id ?? row.entity,
-		detail: payload.detail ?? payload.reason ?? row.detail ?? row.description ?? '',
+		user: displayActor(row.user ?? row.actor_subject, 'Sistema'),
+		role: safeBusinessText(row.actor_role ?? row.role, 'Perfil operacional'),
+		action: actionLabel(row.event_type ?? row.action),
+		entity: auditEntityLabel(row.entity_type, row.entity_id),
+		detail: safeBusinessText(payload.detail ?? payload.reason ?? row.detail ?? row.description, 'Evento registrado'),
 	};
 }
 

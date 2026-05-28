@@ -12,6 +12,7 @@
 	import DecisionDossier, { type DossierKind } from '$lib/components/alcast/DecisionDossier.svelte';
 	import ExecutionTimeline, { type TimelineEvent } from '$lib/components/alcast/ExecutionTimeline.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import { safeBusinessText, stateBadge } from '$lib/alcast/presentation';
 	type Contract = Record<string, any>;
 	type HeaderAction = {
 		label: string;
@@ -67,7 +68,7 @@
 	const TABS: [typeof tab, string][] = [
 		['resumo',   'Resumo'],
 		['legs',     'Pernas'],
-		['cashflow', 'Cash flows'],
+		['cashflow', 'Fluxos de caixa'],
 		['mtm',      'Histórico MTM'],
 		['docs',     'Documentos'],
 	];
@@ -116,6 +117,10 @@
 
 	function mtmValue(row: Record<string, any>): number | null {
 		return asNumber(row.mtm ?? row.mtm_value ?? row.value_usd);
+	}
+
+	function contractLabel(contract: Contract): string {
+		return safeBusinessText(contract.contract_number ?? contract.reference, 'Contrato sem número');
 	}
 
 	function midValue(row: Record<string, any>): number | null {
@@ -189,9 +194,9 @@
 	}
 
 	const settlementVerdict = $derived.by(() => {
-		if (daysToSettle == null) return 'Settlement date missing';
-		if (daysToSettle <= 7 && daysToSettle >= 0) return 'Settlement watch';
-		return c.status === 'active' ? 'Active contract' : c.status ?? 'Loaded';
+		if (daysToSettle == null) return 'Liquidação não informada';
+		if (daysToSettle <= 7 && daysToSettle >= 0) return 'Liquidação em atenção';
+		return c.status === 'active' ? 'Contrato ativo' : stateBadge(c.status).label;
 	});
 	const settlementVerdictKind = $derived.by((): DossierKind => {
 		if (daysToSettle == null) return 'warn';
@@ -200,7 +205,7 @@
 	});
 	const contractTimelineEvents = $derived.by((): TimelineEvent[] => [
 		{
-			label: `Contrato carregado · ${c.id}`,
+			label: `Contrato carregado · ${contractLabel(c)}`,
 			time: fmtDate(c.created_at ?? c.traded),
 			actor: c.cp,
 			kind: 'pos',
@@ -261,9 +266,9 @@
 <div class="page">
 	<PageHeader
 		eyebrow="Contrato financeiro"
-		title={c.id}
+		title={contractLabel(c)}
 		subtitle={`${legLabel(c.fixed_leg)} fixa × ${legLabel(c.var_leg)} variável · ${fmtQty(c)} · ${c.cp} · liquidação ${fmtDate(settleDate)}`}
-		meta={[c.type, c.commodity, `Status ${c.status ?? '—'}`]}
+		meta={[c.type, c.commodity, `Status ${stateBadge(c.status).label}`]}
 		actions={contractHeaderActions}
 	/>
 
@@ -348,7 +353,7 @@
 								<Badge kind={legKind(c.fixed_leg)}>
 									{legLabelUpper(c.fixed_leg)} FIXA
 								</Badge>
-								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Leg 1</span>
+								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Perna 1</span>
 							</div>
 							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço fixo</div>
 							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
@@ -361,7 +366,7 @@
 								<Badge kind={legKind(c.var_leg)}>
 									{legLabelUpper(c.var_leg)} VARIÁVEL
 								</Badge>
-								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Leg 2</span>
+								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Perna 2</span>
 							</div>
 							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço mid de mercado</div>
 							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
@@ -388,13 +393,13 @@
 			<div class="stack gap-4">
 				<Card noPad>
 					<DecisionDossier
-						title="Settlement readiness"
+						title="Prontidão para liquidação"
 						verdict={settlementVerdict}
 						verdictKind={settlementVerdictKind}
 						items={[
 							{ label: 'Contraparte', value: cpName },
 							{ label: 'Liquidação', value: fmtSettleWithDays(), kind: settlementVerdictKind },
-							{ label: 'Aprovação', value: approval?.status ?? approval?.state ?? 'Não carregada', kind: approval ? 'pos' : 'neutral' },
+							{ label: 'Aprovação', value: approval ? stateBadge(approval.status ?? approval.state).label : 'Não carregada', kind: approval ? 'pos' : 'neutral' },
 							{ label: 'Margem inicial', value: initialMargin == null ? '—' : `${fmtUnsignedUsd(initialMargin)}${fmtRate(initialMarginRate)}` },
 						]}
 					/>
@@ -426,9 +431,9 @@
 			<table class="tbl">
 				<thead>
 					<tr>
-						<th>Leg</th>
-						<th>Side</th>
-						<th>Price type</th>
+						<th>Perna</th>
+						<th>Lado</th>
+						<th>Tipo de preço</th>
 						<th class="num">Quantidade</th>
 						<th class="num">Preço</th>
 						<th>Janela / Fixing</th>
@@ -437,7 +442,7 @@
 				</thead>
 				<tbody>
 					<tr>
-						<td class="strong">Leg 1</td>
+						<td class="strong">Perna 1</td>
 						<td><DirectionBadge dir={c.fixed_leg ?? '—'}/></td>
 						<td><Badge kind="info">Fix</Badge></td>
 						<td class="num">{fmtQty(c)}</td>
@@ -446,7 +451,7 @@
 						<td>LME Official Settlement</td>
 					</tr>
 					<tr>
-						<td class="strong">Leg 2</td>
+						<td class="strong">Perna 2</td>
 						<td><DirectionBadge dir={c.var_leg ?? '—'}/></td>
 						<td><Badge kind="neutral">AVG</Badge></td>
 						<td class="num">{fmtQty(c)}</td>
@@ -458,7 +463,7 @@
 			</table>
 		</Card>
 	{:else if tab === 'cashflow'}
-		<Card title="Cash flows projetados" noPad>
+		<Card title="Fluxos de caixa projetados" noPad>
 			<table class="tbl">
 				<thead>
 					<tr>
@@ -475,7 +480,7 @@
 							{@const amount = Number(flow.amount_usd ?? 0)}
 							<tr>
 								<td>{fmtDate(flow.date)}</td>
-								<td>{flow.desc ?? flow.description ?? 'Cash flow'}</td>
+								<td>{flow.desc ?? flow.description ?? 'Liquidação projetada'}</td>
 								<td class="num strong" style="color: {amount >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 									{amount >= 0 ? '+' : ''}{amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
 								</td>
@@ -496,8 +501,8 @@
 							<td colspan="5">
 								<EmptyState
 									icon="coins"
-									title="Nenhum cash flow carregado"
-									message="As pernas financeiras e liquidações futuras serão exibidas quando o backend retornar eventos de cash flow."
+									title="Nenhum fluxo de caixa carregado"
+									message="As pernas financeiras e liquidações futuras serão exibidas assim que houver eventos projetados."
 								/>
 							</td>
 						</tr>

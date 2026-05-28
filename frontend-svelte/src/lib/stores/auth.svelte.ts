@@ -1,4 +1,5 @@
 import { goto } from '$app/navigation';
+import { API_BASE } from '$lib/api/base';
 
 export type UserRole = 'trader' | 'risk_manager' | 'auditor';
 
@@ -13,7 +14,6 @@ interface JwtClaims {
 
 const SESSION_CSRF_KEY = 'hedge-control.auth.csrf';
 const CSRF_COOKIE_NAME = 'csrf_token';
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const SESSION_COOKIE_MAX_AGE_MS = 300 * 1000;
 const SESSION_COOKIE_REFRESH_LEAD_MS = 60 * 1000;
 const CLERK_TOKEN_REFRESH_LEAD_MS = 15 * 1000;
@@ -54,6 +54,7 @@ class AuthStore {
 	#refreshAbortController: AbortController | null = null;
 	#redirecting = false;
 	#isRestoring = $state(false);
+	#restorePromise: Promise<void> | null = null;
 	#generation = 0;
 
 	readonly isAuthenticated = $derived(this.#claims !== null);
@@ -267,7 +268,14 @@ class AuthStore {
 			this.#getStorage()?.getItem(SESSION_CSRF_KEY) ?? this.#readCookie(CSRF_COOKIE_NAME);
 		if (!this.#csrfToken) return;
 		this.#isRestoring = true;
-		void this.#restoreBackendIdentity();
+		this.#restorePromise = this.#restoreBackendIdentity();
+	}
+
+	// Resolves once any in-flight cookie-backed session restore has settled, so
+	// callers (e.g. page loads) can read a stable isAuthenticated instead of
+	// short-circuiting against the transient false during restoration.
+	async whenRestored(): Promise<void> {
+		if (this.#restorePromise) await this.#restorePromise;
 	}
 
 	#applySession(

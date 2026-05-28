@@ -54,7 +54,7 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Exposure control"
+		eyebrow="Controle de exposição"
 		title="Exposições"
 		subtitle="Saldo comercial líquido, aderência à política e pendências de hedge."
 		meta={[`Comercial ${fmtMt(totalCommercial)} t`, `Residual ${fmtMt(totalResidual)} t`, `Política ${fmtPct(policyAdherence)}%`]}
@@ -66,13 +66,13 @@
 
 	<div class="institutional-monitoring">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposures/list" deltaKind="flat"/>
-		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="exposures/list" deltaKind="flat"/>
-		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposures/list" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
-		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="hedged/commercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
+		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="posições comerciais" deltaKind="flat"/>
+		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="cobertura vigente" deltaKind="flat"/>
+		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposição aberta" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
+		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="cobertura sobre comercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
 	</div>
 
-	<Card title="Exposição por commodity e janela" sub="Drill-down por mês de entrega" noPad>
+	<Card title="Exposição por commodity e janela" sub="Detalhamento por mês de entrega" noPad>
 		{#snippet actions()}
 			<div class="row gap-2">
 				<div class="radio-group">
@@ -139,7 +139,7 @@
 							<EmptyState
 								icon="scale"
 								title="Nenhuma exposição para o filtro selecionado"
-								message={canCreateRfqs ? 'Selecione outra commodity ou confirme a carga de exposures/list.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
+								message={canCreateRfqs ? 'Selecione outra commodity ou atualize a base de posições.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
 								actionLabel={canCreateRfqs ? 'Criar RFQ de cobertura' : undefined}
 								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
 							/>
@@ -152,7 +152,7 @@
 	</Card>
 
 	<div class="grid-7-5" style="margin-top: 16px;">
-		<Card title="Exposição líquida" sub="Derivado de /exposures/net">
+		<Card title="Exposição líquida" sub="Saldo líquido por commodity">
 			<table class="tbl tbl-tight">
 				<thead>
 					<tr>
@@ -179,9 +179,9 @@
 						<tr>
 							<td colspan="6">
 								<EmptyState
-									icon="chart"
+								icon="chart"
 									title="Nenhuma exposição líquida carregada"
-									message="A visão net será exibida quando /exposures/net retornar linhas."
+									message="Atualize a base de posições para visualizar a exposição líquida consolidada."
 								/>
 							</td>
 						</tr>
@@ -207,7 +207,7 @@
 					<EmptyState
 						icon="shieldCheck"
 						title="Nenhuma pendência carregada"
-						message="Quando houver desvios de cobertura ou recomendações de hedge, eles aparecerão aqui."
+						message="Não há desvios de cobertura ou recomendações de hedge para revisão."
 					/>
 				{/if}
 			</div>
