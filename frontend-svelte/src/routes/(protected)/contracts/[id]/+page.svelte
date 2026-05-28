@@ -5,10 +5,22 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
 	import MtmSparkline from '$lib/components/alcast/MtmSparkline.svelte';
+	import DecisionDossier, { type DossierKind } from '$lib/components/alcast/DecisionDossier.svelte';
+	import ExecutionTimeline, { type TimelineEvent } from '$lib/components/alcast/ExecutionTimeline.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	type Contract = Record<string, any>;
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		href?: string;
+		disabled?: boolean;
+		onclick?: () => void | Promise<void>;
+	};
 	let { data } = $props();
 	const contracts = $derived(data.contracts);
 	const counterparties = $derived(data.counterparties);
@@ -175,6 +187,56 @@
 		const date = value.slice(0, 10);
 		return date.length >= 7 ? date.slice(0, 7) : '—';
 	}
+
+	const settlementVerdict = $derived.by(() => {
+		if (daysToSettle == null) return 'Settlement date missing';
+		if (daysToSettle <= 7 && daysToSettle >= 0) return 'Settlement watch';
+		return c.status === 'active' ? 'Active contract' : c.status ?? 'Loaded';
+	});
+	const settlementVerdictKind = $derived.by((): DossierKind => {
+		if (daysToSettle == null) return 'warn';
+		if (daysToSettle <= 7 && daysToSettle >= 0) return 'warn';
+		return c.status === 'active' ? 'pos' : 'neutral';
+	});
+	const contractTimelineEvents = $derived.by((): TimelineEvent[] => [
+		{
+			label: `Contrato carregado · ${c.id}`,
+			time: fmtDate(c.created_at ?? c.traded),
+			actor: c.cp,
+			kind: 'pos',
+		},
+		{
+			label: `MTM atual · ${fmtUsd(c.mtm)}`,
+			time: latestMtmDelta == null ? 'última marcação carregada' : `${fmtUsd(latestMtmDelta)} 1d`,
+			actor: 'Sistema',
+			kind: c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg',
+		},
+		{
+			label: `Liquidação financeira · ${c.cp}`,
+			time: fmtDate(settleDate),
+			actor: 'Agendado',
+			kind: daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0 ? 'warn' : 'info',
+		},
+	]);
+	const contractHeaderActions = $derived.by((): HeaderAction[] => {
+		const actions: HeaderAction[] = [
+			{ label: 'Voltar', icon: 'arrowLeft', variant: 'secondary', href: '/contracts' },
+			{ label: 'Confirmação', icon: 'download', variant: 'secondary' },
+			{
+				label: 'Histórico MTM',
+				variant: 'secondary',
+				onclick: () => {
+					tab = 'mtm';
+				},
+			},
+		];
+		if (c.status === 'active') {
+			actions.push({ label: 'Unwinding', variant: 'danger' });
+		} else if (c.status === 'partially_settled') {
+			actions.push({ label: 'Iniciar liquidação', variant: 'accent' });
+		}
+		return actions;
+	});
 </script>
 
 {#snippet documentList()}
@@ -188,40 +250,30 @@
 			</button>
 		{/each}
 	{:else}
-		<div class="tbl-empty">Nenhum documento carregado para este contrato</div>
+		<EmptyState
+			icon="doc"
+			title="Nenhum documento carregado"
+			message="Confirmações, anexos e evidências documentais deste contrato aparecerão aqui."
+		/>
 	{/if}
 {/snippet}
 
 <div class="page">
-	<div class="page-head">
-		<div style="flex: 1;">
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/contracts" class="btn btn-link"><Icon name="arrowLeft"/> Contratos</a>
-				<span style="color: var(--muted);">/</span>
-				<span class="mono" style="font-size: 12px; color: var(--muted);">{c.id}</span>
-			</div>
-			<div class="row gap-3" style="align-items: baseline;">
-				<h1 class="page-title" style="margin: 0;">{c.id}</h1>
-				<Badge kind="neutral">{c.type}</Badge>
-				<CommodityChip code={c.commodity}/>
-				<StatePill state={c.status}/>
-				{#if daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0}
-					<Badge kind="warn" dot>Vence em {daysToSettle}d</Badge>
-				{/if}
-			</div>
-			<div class="page-sub" style="margin-top: 6px;">
-				{legLabel(c.fixed_leg)} fixa × {legLabel(c.var_leg)} variável · {fmtQty(c)} · {c.cp} · liquidação {fmtDate(settleDate)}
-			</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Confirmação</button>
-			<button type="button" class="btn btn-secondary">Histórico MTM</button>
-			{#if c.status === 'active'}
-				<button type="button" class="btn btn-danger">Unwinding</button>
-			{:else if c.status === 'partially_settled'}
-				<button type="button" class="btn btn-accent">Iniciar liquidação</button>
-			{/if}
-		</div>
+	<PageHeader
+		eyebrow="Contrato financeiro"
+		title={c.id}
+		subtitle={`${legLabel(c.fixed_leg)} fixa × ${legLabel(c.var_leg)} variável · ${fmtQty(c)} · ${c.cp} · liquidação ${fmtDate(settleDate)}`}
+		meta={[c.type, c.commodity, `Status ${c.status ?? '—'}`]}
+		actions={contractHeaderActions}
+	/>
+
+	<div class="rfq-command-strip settlement-readiness">
+		<Badge kind="neutral">{c.type}</Badge>
+		<CommodityChip code={c.commodity}/>
+		<StatePill state={c.status}/>
+		{#if daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0}
+			<Badge kind="warn" dot>Vence em {daysToSettle}d</Badge>
+		{/if}
 	</div>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
@@ -334,12 +386,22 @@
 			</div>
 
 			<div class="stack gap-4">
+				<Card noPad>
+					<DecisionDossier
+						title="Settlement readiness"
+						verdict={settlementVerdict}
+						verdictKind={settlementVerdictKind}
+						items={[
+							{ label: 'Contraparte', value: cpName },
+							{ label: 'Liquidação', value: fmtSettleWithDays(), kind: settlementVerdictKind },
+							{ label: 'Aprovação', value: approval?.status ?? approval?.state ?? 'Não carregada', kind: approval ? 'pos' : 'neutral' },
+							{ label: 'Margem inicial', value: initialMargin == null ? '—' : `${fmtUnsignedUsd(initialMargin)}${fmtRate(initialMarginRate)}` },
+						]}
+					/>
+				</Card>
+
 				<Card title="Cronograma">
-					<div class="feed">
-						<div class="feed-item pos"><div class="icon"></div><div><div class="what">Contrato carregado · <strong>{c.id}</strong></div><div class="row gap-2"><span class="when">{fmtDate(c.created_at ?? c.traded)}</span><span class="who">· {c.cp}</span></div></div></div>
-						<div class="feed-item info"><div class="icon"></div><div><div class="what">MTM atual · {fmtUsd(c.mtm)}</div><div class="row gap-2"><span class="when">última marcação carregada</span><span class="who">· Sistema</span></div></div></div>
-						<div class="feed-item info"><div class="icon"></div><div><div class="what">Liquidação financeira · {c.cp}</div><div class="row gap-2"><span class="when">{fmtDate(settleDate)}</span><span class="who">· Agendado</span></div></div></div>
-					</div>
+					<ExecutionTimeline events={contractTimelineEvents}/>
 				</Card>
 
 				<Card title="Documentação">
@@ -430,7 +492,15 @@
 							</tr>
 						{/each}
 					{:else}
-						<tr><td colspan="5" class="tbl-empty">Nenhum cash flow carregado para este contrato</td></tr>
+						<tr>
+							<td colspan="5">
+								<EmptyState
+									icon="coins"
+									title="Nenhum cash flow carregado"
+									message="As pernas financeiras e liquidações futuras serão exibidas quando o backend retornar eventos de cash flow."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
@@ -465,7 +535,15 @@
 						</tr>
 					{/each}
 					{:else}
-						<tr><td colspan="4" class="tbl-empty">Nenhum histórico de MTM carregado para este contrato</td></tr>
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="chart"
+									title="Nenhum histórico de MTM carregado"
+									message="A série de marcação diária aparecerá aqui quando houver observações de mercado para o contrato."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
@@ -484,7 +562,11 @@
 						<div class="feed-item info"><div class="icon"></div><div><div class="what">{event.description ?? event.title ?? 'Evento documental'}{event.version ? ` · ${event.version}` : ''}</div><div class="row gap-2"><span class="when">{fmtDate(event.created_at ?? event.date)}</span><span class="who">· {event.actor ?? event.user ?? 'Sistema'}</span></div></div></div>
 					{/each}
 					{:else}
-						<div class="tbl-empty">Nenhum histórico documental carregado para este contrato</div>
+						<EmptyState
+							icon="doc"
+							title="Nenhum histórico documental carregado"
+							message="Versões, anexos e aprovações documentais ainda não foram carregados para este contrato."
+						/>
 					{/if}
 				</div>
 			</Card>

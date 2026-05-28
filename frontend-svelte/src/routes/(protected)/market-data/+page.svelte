@@ -1,7 +1,8 @@
 <script lang="ts">
 	import Card from '$lib/components/alcast/Card.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	let { data } = $props();
 	const commodities = $derived(data.commodities);
 
@@ -24,16 +25,17 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Dados de mercado</h1>
-			<div class="page-sub">Cash settlement prices carregados do backend</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Atualizar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Market data control"
+		title="Dados de mercado"
+		subtitle="Cash settlement prices carregados do backend para marcação e execução."
+		meta={[`${commodities.length} cotação(ões)`, 'Westmetall cash settlement', 'Backend sourced']}
+		actions={[
+			{ label: 'Atualizar', icon: 'refresh', variant: 'secondary' },
+		]}
+	/>
 
+	<div class="institutional-monitoring">
 	<div style="margin-bottom: 16px;">
 		<Card title="Cash settlement" sub="Dados retornados por /market-data/westmetall/aluminum/cash-settlement/prices" noPad>
 			<table class="tbl">
@@ -60,10 +62,19 @@
 						</tr>
 					{/each}
 					{#if commodities.length === 0}
-						<tr><td colspan="5" class="tbl-empty">Nenhuma cotação carregada</td></tr>
+						<tr>
+							<td colspan="5">
+								<EmptyState
+									icon="globe"
+									title="Nenhuma cotação carregada"
+									message="A grade será preenchida quando o endpoint de cash settlement retornar dados válidos."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
 		</Card>
+	</div>
 	</div>
 </div>

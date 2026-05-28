@@ -6,10 +6,11 @@
 	import { apiFetch } from '$lib/api/fetch';
 	import { orderDetailPath } from '$lib/api/paths';
 	import { describeApiError } from '$lib/api/errors';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import type { OrderRead } from '$lib/api/types/entities';
-
-	// J-A6-08: read-only order detail surface. Shows enough canonical
-	// fields for an auditor to reconstruct the exposure source record.
 
 	type ViewState = 'loading' | 'ready' | 'error';
 
@@ -19,6 +20,12 @@
 	let abortController: AbortController;
 
 	const orderId = $derived(page.params.id ?? '');
+	const orderTypeLabel = $derived(order?.order_type === 'SO' ? 'Sales Order' : 'Purchase Order');
+	const headerMeta = $derived([
+		order?.commodity ?? 'Commodity pendente',
+		order ? `${formatQuantityMT(order.quantity_mt)} MT` : 'Quantidade pendente',
+		order?.counterparty_name ?? 'Contraparte não vinculada',
+	]);
 
 	async function loadOrder(id: string, signal?: AbortSignal) {
 		viewState = 'loading';
@@ -42,6 +49,10 @@
 		}
 	}
 
+	function retry() {
+		if (orderId) loadOrder(orderId, abortController?.signal);
+	}
+
 	onMount(() => {
 		abortController = new AbortController();
 		if (orderId) loadOrder(orderId, abortController.signal);
@@ -50,111 +61,93 @@
 	onDestroy(() => { abortController?.abort(); });
 </script>
 
-<div class="p-6 max-w-4xl">
-	<div class="flex items-center gap-3">
-		<a href="/orders" class="text-gray-500 hover:text-gray-700">← Voltar</a>
-		<h1 class="text-lg font-semibold text-gray-900">Order</h1>
-		{#if order}
-			<span class="font-mono text-xs text-gray-500">{order.id}</span>
-		{/if}
-	</div>
+<div class="page">
+	<PageHeader
+		eyebrow="Fonte de exposição"
+		title={order ? orderTypeLabel : 'Order'}
+		subtitle={order ? `Registro canônico ${order.id}` : `Carregando ${orderId}`}
+		meta={headerMeta}
+		actions={[
+			{ label: 'Voltar', icon: 'arrowLeft', variant: 'secondary', href: '/orders' },
+			{ label: 'Recarregar', icon: 'refresh', variant: 'secondary', onclick: retry },
+		]}
+	/>
 
 	{#if viewState === 'loading'}
-		<div class="mt-4 text-gray-500">Carregando...</div>
+		<Card>
+			<EmptyState icon="refresh" title="Carregando order" message="Buscando o registro canônico e seus campos auditáveis." />
+		</Card>
 	{:else if viewState === 'error'}
-		<div
-			class="mt-4 rounded border border-danger/40 bg-red-600 px-3 py-2 text-sm text-red-700"
-			data-testid="order-detail-error"
-		>
-			Erro ao carregar order: {viewError}
-		</div>
+		<Card>
+			<EmptyState
+				icon="info"
+				title="Erro ao carregar order"
+				message={viewError}
+				actionLabel="Tentar novamente"
+				onAction={retry}
+			/>
+		</Card>
 	{:else if order}
-		<div class="mt-4 grid grid-cols-2 gap-3" data-testid="order-detail">
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Tipo</div>
-				<div class="text-sm font-semibold text-gray-900">
-					{order.order_type === 'SO' ? 'Sales Order' : 'Purchase Order'}
-				</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Commodity</div>
-				<div class="text-sm font-semibold text-gray-900">{order.commodity}</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Quantidade (MT)</div>
-				<div class="text-sm font-semibold tabular-nums text-gray-900" data-testid="order-detail-quantity">
-					{formatQuantityMT(order.quantity_mt)}
-				</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Pricing</div>
-				<div class="text-sm text-gray-900">
-					{order.price_type}{order.pricing_convention ? ` · ${order.pricing_convention}` : ''}
-				</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Preço médio</div>
-				<div class="text-sm tabular-nums text-gray-900">
-					{order.avg_entry_price != null
-						? formatPrice(order.avg_entry_price, `${order.currency}/MT`)
-						: '—'}
-				</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Moeda</div>
-				<div class="text-sm text-gray-900">{order.currency}</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Contraparte</div>
-				<div class="text-sm text-gray-900">{order.counterparty_name ?? '—'}</div>
-				{#if order.counterparty_id}
-					<div class="font-mono text-xs text-gray-500">{order.counterparty_id}</div>
+		<div class="detail-grid" data-testid="order-detail">
+			<div class="stack gap-4">
+				<Card title="Termos comerciais" sub="Campos originais usados para reconstruir a exposição">
+					<dl class="kv" style="grid-template-columns: 180px 1fr 180px 1fr;">
+						<dt>Tipo</dt><dd><Badge kind={order.order_type === 'SO' ? 'pos' : 'info'}>{orderTypeLabel}</Badge></dd>
+						<dt>Commodity</dt><dd>{order.commodity}</dd>
+						<dt>Quantidade</dt><dd class="tabular strong" data-testid="order-detail-quantity">{formatQuantityMT(order.quantity_mt)} MT</dd>
+						<dt>Moeda</dt><dd>{order.currency}</dd>
+						<dt>Pricing</dt><dd>{order.price_type}{order.pricing_convention ? ` · ${order.pricing_convention}` : ''}</dd>
+						<dt>Preço médio</dt>
+						<dd class="tabular">
+							{order.avg_entry_price != null ? formatPrice(order.avg_entry_price, `${order.currency}/MT`) : '—'}
+						</dd>
+						<dt>Contraparte</dt><dd>{order.counterparty_name ?? '—'}</dd>
+						<dt>ID contraparte</dt><dd class="mono">{order.counterparty_id ?? '—'}</dd>
+						<dt>Pagamento</dt><dd>{order.payment_terms_days != null ? `${order.payment_terms_days} dias` : '—'}</dd>
+						<dt>Criado em</dt><dd>{formatDate(order.created_at)}</dd>
+					</dl>
+				</Card>
+
+				<Card title="Janela de entrega" sub="Período operacional que alimenta o cálculo de exposição">
+					<dl class="kv">
+						<dt>Início</dt><dd>{order.delivery_date_start ? formatDate(order.delivery_date_start) : '—'}</dd>
+						<dt>Fim</dt><dd>{order.delivery_date_end ? formatDate(order.delivery_date_end) : '—'}</dd>
+						<dt>Termos</dt><dd>{order.delivery_terms ?? '—'}</dd>
+						<dt>Reference month</dt><dd>{order.reference_month ?? '—'}</dd>
+						<dt>Fixing</dt><dd>{order.fixing_date ? formatDate(order.fixing_date) : '—'}</dd>
+					</dl>
+				</Card>
+
+				{#if order.observation_date_start || order.observation_date_end}
+					<Card title="Janela de observação">
+						<dl class="kv">
+							<dt>Início</dt><dd>{formatDate(order.observation_date_start)}</dd>
+							<dt>Fim</dt><dd>{formatDate(order.observation_date_end)}</dd>
+						</dl>
+					</Card>
 				{/if}
 			</div>
-			<div class="rounded border border-gray-200 bg-white p-3">
-				<div class="text-xs text-gray-500">Pagamento</div>
-				<div class="text-sm text-gray-900">
-					{order.payment_terms_days != null ? `${order.payment_terms_days} dias` : '—'}
-				</div>
-			</div>
-			<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
-				<div class="text-xs text-gray-500">Janela de entrega</div>
-				<div class="text-sm text-gray-900">
-					{order.delivery_date_start ? formatDate(order.delivery_date_start) : '—'}
-					{#if order.delivery_date_end} → {formatDate(order.delivery_date_end)}{/if}
-					{#if order.delivery_terms} · <span class="text-gray-500">{order.delivery_terms}</span>{/if}
-				</div>
-			</div>
-			{#if order.reference_month}
-				<div class="rounded border border-gray-200 bg-white p-3">
-					<div class="text-xs text-gray-500">Mês de referência (AVG)</div>
-					<div class="text-sm text-gray-900">{order.reference_month}</div>
-				</div>
-			{/if}
-			{#if order.fixing_date}
-				<div class="rounded border border-gray-200 bg-white p-3">
-					<div class="text-xs text-gray-500">Fixing (C2R)</div>
-					<div class="text-sm text-gray-900">{formatDate(order.fixing_date)}</div>
-				</div>
-			{/if}
-			{#if order.observation_date_start}
-				<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
-					<div class="text-xs text-gray-500">Janela de observação (AVGInter)</div>
-					<div class="text-sm text-gray-900">
-						{formatDate(order.observation_date_start)}
-						{#if order.observation_date_end} → {formatDate(order.observation_date_end)}{/if}
-					</div>
-				</div>
-			{/if}
-			{#if order.notes}
-				<div class="rounded border border-gray-200 bg-white p-3 col-span-2">
-					<div class="text-xs text-gray-500">Notas</div>
-					<pre class="mt-1 whitespace-pre-wrap text-sm text-gray-700">{order.notes}</pre>
-				</div>
-			{/if}
-			<div class="rounded border border-gray-200 bg-white p-3 col-span-2 text-xs text-gray-500">
-				Criado em {formatDate(order.created_at)}
-				{#if order.deleted_at} · <span class="text-amber-700">Arquivado em {formatDate(order.deleted_at)}</span>{/if}
+
+			<div class="stack gap-4">
+				<Card title="Governança">
+					<dl class="kv">
+						<dt>Origem</dt><dd>Order book</dd>
+						<dt>Status</dt><dd><Badge kind={order.deleted_at ? 'warn' : 'pos'} dot>{order.deleted_at ? 'Arquivada' : 'Ativa'}</Badge></dd>
+						<dt>Arquivada em</dt><dd>{order.deleted_at ? formatDate(order.deleted_at) : '—'}</dd>
+					</dl>
+				</Card>
+
+				<Card title="Notas internas">
+					{#if order.notes}
+						<pre class="notes-block">{order.notes}</pre>
+					{:else}
+						<EmptyState
+							icon="doc"
+							title="Sem notas"
+							message="Nenhuma observação interna foi registrada para esta order."
+						/>
+					{/if}
+				</Card>
 			</div>
 		</div>
 	{/if}

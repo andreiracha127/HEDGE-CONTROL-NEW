@@ -3,9 +3,13 @@
 	import { page } from '$app/state';
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import ExecutionTimeline from '$lib/components/alcast/ExecutionTimeline.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { client } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
@@ -24,6 +28,24 @@
 	const canCancelRfq = $derived(canManageRfq && ['CREATED', 'SENT'].includes(rfq.state));
 	const canRefreshRfq = $derived(canManageRfq && ['SENT', 'QUOTED'].includes(rfq.state));
 	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && !!best);
+	const actionableQuotes = $derived(quotes.filter((q) => q.status !== 'pending').length);
+	const pendingQuotes = $derived(quotes.filter((q) => q.status === 'pending').length);
+	const awardVerdict = $derived(canAwardRfq ? 'Ready to award' : rfq.state === 'QUOTED' ? 'Needs eligible quote' : `State ${rfq.state}`);
+	const awardVerdictKind = $derived(canAwardRfq ? 'pos' : rfq.state === 'QUOTED' ? 'warn' : 'neutral');
+	const headerMeta = $derived([
+		rfq.commodity,
+		`${rfq.qty.toLocaleString('pt-BR')} t`,
+		`Janela ${rfq.window}`,
+		`${quotes.length} cotação${quotes.length === 1 ? '' : 'ões'}`,
+	]);
+	const timelineEvents = $derived(
+		stateEvents.map((event) => ({
+			label: eventWhat(event),
+			time: eventWhen(event),
+			actor: String(event.user_id ?? event.triggering_counterparty_id ?? event.trigger ?? 'Sistema'),
+			kind: eventKind(event),
+		})),
+	);
 	function eventKind(event: Record<string, any>): 'pos' | 'warn' | 'info' {
 		if (event.to_state === 'AWARDED' || event.to_state === 'CLOSED') return 'pos';
 		if (event.trigger === 'cancel' || event.to_state === 'CANCELLED') return 'warn';
@@ -92,54 +114,41 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/rfq" class="btn btn-link"><Icon name="arrowLeft"/> RFQ</a>
-				<span style="color: var(--muted);">/</span>
-				<span class="mono" style="font-size: 12px; color: var(--muted);">{rfq.id}</span>
-			</div>
-			<h1 class="page-title">{rfq.id}</h1>
-			<div class="page-sub">
-				{rfq.commodity} · <DirectionBadge dir={rfq.direction}/> · {rfq.qty.toLocaleString('pt-BR')} t · janela {rfq.window}
-			</div>
-		</div>
-		<div class="page-actions">
-			<StatePill state={rfq.state}/>
-			<button type="button" class="btn btn-secondary" onclick={cancelRfq} disabled={actionBusy !== null || !canCancelRfq}>Cancelar RFQ</button>
-			<button type="button" class="btn btn-secondary" onclick={refreshRfq} disabled={actionBusy !== null || !canRefreshRfq}>Reenviar</button>
-			<button type="button" class="btn btn-accent" onclick={awardRfq} disabled={actionBusy !== null || !canAwardRfq}>
-				<Icon name="bolt"/>Fechar com melhor cotação
-			</button>
-		</div>
-	</div>
-
-	<div class="card" style="margin-bottom: 16px; padding: 12px 18px;">
-		<div class="steps">
-			{#if stateEvents.length}
-				{#each stateEvents as event (event.id)}
-					<div class="step done"><span class="dot"></span>{eventWhat(event)} · {eventWhen(event)}</div>
-				{/each}
-			{:else}
-				<div class="step current"><span class="dot"></span>Estado atual · {rfq.state}</div>
-			{/if}
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="RFQ award cockpit"
+		title={rfq.id}
+		subtitle={`${rfq.commodity} · ${rfq.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : rfq.intent === 'SPREAD' ? 'Spread' : 'Posição global'}`}
+		meta={headerMeta}
+		actions={[
+			{ label: 'Voltar', icon: 'arrowLeft', variant: 'secondary', href: '/rfq' },
+			{ label: 'Cancelar RFQ', variant: 'secondary', disabled: actionBusy !== null || !canCancelRfq, onclick: cancelRfq },
+			{ label: 'Reenviar', icon: 'refresh', variant: 'secondary', disabled: actionBusy !== null || !canRefreshRfq, onclick: refreshRfq },
+			{ label: actionBusy === 'award' ? 'Fechando...' : 'Fechar com melhor cotação', icon: 'bolt', variant: 'accent', disabled: actionBusy !== null || !canAwardRfq, onclick: awardRfq },
+		]}
+	/>
 
 	<div class="detail-grid">
 		<div class="stack gap-4">
+			<div class="rfq-command-strip">
+				<StatePill state={rfq.state}/>
+				<DirectionBadge dir={rfq.direction}/>
+				<Badge kind={best ? 'pos' : 'warn'} dot>{best ? 'Melhor cotação carregada' : 'Sem melhor cotação'}</Badge>
+				<Badge kind={pendingQuotes > 0 ? 'warn' : 'neutral'}>{pendingQuotes} pendente{pendingQuotes === 1 ? '' : 's'}</Badge>
+			</div>
+
 			<Card
-				title="Cotações recebidas"
-				sub="Cotações retornadas pelo backend"
+				title="Quote ladder"
+				sub="Ranking executável de preços, validade e elegibilidade"
 				noPad
 			>
 				{#snippet actions()}
 					<button type="button" class="btn-link">Reenviar pendentes</button>
 				{/snippet}
 
-				<table class="tbl">
+				<table class="tbl quote-ladder">
 					<thead>
 						<tr>
+							<th class="num">Rank</th>
 							<th>Contraparte</th>
 							<th class="num">Preço (USD/t)</th>
 							<th class="num">Spread vs melhor</th>
@@ -150,14 +159,15 @@
 						</tr>
 					</thead>
 					<tbody>
-						{#each quotes as q (q.id)}
+						{#each quotes as q, index (q.id)}
 							{@const isBest = q.status === 'best'}
 							{@const isPending = q.status === 'pending'}
 							<tr class:selected={isBest}>
+								<td class="num strong">{isPending ? '—' : index + 1}</td>
 								<td class="strong">
 									{q.cp}
 									{#if isBest}
-										<span style="margin-left: 6px; color: var(--orange); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;">Melhor</span>
+										<Badge kind="pos">Best executable</Badge>
 									{/if}
 								</td>
 								<td class="num strong">{q.price != null ? q.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
@@ -179,7 +189,15 @@
 							</tr>
 						{/each}
 						{#if quotes.length === 0}
-							<tr><td colspan="7" class="tbl-empty">Nenhuma cotação carregada</td></tr>
+							<tr>
+								<td colspan="8">
+									<EmptyState
+										icon="rfq"
+										title="Nenhuma cotação carregada"
+										message="A ladder será preenchida quando as contrapartes retornarem preços executáveis."
+									/>
+								</td>
+							</tr>
 						{/if}
 					</tbody>
 				</table>
@@ -209,31 +227,33 @@
 							</dd>
 						</dl>
 					{:else}
-						<div class="tbl-empty">Nenhuma melhor cotação carregada</div>
+						<EmptyState
+							icon="rfq"
+							title="Nenhuma melhor cotação carregada"
+							message="O notional será calculado quando houver uma cotação elegível marcada como best."
+						/>
 					{/if}
 				</Card>
 			</div>
 		</div>
 
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
-			<Card title="Histórico" sub="Trilha completa de auditoria">
-				<div class="feed">
-					{#each stateEvents as event (event.id)}
-						<div class="feed-item {eventKind(event)}">
-							<div class="icon"></div>
-							<div>
-								<div class="what">{eventWhat(event)}</div>
-								<div class="row gap-2">
-									<span class="when">{eventWhen(event)}</span>
-									<span class="who">· {event.user_id ?? event.triggering_counterparty_id ?? event.trigger ?? 'Sistema'}</span>
-								</div>
-							</div>
-						</div>
-					{/each}
-					{#if stateEvents.length === 0}
-						<div style="font-size: 12px; color: var(--muted);">Sem eventos de estado registrados.</div>
-					{/if}
-				</div>
+			<Card noPad>
+				<DecisionDossier
+					title="Award dossier"
+					verdict={awardVerdict}
+					verdictKind={awardVerdictKind}
+					items={[
+						{ label: 'Best quote', value: best?.price != null ? best.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' },
+						{ label: 'Eligible quotes', value: actionableQuotes },
+						{ label: 'Maker-checker', value: canManageRfq ? 'Risk Manager' : 'Restricted' },
+						{ label: 'Notional', value: best?.price != null ? `US$ ${(rfq.qty * best.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—' },
+					]}
+				/>
+			</Card>
+
+			<Card title="Execution timeline" sub="Trilha completa de auditoria">
+				<ExecutionTimeline events={timelineEvents} emptyTitle="Sem eventos de estado registrados"/>
 			</Card>
 
 			<Card title="Documentos">
@@ -247,7 +267,11 @@
 						</button>
 					{/each}
 					{#if documents.length === 0}
-						<div class="tbl-empty">Nenhum documento carregado para esta RFQ</div>
+						<EmptyState
+							icon="doc"
+							title="Nenhum documento carregado"
+							message="Confirmações, anexos e evidências de contraparte aparecerão aqui."
+						/>
 					{/if}
 				</div>
 			</Card>

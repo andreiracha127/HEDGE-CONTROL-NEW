@@ -46,8 +46,8 @@ describe('design-port route load contracts', () => {
 		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/cancel'");
 		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/refresh'");
 		expect(source).toContain("client.POST('/rfqs/{rfq_id}/actions/award'");
-		expect(source).toMatch(/onclick=\{cancelRfq\}/);
-		expect(source).toMatch(/onclick=\{refreshRfq\}/);
+		expect(source).toMatch(/onclick:\s*cancelRfq/);
+		expect(source).toMatch(/onclick:\s*refreshRfq|onclick=\{refreshRfq\}/);
 		expect(source).toMatch(/onclick=\{awardRfq\}/);
 	});
 
@@ -86,7 +86,7 @@ describe('design-port create affordances', () => {
 		const listSource = read('(protected)/rfq/+page.svelte');
 		const createSource = read('(protected)/rfq/new/+page.svelte');
 		expect(loadSource).toContain("client.GET('/orders'");
-		expect(listSource).toContain('href="/rfq/new"');
+		expect(listSource).toContain("href: '/rfq/new'");
 		expect(listSource).toContain("goto(`/rfq${query}`");
 		expect(createSource).toContain("client.POST('/rfqs'");
 		expect(createSource).toContain('authStore.userSub');
@@ -98,7 +98,8 @@ describe('design-port create affordances', () => {
 	it('shows the new counterparty entry point and posts the current CounterpartyCreate shape', () => {
 		const listSource = read('(protected)/counterparties/+page.svelte');
 		const createSource = read('(protected)/counterparties/new/+page.svelte');
-		expect(listSource).toContain('href="/counterparties/new"');
+		expect(listSource).toContain("href: '/counterparties/new'");
+		expect(listSource).toContain('actionHref="/counterparties/new"');
 		expect(listSource).toContain('Nova contraparte');
 		expect(createSource).toContain("client.POST('/counterparties'");
 		expect(createSource).toContain('type,');

@@ -3,8 +3,10 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	type Contract = Record<string, any>;
 	let { data } = $props();
@@ -97,15 +99,15 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Contratos</h1>
-			<div class="page-sub">Posições derivativas ativas e vencendo</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Contract blotter"
+		title="Contratos"
+		subtitle="Posições derivativas ativas, vencimentos próximos e marcação agregada."
+		meta={[`${activeContracts.length} ativos`, `${maturingContracts.length} vencendo em 30d`, `MTM ${fmtMtm(aggregateMtm)}`]}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Contratos ativos"                  value={String(activeContracts.length)} delta={`${maturingContracts.length} vencendo em 30d`} deltaKind="flat"/>
@@ -114,6 +116,7 @@
 		<Kpi label="Contratos no vencimento (30d)"     value={String(maturingContracts.length)} delta={`Notional ${fmtUsdMillions(maturingNotional)}`} deltaKind="flat"/>
 	</div>
 
+	<div class="institutional-blotter">
 	<Card noPad>
 		<div class="tbl-tools">
 			<div class="tabs-pill">
@@ -170,10 +173,19 @@
 					</tr>
 				{/each}
 				{#if filteredContracts.length === 0}
-					<tr><td colspan="11" class="tbl-empty">Nenhum contrato para o filtro selecionado</td></tr>
+					<tr>
+						<td colspan="11">
+							<EmptyState
+								icon="fileSign"
+								title="Nenhum contrato para o filtro selecionado"
+								message="Ajuste a visão de status, contraparte ou vencimento para revisar posições."
+							/>
+						</td>
+					</tr>
 				{/if}
 			</tbody>
 		</table>
 		<Pager from={filteredContracts.length > 0 ? 1 : 0} to={filteredContracts.length} total={filteredContracts.length}/>
 	</Card>
+	</div>
 </div>

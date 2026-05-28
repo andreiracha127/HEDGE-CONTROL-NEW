@@ -3,8 +3,11 @@
 	import { client } from '$lib/api/client';
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Card from '$lib/components/alcast/Card.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 
@@ -141,15 +144,15 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Aprovações</h1>
-			<div class="page-sub">Workflow de aprovações pendentes · {pendingApprovals.length} item{pendingApprovals.length === 1 ? '' : 's'} aguardando ação</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary" onclick={() => invalidateAll()}><Icon name="refresh"/>Atualizar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Maker-checker"
+		title="Aprovações"
+		subtitle={`Workflow de aprovações pendentes · ${pendingApprovals.length} item${pendingApprovals.length === 1 ? '' : 's'} aguardando ação`}
+		meta={[`${approvals.length} carregada${approvals.length === 1 ? '' : 's'}`, `${actionableApprovals.length} acionável${actionableApprovals.length === 1 ? '' : 'is'} pelo perfil`, `${expiringSoon} vencendo em 24h`]}
+		actions={[
+			{ label: 'Atualizar', icon: 'refresh', variant: 'secondary', onclick: () => invalidateAll() },
+		]}
+	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Pendentes" value={String(pendingApprovals.length)} delta={`${expiringSoon} vencendo em 24h`} deltaKind={expiringSoon > 0 ? 'neg' : 'flat'}/>
@@ -160,14 +163,20 @@
 
 	{#if approvals.length === 0}
 		<Card>
-			<div style="font-size: 13px; color: var(--muted);">Nenhuma aprovação pendente.</div>
+			<EmptyState
+				icon="shieldCheck"
+				title="Nenhuma aprovação pendente"
+				message="Quando uma mutação exceder alçada ou exigir maker-checker, o dossiê aparecerá aqui."
+				actionLabel="Atualizar"
+				onAction={() => invalidateAll()}
+			/>
 		</Card>
 	{:else}
 		<div class="stack gap-3">
 			{#each approvals as approval (approval.id)}
-				<div class="card" style="padding: 18px; display: grid; grid-template-columns: 4px 1fr auto; gap: 16px; align-items: center;">
+				<div class="card approval-decision-card" style="border-left-color: {barColor(approval)};">
 					<div style="align-self: stretch; background: {barColor(approval)}; border-radius: 2px;"></div>
-					<div>
+					<div class="approval-copy">
 						<div class="row gap-3" style="margin-bottom: 4px;">
 							<Badge kind={badgeKind(approval.status)} dot>{approval.status}</Badge>
 							<span class="mono" style="font-size: 11px; color: var(--muted);">{approval.id}</span>
@@ -195,25 +204,38 @@
 							</div>
 						{/if}
 					</div>
-					<div class="row gap-2">
-						{#if approval.status === 'pending' && canActOn(approval)}
-							<button
-								type="button"
-								class="btn btn-danger"
-								disabled={acting === approval.id}
-								onclick={() => {
-									rejecting = rejecting === approval.id ? null : approval.id;
-									reasonText = '';
-								}}
-							>
-								Rejeitar
-							</button>
-							<button type="button" class="btn btn-primary" disabled={acting === approval.id} onclick={() => grant(approval.id)}>
-								<Icon name="shieldCheck"/>{acting === approval.id ? 'Processando...' : 'Aprovar'}
-							</button>
-						{:else}
-							<button type="button" class="btn btn-secondary" disabled>Sem ação</button>
-						{/if}
+					<div class="approval-dossier">
+						<DecisionDossier
+							title="Decision dossier"
+							verdict={approval.status === 'pending' && canActOn(approval) ? 'Ready for decision' : approval.status}
+							verdictKind={approval.status === 'pending' && canActOn(approval) ? 'warn' : badgeKind(approval.status)}
+							items={[
+								{ label: 'Required role', value: requiredApproverRole(approval.mutation_type) },
+								{ label: 'Requested', value: money(approval.threshold_at_request) },
+								{ label: 'Configured limit', value: money(approval.threshold_config_value) },
+								{ label: 'Expires', value: dateTime(approval.expires_at) },
+							]}
+						/>
+						<div class="approval-actions">
+							{#if approval.status === 'pending' && canActOn(approval)}
+								<button
+									type="button"
+									class="btn btn-danger"
+									disabled={acting === approval.id}
+									onclick={() => {
+										rejecting = rejecting === approval.id ? null : approval.id;
+										reasonText = '';
+									}}
+								>
+									Rejeitar
+								</button>
+								<button type="button" class="btn btn-primary" disabled={acting === approval.id} onclick={() => grant(approval.id)}>
+									<Icon name="shieldCheck"/>{acting === approval.id ? 'Processando...' : 'Aprovar'}
+								</button>
+							{:else}
+								<Badge kind="neutral">Sem ação disponível</Badge>
+							{/if}
+						</div>
 					</div>
 				</div>
 			{/each}

@@ -4,8 +4,10 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Bar from '$lib/components/alcast/Bar.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	let { data } = $props();
 	const cashflow = $derived(data.cashflow);
 
@@ -86,17 +88,18 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Fluxo de caixa projetado</h1>
-			<div class="page-sub">Liquidações financeiras de derivativos · próximos 12 meses</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-			<button type="button" class="btn btn-primary">Sincronizar com SAP</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Cash control"
+		title="Fluxo de caixa projetado"
+		subtitle="Liquidações financeiras de derivativos, concentração e integração operacional."
+		meta={[`${cashflow.length} evento(s)`, `Net 90d ${fmtUsd(projectedNet90d)}`, nextSettlement ? `Próxima ${fmtShortDate(nextSettlement.date)}` : 'Sem liquidação futura']}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+			{ label: 'Sincronizar SAP', icon: 'refresh', variant: 'primary' },
+		]}
+	/>
 
+	<div class="institutional-monitoring">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Inflow projetado (90d)"  value={fmtUsd(projectedInflow90d)}  delta={`${cashflow90d.filter((c) => c.amount_usd > 0).length} liquidação(ões)`} deltaKind="pos"/>
 		<Kpi label="Outflow projetado (90d)" value={fmtUsd(projectedOutflow90d)} delta={`${cashflow90d.filter((c) => c.amount_usd < 0).length} liquidação(ões)`} deltaKind="neg"/>
@@ -106,49 +109,65 @@
 
 	<div class="grid-7-5" style="margin-bottom: 16px;">
 		<Card title="Linha do tempo" sub="Líquido por mês · USD">
-			<div style="position: relative; padding: 12px 0;">
-				<div class="row gap-3" style="align-items: flex-end; height: 160px;">
-					{#each months as m (m)}
-						{@const b = byMonth[m]}
-						{@const inH = (b.inflow / maxAbs) * 130}
-						{@const outH = (-b.outflow / maxAbs) * 130}
-						{@const net = b.inflow + b.outflow}
-						<div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">
-							<div class="tabular" style="font-size: 11px; color: {net >= 0 ? 'var(--pos)' : 'var(--neg)'}; font-weight: 500;">
-								{net >= 0 ? '+' : ''}{(net / 1000).toFixed(1)}k
+			{#if months.length}
+				<div style="position: relative; padding: 12px 0;">
+					<div class="row gap-3" style="align-items: flex-end; height: 160px;">
+						{#each months as m (m)}
+							{@const b = byMonth[m]}
+							{@const inH = (b.inflow / maxAbs) * 130}
+							{@const outH = (-b.outflow / maxAbs) * 130}
+							{@const net = b.inflow + b.outflow}
+							<div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+								<div class="tabular" style="font-size: 11px; color: {net >= 0 ? 'var(--pos)' : 'var(--neg)'}; font-weight: 500;">
+									{net >= 0 ? '+' : ''}{(net / 1000).toFixed(1)}k
+								</div>
+								<div style="width: 70%; display: flex; flex-direction: column; align-items: stretch; gap: 1px;">
+									<div style="height: {inH}px; background: var(--pos); border-radius: 2px 2px 0 0;"></div>
+									{#if outH > 0}
+										<div style="height: {outH}px; background: var(--neg); border-radius: 0 0 2px 2px;"></div>
+									{/if}
+								</div>
+								<div style="border-top: 1px solid var(--line-strong); align-self: stretch;"></div>
+								<div style="font-size: 11px; color: var(--muted);">{m.slice(5) + '/' + m.slice(2, 4)}</div>
 							</div>
-							<div style="width: 70%; display: flex; flex-direction: column; align-items: stretch; gap: 1px;">
-								<div style="height: {inH}px; background: var(--pos); border-radius: 2px 2px 0 0;"></div>
-								{#if outH > 0}
-									<div style="height: {outH}px; background: var(--neg); border-radius: 0 0 2px 2px;"></div>
-								{/if}
-							</div>
-							<div style="border-top: 1px solid var(--line-strong); align-self: stretch;"></div>
-							<div style="font-size: 11px; color: var(--muted);">{m.slice(5) + '/' + m.slice(2, 4)}</div>
-						</div>
-					{/each}
+						{/each}
+					</div>
 				</div>
-			</div>
+			{:else}
+				<EmptyState
+					icon="coins"
+					title="Nenhuma liquidação mensal carregada"
+					message="A timeline será preenchida quando houver eventos de caixa no horizonte selecionado."
+				/>
+			{/if}
 		</Card>
 
 		<Card title="Concentração por contraparte" sub="Inflow projetado · 90 dias">
-			<div class="stack" style="gap: 8px;">
-				{#each cpConcentration as r (r.cp)}
-					<div>
-						<div class="row gap-3" style="font-size: 12.5px; margin-bottom: 4px;">
-							<span style="width: 60px; font-weight: 500;">{r.cp}</span>
-							<Bar pct={r.pct} kind={r.pct > 40 ? 'warn' : 'pos'}/>
-							<span class="tabular" style="width: 90px; text-align: right;">US$ {(r.v / 1000).toFixed(1)}k</span>
-							<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct.toFixed(1)}%</span>
+			{#if cpConcentration.length}
+				<div class="stack" style="gap: 8px;">
+					{#each cpConcentration as r (r.cp)}
+						<div>
+							<div class="row gap-3" style="font-size: 12.5px; margin-bottom: 4px;">
+								<span style="width: 60px; font-weight: 500;">{r.cp}</span>
+								<Bar pct={r.pct} kind={r.pct > 40 ? 'warn' : 'pos'}/>
+								<span class="tabular" style="width: 90px; text-align: right;">US$ {(r.v / 1000).toFixed(1)}k</span>
+								<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct.toFixed(1)}%</span>
+							</div>
 						</div>
-					</div>
-				{/each}
-			</div>
-			<div class="divider"></div>
-			<div class="row gap-2" style="font-size: 11.5px;">
-				<Badge kind={cpConcentration[0]?.pct > 50 ? 'warn' : 'pos'} dot>Concentração</Badge>
-				<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem inflows no horizonte'}</span>
-			</div>
+					{/each}
+				</div>
+				<div class="divider"></div>
+				<div class="row gap-2" style="font-size: 11.5px;">
+					<Badge kind={cpConcentration[0]?.pct > 50 ? 'warn' : 'pos'} dot>Concentração</Badge>
+					<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem inflows no horizonte'}</span>
+				</div>
+			{:else}
+				<EmptyState
+					icon="users"
+					title="Sem concentração no horizonte"
+					message="Nenhum inflow projetado em 90 dias foi carregado para análise por contraparte."
+				/>
+			{/if}
 		</Card>
 	</div>
 
@@ -191,7 +210,19 @@
 						<td><StatePill state={c.status}/></td>
 					</tr>
 				{/each}
+				{#if cashflow.length === 0}
+					<tr>
+						<td colspan="8">
+							<EmptyState
+								icon="coins"
+								title="Nenhuma liquidação carregada"
+								message="Os eventos de caixa aparecerão aqui quando o backend retornar a projeção."
+							/>
+						</td>
+					</tr>
+				{/if}
 			</tbody>
 		</table>
 	</Card>
+	</div>
 </div>

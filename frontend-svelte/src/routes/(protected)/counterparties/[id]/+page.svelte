@@ -5,8 +5,10 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Bar from '$lib/components/alcast/Bar.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
 	type Contract = Record<string, any>;
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
@@ -74,59 +76,45 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div style="flex: 1;">
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/counterparties" class="btn btn-link"><Icon name="arrowLeft"/> Contrapartes</a>
-				<span style="color: var(--muted);">/</span>
-				<span class="mono" style="font-size: 12px; color: var(--muted);">{cp.id}</span>
-			</div>
-			<div class="row gap-3" style="align-items: center;">
-				<div style="width: 44px; height: 44px; border-radius: 8px; background: var(--navy); color: #fff; display: grid; place-items: center; font-size: 14px; font-weight: 600;">{cp.short.slice(0, 3)}</div>
-				<div>
-					<h1 class="page-title" style="margin: 0;">{cp.name}</h1>
-					<div class="row gap-2" style="margin-top: 4px;">
-						<Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{cp.rating}</Badge>
-						<StatePill state={cp.status}/>
-						<Badge kind="neutral">{cp.short}</Badge>
-						<span style="font-size: 11.5px; color: var(--muted);">· {fmtText(cp.type)} · {fmtText(cp.city)} · {fmtText(cp.country)}</span>
-					</div>
-				</div>
-			</div>
+	<PageHeader
+		eyebrow="Relationship diligence"
+		title={cp.name}
+		subtitle={`${cp.short} · ${fmtText(cp.type)} · ${fmtText(cp.city)} · ${fmtText(cp.country)}`}
+		meta={[cp.id, cp.rating, cp.status, `${usePct.toFixed(0)}% limite utilizado`]}
+		actions={[
+			{ label: 'Editar', variant: 'secondary' },
+			{ label: 'Histórico KYC', variant: 'secondary' },
+			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
+		]}
+	/>
+
+	<div class="institutional-counterparty-detail">
+		<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+			<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="credit_limit_usd"/>
+			<Kpi
+				label="Utilização"
+				value={`${usePct.toFixed(0)}`}
+				unit="%"
+				delta={`${fmtUsdMillions(cp.used)} em uso`}
+				deltaKind={usePct > 80 ? 'neg' : usePct > 60 ? 'flat' : 'pos'}
+			/>
+			<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="/contracts/hedge"/>
+			<Kpi
+				label="MTM (USD)"
+				value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+				delta="mtm_value carregado"
+				deltaKind={mtm >= 0 ? 'pos' : 'neg'}
+			/>
 		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary">Editar</button>
-			<button type="button" class="btn btn-secondary">Histórico KYC</button>
-			<a href="/rfq/new" class="btn btn-primary"><Icon name="plus"/>Nova RFQ</a>
+
+		<div class="tabs">
+			<button type="button" class="tab" class:active={tab === 'resumo'} onclick={() => (tab = 'resumo')}>Resumo</button>
+			<button type="button" class="tab" class:active={tab === 'contratos'} onclick={() => (tab = 'contratos')}>Contratos ({cpContracts.length})</button>
+			<button type="button" class="tab" class:active={tab === 'limites'} onclick={() => (tab = 'limites')}>Limites &amp; KYC</button>
+			<button type="button" class="tab" class:active={tab === 'atividade'} onclick={() => (tab = 'atividade')}>Atividade</button>
 		</div>
-	</div>
 
-	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="credit_limit_usd"/>
-		<Kpi
-			label="Utilização"
-			value={`${usePct.toFixed(0)}`}
-			unit="%"
-			delta={`${fmtUsdMillions(cp.used)} em uso`}
-			deltaKind={usePct > 80 ? 'neg' : usePct > 60 ? 'flat' : 'pos'}
-		/>
-		<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="/contracts/hedge"/>
-		<Kpi
-			label="MTM (USD)"
-			value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-			delta="mtm_value carregado"
-			deltaKind={mtm >= 0 ? 'pos' : 'neg'}
-		/>
-	</div>
-
-	<div class="tabs">
-		<button type="button" class="tab" class:active={tab === 'resumo'} onclick={() => (tab = 'resumo')}>Resumo</button>
-		<button type="button" class="tab" class:active={tab === 'contratos'} onclick={() => (tab = 'contratos')}>Contratos ({cpContracts.length})</button>
-		<button type="button" class="tab" class:active={tab === 'limites'} onclick={() => (tab = 'limites')}>Limites &amp; KYC</button>
-		<button type="button" class="tab" class:active={tab === 'atividade'} onclick={() => (tab = 'atividade')}>Atividade</button>
-	</div>
-
-	{#if tab === 'resumo'}
+		{#if tab === 'resumo'}
 		<div class="detail-grid">
 			<div class="stack gap-4">
 				<Card title="Identificação">
@@ -167,7 +155,15 @@
 								</tr>
 							{/each}
 							{#if cpContracts.length === 0}
-								<tr><td colspan="5" class="tbl-empty">Nenhuma operação carregada para esta contraparte</td></tr>
+								<tr>
+									<td colspan="5">
+										<EmptyState
+											icon="rfq"
+											title="Nenhuma operação carregada"
+											message="Contratos, RFQs e eventos operacionais desta contraparte aparecerão aqui."
+										/>
+									</td>
+								</tr>
 							{/if}
 						</tbody>
 					</table>
@@ -204,18 +200,27 @@
 							</div>
 						{/each}
 						{#if concentrationRows.length === 0}
-							<div class="tbl-empty">Nenhuma concentração carregada</div>
+							<EmptyState
+								icon="chart"
+								title="Nenhuma concentração carregada"
+								message="A concentração por commodity será exibida quando houver contratos associados."
+							/>
 						{/if}
 					</div>
 				</Card>
 
-				<Card title="Compliance">
-					<dl class="kv">
-						<dt>KYC</dt><dd>{fmtText(cp.kyc_status)}</dd>
-						<dt>Sanctions</dt><dd>{fmtText(cp.sanctions_status)}</dd>
-						<dt>Rating</dt><dd>{fmtText(cp.rating)}</dd>
-						<dt>Ativa</dt><dd>{cp.is_active === true ? 'Sim' : cp.is_active === false ? 'Não' : '—'}</dd>
-					</dl>
+				<Card noPad>
+					<DecisionDossier
+						title="Compliance dossier"
+						verdict={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'Blocked' : cp.kyc_status === 'approved' ? 'Eligible' : 'Review required'}
+						verdictKind={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'neg' : cp.kyc_status === 'approved' ? 'pos' : 'warn'}
+						items={[
+							{ label: 'KYC', value: fmtText(cp.kyc_status) },
+							{ label: 'Sanctions', value: fmtText(cp.sanctions_status) },
+							{ label: 'Rating', value: fmtText(cp.rating) },
+							{ label: 'Ativa', value: cp.is_active === true ? 'Sim' : cp.is_active === false ? 'Não' : '—' },
+						]}
+					/>
 				</Card>
 			</div>
 		</div>
@@ -245,7 +250,15 @@
 							</tr>
 						{/each}
 					{:else}
-						<tr><td colspan="8" class="tbl-empty">Nenhum contrato ativo com esta contraparte</td></tr>
+						<tr>
+							<td colspan="8">
+								<EmptyState
+									icon="fileSign"
+									title="Nenhum contrato ativo"
+									message="Contratos vinculados a esta contraparte serão listados neste blotter."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
@@ -256,22 +269,39 @@
 				<table class="tbl tbl-tight">
 					<thead><tr><th>Data</th><th class="num">Limite</th><th class="num">Δ</th><th>Aprovador</th></tr></thead>
 					<tbody>
-						<tr><td colspan="4" class="tbl-empty">Nenhum histórico de limite carregado</td></tr>
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="scale"
+									title="Nenhum histórico de limite carregado"
+									message="A trilha de aprovações e revisões de limite aparecerá aqui."
+								/>
+							</td>
+						</tr>
 					</tbody>
 				</table>
 			</Card>
 
 			<Card title="Trilha KYC">
 				<div class="feed">
-					<div class="tbl-empty">Nenhuma trilha KYC carregada</div>
+					<EmptyState
+						icon="shieldCheck"
+						title="Nenhuma trilha KYC carregada"
+						message="Checks de KYC, sanctions e revisões periódicas serão exibidos nesta linha do tempo."
+					/>
 				</div>
 			</Card>
 		</div>
 	{:else if tab === 'atividade'}
 		<Card title="Linha do tempo">
 			<div class="feed">
-				<div class="tbl-empty">Nenhuma atividade carregada para esta contraparte</div>
+				<EmptyState
+					icon="bell"
+					title="Nenhuma atividade carregada"
+					message="Atualizações operacionais, aprovações e eventos de relacionamento serão exibidos aqui."
+				/>
 			</div>
 		</Card>
 	{/if}
+	</div>
 </div>

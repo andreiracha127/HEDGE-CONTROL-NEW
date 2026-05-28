@@ -5,8 +5,10 @@
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
@@ -51,16 +53,16 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">RFQ · Solicitações de cotação</h1>
-			<div class="page-sub">Originar cotações com contrapartes e converter em ordens</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-			<a href="/rfq/new" class="btn btn-primary"><Icon name="plus"/>Nova RFQ</a>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="RFQ blotter"
+		title="Solicitações de cotação"
+		subtitle="Originar, monitorar e converter cotações com contrapartes aprovadas."
+		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `Notional cotado ${fmtUsdMillions(quotedNotional)}`]}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
+		]}
+	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="/rfqs" deltaKind="flat"/>
@@ -69,6 +71,7 @@
 		<Kpi label="Notional cotado" value={fmtUsdMillions(quotedNotional)} delta="qty × melhor preço" deltaKind="flat"/>
 	</div>
 
+	<div class="institutional-blotter">
 	<Card noPad>
 		<div class="tbl-tools">
 			<div class="tabs-pill">
@@ -121,10 +124,21 @@
 					</tr>
 				{/each}
 				{#if rfqs.length === 0}
-					<tr><td colspan="11" class="tbl-empty">Nenhuma RFQ para o filtro selecionado</td></tr>
+					<tr>
+						<td colspan="11">
+							<EmptyState
+								icon="rfq"
+								title="Nenhuma RFQ para o filtro selecionado"
+								message="Ajuste os filtros ou origine uma nova solicitação para a mesa."
+								actionLabel="Nova RFQ"
+								actionHref="/rfq/new"
+							/>
+						</td>
+					</tr>
 				{/if}
 			</tbody>
 		</table>
 		<Pager from={rfqs.length > 0 ? 1 : 0} to={rfqs.length} total={totalLoaded}/>
 	</Card>
+	</div>
 </div>

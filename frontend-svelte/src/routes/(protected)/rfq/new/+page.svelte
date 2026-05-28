@@ -2,9 +2,9 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
 	import Bar from '$lib/components/alcast/Bar.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
 	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
-	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Validation from '$lib/components/alcast/Validation.svelte';
 	import LegEditor, { type Leg, type LegSide } from '$lib/components/alcast/LegEditor.svelte';
 	import { goto } from '$app/navigation';
@@ -294,35 +294,20 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/rfq" class="btn btn-link"><Icon name="arrowLeft"/> RFQ</a>
-				<span style="color: var(--muted);">/</span>
-				<span style="font-size: 12px; color: var(--muted);">Nova solicitação</span>
-			</div>
-			<h1 class="page-title">Nova RFQ</h1>
-			<div class="page-sub">
-				{company} · {commodity} · {tradeType} · <DirectionBadge dir={direction}/>
-			</div>
-		</div>
-		<div class="page-actions">
-			<a href="/rfq" class="btn btn-ghost">Cancelar</a>
-			<button type="button" data-testid="rfq-preview-button" class="btn btn-secondary" onclick={previewText} disabled={!quantityValidation.ok || !legsReady || !datesReady}>Pré-visualizar texto</button>
-			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
-			<button
-				type="button"
-				class="btn btn-primary"
-				onclick={submit}
-				data-testid="rfq-submit-button"
-				disabled={submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady || !datesReady || !intentReady || !recipientsReady || !rfqRoleReady}
-			>
-				<Icon name="bolt"/>{submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`}
-			</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="RFQ execution room"
+		title="Nova RFQ"
+		subtitle={`${company} · ${commodity} · ${tradeType} · ${INTENT_LABEL[intent]}`}
+		meta={[direction, `${qtyNum.toLocaleString('pt-BR')} MT`, selectedCounterparties.length > 0 ? `${selectedCounterparties.length} contraparte(s)` : 'Sem contraparte', rfqRoleReady ? 'Risk manager' : 'Sem alçada']}
+		actions={[
+			{ label: 'Cancelar', variant: 'ghost', href: '/rfq' },
+			{ label: 'Pré-visualizar texto', variant: 'secondary', disabled: !quantityValidation.ok || !legsReady || !datesReady, onclick: previewText, testId: 'rfq-preview-button' },
+			{ label: 'Salvar rascunho', variant: 'secondary' },
+			{ label: submitting ? 'Enviando...' : `Enviar a ${selectedCounterparties.length} contraparte${selectedCounterparties.length === 1 ? '' : 's'}`, icon: 'bolt', variant: 'primary', disabled: submitting || !quantityValidation.ok || selectedCounterparties.length === 0 || !legsReady || !datesReady || !intentReady || !recipientsReady || !rfqRoleReady, onclick: submit, testId: 'rfq-submit-button' },
+		]}
+	/>
 
-	<div class="detail-grid">
+	<div class="detail-grid institutional-rfq-entry">
 		<div class="stack gap-4">
 			<Card title="1. Trade setup" sub="Empresa, commodity, intenção e quantidade">
 				<div class="field-grid">
@@ -479,21 +464,22 @@
 		</div>
 
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
-			<Card title="Resumo">
-				<dl class="kv">
-					<dt>Empresa</dt><dd>{company}</dd>
-					<dt>Commodity</dt><dd>{commodity}</dd>
-					<dt>Intenção</dt><dd>{INTENT_LABEL[intent]}</dd>
-					<dt>Trade</dt><dd>{tradeType}</dd>
-					<dt>Quantidade</dt><dd class="tabular">{qtyNum.toLocaleString('pt-BR')} MT</dd>
-					<dt>Direção</dt><dd><DirectionBadge dir={direction}/></dd>
-					{#if leg1.priceType}
-						<dt>Leg 1</dt><dd>{leg1.side === 'buy' ? 'Compra' : 'Venda'} · {leg1.priceType}</dd>
-					{/if}
-					{#if showLeg2 && leg2.priceType}
-						<dt>Leg 2</dt><dd>{leg2.side === 'buy' ? 'Compra' : 'Venda'} · {leg2.priceType}</dd>
-					{/if}
-				</dl>
+			<Card noPad>
+				<DecisionDossier
+					title="RFQ dispatch dossier"
+					verdict={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'Ready to dispatch' : 'Blocked by validation'}
+					verdictKind={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'pos' : 'warn'}
+					items={[
+						{ label: 'Empresa', value: company },
+						{ label: 'Commodity', value: commodity },
+						{ label: 'Intenção', value: INTENT_LABEL[intent] },
+						{ label: 'Trade', value: tradeType },
+						{ label: 'Quantidade', value: `${qtyNum.toLocaleString('pt-BR')} MT` },
+						{ label: 'Direção', value: direction },
+						{ label: 'Leg 1', value: leg1.priceType ? `${leg1.side === 'buy' ? 'Compra' : 'Venda'} · ${leg1.priceType}` : '—' },
+						{ label: 'Leg 2', value: showLeg2 && leg2.priceType ? `${leg2.side === 'buy' ? 'Compra' : 'Venda'} · ${leg2.priceType}` : showLeg2 ? '—' : 'N/A' },
+					]}
+				/>
 			</Card>
 
 			<Card title="Pré-validações">

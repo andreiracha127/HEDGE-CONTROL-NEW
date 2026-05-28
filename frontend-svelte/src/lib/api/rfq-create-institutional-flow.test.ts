@@ -94,7 +94,7 @@ describe('RFQ create page — production submit contract', () => {
 		expect(source).toContain("intent === 'GLOBAL_POSITION'");
 		expect(source).toContain("intent === 'COMMERCIAL_HEDGE' && !!orderId");
 		expect(source).toContain("intent === 'SPREAD' && !!buyTradeId && !!sellTradeId");
-		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
+		expect(source).toMatch(/disabled:\s*submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady/);
 	});
 
 	it('validates MT quantity at three-decimal precision before preview or submit', () => {
@@ -103,8 +103,8 @@ describe('RFQ create page — production submit contract', () => {
 		expect(source).not.toContain('step="0.001"');
 		expect(source).toContain('validateMtQuantity');
 		expect(source).toMatch(/quantityMtRaw\s*=\s*\$state<string>/);
-		expect(source).toContain('data-testid="rfq-preview-button"');
-		expect(source).toContain('data-testid="rfq-submit-button"');
+		expect(source).toContain("testId: 'rfq-preview-button'");
+		expect(source).toContain("testId: 'rfq-submit-button'");
 		expect(source).toContain('data-testid="rfq-quantity-error"');
 	});
 

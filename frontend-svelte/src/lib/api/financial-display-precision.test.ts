@@ -50,12 +50,12 @@ describe('RFQ create page — MT quantity precision', () => {
 
 	it('submits the canonical decimal string and gates preview/submit buttons', () => {
 		expect(source).toMatch(/quantity_mt:\s*quantityValidation\.canonical/);
-		const previewBtn = source.match(/<button\b[^>]*data-testid="rfq-preview-button"[^>]*>/);
-		const submitBtn = source.match(/<button\b[^>]*data-testid="rfq-submit-button"[^>]*>/);
-		expect(previewBtn, 'preview button element must be present').toBeTruthy();
-		expect(submitBtn, 'submit button element must be present').toBeTruthy();
-		expect(previewBtn![0]).toMatch(/disabled=\{!quantityValidation\.ok \|\| !legsReady \|\| !datesReady\}/);
-		expect(submitBtn![0]).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
+		expect(source).toContain("testId: 'rfq-preview-button'");
+		expect(source).toContain("testId: 'rfq-submit-button'");
+		expect(source).toMatch(/disabled:\s*!quantityValidation\.ok \|\| !legsReady \|\| !datesReady/);
+		expect(source).toMatch(/disabled:\s*submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady/);
+		const pageHeader = readFileSync(resolve(SRC, 'lib', 'components', 'alcast', 'PageHeader.svelte'), 'utf8');
+		expect(pageHeader).toContain('data-testid={action.testId}');
 	});
 
 	it('renders the validation error inline when quantity is invalid', () => {

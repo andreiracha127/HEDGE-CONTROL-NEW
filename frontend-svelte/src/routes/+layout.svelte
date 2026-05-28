@@ -2,10 +2,11 @@
 	import '../app.css';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { wsStore } from '$lib/stores/ws.svelte';
-	import { notifications, type Notification } from '$lib/stores/notifications.svelte';
+	import { notifications } from '$lib/stores/notifications.svelte';
 	import { page } from '$app/state';
 	import { clerk, initClerk } from '$lib/clerk';
 	import AppShell from '$lib/components/alcast/AppShell.svelte';
+	import ToastStack from '$lib/components/alcast/ToastStack.svelte';
 
 	let { children, data } = $props();
 
@@ -30,13 +31,6 @@
 		} finally {
 			authStore.logout();
 		}
-	}
-
-	function typeColor(type: Notification['type']): string {
-		if (type === 'success') return 'badge pos';
-		if (type === 'error') return 'badge neg';
-		if (type === 'warning') return 'badge warn';
-		return 'badge info';
 	}
 
 	const crumbs = $derived(crumbsFor(page.url.pathname));
@@ -82,11 +76,4 @@
 	</div>
 {/if}
 
-<div style="position: fixed; bottom: 16px; right: 16px; z-index: 50; display: flex; flex-direction: column; gap: 8px;">
-	{#each notifications.items as notification (notification.id)}
-		<div class={typeColor(notification.type)} style="padding: 10px 14px; box-shadow: var(--sh-pop);">
-			{notification.message}
-			<button onclick={() => notifications.remove(notification.id)} class="btn-ghost btn-sm" style="margin-left: 8px;">x</button>
-		</div>
-	{/each}
-</div>
+<ToastStack items={notifications.items} onRemove={(id) => notifications.remove(id)}/>

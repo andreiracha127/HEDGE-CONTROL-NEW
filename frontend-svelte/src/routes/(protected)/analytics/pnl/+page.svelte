@@ -3,7 +3,8 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Bar from '$lib/components/alcast/Bar.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 
 	let { data } = $props();
 	const pnl = $derived(data.pnl);
@@ -72,16 +73,17 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">P&amp;L</h1>
-			<div class="page-sub">Resultado realizado, não-realizado e atribuição</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Performance analytics"
+		title="P&L"
+		subtitle="Resultado realizado, não-realizado, atribuição e contribuintes financeiros."
+		meta={[`Snapshot ${data.snapshotDate}`, `${deals.length} deal(s)`, `Total ${fmtUsd(totals.total_pnl)}`]}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
+	<div class="institutional-analytics">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="P&L total"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
@@ -131,7 +133,15 @@
 						</tr>
 					{/each}
 					{#if attribution.length === 0}
-						<tr><td colspan="4" style="color: var(--muted);">Sem deals no período</td></tr>
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="chart"
+									title="Nenhuma atribuição no snapshot"
+									message="A tabela será preenchida quando houver deals com P&L retornados pelo backend."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 				<tfoot>
@@ -174,9 +184,18 @@
 					</tr>
 				{/each}
 				{#if topContrib.length === 0}
-					<tr><td colspan="8" style="color: var(--muted);">Sem contribuintes financeiros no período</td></tr>
+					<tr>
+						<td colspan="8">
+							<EmptyState
+								icon="coins"
+								title="Nenhum contribuinte financeiro no snapshot"
+								message="Os maiores impactos aparecerão aqui quando houver itens financeiros com P&L."
+							/>
+						</td>
+					</tr>
 				{/if}
 			</tbody>
 		</table>
 	</Card>
+	</div>
 </div>

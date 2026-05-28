@@ -2,9 +2,9 @@
 	import { goto } from '$app/navigation';
 	import { client } from '$lib/api/client';
 	import Card from '$lib/components/alcast/Card.svelte';
-	import Badge from '$lib/components/alcast/Badge.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
 	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 
 	let type = $state<'broker' | 'bank_br' | 'customer' | 'supplier'>('supplier');
@@ -31,6 +31,9 @@
 		customer: 'Cliente',
 		supplier: 'Fornecedor',
 	};
+	const limitUsd = $derived(Number(creditLimit || 0));
+	const limitSummary = $derived(`US$ ${(limitUsd / 1_000_000).toFixed(1)} M`);
+	const onboardingReady = $derived(Boolean(name && country && sanctions !== 'blocked'));
 
 	async function submit() {
 		submitting = true;
@@ -66,26 +69,19 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/counterparties" class="btn btn-link"><Icon name="arrowLeft"/> Contrapartes</a>
-				<span style="color: var(--muted);">/</span>
-				<span style="font-size: 12px; color: var(--muted);">Nova contraparte</span>
-			</div>
-			<h1 class="page-title">Nova contraparte</h1>
-			<div class="page-sub">Cadastro inicial — KYC, sanctions screening e limite serão revisados pelo time de Risco</div>
-		</div>
-		<div class="page-actions">
-			<a href="/counterparties" class="btn btn-ghost">Cancelar</a>
-			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
-			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting || !name || !country}>
-				<Icon name="plus"/>{submitting ? 'Criando...' : 'Criar contraparte'}
-			</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Counterparty onboarding"
+		title="Nova contraparte"
+		subtitle="Cadastro inicial com KYC, sanctions screening e limite para revisão de Risco."
+		meta={[TYPE_LABEL[type], `País ${country}`, `Limite ${limitSummary}`]}
+		actions={[
+			{ label: 'Cancelar', variant: 'ghost', href: '/counterparties' },
+			{ label: 'Salvar rascunho', variant: 'secondary' },
+			{ label: submitting ? 'Criando...' : 'Criar contraparte', icon: 'plus', variant: 'primary', disabled: submitting || !name || !country, onclick: submit },
+		]}
+	/>
 
-	<div class="detail-grid">
+	<div class="detail-grid institutional-counterparty">
 		<div class="stack gap-4">
 			<Card title="1. Identificação" sub="Dados cadastrais e jurídicos">
 				<div class="field-grid">
@@ -209,34 +205,21 @@
 		</div>
 
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
-			<Card title="Resumo">
-				<dl class="kv">
-					<dt>Tipo</dt><dd>{TYPE_LABEL[type]}</dd>
-					<dt>Razão social</dt><dd>{name || '—'}</dd>
-					<dt>Abreviação</dt><dd>{shortName || '—'}</dd>
-					<dt>País</dt><dd>{country}</dd>
-					<dt>Limite</dt><dd class="tabular">US$ {(Number(creditLimit || 0) / 1_000_000).toFixed(1)} M</dd>
-					<dt>Risco</dt>
-					<dd>
-						{#if riskRating === 'low'}
-							<Badge kind="pos" dot>Baixo</Badge>
-						{:else if riskRating === 'high'}
-							<Badge kind="neg" dot>Alto</Badge>
-						{:else}
-							<Badge kind="warn" dot>Médio</Badge>
-						{/if}
-					</dd>
-					<dt>Sanctions</dt>
-					<dd>
-						{#if sanctions === 'clear'}
-							<Badge kind="pos" dot>Clear</Badge>
-						{:else if sanctions === 'blocked'}
-							<Badge kind="neg" dot>Blocked</Badge>
-						{:else}
-							<Badge kind="warn" dot>Flagged</Badge>
-						{/if}
-					</dd>
-				</dl>
+			<Card noPad>
+				<DecisionDossier
+					title="Onboarding dossier"
+					verdict={onboardingReady ? 'Ready to submit' : 'Missing required fields'}
+					verdictKind={onboardingReady ? 'pos' : 'warn'}
+					items={[
+						{ label: 'Tipo', value: TYPE_LABEL[type] },
+						{ label: 'Razão social', value: name || '—' },
+						{ label: 'Abreviação', value: shortName || '—' },
+						{ label: 'País', value: country },
+						{ label: 'Limite', value: limitSummary },
+						{ label: 'Risco', value: riskRating },
+						{ label: 'Sanctions', value: sanctions },
+					]}
+				/>
 			</Card>
 
 			<Card title="Próximos passos">

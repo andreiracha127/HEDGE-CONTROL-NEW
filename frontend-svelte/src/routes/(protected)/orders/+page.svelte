@@ -3,8 +3,10 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	import { formatPrice, formatQuantityMT } from '$lib/utils/format';
 	let { data } = $props();
@@ -52,16 +54,16 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Ordens</h1>
-			<div class="page-sub">Execução de hedges e fechamento com contrapartes</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-			<a href="/orders/new" class="btn btn-primary"><Icon name="plus"/>Nova ordem</a>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Execution blotter"
+		title="Ordens"
+		subtitle="Execução de hedges, status de liquidação e vínculo com RFQs."
+		meta={[`${orders.length} ordem(ns)`, `Volume ${fmtUsd(totalVolume)}`, `${statusCount('pending')} pendentes`]}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+			{ label: 'Nova ordem', icon: 'plus', variant: 'primary', href: '/orders/new' },
+		]}
+	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Ordens carregadas" value={String(orders.length)} delta="/orders" deltaKind="flat"/>
@@ -70,6 +72,7 @@
 		<Kpi label="Pendentes" value={String(statusCount('pending'))} delta="status pending" deltaKind="flat"/>
 	</div>
 
+	<div class="institutional-blotter">
 	<Card noPad>
 		<div class="tbl-tools">
 			<div class="tabs-pill">
@@ -131,10 +134,21 @@
 					</tr>
 				{/each}
 				{#if filteredOrders.length === 0}
-					<tr><td colspan="10" class="tbl-empty">Nenhuma ordem para o filtro selecionado</td></tr>
+					<tr>
+						<td colspan="10">
+							<EmptyState
+								icon="clipboard"
+								title="Nenhuma ordem para o filtro selecionado"
+								message="Ajuste status, direção ou filtros de mercado para reabrir o blotter."
+								actionLabel="Nova ordem"
+								actionHref="/orders/new"
+							/>
+						</td>
+					</tr>
 				{/if}
 			</tbody>
 		</table>
 		<Pager from={filteredOrders.length > 0 ? 1 : 0} to={filteredOrders.length} total={filteredOrders.length}/>
 	</Card>
+	</div>
 </div>

@@ -75,7 +75,7 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('text_en: preview.text_en');
 		expect(source).toContain('text_pt: preview.text_pt');
 		expect(source).not.toMatch(/preview\.text(?!_)/);
-		expect(source).toMatch(/disabled=\{submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady\}/);
+		expect(source).toMatch(/disabled:\s*submitting \|\| !quantityValidation\.ok \|\| selectedCounterparties\.length === 0 \|\| !legsReady \|\| !datesReady \|\| !intentReady \|\| !recipientsReady \|\| !rfqRoleReady/);
 		expect(source).not.toContain("new Date().toISOString().slice(0, 10)");
 	});
 
@@ -126,7 +126,9 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain("const canManageRfq = $derived(authStore.hasRole('risk_manager'))");
 		expect(source).toContain("rfq.state === 'QUOTED' && !!best");
 		expect(source).toContain('const stateEvents = $derived(data.stateEvents ?? [])');
-		expect(source).toContain('{#each stateEvents as event');
+		expect(source).toContain('const timelineEvents = $derived');
+		expect(source).toContain('stateEvents.map((event)');
+		expect(source).toContain('<ExecutionTimeline events={timelineEvents}');
 		expect(source).not.toContain('Cotou 2.638,50');
 	});
 
@@ -245,7 +247,7 @@ describe('latest review feedback regressions', () => {
 		expect(contractDetail).not.toContain('notional * 0.1');
 		expect(contractDetail).toContain('c.market_mid');
 		expect(contractDetail).toContain('initialMarginRate');
-		expect(contractDetail).toContain('Nenhum histórico de MTM carregado para este contrato');
+		expect(contractDetail).toContain('Nenhum histórico de MTM carregado');
 		expect(rfqCreate).toContain('<dt>Alçada</dt><dd>Risk Manager</dd>');
 		expect(rfqCreate).not.toContain('Trader · até US$ 5 M');
 	});

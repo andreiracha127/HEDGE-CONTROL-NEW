@@ -1,7 +1,9 @@
 <script lang="ts">
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	import { client } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -9,6 +11,8 @@
 	let { data } = $props();
 	const auditLog = $derived(data.auditLog);
 	const auditLoadError = $derived(data.auditLoadError);
+	const auditTotal = $derived(auditLog.length);
+	const activeUsers = $derived(new Set(auditLog.map((event: Record<string, unknown>) => String(event.user ?? '')).filter(Boolean)).size);
 	type VerifyStatus = 'valid' | 'invalid' | 'unverifiable';
 	let verifyResults = $state<Record<string, VerifyStatus>>({});
 
@@ -55,18 +59,24 @@
 <div class="page">
 	{#if !authStore.hasRole('auditor')}
 		<Card>
-			<div data-testid="audit-forbidden" class="badge warn">Acesso restrito a auditoria.</div>
+			<div data-testid="audit-forbidden">
+				<EmptyState
+					icon="lock"
+					title="Acesso restrito a auditoria"
+					message="Somente auditores podem consultar o ledger imutável e verificar assinaturas."
+				/>
+			</div>
 		</Card>
 	{:else}
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Auditoria</h1>
-			<div class="page-sub">Trilha imutável de eventos · retenção 7 anos · CVM-compliant</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar trilha (CSV)</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Governança"
+		title="Auditoria"
+		subtitle="Trilha imutável de eventos · retenção 7 anos · CVM-compliant"
+		meta={[`${auditTotal} evento${auditTotal === 1 ? '' : 's'}`, `${activeUsers} usuário${activeUsers === 1 ? '' : 's'} ativo${activeUsers === 1 ? '' : 's'}`]}
+		actions={[
+			{ label: 'Exportar trilha (CSV)', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
 	<Card noPad>
 		<div class="tbl-tools">
@@ -75,11 +85,18 @@
 			<button type="button" class="chip"><Icon name="filter"/>Ação · todas</button>
 			<button type="button" class="chip"><Icon name="filter"/>Entidade</button>
 			<div class="sp"></div>
-			<span style="font-size: 11.5px; color: var(--muted);">1.247 eventos · 8 usuários ativos</span>
+			<span style="font-size: 11.5px; color: var(--muted);">{auditTotal} evento{auditTotal === 1 ? '' : 's'} · {activeUsers} usuário{activeUsers === 1 ? '' : 's'} ativo{activeUsers === 1 ? '' : 's'}</span>
 		</div>
 		{#if auditLoadError}
 			<div class="badge warn" style="margin: 12px 18px;">Falha ao carregar eventos: {auditLoadError}</div>
 		{/if}
+		{#if auditLog.length === 0}
+			<EmptyState
+				icon="doc"
+				title="Nenhum evento carregado"
+				message="Ajuste filtros, confirme permissão de auditoria ou recarregue a trilha."
+			/>
+		{:else}
 		<table class="tbl">
 			<thead>
 				<tr>
@@ -118,7 +135,8 @@
 				{/each}
 			</tbody>
 		</table>
-		<Pager from={1} to={10} total={1247}/>
+		<Pager from={1} to={Math.min(10, auditTotal)} total={auditTotal}/>
+		{/if}
 	</Card>
 	{/if}
 </div>

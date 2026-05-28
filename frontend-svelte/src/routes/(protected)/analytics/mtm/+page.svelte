@@ -2,7 +2,8 @@
 	import Kpi from '$lib/components/alcast/Kpi.svelte';
 	import Card from '$lib/components/alcast/Card.svelte';
 	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	type Contract = Record<string, any>;
 	let { data } = $props();
 	const contracts = $derived(data.contracts);
@@ -32,16 +33,17 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Mark-to-market e cenário</h1>
-			<div class="page-sub">Marcação a mercado oficial e simulação what-if</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Re-marcar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Valuation analytics"
+		title="Mark-to-market"
+		subtitle="Marcação oficial de contratos com MTM carregado diretamente do backend."
+		meta={[`${contracts.length} contrato(s)`, `${contractsWithMtm} com MTM`, `Agregado ${aggregateMtm == null ? '—' : fmtMtm(aggregateMtm)}`]}
+		actions={[
+			{ label: 'Re-marcar', icon: 'refresh', variant: 'secondary' },
+		]}
+	/>
 
+	<div class="institutional-analytics">
 	<div class="kpi-row cols-3" style="margin-bottom: 16px;">
 		<Kpi label="Contratos carregados" value={String(contracts.length)} delta="/contracts/hedge" deltaKind="flat"/>
 		<Kpi label="Contratos com MTM" value={String(contractsWithMtm)} delta="mtm_value presente" deltaKind="flat"/>
@@ -73,10 +75,19 @@
 						</tr>
 					{/each}
 					{#if contracts.length === 0}
-						<tr><td colspan="5" class="tbl-empty">Nenhum contrato carregado para marcação</td></tr>
+						<tr>
+							<td colspan="5">
+								<EmptyState
+									icon="chart"
+									title="Nenhum contrato carregado para marcação"
+									message="A tabela será preenchida quando /contracts/hedge retornar contratos com dados de marcação."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
 		</Card>
+	</div>
 	</div>
 </div>

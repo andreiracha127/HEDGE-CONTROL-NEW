@@ -3,7 +3,9 @@
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Bar from '$lib/components/alcast/Bar.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	import { canonicalCommodityCode, exposureBucketsFrom } from '$lib/alcast/route-data';
 	let { data } = $props();
@@ -49,17 +51,18 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<h1 class="page-title">Exposições</h1>
-			<div class="page-sub">Saldo comercial líquido por janela de entrega</div>
-		</div>
-		<div class="page-actions">
-			<button type="button" class="btn btn-secondary"><Icon name="refresh"/>Recalcular</button>
-			<button type="button" class="btn btn-secondary"><Icon name="download"/>Exportar</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Exposure control"
+		title="Exposições"
+		subtitle="Saldo comercial líquido, aderência à política e pendências de hedge."
+		meta={[`Comercial ${fmtMt(totalCommercial)} t`, `Residual ${fmtMt(totalResidual)} t`, `Política ${fmtPct(policyAdherence)}%`]}
+		actions={[
+			{ label: 'Recalcular', icon: 'refresh', variant: 'secondary' },
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
+	<div class="institutional-monitoring">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposures/list" deltaKind="flat"/>
 		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="exposures/list" deltaKind="flat"/>
@@ -127,7 +130,17 @@
 					</tr>
 				{/each}
 				{#if filteredExposureBuckets.length === 0}
-					<tr><td colspan="9" class="tbl-empty">Nenhuma exposição carregada para o filtro selecionado</td></tr>
+					<tr>
+						<td colspan="9">
+							<EmptyState
+								icon="scale"
+								title="Nenhuma exposição para o filtro selecionado"
+								message="Selecione outra commodity ou confirme a carga de exposures/list."
+								actionLabel="Criar RFQ de cobertura"
+								actionHref="/rfq/new"
+							/>
+						</td>
+					</tr>
 				{/if}
 			</tbody>
 		</table>
@@ -159,7 +172,15 @@
 						</tr>
 					{/each}
 					{#if netRows.length === 0}
-						<tr><td colspan="6" class="tbl-empty">Nenhuma exposição líquida carregada</td></tr>
+						<tr>
+							<td colspan="6">
+								<EmptyState
+									icon="chart"
+									title="Nenhuma exposição líquida carregada"
+									message="A visão net será exibida quando /exposures/net retornar linhas."
+								/>
+							</td>
+						</tr>
 					{/if}
 				</tbody>
 			</table>
@@ -179,9 +200,14 @@
 					</div>
 				{/each}
 				{#if hedgeTasks.length === 0}
-					<div class="tbl-empty">Nenhuma pendência carregada</div>
+					<EmptyState
+						icon="shieldCheck"
+						title="Nenhuma pendência carregada"
+						message="Quando houver desvios de cobertura ou recomendações de hedge, eles aparecerão aqui."
+					/>
 				{/if}
 			</div>
 		</Card>
+	</div>
 	</div>
 </div>

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import Card from '$lib/components/alcast/Card.svelte';
 	import Badge from '$lib/components/alcast/Badge.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
 	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Validation from '$lib/components/alcast/Validation.svelte';
 	import { goto } from '$app/navigation';
 	import { client } from '$lib/api/client';
@@ -76,26 +77,19 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div>
-			<div class="row gap-2" style="margin-bottom: 4px;">
-				<a href="/orders" class="btn btn-link"><Icon name="arrowLeft"/> Ordens</a>
-				<span style="color: var(--muted);">/</span>
-				<span style="font-size: 12px; color: var(--muted);">Nova ordem comercial</span>
-			</div>
-			<h1 class="page-title">Nova ordem comercial</h1>
-			<div class="page-sub">Registra a fonte da exposição · {isPO ? 'compra de matéria-prima (PO)' : 'venda de produto final (SO)'}</div>
-		</div>
-		<div class="page-actions">
-			<a href="/orders" class="btn btn-ghost">Cancelar</a>
-			<button type="button" class="btn btn-secondary">Salvar rascunho</button>
-			<button type="button" class="btn btn-primary" onclick={submit} disabled={submitting || !reference || !cp || qtyNum <= 0}>
-				<Icon name="shieldCheck"/>{submitting ? 'Criando...' : 'Criar ordem'}
-			</button>
-		</div>
-	</div>
+	<PageHeader
+		eyebrow="Commercial exposure entry"
+		title="Nova ordem comercial"
+		subtitle={`Registra a fonte da exposição: ${isPO ? 'compra de matéria-prima (PO)' : 'venda de produto final (SO)'}.`}
+		meta={[orderType, commodity, `${qtyNum.toLocaleString('pt-BR')} MT`, `${currency} ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`]}
+		actions={[
+			{ label: 'Cancelar', variant: 'ghost', href: '/orders' },
+			{ label: 'Salvar rascunho', variant: 'secondary' },
+			{ label: submitting ? 'Criando...' : 'Criar ordem', icon: 'shieldCheck', variant: 'primary', disabled: submitting || !reference || !cp || qtyNum <= 0, onclick: submit },
+		]}
+	/>
 
-	<div class="detail-grid">
+	<div class="detail-grid institutional-order-entry">
 		<div class="stack gap-4">
 			<Card>
 				{#snippet title()}
@@ -226,24 +220,22 @@
 		</div>
 
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
-			<Card title="Resumo">
-				<dl class="kv">
-					<dt>Tipo</dt>
-					<dd>
-						{#if isPO}
-							<Badge kind="info" dot>PO · Compra</Badge>
-						{:else}
-							<Badge kind="pos" dot>SO · Venda</Badge>
-						{/if}
-					</dd>
-					<dt>Referência</dt><dd class="mono">{reference || '—'}</dd>
-					<dt>Contraparte</dt><dd>{selectedCounterpartyLabel}</dd>
-					<dt>Commodity</dt><dd>{commodity}</dd>
-					<dt>Quantidade</dt><dd class="tabular">{qtyNum.toLocaleString('pt-BR')} MT</dd>
-					<dt>Preço</dt><dd class="tabular">{priceNum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} {currency}/MT</dd>
-					<dt>Notional</dt><dd class="tabular strong">{currency} {notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</dd>
-					<dt>Entrega</dt><dd>{delivery.split('-').reverse().join('/')}</dd>
-				</dl>
+			<Card noPad>
+				<DecisionDossier
+					title="Order entry dossier"
+					verdict={reference && cp && qtyNum > 0 ? 'Ready to create' : 'Missing required fields'}
+					verdictKind={reference && cp && qtyNum > 0 ? 'pos' : 'warn'}
+					items={[
+						{ label: 'Tipo', value: isPO ? 'PO · Compra' : 'SO · Venda' },
+						{ label: 'Referência', value: reference || '—' },
+						{ label: 'Contraparte', value: selectedCounterpartyLabel },
+						{ label: 'Commodity', value: commodity },
+						{ label: 'Quantidade', value: `${qtyNum.toLocaleString('pt-BR')} MT` },
+						{ label: 'Preço', value: `${priceNum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} ${currency}/MT` },
+						{ label: 'Notional', value: `${currency} ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}` },
+						{ label: 'Entrega', value: delivery.split('-').reverse().join('/') },
+					]}
+				/>
 			</Card>
 
 			<Card title="Impacto em exposições">
@@ -277,6 +269,5 @@
 		</div>
 	</div>
 </div>
-
 
 

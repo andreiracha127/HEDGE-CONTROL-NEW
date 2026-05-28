@@ -1,11 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 </script>
 
-<div class="flex h-full items-center justify-center">
-	<div class="text-center">
-		<h1 class="text-4xl font-bold text-gray-500">{page.status}</h1>
-		<p class="mt-2 text-gray-500">{page.error?.message ?? 'RFQ não encontrada'}</p>
-		<a href="/rfq" class="mt-4 inline-block text-sm text-blue-700 hover:underline">← Voltar para RFQs</a>
-	</div>
+<div class="page error-surface">
+	<EmptyState
+		icon="rfq"
+		title={`${page.status} · RFQ indisponível`}
+		message={page.error?.message ?? 'A solicitação não foi encontrada ou não está acessível para este perfil.'}
+		actionLabel="Voltar para RFQs"
+		actionHref="/rfq"
+	/>
 </div>
