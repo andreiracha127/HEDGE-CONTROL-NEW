@@ -149,13 +149,14 @@ describe('live API row normalizers', () => {
 		expect(
 			normalizeAuditEvent({
 				event_type: 'rfq_invitation_rejected',
+				entity_type: 'rfq',
 				entity_id: 'rfq-1',
 				timestamp_utc: '2026-05-27T12:00:00Z',
 				payload: { detail: 'Counterparty declined quote' },
 			}),
 		).toMatchObject({
 			action: 'Convite recusado',
-			entity: 'Registro operacional',
+			entity: 'RFQ · rfq-1',
 			detail: 'Counterparty declined quote',
 		});
 	});

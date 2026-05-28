@@ -150,7 +150,7 @@
 								<tr>
 									<td>{fmtDate(contract.created_at ?? contract.traded)}</td>
 									<td>Contrato</td>
-									<td>{contract.contract_number ?? 'Contrato sem número'}</td>
+									<td>{contract.contract_number ?? contract.reference ?? 'Contrato sem número'}</td>
 									<td class="num">{fmtQty(contract)}</td>
 									<td><StatePill state={contract.status}/></td>
 								</tr>
@@ -238,7 +238,7 @@
 					{#if cpContracts.length}
 						{#each cpContracts as c (c.id)}
 							<tr>
-								<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? 'Contrato sem número'}</a></td>
+								<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? c.reference ?? 'Contrato sem número'}</a></td>
 								<td><CommodityChip code={c.commodity}/></td>
 								<td>{c.type}</td>
 								<td class="num">{fmtQty(c)}</td>

@@ -1,6 +1,7 @@
 import { error } from '@sveltejs/kit';
 import {
 	actionLabel,
+	auditEntityLabel,
 	displayActor,
 	entityDisplayName,
 	safeBusinessText,
@@ -210,7 +211,7 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 		user: displayActor(row.user ?? row.actor_subject, 'Sistema'),
 		role: safeBusinessText(row.actor_role ?? row.role, 'Perfil operacional'),
 		action: actionLabel(row.event_type ?? row.action),
-		entity: safeBusinessText(row.entity ?? row.entity_name, 'Registro operacional'),
+		entity: auditEntityLabel(row.entity_type, row.entity_id),
 		detail: safeBusinessText(payload.detail ?? payload.reason ?? row.detail ?? row.description, 'Evento registrado'),
 	};
 }

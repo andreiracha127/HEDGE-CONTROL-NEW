@@ -3,6 +3,7 @@ import { exposureBucketsFrom, exposureCommodityRowsFrom, items, normalizeCommodi
 import { authStore } from '$lib/stores/auth.svelte';
 
 export const load = async () => {
+	await authStore.whenRestored();
 	if (!authStore.isAuthenticated) {
 		return {
 			globalExposure: null,

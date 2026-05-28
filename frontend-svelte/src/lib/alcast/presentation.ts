@@ -43,6 +43,31 @@ const STATE_MAP: Record<string, BadgePresentation> = {
 	INVALID: { kind: 'neg', label: 'Inválida' },
 };
 
+const AUDIT_ENTITY_TYPE_MAP: Record<string, string> = {
+	counterparty: 'Contraparte',
+	hedge_contract: 'Contrato',
+	hedge_contract_settlement: 'Liquidação de contrato',
+	order: 'Ordem',
+	rfq: 'RFQ',
+	rfq_quote: 'Cotação RFQ',
+	deal: 'Negócio',
+	deal_link: 'Vínculo de negócio',
+	deal_pnl_snapshot: 'Snapshot de P&L do negócio',
+	linkage: 'Vínculo',
+	sopo_link: 'Vínculo SO/PO',
+	exposure: 'Exposição',
+	exposure_reconciliation: 'Reconciliação de exposição',
+	mtm_snapshot: 'Snapshot de MTM',
+	pl_snapshot: 'Snapshot de P&L',
+	cash_settlement_price: 'Preço de liquidação',
+	cashflow_baseline_snapshot: 'Baseline de caixa',
+	finance_pipeline_run: 'Execução de pipeline',
+	finance_pipeline_step: 'Etapa de pipeline',
+	hedge_task: 'Tarefa de hedge',
+	inbound_webhook_message: 'Mensagem recebida',
+	workflow_approval_request: 'Solicitação de aprovação',
+};
+
 const RATING_MAP: Record<string, string> = {
 	LOW: 'Baixo',
 	MEDIUM: 'Médio',
@@ -132,6 +157,32 @@ export function actionLabel(value: unknown): string {
 	const mapped = ACTION_MAP[raw.toUpperCase().replace(/[^A-Z0-9]+/g, '_')];
 	if (mapped) return mapped;
 	return safeBusinessText(raw, 'Evento registrado');
+}
+
+function entityTypeLabel(value: unknown): string {
+	const raw = asText(value).toLowerCase();
+	if (!raw) return '';
+	const mapped = AUDIT_ENTITY_TYPE_MAP[raw];
+	if (mapped) return mapped;
+	const humanized = raw.replace(/_/g, ' ').trim();
+	return humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : '';
+}
+
+// Audit ledger surface: auditors must keep the link between a signed event and
+// the record it mutated. Unlike other surfaces we deliberately preserve the raw
+// entity_id (it is the reconstruction/filter key), prefixed by a business label
+// for the entity_type.
+export function auditEntityLabel(
+	entityType: unknown,
+	entityId: unknown,
+	fallback = 'Registro operacional',
+): string {
+	const typeLabel = entityTypeLabel(entityType);
+	const idText = asText(entityId);
+	if (typeLabel && idText) return `${typeLabel} · ${idText}`;
+	if (typeLabel) return typeLabel;
+	if (idText) return idText;
+	return fallback;
 }
 
 export function entityDisplayName(entity: EntityLike, fallback = 'Registro sem nome'): string {

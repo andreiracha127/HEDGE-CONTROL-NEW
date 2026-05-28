@@ -151,7 +151,7 @@
 			<tbody>
 				{#each filteredContracts as c (c.id)}
 					<tr>
-						<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? 'Contrato sem número'}</a></td>
+						<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? c.reference ?? 'Contrato sem número'}</a></td>
 						<td><CommodityChip code={c.commodity}/></td>
 						<td>{c.type}</td>
 						<td>

@@ -12,7 +12,7 @@ describe('audit load', () => {
 	});
 
 	test('loads audit events from the API', async () => {
-		get.mockResolvedValueOnce({ data: { events: [{ event_type: 'rfq.create', entity_id: 'rfq-1', timestamp_utc: '2026-05-27T00:00:00Z' }] } });
+		get.mockResolvedValueOnce({ data: { events: [{ event_type: 'rfq.create', entity_type: 'rfq', entity_id: 'rfq-1', timestamp_utc: '2026-05-27T00:00:00Z' }] } });
 
 		const { load } = await import('./+page');
 		const result = await load();
@@ -21,7 +21,7 @@ describe('audit load', () => {
 		expect(result.auditLog[0]).toMatchObject({
 			action: 'RFQ criada',
 			detail: 'Evento registrado',
-			entity: 'Registro operacional',
+			entity: 'RFQ · rfq-1',
 			role: 'Perfil operacional',
 			ts: '2026-05-27T00:00:00Z',
 			user: 'Sistema',

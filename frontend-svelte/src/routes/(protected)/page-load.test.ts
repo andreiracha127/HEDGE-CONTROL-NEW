@@ -16,6 +16,12 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		get isRestoring() {
 			return isRestoring;
 		},
+		whenRestored: async () => {
+			if (isRestoring) {
+				isRestoring = false;
+				isAuthenticated = true;
+			}
+		},
 	},
 }));
 
@@ -72,6 +78,7 @@ describe('dashboard load', () => {
 
 	test('does not call protected APIs while the session is unauthenticated', async () => {
 		isAuthenticated = false;
+		isRestoring = false;
 
 		const { load } = await import('./+page');
 		const result = await load();
@@ -81,5 +88,21 @@ describe('dashboard load', () => {
 		expect(result.rfqs).toEqual([]);
 		expect(result.commodities).toEqual([]);
 		expect(result.exposureBuckets).toEqual([]);
+	});
+
+	test('waits for session restoration before short-circuiting the dashboard', async () => {
+		isAuthenticated = false;
+		isRestoring = true;
+		get
+			.mockResolvedValueOnce({ data: { commercial_net_mt: '10.000' } })
+			.mockResolvedValueOnce({ data: { items: [] } })
+			.mockResolvedValueOnce({ data: { items: [], total: 0 } })
+			.mockResolvedValueOnce({ data: [] });
+
+		const { load } = await import('./+page');
+		const result = await load();
+
+		expect(get).toHaveBeenCalledWith('/exposures/global');
+		expect((result.globalExposure as any).commercial_net_mt).toBe('10.000');
 	});
 });

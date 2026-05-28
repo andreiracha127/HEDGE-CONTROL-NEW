@@ -54,6 +54,7 @@ class AuthStore {
 	#refreshAbortController: AbortController | null = null;
 	#redirecting = false;
 	#isRestoring = $state(false);
+	#restorePromise: Promise<void> | null = null;
 	#generation = 0;
 
 	readonly isAuthenticated = $derived(this.#claims !== null);
@@ -267,7 +268,14 @@ class AuthStore {
 			this.#getStorage()?.getItem(SESSION_CSRF_KEY) ?? this.#readCookie(CSRF_COOKIE_NAME);
 		if (!this.#csrfToken) return;
 		this.#isRestoring = true;
-		void this.#restoreBackendIdentity();
+		this.#restorePromise = this.#restoreBackendIdentity();
+	}
+
+	// Resolves once any in-flight cookie-backed session restore has settled, so
+	// callers (e.g. page loads) can read a stable isAuthenticated instead of
+	// short-circuiting against the transient false during restoration.
+	async whenRestored(): Promise<void> {
+		if (this.#restorePromise) await this.#restorePromise;
 	}
 
 	#applySession(

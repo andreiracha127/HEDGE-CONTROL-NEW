@@ -83,7 +83,7 @@ export async function searchGlobal(query: string, client: SearchClient): Promise
 				const contract = normalizeContract(row);
 				if (!row.id) return null;
 				return {
-					label: safeBusinessText(row.contract_number, `Contrato ${displayCommodityCode(row.commodity)}`),
+					label: safeBusinessText(row.contract_number ?? row.reference, `Contrato ${displayCommodityCode(row.commodity)}`),
 					detail: `${safeBusinessText(contract.cp, 'Contraparte não informada')} · ${stateBadge(contract.status).label}`,
 					href: `/contracts/${row.id}`,
 					icon: 'fileSign',
