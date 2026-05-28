@@ -197,7 +197,7 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('avg_entry_price: price');
 		expect(source).toContain('pricing_convention');
 		expect(source).toContain('variablePricingPayload');
-		expect(source).toContain('reference_month: referenceMonth');
+		expect(source).toContain('reference_month: avgReferenceMonth');
 		expect(source).toContain('observation_date_start: observationStart');
 		expect(source).toContain('fixing_date: fixingDate');
 		expect(source).toMatch(/priceType === 'fixed'[\s\S]+:\s*\{[\s\S]*avg_entry_price: price[\s\S]*pricing_convention/);

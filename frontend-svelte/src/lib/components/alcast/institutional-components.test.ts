@@ -64,7 +64,7 @@ describe('institutional foundation components', () => {
 	});
 
 	it('opens a command center from the topbar search trigger', async () => {
-		render(Topbar, { props: { crumbs: ['Hedge Control', 'Visão geral'] } });
+		render(Topbar, { props: { crumbs: ['Hedge Control', 'Visão geral'], userRoles: ['trader', 'risk_manager', 'auditor'] } });
 
 		await fireEvent.click(screen.getByRole('button', { name: /Buscar/i }));
 

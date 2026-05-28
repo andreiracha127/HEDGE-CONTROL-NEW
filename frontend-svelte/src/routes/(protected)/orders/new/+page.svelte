@@ -21,7 +21,7 @@
 	let currency = $state('USD');
 	let cp = $state('');
 	let delivery = $state('2026-06-30');
-	let referenceMonth = $state('2026-06');
+	let avgReferenceMonth = $state('2026-06');
 	let observationStart = $state('2026-06-01');
 	let observationEnd = $state('2026-06-30');
 	let fixingDate = $state('2026-06-30');
@@ -35,7 +35,7 @@
 	const hasPrice = $derived(price.trim() !== '' && Number.isFinite(Number(price)));
 	const variablePricingPayload = $derived.by(() => {
 		if (priceType !== 'variable') return {};
-		if (pricingConv === 'AVG') return { reference_month: referenceMonth };
+		if (pricingConv === 'AVG') return { reference_month: avgReferenceMonth };
 		if (pricingConv === 'AVGInter') {
 			return {
 				observation_date_start: observationStart,
@@ -46,7 +46,7 @@
 	});
 	const pricingWindowReady = $derived.by(() => {
 		if (priceType !== 'variable') return true;
-		if (pricingConv === 'AVG') return !!referenceMonth;
+		if (pricingConv === 'AVG') return !!avgReferenceMonth;
 		if (pricingConv === 'AVGInter') return !!observationStart && !!observationEnd;
 		return !!fixingDate;
 	});
@@ -214,7 +214,7 @@
 					{#if priceType === 'variable' && pricingConv === 'AVG'}
 						<div class="field">
 							<label class="field-label" for="order-reference-month">Mês de referência <span class="req">*</span></label>
-							<input id="order-reference-month" class="input" type="month" bind:value={referenceMonth}/>
+							<input id="order-reference-month" class="input" type="month" bind:value={avgReferenceMonth}/>
 						</div>
 					{:else if priceType === 'variable' && pricingConv === 'AVGInter'}
 						<div class="field">
