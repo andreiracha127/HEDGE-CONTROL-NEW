@@ -27,12 +27,19 @@
 	];
 
 	const ORDER_TYPES: { value: LegOrderType; label: string }[] = [
-		{ value: 'At Market', label: 'At Market (a mercado)' },
-		{ value: 'Limit',     label: 'Limit (limitada)' },
-		{ value: 'Resting',   label: 'Resting (em aberto)' },
+		{ value: 'At Market', label: 'A mercado' },
+		{ value: 'Limit',     label: 'Limitada' },
+		{ value: 'Resting',   label: 'Em aberto' },
 	];
 
-	const VALIDITIES = ['Day', 'GTC', '3 Hours', '6 Hours', '12 Hours', 'Until Further Notice'];
+	const VALIDITIES = [
+		{ value: 'Day', label: 'Dia' },
+		{ value: 'GTC', label: 'GTC' },
+		{ value: '3 Hours', label: '3 horas' },
+		{ value: '6 Hours', label: '6 horas' },
+		{ value: '12 Hours', label: '12 horas' },
+		{ value: 'Until Further Notice', label: 'Até nova instrução' },
+	];
 
 	const MONTHS_PT = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 	const MONTHS_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -66,7 +73,7 @@
 
 	<div class="field-grid">
 		<div class="field">
-			<div class="field-label">Side <span class="req">*</span></div>
+			<div class="field-label">Lado <span class="req">*</span></div>
 			<div class="radio-group">
 				<button type="button" class:active={leg.side === 'buy'} class:buy={leg.side === 'buy'} onclick={() => onSideChange('buy')}>Compra</button>
 				<button type="button" class:active={leg.side === 'sell'} class:sell={leg.side === 'sell'} onclick={() => onSideChange('sell')}>Venda</button>
@@ -74,7 +81,7 @@
 		</div>
 
 		<div class="field">
-			<label class="field-label" for={`${idPrefix}-price-type`}>Price type <span class="req">*</span></label>
+			<label class="field-label" for={`${idPrefix}-price-type`}>Tipo de preço <span class="req">*</span></label>
 			<select id={`${idPrefix}-price-type`} class="select" bind:value={leg.priceType}>
 				<option value="">— Selecione —</option>
 				{#each PRICE_TYPES as pt (pt.value)}
@@ -115,7 +122,7 @@
 
 		{#if showFix}
 			<div class="field">
-				<label class="field-label" for={`${idPrefix}-fixing-date`}>Fixing date</label>
+				<label class="field-label" for={`${idPrefix}-fixing-date`}>Data de fixing</label>
 				<input id={`${idPrefix}-fixing-date`} class="input" type="date" readonly={leg.fixingDateInherited} bind:value={leg.fixingDate}/>
 				{#if leg.fixingDateInherited}
 					<div class="field-help">Herdado da leg variável (oposta)</div>
@@ -134,8 +141,8 @@
 				<div class="field">
 					<label class="field-label" for={`${idPrefix}-validity`}>Validade</label>
 					<select id={`${idPrefix}-validity`} class="select" bind:value={leg.orderValidity}>
-						{#each VALIDITIES as v (v)}
-							<option value={v}>{v}</option>
+						{#each VALIDITIES as v (v.value)}
+							<option value={v.value}>{v.label}</option>
 						{/each}
 					</select>
 				</div>
@@ -152,5 +159,4 @@
 		{/if}
 	</div>
 </div>
-
 

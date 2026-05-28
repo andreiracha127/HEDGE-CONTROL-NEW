@@ -100,7 +100,7 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Contract blotter"
+		eyebrow="Carteira de contratos"
 		title="Contratos"
 		subtitle="Posições derivativas ativas, vencimentos próximos e marcação agregada."
 		meta={[`${activeContracts.length} ativos`, `${maturingContracts.length} vencendo em 30d`, `MTM ${fmtMtm(aggregateMtm)}`]}
@@ -151,7 +151,7 @@
 			<tbody>
 				{#each filteredContracts as c (c.id)}
 					<tr>
-						<td class="strong mono"><a href={`/contracts/${c.id}`}>{c.id}</a></td>
+						<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? 'Contrato sem número'}</a></td>
 						<td><CommodityChip code={c.commodity}/></td>
 						<td>{c.type}</td>
 						<td>

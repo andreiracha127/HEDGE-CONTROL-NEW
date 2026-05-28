@@ -8,6 +8,7 @@
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
 	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { ratingLabel } from '$lib/alcast/presentation';
 	type HeaderAction = {
 		label: string;
 		icon?: IconName;
@@ -31,11 +32,12 @@
 	const totalUsed = $derived(counterparties.reduce((sum, cp) => sum + cp.used, 0));
 	const usagePct = $derived(totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0);
 	const topConcentration = $derived(totalLimit > 0 ? (Math.max(0, ...counterparties.map((cp) => cp.used)) / totalLimit) * 100 : 0);
+
 </script>
 
 <div class="page">
 	<PageHeader
-		eyebrow="Relationship control"
+		eyebrow="Gestão de relacionamento"
 		title="Contrapartes"
 		subtitle="Limites de crédito, rating, exposição corrente e elegibilidade operacional."
 		meta={[`${counterparties.length} contraparte(s)`, `${activeCount} ativas`, `Utilização ${usagePct.toFixed(1)}%`]}
@@ -47,7 +49,7 @@
 			<Kpi label="Contrapartes ativas"     value={String(activeCount)} delta={`${reviewCount} em análise`} deltaKind="flat"/>
 			<Kpi label="Limite agregado"         value={`US$ ${(totalLimit / 1_000_000).toFixed(1)} M`} delta={`utilizado ${usagePct.toFixed(0)} %`} deltaKind="flat"/>
 			<Kpi label="Concentração top-1"      value={topConcentration.toFixed(1)} unit="%" delta="maior utilização / limite agregado" deltaKind={topConcentration <= 30 ? 'pos' : 'flat'}/>
-			<Kpi label="Utilização média"        value={usagePct.toFixed(1)} unit="%" delta="credit_used_usd / credit_limit_usd"/>
+			<Kpi label="Utilização média"        value={usagePct.toFixed(1)} unit="%" delta="uso sobre limite"/>
 		</div>
 
 		<Card noPad>
@@ -70,10 +72,10 @@
 							<td class="strong">
 								<a href={`/counterparties/${cp.id}`}>
 									<div>{cp.name}</div>
-									<div style="font-size: 11px; color: var(--muted); font-weight: 400;">{cp.short} · {cp.id}</div>
+									<div style="font-size: 11px; color: var(--muted); font-weight: 400;">{cp.short}</div>
 								</a>
 							</td>
-							<td><Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{cp.rating}</Badge></td>
+							<td><Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{ratingLabel(cp.rating)}</Badge></td>
 							<td class="num">US$ {(cp.limit / 1_000_000).toFixed(1)} M</td>
 							<td class="num strong">US$ {(cp.used / 1_000_000).toFixed(1)} M</td>
 							<td>
@@ -98,10 +100,10 @@
 										actionHref="/counterparties/new"
 									/>
 								{:else}
-									<EmptyState
+							<EmptyState
 										icon="users"
 										title="Nenhuma contraparte carregada"
-										message="Sem registros disponíveis para consulta no momento."
+										message="Nenhuma contraparte está disponível para consulta no momento."
 									/>
 								{/if}
 							</td>

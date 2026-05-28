@@ -26,10 +26,10 @@
 			: []),
 	]);
 	const riskVerdict = $derived.by(() => {
-		if (exposureRows.length === 0) return 'Data load pending';
-		if (totalCoverage >= 70) return 'Policy aligned';
-		if (totalCoverage >= 40) return 'Coverage watch';
-		return 'Residual risk';
+		if (exposureRows.length === 0) return 'Aguardando dados';
+		if (totalCoverage >= 70) return 'Política atendida';
+		if (totalCoverage >= 40) return 'Cobertura em atenção';
+		return 'Risco residual';
 	});
 	const riskVerdictKind = $derived.by((): DossierKind => {
 		if (exposureRows.length === 0 || totalCoverage >= 40 && totalCoverage < 70) return 'warn';
@@ -87,10 +87,10 @@
 <div class="page">
 	<PageHeader
 		eyebrow="Visão executiva"
-		title="Risk command center"
+		title="Centro de comando de risco"
 		subtitle="Cobertura, residual, RFQs abertas e mercado em uma leitura única da mesa."
 		meta={[
-			`${exposureRows.length} commodity(s) live`,
+			`${exposureRows.length} commodity(s) monitoradas`,
 			`${openRfqs.length} RFQ(s) enviadas`,
 			`Cobertura ${totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`,
 		]}
@@ -103,32 +103,32 @@
 		<Badge kind={openRfqs.length > 0 ? 'warn' : 'neutral'}>{openRfqs.length} RFQ(s) em curso</Badge>
 	</div>
 
-	<div class="kpi-row" style="margin-bottom: 16px;">
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="Exposição comercial"
 			value={fmtMt(totalCommercial)}
 			unit="t"
-			delta={`${exposureRows.length} commodity(s) live`}
+			delta={`${exposureRows.length} commodity(s) monitoradas`}
 			deltaKind="flat"
 		/>
 		<Kpi
-			label="Hedge ratio"
+			label="Índice de cobertura"
 			value={totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}
 			unit="%"
-			delta="live exposure list"
+			delta="cobertura sobre exposição"
 			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="Residual"
 			value={fmtMt(totalResidual)}
 			unit="t"
-			delta="derivado de exposures/list"
+			delta="saldo após hedges"
 			deltaKind={totalResidual === 0 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="RFQs enviadas"
 			value={String(openRfqs.length)}
-			delta="state=SENT"
+			delta="cotações enviadas"
 			deltaKind="flat"
 		/>
 	</div>
@@ -169,7 +169,7 @@
 				<EmptyState
 					icon="chart"
 					title="Nenhuma janela de cobertura carregada"
-					message="A matriz será preenchida quando a exposição comercial e os hedges chegarem de exposures/list."
+					message="Atualize a base de posições para visualizar a cobertura por mês."
 				/>
 			{/if}
 
@@ -255,8 +255,8 @@
 							<td colspan="6">
 								<EmptyState
 									icon="chart"
-									title="Nenhuma exposição live carregada"
-									message="A tabela permanece vazia até o backend retornar linhas de exposures/list."
+									title="Nenhuma exposição carregada"
+									message="Atualize a base de posições para visualizar saldos comerciais e cobertura."
 								/>
 							</td>
 						</tr>
@@ -265,7 +265,7 @@
 			</table>
 		</Card>
 
-		<Card title="Cotações de mercado" sub="Westmetall cash settlement">
+		<Card title="Cotações de mercado" sub="Fonte: Market Data">
 			{#snippet actions()}
 				<Badge kind="pos" dot>ao vivo</Badge>
 			{/snippet}

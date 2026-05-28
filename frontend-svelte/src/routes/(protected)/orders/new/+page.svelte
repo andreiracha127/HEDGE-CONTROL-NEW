@@ -8,6 +8,7 @@
 	import { goto } from '$app/navigation';
 	import { client } from '$lib/api/client';
 	import { notifications } from '$lib/stores/notifications.svelte';
+	import { safeBusinessText } from '$lib/alcast/presentation';
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
 	let submitting = $state(false);
@@ -72,8 +73,8 @@
 	async function submit() {
 		submitting = true;
 		const selectedCounterparty = counterparties.find((item) => item.id === cp);
-		const endpoint = orderType === 'PO' ? '/orders/purchase' : '/orders/sales';
-		const { data: created, error: apiError } = await client.POST(endpoint, {
+		const orderPath = orderType === 'PO' ? '/orders/purchase' : '/orders/sales';
+		const { data: created, error: apiError } = await client.POST(orderPath, {
 			body: {
 				commodity,
 				quantity_mt: qty,
@@ -92,17 +93,17 @@
 		});
 		submitting = false;
 		if (apiError) {
-			notifications.error(`Falha ao criar ordem: ${apiError.detail ?? 'erro desconhecido'}`);
+			notifications.error(`Falha ao criar ordem: ${safeBusinessText(apiError.detail, 'não foi possível criar a ordem')}`);
 			return;
 		}
-		notifications.success(`Ordem ${created?.id} criada`);
+		notifications.success('Ordem criada');
 		await goto(`/orders/${created?.id}`);
 	}
 </script>
 
 <div class="page">
 	<PageHeader
-		eyebrow="Commercial exposure entry"
+		eyebrow="Registro comercial"
 		title="Nova ordem comercial"
 		subtitle={`Registra a fonte da exposição: ${isPO ? 'compra de matéria-prima (PO)' : 'venda de produto final (SO)'}.`}
 		meta={[orderType, commodity, `${qtyNum.toLocaleString('pt-BR')} MT`, `${currency} ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`]}
@@ -128,7 +129,7 @@
 						onclick={() => (orderType = 'PO')}
 					>
 						<div class="row gap-2">
-							<Badge kind="info" dot>PO · Purchase Order</Badge>
+					<Badge kind="info" dot>PO · Compra</Badge>
 							<InfoTip>Compra de matéria-prima — gera <strong>exposição passiva</strong>. Hedge se faz com <strong>compra</strong> de derivativo.</InfoTip>
 							{#if orderType === 'PO'}<span style="margin-left: auto; color: var(--navy);">●</span>{/if}
 						</div>
@@ -140,7 +141,7 @@
 						onclick={() => (orderType = 'SO')}
 					>
 						<div class="row gap-2">
-							<Badge kind="pos" dot>SO · Sales Order</Badge>
+							<Badge kind="pos" dot>SO · Venda</Badge>
 							<InfoTip>Venda de produto final — gera <strong>exposição ativa</strong>. Hedge se faz com <strong>venda</strong> de derivativo.</InfoTip>
 							{#if orderType === 'SO'}<span style="margin-left: auto; color: var(--navy);">●</span>{/if}
 						</div>
@@ -267,8 +268,8 @@
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
 			<Card noPad>
 				<DecisionDossier
-					title="Order entry dossier"
-					verdict={reference && cp && qtyNum > 0 ? 'Ready to create' : 'Missing required fields'}
+					title="Dossiê da ordem"
+					verdict={reference && cp && qtyNum > 0 ? 'Pronta para criação' : 'Campos obrigatórios pendentes'}
 					verdictKind={reference && cp && qtyNum > 0 ? 'pos' : 'warn'}
 					items={[
 						{ label: 'Tipo', value: isPO ? 'PO · Compra' : 'SO · Venda' },

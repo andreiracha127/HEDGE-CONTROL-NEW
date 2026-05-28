@@ -19,7 +19,6 @@ describe('rfq list load', () => {
 
 		expect(get).toHaveBeenCalledWith('/rfqs', { params: { query: { state: 'SENT', limit: 200 } } });
 		expect(result.tab).toBe('SENT');
-		expect(result.rfqs[0]).toMatchObject({ id: 'rfq-1', rfq: 'rfq-1', qty: '1.000', state: 'SENT' });
+		expect(result.rfqs[0]).toMatchObject({ id: 'rfq-1', rfq: 'RFQ sem número', qty: '1.000', state: 'SENT' });
 	});
 });
-

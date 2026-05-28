@@ -1,14 +1,29 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 const get = vi.fn();
+let isAuthenticated = true;
+let isRestoring = false;
 
 vi.mock('$lib/api/client', () => ({
 	client: { GET: get },
 }));
 
+vi.mock('$lib/stores/auth.svelte', () => ({
+	authStore: {
+		get isAuthenticated() {
+			return isAuthenticated;
+		},
+		get isRestoring() {
+			return isRestoring;
+		},
+	},
+}));
+
 describe('dashboard load', () => {
 	beforeEach(() => {
 		get.mockReset();
+		isAuthenticated = true;
+		isRestoring = false;
 	});
 
 	test('returns flat dashboard data from API responses', async () => {
@@ -33,8 +48,8 @@ describe('dashboard load', () => {
 
 		expect(get).not.toHaveBeenCalledWith('/pl/snapshots', expect.anything());
 		expect(get).toHaveBeenCalledWith('/exposures/list', { params: { query: { limit: 200 } } });
-		expect(result.rfqs[0]).toMatchObject({ id: 'rfq-1', rfq: 'rfq-1' });
-		expect(result.commodities[0]).toMatchObject({ code: 'AL-LME', last: 2645.5, prev: null, provider: '—' });
+		expect(result.rfqs[0]).toMatchObject({ id: 'rfq-1', rfq: 'RFQ sem número' });
+		expect(result.commodities[0]).toMatchObject({ code: 'AL-LME', last: 2645.5, prev: null, provider: 'Fonte indisponível' });
 		expect((result.globalExposure as any).commercial_net_mt).toBe('10.000');
 		expect(result.exposureBuckets).toMatchObject([{ month: '2026-06', commercial_mt: 1000, hedged_mt: 500, ratio: 50 }]);
 	});
@@ -54,5 +69,17 @@ describe('dashboard load', () => {
 		expect(result.commodities).toEqual([]);
 		expect(result.exposureBuckets).toEqual([]);
 	});
-});
 
+	test('does not call protected APIs while the session is unauthenticated', async () => {
+		isAuthenticated = false;
+
+		const { load } = await import('./+page');
+		const result = await load();
+
+		expect(get).not.toHaveBeenCalled();
+		expect(result.globalExposure).toBeNull();
+		expect(result.rfqs).toEqual([]);
+		expect(result.commodities).toEqual([]);
+		expect(result.exposureBuckets).toEqual([]);
+	});
+});

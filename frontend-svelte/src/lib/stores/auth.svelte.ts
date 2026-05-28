@@ -1,4 +1,5 @@
 import { goto } from '$app/navigation';
+import { API_BASE } from '$lib/api/base';
 
 export type UserRole = 'trader' | 'risk_manager' | 'auditor';
 
@@ -13,7 +14,6 @@ interface JwtClaims {
 
 const SESSION_CSRF_KEY = 'hedge-control.auth.csrf';
 const CSRF_COOKIE_NAME = 'csrf_token';
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const SESSION_COOKIE_MAX_AGE_MS = 300 * 1000;
 const SESSION_COOKIE_REFRESH_LEAD_MS = 60 * 1000;
 const CLERK_TOKEN_REFRESH_LEAD_MS = 15 * 1000;

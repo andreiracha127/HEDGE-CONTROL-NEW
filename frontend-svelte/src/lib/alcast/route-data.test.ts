@@ -102,6 +102,18 @@ describe('live API row normalizers', () => {
 		});
 	});
 
+	it('does not expose UUIDs, object ids, or Clerk subjects as display fallbacks', () => {
+		expect(normalizeCounterparty({ id: '4d7a5353-9823-41a5-b63c-13f9a946c4c1' })).toMatchObject({
+			short: 'Contraparte sem nome',
+		});
+		expect(normalizeCashflow({ object_type: 'cashflow', object_id: 'evt-raw-1', amount_usd: '10.00' })).toMatchObject({
+			desc: 'Liquidação projetada',
+		});
+		expect(normalizeAuditEvent({ actor_subject: 'user_3DlOwTmAbFZHTBxt5NU30jemklp', event_type: 'rfq_sent' })).toMatchObject({
+			user: 'Usuário autenticado',
+		});
+	});
+
 	it('marks non-approved KYC counterparties as unavailable for RFQ selection', () => {
 		expect(normalizeCounterparty({ kyc_status: 'pending', is_active: true })).toMatchObject({ status: 'review' });
 		expect(normalizeCounterparty({ kyc_status: 'expired', is_active: true })).toMatchObject({ status: 'suspended' });
@@ -125,7 +137,7 @@ describe('live API row normalizers', () => {
 			),
 		).toMatchObject({
 			id: 'q-1',
-			cp: 'cp-1',
+			cp: 'Contraparte não informada',
 			price: 2638.5,
 			spread: 0,
 			received: '2026-05-27T12:00:00Z',
@@ -142,8 +154,8 @@ describe('live API row normalizers', () => {
 				payload: { detail: 'Counterparty declined quote' },
 			}),
 		).toMatchObject({
-			action: 'rfq_invitation_rejected',
-			entity: 'rfq-1',
+			action: 'Convite recusado',
+			entity: 'Registro operacional',
 			detail: 'Counterparty declined quote',
 		});
 	});

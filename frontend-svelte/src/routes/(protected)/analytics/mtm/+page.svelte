@@ -30,13 +30,17 @@
 		if (value == null) return '—';
 		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
+
+	function contractLabel(c: Contract): string {
+		return c.contract_number ?? c.reference ?? 'Contrato sem número';
+	}
 </script>
 
 <div class="page">
 	<PageHeader
-		eyebrow="Valuation analytics"
-		title="Mark-to-market"
-		subtitle="Marcação oficial de contratos com MTM carregado diretamente do backend."
+		eyebrow="Marcação"
+		title="MTM"
+		subtitle="Marcação de contratos com preços oficiais e sensibilidades da mesa."
 		meta={[`${contracts.length} contrato(s)`, `${contractsWithMtm} com MTM`, `Agregado ${aggregateMtm == null ? '—' : fmtMtm(aggregateMtm)}`]}
 		actions={[
 			{ label: 'Re-marcar', icon: 'refresh', variant: 'secondary' },
@@ -45,13 +49,13 @@
 
 	<div class="institutional-analytics">
 	<div class="kpi-row cols-3" style="margin-bottom: 16px;">
-		<Kpi label="Contratos carregados" value={String(contracts.length)} delta="/contracts/hedge" deltaKind="flat"/>
-		<Kpi label="Contratos com MTM" value={String(contractsWithMtm)} delta="mtm_value presente" deltaKind="flat"/>
-		<Kpi label="MTM agregado" value={aggregateMtm == null ? '—' : fmtMtm(aggregateMtm)} delta="somente payload backend" deltaKind={aggregateMtm == null || aggregateMtm >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="Contratos carregados" value={String(contracts.length)} delta="carteira elegível" deltaKind="flat"/>
+		<Kpi label="Contratos com MTM" value={String(contractsWithMtm)} delta="marcação disponível" deltaKind="flat"/>
+		<Kpi label="MTM agregado" value={aggregateMtm == null ? '—' : fmtMtm(aggregateMtm)} delta="carteira marcada" deltaKind={aggregateMtm == null || aggregateMtm >= 0 ? 'pos' : 'neg'}/>
 	</div>
 
 	<div>
-		<Card title="Marcação por contrato" sub="MTM carregado do backend" noPad>
+		<Card title="Marcação por contrato" sub="Posição marcada por contrato" noPad>
 			<table class="tbl">
 				<thead>
 					<tr>
@@ -65,7 +69,7 @@
 				<tbody>
 					{#each contracts as c (c.id)}
 						<tr>
-							<td class="strong mono">{c.id}</td>
+							<td class="strong">{contractLabel(c)}</td>
 							<td><CommodityChip code={c.commodity}/></td>
 							<td class="num">{fmtQty(c)}</td>
 							<td class="num">{fmtPrice(c)}</td>
@@ -80,7 +84,7 @@
 								<EmptyState
 									icon="chart"
 									title="Nenhum contrato carregado para marcação"
-									message="A tabela será preenchida quando /contracts/hedge retornar contratos com dados de marcação."
+									message="Atualize a carteira para visualizar contratos elegíveis com marcação disponível."
 								/>
 							</td>
 						</tr>

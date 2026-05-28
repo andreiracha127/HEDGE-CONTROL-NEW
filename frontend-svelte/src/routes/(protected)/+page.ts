@@ -1,7 +1,18 @@
 import { client } from '$lib/api/client';
 import { exposureBucketsFrom, exposureCommodityRowsFrom, items, normalizeCommodity, normalizeRfq, optionalData } from '$lib/alcast/route-data';
+import { authStore } from '$lib/stores/auth.svelte';
 
 export const load = async () => {
+	if (!authStore.isAuthenticated) {
+		return {
+			globalExposure: null,
+			rfqs: [],
+			commodities: [],
+			exposureBuckets: [],
+			exposureRows: [],
+		};
+	}
+
 	const [globalExposureResult, exposureListResult, rfqsResult, marketResult] = await Promise.allSettled([
 		client.GET('/exposures/global'),
 		client.GET('/exposures/list', { params: { query: { limit: 200 } } }),
@@ -22,4 +33,3 @@ export const load = async () => {
 		exposureRows: exposureCommodityRowsFrom(exposureList),
 	};
 };
-

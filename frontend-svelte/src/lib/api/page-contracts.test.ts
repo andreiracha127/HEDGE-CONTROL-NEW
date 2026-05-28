@@ -111,8 +111,8 @@ describe('design-port create affordances', () => {
 
 	it('posts order create through the purchase/sales endpoints', () => {
 		const source = read('(protected)/orders/new/+page.svelte');
-		expect(source).toContain("const endpoint = orderType === 'PO' ? '/orders/purchase' : '/orders/sales'");
-		expect(source).toContain('client.POST(endpoint');
+		expect(source).toContain("const orderPath = orderType === 'PO' ? '/orders/purchase' : '/orders/sales'");
+		expect(source).toContain('client.POST(orderPath');
 		expect(source).toContain("goto(`/orders/${created?.id}`)");
 		expect(source).not.toContain('reference_month: reference');
 	});

@@ -65,7 +65,7 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Execution blotter"
+		eyebrow="Execução"
 		title="Ordens"
 		subtitle="Execução de hedges, status de liquidação e vínculo com RFQs."
 		meta={[`${orders.length} ordem(ns)`, `Volume ${fmtUsd(totalVolume)}`, `${filteredOrders.length} no filtro`]}
@@ -73,10 +73,10 @@
 	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Ordens carregadas" value={String(orders.length)} delta="/orders" deltaKind="flat"/>
-		<Kpi label="Volume carregado" value={fmtUsd(totalVolume)} delta="quantidade × preço" deltaKind="flat"/>
-		<Kpi label="Compras" value={String(directionCount('buy'))} delta="direção buy" deltaKind="flat"/>
-		<Kpi label="Vendas" value={String(directionCount('sell'))} delta="direção sell" deltaKind="flat"/>
+		<Kpi label="Ordens carregadas" value={String(orders.length)} delta="mesa de execução" deltaKind="flat"/>
+		<Kpi label="Volume carregado" value={fmtUsd(totalVolume)} delta="notional estimado" deltaKind="flat"/>
+		<Kpi label="Compras" value={String(directionCount('buy'))} delta="lado compra" deltaKind="flat"/>
+		<Kpi label="Vendas" value={String(directionCount('sell'))} delta="lado venda" deltaKind="flat"/>
 	</div>
 
 	<div class="institutional-blotter">
@@ -141,7 +141,7 @@
 							<EmptyState
 								icon="clipboard"
 								title="Nenhuma ordem para o filtro selecionado"
-								message="Ajuste direção ou filtros de mercado para reabrir o blotter."
+								message="Ajuste direção ou filtros de mercado para revisar ordens."
 								actionLabel="Nova ordem"
 								actionHref="/orders/new"
 							/>
