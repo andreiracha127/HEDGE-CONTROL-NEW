@@ -32,12 +32,17 @@
 	const maxAbs = $derived(
 		Math.max(1, ...months.map((m) => Math.max(byMonth[m].inflow, -byMonth[m].outflow))),
 	);
+
+	function startOfLocalDay(value: Date): Date {
+		return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+	}
+
 	const cashflow90d = $derived.by(() => {
-		const now = Date.now();
-		const horizon = now + 90 * 24 * 60 * 60 * 1000;
+		const start = startOfLocalDay(new Date()).getTime();
+		const horizon = start + 90 * 24 * 60 * 60 * 1000;
 		return cashflow.filter((c) => {
 			const timestamp = Date.parse(c.date);
-			return Number.isFinite(timestamp) && timestamp >= now && timestamp <= horizon;
+			return Number.isFinite(timestamp) && timestamp >= start && timestamp <= horizon;
 		});
 	});
 	const projectedInflow90d = $derived(cashflow90d.reduce((sum, c) => sum + Math.max(c.amount_usd, 0), 0));

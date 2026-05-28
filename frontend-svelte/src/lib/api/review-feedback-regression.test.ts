@@ -262,6 +262,60 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('!canReceiveRfq(cp)');
 	});
 
+	it('keeps commercial order pricing conventions aligned to backend enum values', () => {
+		const source = readRoute('(protected)/orders/new/+page.svelte');
+
+		expect(source).toContain("let pricingConv = $state<'AVG' | 'AVGInter' | 'C2R'>('AVG')");
+		expect(source).toContain('pricing_convention: pricingConv');
+		expect(source).toContain('<option value="AVG">');
+		expect(source).toContain('<option value="AVGInter">');
+		expect(source).toContain('<option value="C2R">');
+		expect(source).not.toContain("pricingConv === 'LME-AVG-M' ? 'AVG' : 'C2R'");
+		expect(source).not.toContain('LME-OFFICIAL');
+	});
+
+	it('allows fixed RFQ legs without fixing dates when another leg supplies the delivery window', () => {
+		const source = readRoute('(protected)/rfq/new/+page.svelte');
+
+		expect(source).toContain('const deliveryWindow = $derived(legDeliveryWindow(leg1) ?? (showLeg2 ? legDeliveryWindow(leg2) : null))');
+		expect(source).toContain("if (leg.priceType === 'Fix') return true");
+		expect(source).not.toContain("if (leg.priceType === 'Fix') return !!leg.fixingDate");
+	});
+
+	it('submits commercial order counterparties by UUID instead of short name', () => {
+		const source = readRoute('(protected)/orders/new/+page.svelte');
+
+		expect(source).toContain('const selectedCounterparty = counterparties.find((item) => item.id === cp)');
+		expect(source).toContain('<option value={c.id}>{c.name} ({c.short})</option>');
+		expect(source).toContain('const selectedCounterpartyLabel = $derived');
+		expect(source).not.toContain('item.short === cp || item.id === cp');
+		expect(source).not.toContain('<option value={c.short}>');
+	});
+
+	it('includes date-only cashflows from today in the 90-day KPI window', () => {
+		const source = readRoute('(protected)/cashflow/+page.svelte');
+
+		expect(source).toContain('function startOfLocalDay');
+		expect(source).toContain('const start = startOfLocalDay(new Date()).getTime()');
+		expect(source).toContain('timestamp >= start');
+		expect(source).not.toContain('timestamp >= now');
+	});
+
+	it('keys dashboard market quotes by quote identity rather than display code only', () => {
+		const source = readRoute('(protected)/+page.svelte');
+
+		expect(source).toContain('function marketKey');
+		expect(source).toContain('{#each commodities as c (marketKey(c))}');
+		expect(source).not.toContain('{#each commodities as c (c.code)}');
+	});
+
+	it('hides risk-only exposure navigation for trader-only users', () => {
+		const source = readFileSync(resolve(process.cwd(), 'src', 'lib', 'components', 'alcast', 'Sidebar.svelte'), 'utf8');
+
+		expect(source).toContain("...(canUseAnalysis ? [{ key: 'exposures'");
+		expect(source).not.toContain("\t\t\t\t{ key: 'exposures', label: 'Exposições', icon: 'layers', badge: null, href: '/exposures' },");
+	});
+
 	it('defaults new counterparties to a trader-allowed type', () => {
 		const source = readRoute('(protected)/counterparties/new/+page.svelte');
 

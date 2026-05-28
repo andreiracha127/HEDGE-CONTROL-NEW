@@ -54,7 +54,7 @@
 	const quantityError = $derived(quantityValidation.ok ? null : quantityValidation.reason);
 	const qtyNum = $derived(Number(quantityMtRaw) || 0);
 	const rfqRoleReady = $derived(authStore.hasRole('risk_manager'));
-	const deliveryWindow = $derived(legDeliveryWindow(leg1));
+	const deliveryWindow = $derived(legDeliveryWindow(leg1) ?? (showLeg2 ? legDeliveryWindow(leg2) : null));
 	const datesReady = $derived(deliveryWindow != null);
 	const intentReady = $derived(
 		intent === 'GLOBAL_POSITION' ||
@@ -107,7 +107,7 @@
 		if (leg.priceType === 'AVG') return monthWindow(leg) != null;
 		if (leg.priceType === 'AVGInter') return !!leg.startDate && !!leg.endDate;
 		if (leg.priceType === 'C2R') return !!leg.fixingDate;
-		if (leg.priceType === 'Fix') return !!leg.fixingDate;
+		if (leg.priceType === 'Fix') return true;
 		if (leg.orderType === 'Limit') return !!leg.limitPrice;
 		return true;
 	}

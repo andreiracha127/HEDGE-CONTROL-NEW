@@ -15,7 +15,7 @@
 	let commodity = $state('ALUMINIUM');
 	let qty = $state('1500');
 	let priceType = $state<'fixed' | 'variable'>('fixed');
-	let pricingConv = $state('LME-OFFICIAL');
+	let pricingConv = $state<'AVG' | 'AVGInter' | 'C2R'>('AVG');
 	let price = $state('2631.00');
 	let currency = $state('USD');
 	let cp = $state('');
@@ -41,10 +41,13 @@
 		const trimmedNotes = notes.trim();
 		return trimmedNotes ? `${referenceLine}\n${trimmedNotes}` : referenceLine;
 	});
+	const selectedCounterpartyLabel = $derived(
+		counterparties.find((item) => item.id === cp)?.name ?? '—',
+	);
 
 	async function submit() {
 		submitting = true;
-		const selectedCounterparty = counterparties.find((item) => item.short === cp || item.id === cp);
+		const selectedCounterparty = counterparties.find((item) => item.id === cp);
 		const endpoint = orderType === 'PO' ? '/orders/purchase' : '/orders/sales';
 		const { data: created, error: apiError } = await client.POST(endpoint, {
 			body: {
@@ -53,7 +56,7 @@
 				price_type: priceType,
 				...(priceType === 'fixed'
 					? { avg_entry_price: price }
-					: { avg_entry_price: price, pricing_convention: pricingConv === 'LME-AVG-M' ? 'AVG' : 'C2R' }),
+					: { avg_entry_price: price, pricing_convention: pricingConv }),
 				currency,
 				counterparty_id: selectedCounterparty?.id ?? null,
 				counterparty_name: selectedCounterparty?.name ?? cp,
@@ -141,7 +144,7 @@
 						<select id="order-counterparty" class="select" bind:value={cp}>
 							<option value="">— Selecione —</option>
 							{#each counterparties as c (c.id)}
-								<option value={c.short}>{c.name} ({c.short})</option>
+								<option value={c.id}>{c.name} ({c.short})</option>
 							{/each}
 						</select>
 					</div>
@@ -184,11 +187,9 @@
 							<InfoTip width={260}>Define qual cotação LME será usada na liquidação variável (Official, Cash, 3-Month, ou médias mensais).</InfoTip>
 						</label>
 						<select class="select" bind:value={pricingConv}>
-							<option value="LME-OFFICIAL">LME Official Settlement</option>
-							<option value="LME-CASH">LME Cash</option>
-							<option value="LME-3M">LME 3-Month</option>
-							<option value="LME-AVG-M">LME Average (mês de entrega)</option>
-							<option value="LME-AVG-M1">LME Average M+1</option>
+							<option value="AVG">LME Average (mês de entrega)</option>
+							<option value="AVGInter">LME Average entre datas</option>
+							<option value="C2R">C2R / fixing date</option>
 						</select>
 					</div>
 
@@ -236,7 +237,7 @@
 						{/if}
 					</dd>
 					<dt>Referência</dt><dd class="mono">{reference || '—'}</dd>
-					<dt>Contraparte</dt><dd>{cp || '—'}</dd>
+					<dt>Contraparte</dt><dd>{selectedCounterpartyLabel}</dd>
 					<dt>Commodity</dt><dd>{commodity}</dd>
 					<dt>Quantidade</dt><dd class="tabular">{qtyNum.toLocaleString('pt-BR')} MT</dd>
 					<dt>Preço</dt><dd class="tabular">{priceNum.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} {currency}/MT</dd>
@@ -276,7 +277,6 @@
 		</div>
 	</div>
 </div>
-
 
 
 

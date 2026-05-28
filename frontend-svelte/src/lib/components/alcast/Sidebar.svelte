@@ -57,7 +57,7 @@
 			label: 'Operação',
 			items: [
 				{ key: 'dashboard', label: 'Visão geral', icon: 'home', badge: null, href: '/' },
-				{ key: 'exposures', label: 'Exposições', icon: 'layers', badge: null, href: '/exposures' },
+				...(canUseAnalysis ? [{ key: 'exposures', label: 'Exposições', icon: 'layers' as IconName, badge: null, href: '/exposures' }] : []),
 				{ key: 'orders', label: 'Ordens', icon: 'clipboard', badge: navBadges.ordersToday !== null ? String(navBadges.ordersToday) : null, href: '/orders' },
 				{ key: 'rfq', label: 'RFQ', icon: 'rfq', badge: navBadges.rfqOpen !== null ? String(navBadges.rfqOpen) : null, href: '/rfq' },
 				{ key: 'contracts', label: 'Contratos', icon: 'fileSign', badge: null, href: '/contracts' },
@@ -131,5 +131,3 @@
 		</div>
 	</div>
 </aside>
-
-

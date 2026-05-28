@@ -53,6 +53,10 @@
 		const chg = ((c.last - c.prev) / c.prev) * 100;
 		return Number.isFinite(chg) ? chg : null;
 	}
+
+	function marketKey(c: Record<string, any>): string {
+		return [c.code, c.settlement_date, c.date, c.source, c.last].filter(Boolean).join(':');
+	}
 </script>
 
 <div class="page">
@@ -208,7 +212,7 @@
 			{/snippet}
 
 			<div class="stack" style="gap: 0;">
-				{#each commodities as c (c.code)}
+				{#each commodities as c (marketKey(c))}
 					{@const chg = marketChangePct(c)}
 					<div
 						class="row gap-3"
