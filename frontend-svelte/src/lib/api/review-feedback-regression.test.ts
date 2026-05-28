@@ -365,6 +365,7 @@ describe('latest review feedback regressions', () => {
 
 		expect(whatIf).toContain('const scenarioActions = $derived.by');
 		expect(whatIf).toContain('allowed');
+		expect(whatIf).toContain("let canRunScenario = $derived(authStore.hasRole('risk_manager'))");
 		expect(whatIf).toContain('actions={scenarioActions}');
 		expect(orders).toContain("const canCreateOrders = $derived(authStore.hasRole('trader'))");
 		expect(orders).toContain('actions={headerActions}');

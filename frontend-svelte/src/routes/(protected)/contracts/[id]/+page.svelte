@@ -507,7 +507,7 @@
 		</Card>
 	{:else if tab === 'mtm'}
 		<Card title="Histórico de marcação" sub="Últimos 30 dias">
-			<MtmSparkline mtm={c.mtm}/>
+			<MtmSparkline history={mtmHistory}/>
 			<table class="tbl tbl-tight" style="margin-top: 16px;">
 				<thead>
 					<tr>

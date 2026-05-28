@@ -20,6 +20,7 @@
 	};
 
 	let allowed = $derived(authStore.hasAnyRole('risk_manager', 'auditor'));
+	let canRunScenario = $derived(authStore.hasRole('risk_manager'));
 
 	let priceShock = $state(0);
 	let volumeChange = $state(0);
@@ -28,7 +29,7 @@
 	let isRunning = $state(false);
 
 	const scenarioActions = $derived.by((): HeaderAction[] =>
-		allowed
+		canRunScenario
 			? [
 					{
 						label: isRunning ? 'Executando...' : 'Executar cenário',
@@ -128,7 +129,7 @@
 			<EmptyState
 				icon="lock"
 				title="Acesso restrito"
-				message="Somente perfis Risk Manager e Auditor podem executar cenários sensíveis."
+				message="Somente perfis Risk Manager e Auditor podem consultar cenários sensíveis."
 			/>
 		</Card>
 	{:else}
@@ -175,7 +176,7 @@
 						<EmptyState
 							icon="bolt"
 							title="Nenhum cenário executado"
-							message="Escolha um preset ou ajuste os parâmetros e execute o cenário."
+							message={canRunScenario ? 'Escolha um preset ou ajuste os parâmetros e execute o cenário.' : 'Auditores podem consultar resultados carregados; a execução de novos cenários é restrita a Risk Manager.'}
 						/>
 					{/if}
 				</Card>

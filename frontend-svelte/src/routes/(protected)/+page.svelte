@@ -7,6 +7,7 @@
 	import DecisionDossier, { type DossierKind } from '$lib/components/alcast/DecisionDossier.svelte';
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	let { data } = $props();
 	const commodities = $derived(data.commodities);
 	const exposureBuckets = $derived(data.exposureBuckets);
@@ -16,6 +17,14 @@
 	const totalResidual = $derived(exposureRows.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
 	const totalCoverage = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : 0);
 	const openRfqs = $derived(data.rfqs ?? []);
+	const canCreateRfqs = $derived(authStore.hasRole('risk_manager'));
+	const headerActions = $derived.by(() => [
+		{ label: 'Atualizar', icon: 'refresh' as const, variant: 'secondary' as const, onclick: refreshPage },
+		{ label: 'Exportar', icon: 'download' as const, variant: 'secondary' as const },
+		...(canCreateRfqs
+			? [{ label: 'Nova RFQ', icon: 'plus' as const, variant: 'primary' as const, href: '/rfq/new' }]
+			: []),
+	]);
 	const riskVerdict = $derived.by(() => {
 		if (exposureRows.length === 0) return 'Data load pending';
 		if (totalCoverage >= 70) return 'Policy aligned';
@@ -85,11 +94,7 @@
 			`${openRfqs.length} RFQ(s) enviadas`,
 			`Cobertura ${totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`,
 		]}
-		actions={[
-			{ label: 'Atualizar', icon: 'refresh', variant: 'secondary', onclick: refreshPage },
-			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
-			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
-		]}
+		actions={headerActions}
 	/>
 
 	<div class="rfq-command-strip risk-command-center">

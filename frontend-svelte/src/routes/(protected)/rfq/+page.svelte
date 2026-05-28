@@ -10,11 +10,19 @@
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	let { data } = $props();
 	const rfqs = $derived(data.rfqs);
 	type TabKey = 'all' | 'CREATED' | 'SENT' | 'QUOTED';
 	const tab = $derived((data.tab ?? 'all') as TabKey);
 	const totalLoaded = $derived(data.total ?? rfqs.length);
+	const canCreateRfqs = $derived(authStore.hasRole('risk_manager'));
+	const headerActions = $derived.by(() => [
+		{ label: 'Exportar', icon: 'download' as const, variant: 'secondary' as const },
+		...(canCreateRfqs
+			? [{ label: 'Nova RFQ', icon: 'plus' as const, variant: 'primary' as const, href: '/rfq/new' }]
+			: []),
+	]);
 	const stateCount = (state: string) => rfqs.filter((rfq) => rfq.state === state).length;
 
 	const TABS = $derived<[TabKey, string, number][]>([
@@ -42,10 +50,7 @@
 		title="Solicitações de cotação"
 		subtitle="Originar, monitorar e converter cotações com contrapartes aprovadas."
 		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `${stateCount('QUOTED')} cotadas`]}
-		actions={[
-			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
-			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
-		]}
+		actions={headerActions}
 	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
@@ -111,9 +116,9 @@
 							<EmptyState
 								icon="rfq"
 								title="Nenhuma RFQ para o filtro selecionado"
-								message="Ajuste os filtros ou origine uma nova solicitação para a mesa."
-								actionLabel="Nova RFQ"
-								actionHref="/rfq/new"
+								message={canCreateRfqs ? 'Ajuste os filtros ou origine uma nova solicitação para a mesa.' : 'Ajuste os filtros ou consulte a mesa de risco para originar novas solicitações.'}
+								actionLabel={canCreateRfqs ? 'Nova RFQ' : undefined}
+								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
 							/>
 						</td>
 					</tr>

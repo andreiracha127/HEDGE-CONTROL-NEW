@@ -8,6 +8,7 @@
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
 	import { canonicalCommodityCode, exposureBucketsFrom } from '$lib/alcast/route-data';
+	import { authStore } from '$lib/stores/auth.svelte';
 	let { data } = $props();
 	const exposureRows = $derived(data.exposureRows ?? []);
 	const hedgeTasks = $derived((data.tasks?.items ?? data.tasks ?? []) as Record<string, any>[]);
@@ -17,6 +18,7 @@
 	const totalHedged = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.hedged_mt ?? 0), 0));
 	const totalResidual = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
 	const policyAdherence = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : null);
+	const canCreateRfqs = $derived(authStore.hasRole('risk_manager'));
 
 	let commodity = $state('ALUMINUM');
 	const COMMODITIES = [
@@ -124,7 +126,9 @@
 						</td>
 						<td>
 							<div class="tbl-actions">
-								<a href="/rfq/new" class="btn btn-ghost btn-sm">Cobrir →</a>
+								{#if canCreateRfqs}
+									<a href="/rfq/new" class="btn btn-ghost btn-sm">Cobrir →</a>
+								{/if}
 							</div>
 						</td>
 					</tr>
@@ -135,9 +139,9 @@
 							<EmptyState
 								icon="scale"
 								title="Nenhuma exposição para o filtro selecionado"
-								message="Selecione outra commodity ou confirme a carga de exposures/list."
-								actionLabel="Criar RFQ de cobertura"
-								actionHref="/rfq/new"
+								message={canCreateRfqs ? 'Selecione outra commodity ou confirme a carga de exposures/list.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
+								actionLabel={canCreateRfqs ? 'Criar RFQ de cobertura' : undefined}
+								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
 							/>
 						</td>
 					</tr>

@@ -11,13 +11,13 @@ function read(rel: string): string {
 }
 
 describe('design-port route load contracts', () => {
-	it('loads cashflow analytic and projection through typed openapi-fetch calls', () => {
+	it('loads cashflow projection without making unused analytic data fatal', () => {
 		const source = read('(protected)/cashflow/+page.ts');
-		expect(source).toContain("client.GET('/cashflow/analytic'");
 		expect(source).toContain("client.GET('/cashflow/projection'");
 		expect(source).toContain('as_of_date');
-		expect(source).toContain('Failed to load cashflow analytic');
 		expect(source).toContain('Failed to load cashflow projection');
+		expect(source).not.toContain("client.GET('/cashflow/analytic'");
+		expect(source).not.toContain('Failed to load cashflow analytic');
 	});
 
 	it('loads MTM and P&L from existing backend endpoints without stale latest paths', () => {
@@ -87,6 +87,7 @@ describe('design-port create affordances', () => {
 		const createSource = read('(protected)/rfq/new/+page.svelte');
 		expect(loadSource).toContain("client.GET('/orders'");
 		expect(listSource).toContain("href: '/rfq/new'");
+		expect(listSource).toContain("const canCreateRfqs = $derived(authStore.hasRole('risk_manager'))");
 		expect(listSource).toContain("goto(`/rfq${query}`");
 		expect(createSource).toContain("client.POST('/rfqs'");
 		expect(createSource).toContain('authStore.userSub');
