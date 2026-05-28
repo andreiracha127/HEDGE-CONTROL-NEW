@@ -43,6 +43,7 @@ const numberOrNull = (value: unknown): number | null => {
 };
 
 const datePart = (value: unknown): string => (typeof value === 'string' ? value.slice(0, 10) : '');
+const monthPart = (value: unknown): string => (typeof value === 'string' ? value.slice(0, 7) : '');
 
 function signedExposureAmount(row: Record<string, any>, value: number): number {
 	const direction = String(row.direction ?? row.exposure_direction ?? row.side ?? '').toLowerCase();
@@ -241,7 +242,7 @@ function normalizedExposureRows(data: unknown): Record<string, any>[] {
 				row.month ??
 				row.settlement_month ??
 				row.reference_month ??
-				datePart(row.delivery_date_start ?? row.delivery_window_start ?? row.as_of_date ?? row.exposure_date),
+				monthPart(row.delivery_date_start ?? row.delivery_window_start ?? row.as_of_date ?? row.exposure_date),
 			commercial_mt: commercialMt,
 			commercial_active_mt: commercialActiveMt,
 			commercial_passive_mt: commercialPassiveMt,

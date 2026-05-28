@@ -343,6 +343,22 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toContain('quotes: row.invitations?.length');
 		expect(source).toContain('function signedExposureAmount');
 		expect(source).toContain("['long', 'buy', 'purchase', 'po']");
+		expect(source).toContain('const monthPart =');
+		expect(source).toContain('monthPart(row.delivery_date_start ?? row.delivery_window_start ?? row.as_of_date ?? row.exposure_date)');
+	});
+
+	it('gates header CTAs by the backend roles that can execute the mutation', () => {
+		const whatIf = readRoute('(protected)/analytics/what-if/+page.svelte');
+		const orders = readRoute('(protected)/orders/+page.svelte');
+		const counterparties = readRoute('(protected)/counterparties/+page.svelte');
+
+		expect(whatIf).toContain('const scenarioActions = $derived.by');
+		expect(whatIf).toContain('allowed');
+		expect(whatIf).toContain('actions={scenarioActions}');
+		expect(orders).toContain("const canCreateOrders = $derived(authStore.hasRole('trader'))");
+		expect(orders).toContain('actions={headerActions}');
+		expect(counterparties).toContain("const canCreateCounterparties = $derived(authStore.hasAnyRole('trader', 'risk_manager'))");
+		expect(counterparties).toContain('actions={headerActions}');
 	});
 
 	it('does not synthesize RFQ winners outside backend ranking', () => {

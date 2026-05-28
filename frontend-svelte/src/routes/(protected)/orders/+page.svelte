@@ -5,14 +5,28 @@
 	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import Pager from '$lib/components/alcast/Pager.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import { formatPrice, formatQuantityMT } from '$lib/utils/format';
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		href?: string;
+	};
+
 	let { data } = $props();
 	const orders = $derived(data.orders);
 
 	let tab = $state<'all' | 'buy' | 'sell'>('all');
+	const canCreateOrders = $derived(authStore.hasRole('trader'));
+	const headerActions = $derived.by((): HeaderAction[] => {
+		const actions: HeaderAction[] = [{ label: 'Exportar', icon: 'download', variant: 'secondary' }];
+		if (canCreateOrders) actions.push({ label: 'Nova ordem', icon: 'plus', variant: 'primary', href: '/orders/new' });
+		return actions;
+	});
 
 	const directionCount = (direction: string) =>
 		orders.filter((order) => String(order.direction ?? '').toLowerCase() === direction).length;
@@ -55,10 +69,7 @@
 		title="Ordens"
 		subtitle="Execução de hedges, status de liquidação e vínculo com RFQs."
 		meta={[`${orders.length} ordem(ns)`, `Volume ${fmtUsd(totalVolume)}`, `${filteredOrders.length} no filtro`]}
-		actions={[
-			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
-			{ label: 'Nova ordem', icon: 'plus', variant: 'primary', href: '/orders/new' },
-		]}
+		actions={headerActions}
 	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">

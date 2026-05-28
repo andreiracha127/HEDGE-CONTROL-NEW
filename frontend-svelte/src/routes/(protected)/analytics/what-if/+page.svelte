@@ -8,7 +8,16 @@
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import EChart from '$lib/components/chart/EChart.svelte';
+	import type { IconName } from '$lib/components/alcast/Icon.svelte';
 	import type { WhatIfResult } from '$lib/api/types/entities';
+
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		disabled?: boolean;
+		onclick?: () => void | Promise<void>;
+	};
 
 	let allowed = $derived(authStore.hasAnyRole('risk_manager', 'auditor'));
 
@@ -18,6 +27,19 @@
 	let result = $state<WhatIfResult | null>(null);
 	let isRunning = $state(false);
 
+	const scenarioActions = $derived.by((): HeaderAction[] =>
+		allowed
+			? [
+					{
+						label: isRunning ? 'Executando...' : 'Executar cenário',
+						icon: 'bolt',
+						variant: 'primary',
+						disabled: isRunning,
+						onclick: runScenario,
+					},
+				]
+			: [],
+	);
 	const deltaValue = $derived(result ? Number(result.delta ?? result.impact ?? 0) : 0);
 	const scenarioMeta = $derived([
 		`${commodity}`,
@@ -98,9 +120,7 @@
 		title="What-if scenario lab"
 		subtitle="Stress tests sobre P&L, exposição e volume para decisões de hedge."
 		meta={scenarioMeta}
-		actions={[
-			{ label: isRunning ? 'Executando...' : 'Executar cenário', icon: 'bolt', variant: 'primary', disabled: isRunning, onclick: runScenario },
-		]}
+		actions={scenarioActions}
 	/>
 
 	{#if !allowed}

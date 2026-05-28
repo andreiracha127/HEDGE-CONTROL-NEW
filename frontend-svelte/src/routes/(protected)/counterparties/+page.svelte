@@ -6,9 +6,25 @@
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import StatePill from '$lib/components/alcast/StatePill.svelte';
-	import Icon from '$lib/components/alcast/Icon.svelte';
+	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		href?: string;
+	};
+
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
+	const canCreateCounterparties = $derived(authStore.hasAnyRole('trader', 'risk_manager'));
+	const headerActions = $derived.by((): HeaderAction[] => {
+		const actions: HeaderAction[] = [{ label: 'Exportar', icon: 'download', variant: 'secondary' }];
+		if (canCreateCounterparties) {
+			actions.push({ label: 'Nova contraparte', icon: 'plus', variant: 'primary', href: '/counterparties/new' });
+		}
+		return actions;
+	});
 	const activeCount = $derived(counterparties.filter((cp) => cp.status === 'active').length);
 	const reviewCount = $derived(counterparties.filter((cp) => cp.status === 'review').length);
 	const totalLimit = $derived(counterparties.reduce((sum, cp) => sum + cp.limit, 0));
@@ -23,10 +39,7 @@
 		title="Contrapartes"
 		subtitle="Limites de crédito, rating, exposição corrente e elegibilidade operacional."
 		meta={[`${counterparties.length} contraparte(s)`, `${activeCount} ativas`, `Utilização ${usagePct.toFixed(1)}%`]}
-		actions={[
-			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
-			{ label: 'Nova contraparte', icon: 'plus', variant: 'primary', href: '/counterparties/new' },
-		]}
+		actions={headerActions}
 	/>
 
 	<div class="institutional-counterparty">
@@ -76,13 +89,21 @@
 					{#if counterparties.length === 0}
 						<tr>
 							<td colspan="7">
-								<EmptyState
-									icon="users"
-									title="Nenhuma contraparte carregada"
-									message="Cadastre uma contraparte elegível para RFQs, limites e trilha KYC."
-									actionLabel="Nova contraparte"
-									actionHref="/counterparties/new"
-								/>
+								{#if canCreateCounterparties}
+									<EmptyState
+										icon="users"
+										title="Nenhuma contraparte carregada"
+										message="Cadastre uma contraparte elegível para RFQs, limites e trilha KYC."
+										actionLabel="Nova contraparte"
+										actionHref="/counterparties/new"
+									/>
+								{:else}
+									<EmptyState
+										icon="users"
+										title="Nenhuma contraparte carregada"
+										message="Sem registros disponíveis para consulta no momento."
+									/>
+								{/if}
 							</td>
 						</tr>
 					{/if}
