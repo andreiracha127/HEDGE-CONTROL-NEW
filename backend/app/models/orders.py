@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.models.base import Base
 from app.core.precision import (
@@ -46,6 +46,20 @@ class OrderPricingConvention(enum.Enum):
     avg = "AVG"
     avginter = "AVGInter"
     c2r = "C2R"
+
+
+def _coerce_order_pricing_convention(
+    value: OrderPricingConvention | str | None,
+) -> OrderPricingConvention | None:
+    if value is None or isinstance(value, OrderPricingConvention):
+        return value
+
+    normalized = value.strip()
+    for member in OrderPricingConvention:
+        if normalized == member.value or normalized.lower() == member.name:
+            return member
+
+    raise ValueError(f"Invalid order pricing_convention: {value!r}")
 
 
 class PricingType(enum.Enum):
@@ -126,6 +140,12 @@ class Order(Base):
     deleted_at: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+
+    @validates("pricing_convention")
+    def _validate_pricing_convention(
+        self, _key: str, value: OrderPricingConvention | str | None
+    ) -> OrderPricingConvention | None:
+        return _coerce_order_pricing_convention(value)
 
 
 class SoPoLink(Base):
