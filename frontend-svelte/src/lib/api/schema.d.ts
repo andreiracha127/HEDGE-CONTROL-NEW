@@ -741,6 +741,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/test/cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cleanup By Trace Id */
+        post: operations["cleanup_by_trace_id_internal_test_cleanup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/linkages": {
         parameters: {
             query?: never;
@@ -1887,6 +1904,11 @@ export interface components {
             source_url: string;
             /** Symbol */
             symbol: string;
+        };
+        /** CleanupRequest */
+        CleanupRequest: {
+            /** Trace Id */
+            trace_id: string;
         };
         /** CommercialExposureRead */
         CommercialExposureRead: {
@@ -3053,6 +3075,11 @@ export interface components {
              */
             delivery_terms?: string | null;
             /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
+            /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
              */
@@ -3498,6 +3525,11 @@ export interface components {
              * @description e.g. CIF Rotterdam
              */
             delivery_terms?: string | null;
+            /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
             /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
@@ -4045,6 +4077,11 @@ export interface components {
              * @description e.g. CIF Rotterdam
              */
             delivery_terms?: string | null;
+            /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
             /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
@@ -5939,6 +5976,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    cleanup_by_trace_id_internal_test_cleanup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CleanupRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -100,6 +100,7 @@ class Order(Base):
     avg_entry_price: Mapped[Decimal | None] = mapped_column(
         Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
     )
+    external_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # --- Counterparty (free text) ---
     counterparty_name: Mapped[str | None] = mapped_column(String(200), nullable=True)

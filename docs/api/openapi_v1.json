@@ -155,6 +155,18 @@
         "title": "AdjustOrderQuantityDelta",
         "type": "object"
       },
+      "ApprovalStatus": {
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "expired",
+          "consumed",
+          "superseded"
+        ],
+        "title": "ApprovalStatus",
+        "type": "string"
+      },
       "AuditEventListResponse": {
         "properties": {
           "events": {
@@ -262,6 +274,36 @@
           "detail"
         ],
         "title": "AuditVerifyResponse",
+        "type": "object"
+      },
+      "Body_create_session_auth_session_post": {
+        "properties": {
+          "session_token": {
+            "title": "Session Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_token"
+        ],
+        "title": "Body_create_session_auth_session_post",
+        "type": "object"
+      },
+      "Body_refresh_session_auth_refresh_post": {
+        "properties": {
+          "session_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Token"
+          }
+        },
+        "title": "Body_refresh_session_auth_refresh_post",
         "type": "object"
       },
       "CashFlowAnalyticResponse": {
@@ -760,6 +802,10 @@
             "title": "Ingested Count",
             "type": "integer"
           },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
+          },
           "skipped_count": {
             "title": "Skipped Count",
             "type": "integer"
@@ -778,10 +824,6 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
-          },
-          "is_canonical": {
-            "title": "Is Canonical",
-            "type": "boolean"
           }
         },
         "required": [
@@ -828,6 +870,10 @@
             "title": "Ingested Count",
             "type": "integer"
           },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
+          },
           "settlement_date": {
             "format": "date",
             "title": "Settlement Date",
@@ -851,10 +897,6 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
-          },
-          "is_canonical": {
-            "title": "Is Canonical",
-            "type": "boolean"
           }
         },
         "required": [
@@ -893,6 +935,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_canonical": {
+            "title": "Is Canonical",
+            "type": "boolean"
+          },
           "price_usd": {
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Price Usd",
@@ -917,10 +963,6 @@
             "maxLength": 64,
             "title": "Symbol",
             "type": "string"
-          },
-          "is_canonical": {
-            "title": "Is Canonical",
-            "type": "boolean"
           }
         },
         "required": [
@@ -929,13 +971,28 @@
           "symbol",
           "settlement_date",
           "price_usd",
+          "is_canonical",
           "source_url",
           "html_sha256",
           "fetched_at",
-          "created_at",
-          "is_canonical"
+          "created_at"
         ],
         "title": "CashSettlementPriceRead",
+        "type": "object"
+      },
+      "CleanupRequest": {
+        "properties": {
+          "trace_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Trace Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id"
+        ],
+        "title": "CleanupRequest",
         "type": "object"
       },
       "CommercialExposureRead": {
@@ -1118,10 +1175,6 @@
             "default": true,
             "title": "Is Active",
             "type": "boolean"
-          },
-          "kyc_status": {
-            "$ref": "#/components/schemas/KycStatus",
-            "default": "pending"
           },
           "name": {
             "maxLength": 200,
@@ -1535,16 +1588,6 @@
               }
             ],
             "title": "Is Active"
-          },
-          "kyc_status": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/KycStatus"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "name": {
             "anyOf": [
@@ -3611,6 +3654,25 @@
         "title": "KycStatus",
         "type": "string"
       },
+      "KycStatusTransitionRequest": {
+        "properties": {
+          "new_status": {
+            "$ref": "#/components/schemas/KycStatus"
+          },
+          "reason": {
+            "maxLength": 512,
+            "minLength": 8,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "new_status",
+          "reason"
+        ],
+        "title": "KycStatusTransitionRequest",
+        "type": "object"
+      },
       "LedgerDirection": {
         "enum": [
           "IN",
@@ -3969,6 +4031,15 @@
         "title": "MTMSnapshotResponse",
         "type": "object"
       },
+      "MutationType": {
+        "enum": [
+          "deal_create",
+          "deal_award",
+          "hedge_contract_settle"
+        ],
+        "title": "MutationType",
+        "type": "string"
+      },
       "NetExposureItem": {
         "properties": {
           "commodity": {
@@ -4186,6 +4257,19 @@
             ],
             "description": "e.g. CIF Rotterdam",
             "title": "Delivery Terms"
+          },
+          "external_reference": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External ERP/SAP PO or SO reference submitted by the user",
+            "title": "External Reference"
           },
           "fixing_date": {
             "anyOf": [
@@ -4478,6 +4562,82 @@
         "title": "PLSnapshotResponse",
         "type": "object"
       },
+      "PipelineRiskFlagRead": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "flag_type": {
+            "$ref": "#/components/schemas/PipelineRiskFlagType"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/PipelineRiskFlagSeverity"
+          },
+          "subject_entity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject Entity Id"
+          },
+          "subject_entity_type": {
+            "title": "Subject Entity Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "flag_type",
+          "severity",
+          "subject_entity_type",
+          "payload",
+          "created_at"
+        ],
+        "title": "PipelineRiskFlagRead",
+        "type": "object"
+      },
+      "PipelineRiskFlagSeverity": {
+        "enum": [
+          "informational",
+          "warning",
+          "critical"
+        ],
+        "title": "PipelineRiskFlagSeverity",
+        "type": "string"
+      },
+      "PipelineRiskFlagType": {
+        "enum": [
+          "missing_mtm_price",
+          "unhedged_exposure_over_guardrail",
+          "kyc_regression_with_active_deals",
+          "workflow_approval_pending_past_expiry"
+        ],
+        "title": "PipelineRiskFlagType",
+        "type": "string"
+      },
       "PipelineRunDetailRead": {
         "properties": {
           "created_at": {
@@ -4517,6 +4677,18 @@
             "title": "Inputs Hash",
             "type": "string"
           },
+          "risk_flags": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PipelineRiskFlagRead"
+            },
+            "title": "Risk Flags",
+            "type": "array"
+          },
+          "risk_flags_count": {
+            "title": "Risk Flags Count",
+            "type": "integer"
+          },
           "run_date": {
             "format": "date",
             "title": "Run Date",
@@ -4546,6 +4718,9 @@
           "steps_total": {
             "title": "Steps Total",
             "type": "integer"
+          },
+          "triggered_by": {
+            "$ref": "#/components/schemas/PipelineTriggerSource"
           }
         },
         "required": [
@@ -4556,6 +4731,8 @@
           "steps_completed",
           "steps_total",
           "inputs_hash",
+          "triggered_by",
+          "risk_flags_count",
           "created_at"
         ],
         "title": "PipelineRunDetailRead",
@@ -4616,6 +4793,10 @@
             "title": "Inputs Hash",
             "type": "string"
           },
+          "risk_flags_count": {
+            "title": "Risk Flags Count",
+            "type": "integer"
+          },
           "run_date": {
             "format": "date",
             "title": "Run Date",
@@ -4637,6 +4818,9 @@
           "steps_total": {
             "title": "Steps Total",
             "type": "integer"
+          },
+          "triggered_by": {
+            "$ref": "#/components/schemas/PipelineTriggerSource"
           }
         },
         "required": [
@@ -4647,6 +4831,8 @@
           "steps_completed",
           "steps_total",
           "inputs_hash",
+          "triggered_by",
+          "risk_flags_count",
           "created_at"
         ],
         "title": "PipelineRunRead",
@@ -4726,6 +4912,14 @@
         ],
         "title": "PipelineStepRead",
         "type": "object"
+      },
+      "PipelineTriggerSource": {
+        "enum": [
+          "scheduler",
+          "manual"
+        ],
+        "title": "PipelineTriggerSource",
+        "type": "string"
       },
       "PnlBreakdownRequest": {
         "properties": {
@@ -5100,6 +5294,19 @@
             ],
             "description": "e.g. CIF Rotterdam",
             "title": "Delivery Terms"
+          },
+          "external_reference": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External ERP/SAP PO or SO reference submitted by the user",
+            "title": "External Reference"
           },
           "fixing_date": {
             "anyOf": [
@@ -6383,6 +6590,17 @@
         "title": "ReconcileResponse",
         "type": "object"
       },
+      "RejectionReasonCode": {
+        "enum": [
+          "policy_violation",
+          "counterparty_risk",
+          "payload_concern",
+          "threshold_inappropriate",
+          "other"
+        ],
+        "title": "RejectionReasonCode",
+        "type": "string"
+      },
       "RiskRating": {
         "enum": [
           "low",
@@ -6487,6 +6705,19 @@
             ],
             "description": "e.g. CIF Rotterdam",
             "title": "Delivery Terms"
+          },
+          "external_reference": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "External ERP/SAP PO or SO reference submitted by the user",
+            "title": "External Reference"
           },
           "fixing_date": {
             "anyOf": [
@@ -6986,6 +7217,14 @@
         "title": "SpreadRankingRead",
         "type": "object"
       },
+      "ThresholdDimension": {
+        "enum": [
+          "notional_usd",
+          "settlement_amount_usd"
+        ],
+        "title": "ThresholdDimension",
+        "type": "string"
+      },
       "TradeRankingEntry": {
         "properties": {
           "quote": {
@@ -7114,6 +7353,216 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkflowApprovalConsumeRequest": {
+        "properties": {
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "payload"
+        ],
+        "title": "WorkflowApprovalConsumeRequest",
+        "type": "object"
+      },
+      "WorkflowApprovalListResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "WorkflowApprovalListResponse",
+        "type": "object"
+      },
+      "WorkflowApprovalRejectRequest": {
+        "properties": {
+          "reason_code": {
+            "$ref": "#/components/schemas/RejectionReasonCode"
+          },
+          "reason_text": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Reason Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "reason_text"
+        ],
+        "title": "WorkflowApprovalRejectRequest",
+        "type": "object"
+      },
+      "WorkflowApprovalRequestRead": {
+        "properties": {
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "approver_ip": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Ip"
+          },
+          "approver_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Session Id"
+          },
+          "consumed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumed At"
+          },
+          "correlation_id": {
+            "format": "uuid",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "mutation_type": {
+            "$ref": "#/components/schemas/MutationType"
+          },
+          "rejection_reason_code": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RejectionReasonCode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejection_reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rejection Reason Text"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApprovalStatus"
+          },
+          "threshold_at_request": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Threshold At Request",
+            "type": "string"
+          },
+          "threshold_config_value": {
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Threshold Config Value",
+            "type": "string"
+          },
+          "threshold_dimension": {
+            "$ref": "#/components/schemas/ThresholdDimension"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "id",
+          "mutation_type",
+          "status",
+          "requested_by",
+          "threshold_at_request",
+          "threshold_config_value",
+          "threshold_dimension",
+          "correlation_id",
+          "created_at",
+          "expires_at"
+        ],
+        "title": "WorkflowApprovalRequestRead",
         "type": "object"
       }
     }
@@ -7296,6 +7745,167 @@
         ]
       }
     },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Logout Auth Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Clears the session and CSRF cookies.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "read_current_identity_auth_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Current Identity Auth Me Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Read Current Identity",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/refresh": {
+      "post": {
+        "operationId": "refresh_session_auth_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_refresh_session_auth_refresh_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Refresh Session Auth Refresh Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Sets the httpOnly session cookie and the readable CSRF cookie used by the double-submit CSRF middleware.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh Session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/auth/session": {
+      "post": {
+        "operationId": "create_session_auth_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_session_auth_session_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Create Session Auth Session Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "Set-Cookie": {
+                "description": "Sets the httpOnly session cookie and the readable CSRF cookie used by the double-submit CSRF middleware.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Session",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/cashflow/analytic": {
       "get": {
         "operationId": "get_cashflow_analytic_cashflow_analytic_get",
@@ -7433,6 +8043,38 @@
               "format": "uuid",
               "title": "Contract Id",
               "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
             }
           }
         ],
@@ -8385,6 +9027,80 @@
         ]
       }
     },
+    "/counterparties/{counterparty_id}/kyc-status": {
+      "post": {
+        "operationId": "transition_kyc_status_counterparties__counterparty_id__kyc_status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "counterparty_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Counterparty Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KycStatusTransitionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CounterpartyRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transition Kyc Status",
+        "tags": [
+          "Counterparties"
+        ]
+      }
+    },
+    "/csp/report": {
+      "post": {
+        "description": "Accept CSP violation report (legacy or modern shape), log structured event, return 204.",
+        "operationId": "csp_report_csp_report_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Csp Report",
+        "tags": [
+          "CSP",
+          "csp"
+        ]
+      }
+    },
     "/deals": {
       "get": {
         "operationId": "list_deals_deals_get",
@@ -8479,6 +9195,40 @@
       },
       "post": {
         "operationId": "create_deal_deals_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -9377,6 +10127,73 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz"
+      }
+    },
+    "/internal/test/cleanup": {
+      "post": {
+        "operationId": "cleanup_by_trace_id_internal_test_cleanup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Cleanup By Trace Id Internal Test Cleanup Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cleanup By Trace Id",
+        "tags": [
+          "internal-test"
+        ]
       }
     },
     "/linkages": {
@@ -10834,6 +11651,38 @@
               "title": "Rfq Id",
               "type": "string"
             }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
           }
         ],
         "requestBody": {
@@ -11593,6 +12442,350 @@
         "summary": "Receive Webhook",
         "tags": [
           "Webhooks"
+        ]
+      }
+    },
+    "/workflow-approvals": {
+      "get": {
+        "operationId": "list_workflow_approvals_workflow_approvals_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/ApprovalStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Workflow Approvals",
+        "tags": [
+          "WorkflowApprovals"
+        ]
+      }
+    },
+    "/workflow-approvals/{approval_id}": {
+      "get": {
+        "operationId": "get_workflow_approval_workflow_approvals__approval_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Workflow Approval",
+        "tags": [
+          "WorkflowApprovals"
+        ]
+      }
+    },
+    "/workflow-approvals/{approval_id}/consume": {
+      "post": {
+        "operationId": "consume_workflow_approval_workflow_approvals__approval_id__consume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowApprovalConsumeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Consume Workflow Approval",
+        "tags": [
+          "WorkflowApprovals"
+        ]
+      }
+    },
+    "/workflow-approvals/{approval_id}/grant": {
+      "post": {
+        "operationId": "grant_workflow_approval_workflow_approvals__approval_id__grant_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Grant Workflow Approval",
+        "tags": [
+          "WorkflowApprovals"
+        ]
+      }
+    },
+    "/workflow-approvals/{approval_id}/reject": {
+      "post": {
+        "operationId": "reject_workflow_approval_workflow_approvals__approval_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-Session-Id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Session-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowApprovalRejectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Workflow Approval",
+        "tags": [
+          "WorkflowApprovals"
+        ]
+      }
+    },
+    "/workflow-approvals/{approval_id}/supersede": {
+      "post": {
+        "operationId": "supersede_workflow_approval_workflow_approvals__approval_id__supersede_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowApprovalRequestRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Supersede Workflow Approval",
+        "tags": [
+          "WorkflowApprovals"
         ]
       }
     }

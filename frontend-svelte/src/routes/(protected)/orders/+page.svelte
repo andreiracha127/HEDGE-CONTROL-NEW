@@ -12,10 +12,10 @@
 	let { data } = $props();
 	const orders = $derived(data.orders);
 
-	let tab = $state<'all' | 'filled' | 'partial' | 'pending' | 'cancelled'>('all');
-	let dir = $state<'all' | 'buy' | 'sell'>('all');
+	let tab = $state<'all' | 'buy' | 'sell'>('all');
 
-	const statusCount = (status: string) => orders.filter((order) => order.status === status).length;
+	const directionCount = (direction: string) =>
+		orders.filter((order) => String(order.direction ?? '').toLowerCase() === direction).length;
 	const totalVolume = $derived(
 		orders.reduce((sum, order) => {
 			const qty = Number(order.quantity_mt ?? order.qty);
@@ -24,18 +24,14 @@
 		}, 0),
 	);
 	const TABS = $derived<[typeof tab, string, number][]>([
-		['all',       'Todas',      orders.length],
-		['filled',    'Liquidadas', statusCount('filled')],
-		['partial',   'Parciais',   statusCount('partial')],
-		['pending',   'Pendentes',  statusCount('pending')],
-		['cancelled', 'Canceladas', statusCount('cancelled')],
+		['all',  'Todas',   orders.length],
+		['buy',  'Compras', directionCount('buy')],
+		['sell', 'Vendas',  directionCount('sell')],
 	]);
 	const filteredOrders = $derived(
 		orders.filter((order) => {
-			const statusOk = tab === 'all' || order.status === tab;
 			const direction = String(order.direction ?? '').toLowerCase();
-			const dirOk = dir === 'all' || direction === dir;
-			return statusOk && dirOk;
+			return tab === 'all' || direction === tab;
 		}),
 	);
 
@@ -58,7 +54,7 @@
 		eyebrow="Execution blotter"
 		title="Ordens"
 		subtitle="Execução de hedges, status de liquidação e vínculo com RFQs."
-		meta={[`${orders.length} ordem(ns)`, `Volume ${fmtUsd(totalVolume)}`, `${statusCount('pending')} pendentes`]}
+		meta={[`${orders.length} ordem(ns)`, `Volume ${fmtUsd(totalVolume)}`, `${filteredOrders.length} no filtro`]}
 		actions={[
 			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
 			{ label: 'Nova ordem', icon: 'plus', variant: 'primary', href: '/orders/new' },
@@ -68,8 +64,8 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Ordens carregadas" value={String(orders.length)} delta="/orders" deltaKind="flat"/>
 		<Kpi label="Volume carregado" value={fmtUsd(totalVolume)} delta="quantidade × preço" deltaKind="flat"/>
-		<Kpi label="Liquidadas" value={String(statusCount('filled'))} delta="status filled" deltaKind="flat"/>
-		<Kpi label="Pendentes" value={String(statusCount('pending'))} delta="status pending" deltaKind="flat"/>
+		<Kpi label="Compras" value={String(directionCount('buy'))} delta="direção buy" deltaKind="flat"/>
+		<Kpi label="Vendas" value={String(directionCount('sell'))} delta="direção sell" deltaKind="flat"/>
 	</div>
 
 	<div class="institutional-blotter">
@@ -83,11 +79,6 @@
 				{/each}
 			</div>
 			<div class="sp"></div>
-			<div class="radio-group">
-				<button type="button" class:active={dir === 'all'} onclick={() => (dir = 'all')}>Todas</button>
-				<button type="button" class:active={dir === 'buy'} class:buy={dir === 'buy'} onclick={() => (dir = 'buy')}>Compra</button>
-				<button type="button" class:active={dir === 'sell'} class:sell={dir === 'sell'} onclick={() => (dir = 'sell')}>Venda</button>
-			</div>
 			<button type="button" class="chip"><Icon name="filter"/>Commodity</button>
 			<button type="button" class="chip"><Icon name="filter"/>Contraparte</button>
 			<button type="button" class="chip"><Icon name="filter"/>Período</button>
@@ -139,7 +130,7 @@
 							<EmptyState
 								icon="clipboard"
 								title="Nenhuma ordem para o filtro selecionado"
-								message="Ajuste status, direção ou filtros de mercado para reabrir o blotter."
+								message="Ajuste direção ou filtros de mercado para reabrir o blotter."
 								actionLabel="Nova ordem"
 								actionHref="/orders/new"
 							/>

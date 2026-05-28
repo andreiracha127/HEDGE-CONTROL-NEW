@@ -45,6 +45,14 @@ def test_create_sales_order_fixed(session: Session) -> None:
     assert order.id is not None
 
 
+def test_create_sales_order_persists_external_reference(session: Session) -> None:
+    order = OrderService.create_sales_order(
+        session, _so_payload(external_reference="SO-2026-0943")
+    )
+
+    assert order.external_reference == "SO-2026-0943"
+
+
 def test_create_sales_order_variable_no_convention(session: Session) -> None:
     order = OrderService.create_sales_order(session, _so_payload(price_type="variable"))
     assert order.order_type == OrderType.sales

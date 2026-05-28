@@ -124,7 +124,7 @@ describe('latest review feedback regressions', () => {
 		expect(source).not.toContain('const mid =');
 		expect(source).not.toContain('pnlVsMid');
 		expect(source).toContain("const canManageRfq = $derived(authStore.hasRole('risk_manager'))");
-		expect(source).toContain("rfq.state === 'QUOTED' && !!best");
+		expect(source).toContain("rfq.state === 'QUOTED' && Boolean(data.canAwardRfq)");
 		expect(source).toContain('const stateEvents = $derived(data.stateEvents ?? [])');
 		expect(source).toContain('const timelineEvents = $derived');
 		expect(source).toContain('stateEvents.map((event)');
@@ -151,10 +151,13 @@ describe('latest review feedback regressions', () => {
 
 	it('persists commercial order references through the submitted notes field', () => {
 		const source = readRoute('(protected)/orders/new/+page.svelte');
+		const schema = readFileSync(resolve(process.cwd(), '..', 'backend', 'app', 'schemas', 'orders.py'), 'utf8');
 
 		expect(source).toContain('const submittedNotes = $derived.by');
 		expect(source).toContain('Referencia ERP/SAP');
 		expect(source).toContain('notes: submittedNotes');
+		expect(source).toContain('external_reference: reference');
+		expect(schema).toContain('external_reference: str | None');
 	});
 
 	it('resolves contract counterparties through stable ids', () => {
@@ -181,8 +184,10 @@ describe('latest review feedback regressions', () => {
 		const source = readFileSync(resolve(process.cwd(), 'src', 'lib', 'components', 'alcast', 'Sidebar.svelte'), 'utf8');
 
 		expect(source).toContain("const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'))");
+		expect(source).toContain('const canUseRiskWorkflows = $derived');
 		expect(source).toContain('items: canUseAnalysis');
 		expect(source).toContain('{#if section.items.length > 0}');
+		expect(source).toContain("...(canUseRiskWorkflows ? [");
 	});
 
 	it('preserves variable-order entry prices in order creation payloads', () => {
@@ -280,6 +285,7 @@ describe('latest review feedback regressions', () => {
 		const source = readRoute('(protected)/rfq/new/+page.svelte');
 
 		expect(source).toContain('const deliveryWindow = $derived(legDeliveryWindow(leg1) ?? (showLeg2 ? legDeliveryWindow(leg2) : null))');
+		expect(source).toContain("if (leg.orderType === 'Limit' && !leg.limitPrice) return false");
 		expect(source).toContain("if (leg.priceType === 'Fix') return true");
 		expect(source).not.toContain("if (leg.priceType === 'Fix') return !!leg.fixingDate");
 	});
@@ -321,7 +327,39 @@ describe('latest review feedback regressions', () => {
 	it('defaults new counterparties to a trader-allowed type', () => {
 		const source = readRoute('(protected)/counterparties/new/+page.svelte');
 
-		expect(source).toContain("$state<'broker' | 'bank_br' | 'customer' | 'supplier'>('supplier')");
+		expect(source).toContain("type CounterpartyType = 'broker' | 'bank_br' | 'customer' | 'supplier'");
+		expect(source).toContain("let type = $state<CounterpartyType>('supplier')");
+		expect(source).toContain("canCreateFinancialCounterparties ? ['broker', 'bank_br', 'customer', 'supplier'] : ['customer', 'supplier']");
+		expect(source).toContain('{#each allowedTypes as option (option)}');
 		expect(source).not.toContain('kyc_status:');
+	});
+
+	it('keeps route-data derived values tied to backend semantics', () => {
+		const source = readFileSync(resolve(process.cwd(), 'src', 'lib', 'alcast', 'route-data.ts'), 'utf8');
+
+		expect(source).toContain('response?: { status?: number }');
+		expect(source).toContain('result.response?.status ?? result.error.status ?? result.error.statusCode ?? 502');
+		expect(source).toContain('quotes: row.quote_count ?? row.quotes ?? row.submitted_quote_count ?? 0');
+		expect(source).not.toContain('quotes: row.invitations?.length');
+		expect(source).toContain('function signedExposureAmount');
+		expect(source).toContain("['long', 'buy', 'purchase', 'po']");
+	});
+
+	it('does not synthesize RFQ winners outside backend ranking', () => {
+		const loader = readRoute('(protected)/rfq/[id]/+page.ts');
+
+		expect(loader).toContain('const tradeRankingRows = Array.isArray(tradeRanking?.ranking) ? tradeRanking.ranking : []');
+		expect(loader).toContain('const rankedQuoteIds = tradeRankingRows');
+		expect(loader).toContain('const canAwardRfq = Boolean(spreadBest?.buy_quote?.id && spreadBest?.sell_quote?.id) || bestQuoteIds.length > 0');
+		expect(loader).toContain('const rankedQuotes = activeQuotes');
+		expect(loader).not.toContain("rfq.direction === 'SELL' ? right - left : left - right");
+	});
+
+	it('does not reset the shared full-stack E2E database from backend pytest fixtures', () => {
+		const source = readFileSync(resolve(process.cwd(), '..', 'backend', 'tests', 'conftest.py'), 'utf8');
+
+		expect(source).toContain('if os.environ.get("E2E_FULL_STACK") == "1":');
+		expect(source).toContain('yield');
+		expect(source).toContain('Base.metadata.drop_all(bind=engine)');
 	});
 });

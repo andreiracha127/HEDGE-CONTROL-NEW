@@ -6,8 +6,11 @@
 	import InfoTip from '$lib/components/alcast/InfoTip.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 
-	let type = $state<'broker' | 'bank_br' | 'customer' | 'supplier'>('supplier');
+	type CounterpartyType = 'broker' | 'bank_br' | 'customer' | 'supplier';
+
+	let type = $state<CounterpartyType>('supplier');
 	let name = $state('');
 	let shortName = $state('');
 	let taxId = $state('');
@@ -34,6 +37,14 @@
 	const limitUsd = $derived(Number(creditLimit || 0));
 	const limitSummary = $derived(`US$ ${(limitUsd / 1_000_000).toFixed(1)} M`);
 	const onboardingReady = $derived(Boolean(name && country && sanctions !== 'blocked'));
+	const canCreateFinancialCounterparties = $derived(authStore.hasRole('risk_manager'));
+	const allowedTypes = $derived<CounterpartyType[]>(
+		canCreateFinancialCounterparties ? ['broker', 'bank_br', 'customer', 'supplier'] : ['customer', 'supplier'],
+	);
+
+	$effect(() => {
+		if (!allowedTypes.includes(type)) type = 'supplier';
+	});
 
 	async function submit() {
 		submitting = true;
@@ -88,10 +99,9 @@
 					<div class="field">
 						<label class="field-label" for="counterparty-type">Tipo <span class="req">*</span></label>
 						<select id="counterparty-type" class="select" bind:value={type}>
-							<option value="broker">Broker / corretora</option>
-							<option value="bank_br">Banco BR</option>
-							<option value="customer">Cliente</option>
-							<option value="supplier">Fornecedor</option>
+							{#each allowedTypes as option (option)}
+								<option value={option}>{option === 'broker' ? 'Broker / corretora' : option === 'bank_br' ? 'Banco BR' : TYPE_LABEL[option]}</option>
+							{/each}
 						</select>
 					</div>
 					<div class="field">

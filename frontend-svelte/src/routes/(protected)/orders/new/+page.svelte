@@ -55,6 +55,7 @@
 				commodity,
 				quantity_mt: qty,
 				price_type: priceType,
+				external_reference: reference,
 				...(priceType === 'fixed'
 					? { avg_entry_price: price }
 					: { avg_entry_price: price, pricing_convention: pricingConv }),
@@ -241,13 +242,12 @@
 			<Card title="Impacto em exposições">
 				<dl class="kv">
 					<dt>Janela</dt><dd>{deliveryLabel}</dd>
-					<dt>Comercial atual</dt><dd class="tabular">4.200 MT</dd>
 					<dt>+ Esta ordem</dt>
 					<dd class="tabular" style="color: {isPO ? 'var(--info)' : 'var(--pos)'};">
 						+{qtyNum.toLocaleString('pt-BR')} MT {isPO ? '(passiva)' : '(ativa)'}
 					</dd>
-					<dt>Projetada</dt><dd class="tabular strong">{(4200 + qtyNum).toLocaleString('pt-BR')} MT</dd>
-					<dt>Hedge ratio</dt><dd class="tabular">{priceType === 'variable' ? 'cai para 67,2 %' : 'inalterado (preço fixo)'}</dd>
+					<dt>Referência</dt><dd class="mono">{reference || '—'}</dd>
+					<dt>Próximo passo</dt><dd>{priceType === 'variable' ? 'Criar RFQ de hedge após registro' : 'Monitorar liquidação'}</dd>
 				</dl>
 				{#if priceType === 'variable'}
 					<div class="row gap-2" style="margin-top: 8px; font-size: 11.5px;">
@@ -269,5 +269,4 @@
 		</div>
 	</div>
 </div>
-
 

@@ -244,6 +244,7 @@ class OrderService:
             price_type=PriceType(payload.price_type.value),
             commodity=payload.commodity,
             quantity_mt=payload.quantity_mt,
+            external_reference=payload.external_reference,
             counterparty_id=payload.counterparty_id,
             counterparty_name=payload.counterparty_name,
             pricing_type=payload.pricing_type,

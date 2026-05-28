@@ -104,11 +104,11 @@
 
 	function legFieldsReady(leg: Leg): boolean {
 		if (!leg.priceType) return false;
+		if (leg.orderType === 'Limit' && !leg.limitPrice) return false;
 		if (leg.priceType === 'AVG') return monthWindow(leg) != null;
 		if (leg.priceType === 'AVGInter') return !!leg.startDate && !!leg.endDate;
 		if (leg.priceType === 'C2R') return !!leg.fixingDate;
 		if (leg.priceType === 'Fix') return true;
-		if (leg.orderType === 'Limit') return !!leg.limitPrice;
 		return true;
 	}
 

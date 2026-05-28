@@ -42,6 +42,7 @@
 		return 'Unknown';
 	});
 	const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
+	const canUseRiskWorkflows = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
 
 	const initials = $derived(
 		userName
@@ -59,8 +60,10 @@
 				{ key: 'dashboard', label: 'Visão geral', icon: 'home', badge: null, href: '/' },
 				...(canUseAnalysis ? [{ key: 'exposures', label: 'Exposições', icon: 'layers' as IconName, badge: null, href: '/exposures' }] : []),
 				{ key: 'orders', label: 'Ordens', icon: 'clipboard', badge: navBadges.ordersToday !== null ? String(navBadges.ordersToday) : null, href: '/orders' },
-				{ key: 'rfq', label: 'RFQ', icon: 'rfq', badge: navBadges.rfqOpen !== null ? String(navBadges.rfqOpen) : null, href: '/rfq' },
-				{ key: 'contracts', label: 'Contratos', icon: 'fileSign', badge: null, href: '/contracts' },
+				...(canUseRiskWorkflows ? [
+					{ key: 'rfq', label: 'RFQ', icon: 'rfq' as IconName, badge: navBadges.rfqOpen !== null ? String(navBadges.rfqOpen) : null, href: '/rfq' },
+					{ key: 'contracts', label: 'Contratos', icon: 'fileSign' as IconName, badge: null, href: '/contracts' },
+				] : []),
 				{ key: 'counterparties', label: 'Contrapartes', icon: 'users', badge: null, href: '/counterparties' },
 			],
 		},
@@ -79,7 +82,9 @@
 		{
 			label: 'Governança',
 			items: [
-				{ key: 'approvals', label: 'Aprovações', icon: 'shieldCheck', badge: navBadges.approvalsPending !== null ? String(navBadges.approvalsPending) : null, href: '/workflow-approvals' },
+				...(canUseRiskWorkflows ? [
+				{ key: 'approvals', label: 'Aprovações', icon: 'shieldCheck' as IconName, badge: navBadges.approvalsPending !== null ? String(navBadges.approvalsPending) : null, href: '/workflow-approvals' },
+				] : []),
 				...(userRoles.includes('auditor')
 					? [{ key: 'audit', label: 'Auditoria', icon: 'doc' as IconName, badge: null, href: '/audit' }]
 					: []),

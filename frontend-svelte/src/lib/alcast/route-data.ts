@@ -2,15 +2,16 @@ import { error } from '@sveltejs/kit';
 
 type ApiResult<T = unknown> = {
 	data?: T | null;
-	error?: { detail?: unknown } | null;
+	error?: { detail?: unknown; status?: number; statusCode?: number } | null;
+	response?: { status?: number } | null;
 };
 
 export function requireData<T>(result: ApiResult<T>, message: string): T {
 	if (result.error) {
 		const detail = typeof result.error.detail === 'string' ? `: ${result.error.detail}` : '';
-		error(502, `${message}${detail}`);
+		error(result.response?.status ?? result.error.status ?? result.error.statusCode ?? 502, `${message}${detail}`);
 	}
-	if (result.data == null) error(502, message);
+	if (result.data == null) error(result.response?.status ?? 502, message);
 	return result.data;
 }
 
@@ -43,6 +44,13 @@ const numberOrNull = (value: unknown): number | null => {
 
 const datePart = (value: unknown): string => (typeof value === 'string' ? value.slice(0, 10) : '');
 
+function signedExposureAmount(row: Record<string, any>, value: number): number {
+	const direction = String(row.direction ?? row.exposure_direction ?? row.side ?? '').toLowerCase();
+	if (['long', 'buy', 'purchase', 'po'].includes(direction)) return -Math.abs(value);
+	if (['short', 'sell', 'sales', 'so'].includes(direction)) return Math.abs(value);
+	return value;
+}
+
 export function canonicalCommodityCode(value: unknown): string {
 	const raw = String(value ?? '').trim().toUpperCase();
 	if (raw === 'ALUMINIUM' || raw === 'ALUMINUM' || raw === 'AL-LME' || raw === 'LME_ALUMINUM') return 'ALUMINUM';
@@ -73,7 +81,7 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 		delivery_start: row.delivery_window_start ?? row.delivery_start,
 		delivery_end: row.delivery_window_end ?? row.delivery_end,
 		created: row.created_at ?? row.created,
-		quotes: row.invitations?.length ?? row.quotes ?? 0,
+		quotes: row.quote_count ?? row.quotes ?? row.submitted_quote_count ?? 0,
 		best: row.notional_usd_at_best ?? row.best ?? null,
 		requester: row.created_by ?? row.requester ?? 'Sistema',
 	};
@@ -204,16 +212,16 @@ export function normalizeAuditEvent(row: Record<string, any>): Record<string, an
 function normalizedExposureRows(data: unknown): Record<string, any>[] {
 	const rows = items<Record<string, any>>(data);
 	return rows.map((row) => {
-		const commercialMt =
+		const rawCommercialMt =
 			numberOrNull(row.commercial_mt ?? row.commercial_net_mt ?? row.original_tons ?? row.quantity_mt) ?? 0;
+		const commercialMt = signedExposureAmount(row, rawCommercialMt);
 		const commercialActiveMt =
 			numberOrNull(row.commercial_active_mt) ?? (commercialMt > 0 ? commercialMt : 0);
 		const commercialPassiveMt =
 			numberOrNull(row.commercial_passive_mt) ?? (commercialMt < 0 ? Math.abs(commercialMt) : 0);
 		const hedgedMt = numberOrNull(row.hedged_mt ?? row.hedge_mt ?? row.hedged_tons) ?? 0;
-		const residualMt =
-			numberOrNull(row.residual_mt ?? row.exposure_residual_mt ?? row.open_tons) ??
-			Math.max(Math.abs(commercialMt) - hedgedMt, 0);
+		const loadedResidualMt = numberOrNull(row.residual_mt ?? row.exposure_residual_mt ?? row.open_tons);
+		const residualMt = loadedResidualMt != null ? Math.abs(loadedResidualMt) : Math.max(Math.abs(commercialMt) - hedgedMt, 0);
 		const explicitRatio = numberOrNull(row.coverage_ratio ?? row.hedge_ratio ?? row.hedge_coverage_ratio);
 		const ratio =
 			explicitRatio != null
@@ -302,4 +310,3 @@ export function exposureCommodityRowsFrom(data: unknown) {
 	}
 	return Array.from(byCommodity.values()).sort((a, b) => Math.abs(b.commercial_mt) - Math.abs(a.commercial_mt));
 }
-

@@ -27,7 +27,7 @@
 	const canManageRfq = $derived(authStore.hasRole('risk_manager'));
 	const canCancelRfq = $derived(canManageRfq && ['CREATED', 'SENT'].includes(rfq.state));
 	const canRefreshRfq = $derived(canManageRfq && ['SENT', 'QUOTED'].includes(rfq.state));
-	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && !!best);
+	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && Boolean(data.canAwardRfq));
 	const actionableQuotes = $derived(quotes.filter((q) => q.status !== 'pending').length);
 	const pendingQuotes = $derived(quotes.filter((q) => q.status === 'pending').length);
 	const awardVerdict = $derived(canAwardRfq ? 'Ready to award' : rfq.state === 'QUOTED' ? 'Needs eligible quote' : `State ${rfq.state}`);

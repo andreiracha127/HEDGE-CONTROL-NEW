@@ -57,6 +57,9 @@ def reset_rate_limiter() -> None:
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
+    if os.environ.get("E2E_FULL_STACK") == "1":
+        yield
+        return
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
