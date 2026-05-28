@@ -69,14 +69,27 @@
 	<title>Sign up | Hedge Control</title>
 </svelte:head>
 
-<main class="flex min-h-screen items-center justify-center bg-surface-950 px-4 py-8">
-	<section class="w-full max-w-md">
-		<h1 class="mb-6 text-xl font-semibold text-surface-200">Hedge Control</h1>
-		<div bind:this={mountEl}></div>
-		{#if error}
-			<p class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-				{error}
-			</p>
-		{/if}
+<main class="auth-screen">
+	<section class="auth-panel">
+		<div class="auth-brand">
+			<div class="auth-mark">HC</div>
+			<div>
+				<h1>Hedge Control</h1>
+				<p>Institutional hedge operations terminal</p>
+			</div>
+		</div>
+		<div class="auth-strip">
+			<span>Tenant onboarding</span>
+			<span>Role-bound access</span>
+			<span>Audit-ready</span>
+		</div>
+		<div class="auth-card">
+			<div bind:this={mountEl}></div>
+			{#if error}
+				<p class="auth-error">
+					{error}
+				</p>
+			{/if}
+		</div>
 	</section>
 </main>

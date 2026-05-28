@@ -1,9 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { loginAsTrader } from './helpers';
+import { loginAsRiskManager } from './helpers';
+
+const RFQ_BOARD_HEADING = 'Solicitações de cotação';
 
 test.describe('RFQ Lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
-		await loginAsTrader(page);
+		await loginAsRiskManager(page);
 	});
 
 	test('navigates to RFQ board from dashboard', async ({ page }) => {
@@ -13,7 +15,7 @@ test.describe('RFQ Lifecycle', () => {
 
 	test('RFQ board loads and shows list or empty state', async ({ page }) => {
 		await page.goto('/rfq');
-		await expect(page.getByRole('heading', { name: 'RFQs' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: RFQ_BOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 	});
 
 	test('navigates to new RFQ form', async ({ page }) => {
@@ -31,8 +33,7 @@ test.describe('RFQ Lifecycle', () => {
 		await page.goto('/rfq/new');
 		// Key form elements
 		await expect(page.getByLabel('Commodity')).toBeVisible();
-		await expect(page.getByLabel('Quantidade (MT)')).toBeVisible();
-		// Submit button
-		await expect(page.locator('button[type="submit"]')).toBeVisible();
+		await expect(page.getByLabel('Quantidade')).toBeVisible();
+		await expect(page.getByRole('button', { name: /Enviar a/ })).toBeVisible();
 	});
 });

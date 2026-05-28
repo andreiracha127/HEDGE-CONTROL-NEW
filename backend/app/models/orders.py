@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.models.base import Base
 from app.core.precision import (
@@ -26,6 +26,10 @@ from app.core.precision import (
     PRICE_NUMERIC_PRECISION,
     PRICE_NUMERIC_SCALE,
 )
+
+
+def _enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    return [member.value for member in enum_cls]
 
 
 class OrderType(enum.Enum):
@@ -44,6 +48,20 @@ class OrderPricingConvention(enum.Enum):
     c2r = "C2R"
 
 
+def _coerce_order_pricing_convention(
+    value: OrderPricingConvention | str | None,
+) -> OrderPricingConvention | None:
+    if value is None or isinstance(value, OrderPricingConvention):
+        return value
+
+    normalized = value.strip()
+    for member in OrderPricingConvention:
+        if normalized == member.value or normalized.lower() == member.name:
+            return member
+
+    raise ValueError(f"Invalid order pricing_convention: {value!r}")
+
+
 class PricingType(enum.Enum):
     fixed = "fixed"
     average = "average"
@@ -59,7 +77,8 @@ class Order(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     order_type: Mapped[OrderType] = mapped_column(
-        Enum(OrderType, name="order_type"), nullable=False
+        Enum(OrderType, name="order_type", values_callable=_enum_values),
+        nullable=False,
     )
     price_type: Mapped[PriceType] = mapped_column(
         Enum(PriceType, name="price_type"), nullable=False
@@ -71,12 +90,17 @@ class Order(Base):
         Numeric(MT_NUMERIC_PRECISION, MT_NUMERIC_SCALE), nullable=False
     )
     pricing_convention: Mapped[OrderPricingConvention | None] = mapped_column(
-        Enum(OrderPricingConvention, name="order_pricing_convention"),
+        Enum(
+            OrderPricingConvention,
+            name="order_pricing_convention",
+            values_callable=_enum_values,
+        ),
         nullable=True,
     )
     avg_entry_price: Mapped[Decimal | None] = mapped_column(
         Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
     )
+    external_reference: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # --- Counterparty (free text) ---
     counterparty_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -117,6 +141,12 @@ class Order(Base):
     deleted_at: Mapped[DateTime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
+
+    @validates("pricing_convention")
+    def _validate_pricing_convention(
+        self, _key: str, value: OrderPricingConvention | str | None
+    ) -> OrderPricingConvention | None:
+        return _coerce_order_pricing_convention(value)
 
 
 class SoPoLink(Base):

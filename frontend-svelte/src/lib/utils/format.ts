@@ -95,11 +95,11 @@ const STATE_LABELS: Record<string, string> = {
 };
 
 const STATE_COLORS: Record<string, string> = {
-	CREATED: 'bg-surface-600 text-surface-200',
-	SENT: 'bg-accent/20 text-accent',
-	QUOTED: 'bg-warning/20 text-warning',
-	AWARDED: 'bg-success/20 text-success',
-	CLOSED: 'bg-surface-700 text-surface-400',
+	CREATED: 'badge neutral',
+	SENT: 'badge info',
+	QUOTED: 'badge warn',
+	AWARDED: 'badge pos',
+	CLOSED: 'badge neutral',
 };
 
 export function stateLabel(state: string | undefined): string {
@@ -108,8 +108,8 @@ export function stateLabel(state: string | undefined): string {
 }
 
 export function stateColor(state: string | undefined): string {
-	if (!state) return 'bg-surface-700 text-surface-400';
-	return STATE_COLORS[state] ?? 'bg-surface-700 text-surface-400';
+	if (!state) return 'badge neutral';
+	return STATE_COLORS[state] ?? 'badge neutral';
 }
 
 const INTENT_LABELS: Record<string, string> = {
@@ -129,6 +129,6 @@ export function directionLabel(direction: string | undefined): string {
 }
 
 export function directionColor(direction: string | undefined): string {
-	if (!direction) return 'text-surface-400';
-	return direction === 'BUY' ? 'text-success' : 'text-danger';
+	if (!direction) return 'muted';
+	return direction === 'BUY' ? 'badge pos' : 'badge neg';
 }

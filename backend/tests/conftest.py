@@ -1,12 +1,21 @@
 import os
 import sys
+from collections.abc import Mapping
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+
+def _database_url_for_tests(env: Mapping[str, str]) -> str:
+    default_url = "sqlite+pysqlite:///:memory:"
+    if env.get("E2E_FULL_STACK") == "1":
+        return env.get("DATABASE_URL") or default_url
+    return default_url
+
+
+os.environ["DATABASE_URL"] = _database_url_for_tests(os.environ)
 os.environ.setdefault("SCHEDULER_DISABLED", "1")
 os.environ.setdefault("APP_ENV", "test")
 # Default audit signing key for tests — fail-closed audit emission requires
@@ -48,6 +57,9 @@ def reset_rate_limiter() -> None:
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
+    if os.environ.get("E2E_FULL_STACK") == "1":
+        yield
+        return
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield

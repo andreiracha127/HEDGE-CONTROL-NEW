@@ -1,376 +1,228 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { cashflowAnalyticPath, cashflowProjectionPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type {
-		CashFlowItem,
-		CashFlowAnalyticResponse,
-		CashFlowProjectionItem,
-		CashFlowProjectionResponse,
-		CashFlowProjectionSummary,
-	} from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	let { data } = $props();
+	const cashflow = $derived(data.cashflow);
 
-	type TabState = 'idle' | 'loading' | 'ready' | 'missing-param' | 'error' | 'malformed';
-
-	let activeTab = $state<'analytics' | 'projections' | 'ledger'>('analytics');
-	let isLoading = $state(false);
-
-	// Canonical analytic response shape (CashFlowAnalyticResponse): a list of
-	// per-position `cashflow_items` plus a scalar `total_net_cashflow`.
-	let cashflowItems = $state<CashFlowItem[]>([]);
-	let totalNetCashflow = $state<string | null>(null);
-	let analyticAsOfDate = $state<string | null>(null);
-
-	// Canonical projection response shape (CashFlowProjectionResponse): a
-	// list of `items` plus a `summary` with total_inflows, total_outflows,
-	// net_cashflow, instrument_count (all Decimal-as-string except count).
-	let projectionItems = $state<CashFlowProjectionItem[]>([]);
-	let projectionSummary = $state<CashFlowProjectionSummary | null>(null);
-	let projectionAsOfDate = $state<string | null>(null);
-
-	// Tab states distinguish loading / ready / error / malformed / missing-param.
-	let analyticsState = $state<TabState>('idle');
-	let projectionsState = $state<TabState>('idle');
-	let analyticsError = $state<string>('');
-	let projectionsError = $state<string>('');
-
-	// Date filter — `as_of_date` derives from dateTo; user picks the date
-	// explicitly through the inputs. No request fires until a date is set.
-	let dateFrom = $state('');
-	let dateTo = $state('');
-	let abortController: AbortController;
-
-	function today(): string {
-		const d = new Date();
-		const m = String(d.getMonth() + 1).padStart(2, '0');
-		const day = String(d.getDate()).padStart(2, '0');
-		return `${d.getFullYear()}-${m}-${day}`;
+	interface MonthAgg {
+		inflow: number;
+		outflow: number;
+		count: number;
 	}
 
-	function clearAnalytic() {
-		cashflowItems = [];
-		totalNetCashflow = null;
-		analyticAsOfDate = null;
-	}
-
-	function clearProjection() {
-		projectionItems = [];
-		projectionSummary = null;
-		projectionAsOfDate = null;
-	}
-
-	async function loadData(signal?: AbortSignal) {
-		const asOfDate = dateTo.trim();
-
-		if (!asOfDate) {
-			analyticsState = 'missing-param';
-			projectionsState = 'missing-param';
-			analyticsError = 'Selecione a data "Até" (as_of_date) para carregar';
-			projectionsError = 'Selecione a data "Até" (as_of_date) para carregar';
-			clearAnalytic();
-			clearProjection();
-			return;
+	const byMonth = $derived.by(() => {
+		const map: Record<string, MonthAgg> = {};
+		for (const c of cashflow) {
+			const k = c.date?.slice(0, 7);
+			if (!k) continue;
+			if (!map[k]) map[k] = { inflow: 0, outflow: 0, count: 0 };
+			if (c.amount_usd > 0) map[k].inflow += c.amount_usd;
+			else map[k].outflow += c.amount_usd;
+			map[k].count++;
 		}
-
-		isLoading = true;
-		analyticsState = 'loading';
-		projectionsState = 'loading';
-
-		try {
-			const [analyticsRes, projectionsRes] = await Promise.all([
-				apiFetch(cashflowAnalyticPath({ as_of_date: asOfDate }), { signal }),
-				apiFetch(cashflowProjectionPath({ as_of_date: asOfDate }), { signal }),
-			]);
-
-			if (analyticsRes.ok) {
-				try {
-					const data = (await analyticsRes.json()) as CashFlowAnalyticResponse;
-					cashflowItems = Array.isArray(data?.cashflow_items) ? data.cashflow_items : [];
-					totalNetCashflow = typeof data?.total_net_cashflow === 'string' ? data.total_net_cashflow : null;
-					analyticAsOfDate = typeof data?.as_of_date === 'string' ? data.as_of_date : null;
-					analyticsState = 'ready';
-				} catch {
-					clearAnalytic();
-					analyticsState = 'malformed';
-					analyticsError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error('Cashflow analytic: resposta malformada');
-				}
-			} else {
-				clearAnalytic();
-				analyticsState = 'error';
-				analyticsError = await describeApiError(analyticsRes);
-				notifications.error(`Cashflow analytic: ${analyticsError}`);
-			}
-
-			if (projectionsRes.ok) {
-				try {
-					const data = (await projectionsRes.json()) as CashFlowProjectionResponse;
-					projectionItems = Array.isArray(data?.items) ? data.items : [];
-					projectionSummary = data?.summary ?? null;
-					projectionAsOfDate = typeof data?.as_of_date === 'string' ? data.as_of_date : null;
-					projectionsState = 'ready';
-				} catch {
-					clearProjection();
-					projectionsState = 'malformed';
-					projectionsError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error('Cashflow projection: resposta malformada');
-				}
-			} else {
-				clearProjection();
-				projectionsState = 'error';
-				projectionsError = await describeApiError(projectionsRes);
-				notifications.error(`Cashflow projection: ${projectionsError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			analyticsState = 'error';
-			projectionsState = 'error';
-			analyticsError = e instanceof Error ? e.message : 'Erro de conexão';
-			projectionsError = analyticsError;
-			notifications.error('Erro ao carregar cashflow');
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		// Default to today so the operator sees data on mount. The filter
-		// inputs remain editable for explicit date selection.
-		if (!dateTo) dateTo = today();
-		loadData(abortController.signal);
+		return map;
 	});
 
-	onDestroy(() => { abortController?.abort(); });
+	const months = $derived(Object.keys(byMonth).sort());
+	const maxAbs = $derived(
+		Math.max(1, ...months.map((m) => Math.max(byMonth[m].inflow, -byMonth[m].outflow))),
+	);
 
-	// Helpers for sign-based colouring on Decimal-as-string totals.
-	function signOf(value: string | null | undefined): number {
-		if (value == null || value === '') return Number.NaN;
-		const n = Number(value);
-		return Number.isFinite(n) ? n : Number.NaN;
+	function startOfLocalDay(value: Date): Date {
+		return new Date(value.getFullYear(), value.getMonth(), value.getDate());
 	}
 
-	const netSign = $derived(signOf(totalNetCashflow));
-	const projectionNetSign = $derived(signOf(projectionSummary?.net_cashflow ?? null));
+	const cashflow90d = $derived.by(() => {
+		const start = startOfLocalDay(new Date()).getTime();
+		const horizon = start + 90 * 24 * 60 * 60 * 1000;
+		return cashflow.filter((c) => {
+			const timestamp = Date.parse(c.date);
+			return Number.isFinite(timestamp) && timestamp >= start && timestamp <= horizon;
+		});
+	});
+	const projectedInflow90d = $derived(cashflow90d.reduce((sum, c) => sum + Math.max(c.amount_usd, 0), 0));
+	const projectedOutflow90d = $derived(cashflow90d.reduce((sum, c) => sum + Math.min(c.amount_usd, 0), 0));
+	const projectedNet90d = $derived(projectedInflow90d + projectedOutflow90d);
+	const nextSettlement = $derived.by(() =>
+		[...cashflow]
+			.filter((c) => Number.isFinite(Date.parse(c.date)))
+			.sort((a, b) => Date.parse(a.date) - Date.parse(b.date))[0] ?? null,
+	);
+
+	const cpConcentration = $derived.by(() => {
+		const totals = new Map<string, number>();
+		for (const c of cashflow90d) {
+			const cp = c.cp || '—';
+			totals.set(cp, (totals.get(cp) ?? 0) + Math.max(c.amount_usd, 0));
+		}
+		const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
+		return [...totals.entries()]
+			.map(([cp, v]) => ({ cp, v, pct: total > 0 ? (v / total) * 100 : 0 }))
+			.sort((a, b) => b.v - a.v)
+			.slice(0, 5);
+	});
+
+	function fmtUsd(value: number): string {
+		const prefix = value >= 0 ? '+US$ ' : '-US$ ';
+		return prefix + Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+	}
+
+	function fmtShortDate(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		const parts = date.split('-');
+		return parts.length === 3 ? `${parts[2]}/${parts[1]}` : '—';
+	}
+
+	function fmtBrl(c: Record<string, any>): string {
+		if (c.amount_brl == null) return '—';
+		return `R$ ${Number(c.amount_brl).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
+	}
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Cashflow</h1>
+<div class="page">
+	<PageHeader
+		eyebrow="Cash control"
+		title="Fluxo de caixa projetado"
+		subtitle="Liquidações financeiras de derivativos, concentração e integração operacional."
+		meta={[`${cashflow.length} evento(s)`, `Net 90d ${fmtUsd(projectedNet90d)}`, nextSettlement ? `Próxima ${fmtShortDate(nextSettlement.date)}` : 'Sem liquidação futura']}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+			{ label: 'Sincronizar SAP', icon: 'refresh', variant: 'primary' },
+		]}
+	/>
 
-	<!-- Date filter -->
-	<div class="mt-4 flex gap-3 items-end">
-		<div>
-			<label class="block text-xs text-surface-500" for="cf-from">De</label>
-			<input id="cf-from" type="date" bind:value={dateFrom} class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200" />
-		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="cf-to">Até (as_of_date)</label>
-			<input id="cf-to" type="date" bind:value={dateTo} class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200" />
-		</div>
-		<button onclick={() => loadData()} class="rounded border border-surface-700 px-3 py-1 text-sm text-surface-400 hover:bg-surface-800">
-			Filtrar
-		</button>
+	<div class="institutional-monitoring">
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Inflow projetado (90d)"  value={fmtUsd(projectedInflow90d)}  delta={`${cashflow90d.filter((c) => c.amount_usd > 0).length} liquidação(ões)`} deltaKind="pos"/>
+		<Kpi label="Outflow projetado (90d)" value={fmtUsd(projectedOutflow90d)} delta={`${cashflow90d.filter((c) => c.amount_usd < 0).length} liquidação(ões)`} deltaKind="neg"/>
+		<Kpi label="Net (90d)"               value={fmtUsd(projectedNet90d)}     delta={`${cashflow90d.length} evento(s)`}                    deltaKind={projectedNet90d >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="Próxima liquidação"      value={fmtShortDate(nextSettlement?.date)} delta={nextSettlement ? `${nextSettlement.desc} · ${nextSettlement.cp}` : 'sem eventos'} deltaKind="flat"/>
 	</div>
 
-	<!-- Tabs -->
-	<div class="mt-6 flex gap-4 border-b border-surface-800">
-		<button
-			onclick={() => activeTab = 'analytics'}
-			class="pb-2 text-sm {activeTab === 'analytics' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Analytics
-		</button>
-		<button
-			onclick={() => activeTab = 'projections'}
-			class="pb-2 text-sm {activeTab === 'projections' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Projeções
-		</button>
-		<button
-			onclick={() => activeTab = 'ledger'}
-			class="pb-2 text-sm {activeTab === 'ledger' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Ledger
-		</button>
+	<div class="grid-7-5" style="margin-bottom: 16px;">
+		<Card title="Linha do tempo" sub="Líquido por mês · USD">
+			{#if months.length}
+				<div style="position: relative; padding: 12px 0;">
+					<div class="row gap-3" style="align-items: flex-end; height: 160px;">
+						{#each months as m (m)}
+							{@const b = byMonth[m]}
+							{@const inH = (b.inflow / maxAbs) * 130}
+							{@const outH = (-b.outflow / maxAbs) * 130}
+							{@const net = b.inflow + b.outflow}
+							<div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">
+								<div class="tabular" style="font-size: 11px; color: {net >= 0 ? 'var(--pos)' : 'var(--neg)'}; font-weight: 500;">
+									{net >= 0 ? '+' : ''}{(net / 1000).toFixed(1)}k
+								</div>
+								<div style="width: 70%; display: flex; flex-direction: column; align-items: stretch; gap: 1px;">
+									<div style="height: {inH}px; background: var(--pos); border-radius: 2px 2px 0 0;"></div>
+									{#if outH > 0}
+										<div style="height: {outH}px; background: var(--neg); border-radius: 0 0 2px 2px;"></div>
+									{/if}
+								</div>
+								<div style="border-top: 1px solid var(--line-strong); align-self: stretch;"></div>
+								<div style="font-size: 11px; color: var(--muted);">{m.slice(5) + '/' + m.slice(2, 4)}</div>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{:else}
+				<EmptyState
+					icon="coins"
+					title="Nenhuma liquidação mensal carregada"
+					message="A timeline será preenchida quando houver eventos de caixa no horizonte selecionado."
+				/>
+			{/if}
+		</Card>
+
+		<Card title="Concentração por contraparte" sub="Inflow projetado · 90 dias">
+			{#if cpConcentration.length}
+				<div class="stack" style="gap: 8px;">
+					{#each cpConcentration as r (r.cp)}
+						<div>
+							<div class="row gap-3" style="font-size: 12.5px; margin-bottom: 4px;">
+								<span style="width: 60px; font-weight: 500;">{r.cp}</span>
+								<Bar pct={r.pct} kind={r.pct > 40 ? 'warn' : 'pos'}/>
+								<span class="tabular" style="width: 90px; text-align: right;">US$ {(r.v / 1000).toFixed(1)}k</span>
+								<span class="tabular" style="width: 36px; text-align: right; color: var(--muted);">{r.pct.toFixed(1)}%</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+				<div class="divider"></div>
+				<div class="row gap-2" style="font-size: 11.5px;">
+					<Badge kind={cpConcentration[0]?.pct > 50 ? 'warn' : 'pos'} dot>Concentração</Badge>
+					<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem inflows no horizonte'}</span>
+				</div>
+			{:else}
+				<EmptyState
+					icon="users"
+					title="Sem concentração no horizonte"
+					message="Nenhum inflow projetado em 90 dias foi carregado para análise por contraparte."
+				/>
+			{/if}
+		</Card>
 	</div>
 
-	<div class="mt-4">
-		{#if activeTab === 'analytics'}
-			{#if analyticsState === 'loading'}
-				<div class="text-sm text-surface-500">Carregando analytics...</div>
-			{:else if analyticsState === 'missing-param'}
-				<div class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
-					{analyticsError}
-				</div>
-			{:else if analyticsState === 'error' || analyticsState === 'malformed'}
-				<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-					Erro ao carregar analytic: {analyticsError}
-				</div>
-			{:else}
-				<!--
-					CashFlowAnalyticResponse: total_net_cashflow is a scalar
-					Decimal-string; cashflow_items is the per-position list.
-				-->
-				<div class="grid grid-cols-3 gap-4">
-					<div class="rounded border border-surface-800 bg-surface-900 p-3">
-						<div class="text-xs text-surface-500">Net Cashflow</div>
-						<div
-							class="text-lg font-semibold tabular-nums {Number.isFinite(netSign) && netSign >= 0 ? 'text-success' : 'text-danger'}"
-							data-testid="analytic-total-net-cashflow"
-						>
-							{formatNumber(totalNetCashflow)}
-						</div>
-					</div>
-					<div class="rounded border border-surface-800 bg-surface-900 p-3">
-						<div class="text-xs text-surface-500">As Of</div>
-						<div class="text-lg font-semibold text-surface-200">{formatDate(analyticAsOfDate)}</div>
-					</div>
-					<div class="rounded border border-surface-800 bg-surface-900 p-3">
-						<div class="text-xs text-surface-500">Itens</div>
-						<div class="text-lg font-semibold tabular-nums text-surface-200">{cashflowItems.length}</div>
-					</div>
-				</div>
+	<Card title="Liquidações detalhadas" sub="Eventos de caixa de derivativos · ordenado por data" noPad>
+		{#snippet actions()}
+			<button type="button" class="btn btn-secondary btn-sm"><Icon name="filter"/>Filtros</button>
+		{/snippet}
 
-				{#if cashflowItems.length > 0}
-					<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-						<table class="w-full text-sm">
-							<thead>
-								<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-									<th class="px-3 py-2">Settlement</th>
-									<th class="px-3 py-2">Objeto</th>
-									<th class="px-3 py-2">Amount USD</th>
-									<th class="px-3 py-2">MTM</th>
-									<th class="px-3 py-2">Preço</th>
-									<th class="px-3 py-2">Fonte</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each cashflowItems as item, idx (item.object_id + ':' + item.settlement_date + ':' + idx)}
-									<tr class="border-b border-surface-800/50">
-										<td class="px-3 py-2 text-surface-300">{formatDate(item.settlement_date)}</td>
-										<td class="px-3 py-2 text-xs text-surface-400">
-											<span class="font-mono">{item.object_type}</span> /
-											<span class="font-mono">{item.object_id.slice(0, 8)}</span>
-										</td>
-										<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(item.amount_usd)}</td>
-										<td class="px-3 py-2 tabular-nums text-surface-300">{formatNumber(item.mtm_value)}</td>
-										<td class="px-3 py-2 tabular-nums text-xs text-surface-400">{formatPrice(item.price_value ?? null)}</td>
-										<td class="px-3 py-2 text-xs text-surface-500">{item.price_source ?? '—'}{item.price_symbol ? ` / ${item.price_symbol}` : ''}</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{:else}
-					<div class="mt-4 text-sm text-surface-500">Nenhum item analítico disponível</div>
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>Data</th>
+					<th>Descrição</th>
+					<th>Commodity</th>
+					<th>Contraparte</th>
+					<th class="num">Valor (USD)</th>
+					<th class="num">Valor (BRL)</th>
+					<th>Direção</th>
+					<th>Status</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each cashflow as c, i (i)}
+					<tr>
+						<td class="strong">{fmtShortDate(c.date)}</td>
+						<td>{c.desc}</td>
+						<td><CommodityChip code={c.commodity}/></td>
+						<td>{c.cp}</td>
+						<td class="num strong" style="color: {c.amount_usd >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{c.amount_usd >= 0 ? '+' : ''}{c.amount_usd.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+						</td>
+						<td class="num">{fmtBrl(c)}</td>
+						<td>
+							{#if c.amount_usd >= 0}
+								<Badge kind="pos" dot>Entrada</Badge>
+							{:else}
+								<Badge kind="neg" dot>Saída</Badge>
+							{/if}
+						</td>
+						<td><StatePill state={c.status}/></td>
+					</tr>
+				{/each}
+				{#if cashflow.length === 0}
+					<tr>
+						<td colspan="8">
+							<EmptyState
+								icon="coins"
+								title="Nenhuma liquidação carregada"
+								message="Os eventos de caixa aparecerão aqui quando o backend retornar a projeção."
+							/>
+						</td>
+					</tr>
 				{/if}
-			{/if}
-
-		{:else if activeTab === 'projections'}
-			{#if projectionsState === 'loading'}
-				<div class="text-sm text-surface-500">Carregando projeções...</div>
-			{:else if projectionsState === 'missing-param'}
-				<div class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
-					{projectionsError}
-				</div>
-			{:else if projectionsState === 'error' || projectionsState === 'malformed'}
-				<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-					Erro ao carregar projeção: {projectionsError}
-				</div>
-			{:else}
-				<!--
-					CashFlowProjectionResponse: summary carries total_inflows /
-					total_outflows / net_cashflow (Decimal strings) and
-					instrument_count (int). Items expose settlement_date,
-					reference, commodity, counterparty, amount_usd, etc.
-				-->
-				{#if projectionSummary}
-					<div class="grid grid-cols-4 gap-4">
-						<div class="rounded border border-surface-800 bg-surface-900 p-3">
-							<div class="text-xs text-surface-500">Total Entradas</div>
-							<div
-								class="text-lg font-semibold tabular-nums text-success"
-								data-testid="projection-total-inflows"
-							>
-								{formatNumber(projectionSummary.total_inflows)}
-							</div>
-						</div>
-						<div class="rounded border border-surface-800 bg-surface-900 p-3">
-							<div class="text-xs text-surface-500">Total Saídas</div>
-							<div
-								class="text-lg font-semibold tabular-nums text-danger"
-								data-testid="projection-total-outflows"
-							>
-								{formatNumber(projectionSummary.total_outflows)}
-							</div>
-						</div>
-						<div class="rounded border border-surface-800 bg-surface-900 p-3">
-							<div class="text-xs text-surface-500">Net Cashflow</div>
-							<div
-								class="text-lg font-semibold tabular-nums {Number.isFinite(projectionNetSign) && projectionNetSign >= 0 ? 'text-success' : 'text-danger'}"
-								data-testid="projection-net-cashflow"
-							>
-								{formatNumber(projectionSummary.net_cashflow)}
-							</div>
-						</div>
-						<div class="rounded border border-surface-800 bg-surface-900 p-3">
-							<div class="text-xs text-surface-500">Instrumentos</div>
-							<div class="text-lg font-semibold tabular-nums text-surface-200">{projectionSummary.instrument_count}</div>
-						</div>
-					</div>
-				{/if}
-
-				{#if projectionItems.length > 0}
-					<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-						<table class="w-full text-sm">
-							<thead>
-								<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-									<th class="px-3 py-2">Settlement</th>
-									<th class="px-3 py-2">Referência</th>
-									<th class="px-3 py-2">Commodity</th>
-									<th class="px-3 py-2">Contraparte</th>
-									<th class="px-3 py-2">Qty (MT)</th>
-									<th class="px-3 py-2">Preço / MT</th>
-									<th class="px-3 py-2">Amount USD</th>
-									<th class="px-3 py-2">Tipo</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each projectionItems as item, idx (item.instrument_id + ':' + idx)}
-									<tr class="border-b border-surface-800/50">
-										<td class="px-3 py-2 text-surface-300">{formatDate(item.settlement_date)}</td>
-										<td class="px-3 py-2 font-mono text-xs text-surface-400">{item.reference || '—'}</td>
-										<td class="px-3 py-2 text-surface-300">{item.commodity || '—'}</td>
-										<td class="px-3 py-2 text-surface-400">{item.counterparty || '—'}</td>
-										<td class="px-3 py-2 tabular-nums text-surface-300">{formatQuantityMT(item.quantity_mt)}</td>
-										<td class="px-3 py-2 tabular-nums text-surface-300">{formatPrice(item.price_per_mt)}</td>
-										<td class="px-3 py-2 tabular-nums text-surface-200">{formatNumber(item.amount_usd)}</td>
-										<td class="px-3 py-2 text-xs text-surface-500">{item.instrument_type}</td>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
-					</div>
-				{:else}
-					<div class="mt-4 text-sm text-surface-500">Nenhuma projeção disponível</div>
-				{/if}
-			{/if}
-
-		{:else}
-			<!--
-				Ledger requires `source_event_id` per `/cashflow/ledger`. The
-				cashflow dashboard has no reliable source for it (this is a
-				summary surface, not an event detail surface), so we render an
-				explicit missing-parameter state and do not issue a request.
-				A dedicated event-scoped ledger view is out of scope for
-				PR-A6-1.
-			-->
-			<div class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
-				Ledger requer um source_event_id. Acesse o ledger a partir de um evento ou contrato específico.
-			</div>
-		{/if}
+			</tbody>
+		</table>
+	</Card>
 	</div>
 </div>

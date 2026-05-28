@@ -1,0 +1,12 @@
+.git
+.venv
+**/.venv
+**/__pycache__
+**/.pytest_cache
+backend/.codex-pytest-tmp
+backend/test-results
+frontend-svelte/node_modules
+frontend-svelte/.svelte-kit
+frontend-svelte/build
+frontend-svelte/test-results
+frontend-svelte/playwright-report

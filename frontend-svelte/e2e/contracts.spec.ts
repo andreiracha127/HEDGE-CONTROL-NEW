@@ -11,12 +11,12 @@ test.describe('Contracts', () => {
 		await expect(page.getByRole('heading', { name: 'Contratos' })).toBeVisible();
 	});
 
-	test('contract list shows filter dropdown', async ({ page }) => {
+	test('contract list shows filter controls', async ({ page }) => {
 		await page.goto('/contracts');
-		const select = page.locator('select');
-		await expect(select).toBeVisible();
-		// Should have status filter options
-		await expect(select.locator('option')).toHaveCount(4); // Todos, Ativo, Liquidado, Cancelado
+		await expect(page.getByRole('button', { name: /Ativos/ })).toBeVisible();
+		await expect(page.getByRole('button', { name: /Vencendo/ })).toBeVisible();
+		await expect(page.getByRole('button', { name: /Liquidados/ })).toBeVisible();
+		await expect(page.getByRole('button', { name: 'Commodity' })).toBeVisible();
 	});
 
 	test('clicking a contract row navigates to detail', async ({ page }) => {

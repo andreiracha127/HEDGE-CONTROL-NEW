@@ -127,7 +127,7 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol
         run: |
-          python -m alembic current | grep -F "047_finance_pipeline_hb3_hardening (head)"
+          python -m alembic current | grep -F "048_order_external_reference (head)"
 
   e2e-smoke:
     name: "E2E: Smoke (pytest journey + RBAC)"
@@ -193,6 +193,13 @@ jobs:
             docker compose logs backend
             exit 1
           fi
+        env:
+          APP_ENV: test
+
+      - name: Run app migrations for E2E stack
+        run: |
+          docker compose exec -T backend python -m alembic upgrade head
+          docker compose exec -T backend python -m alembic current | grep -F "048_order_external_reference (head)"
 
       - name: Check schema drift
         working-directory: frontend-svelte
@@ -289,6 +296,13 @@ jobs:
             docker compose logs backend
             exit 1
           fi
+        env:
+          APP_ENV: test
+
+      - name: Run app migrations for full E2E stack
+        run: |
+          docker compose exec -T backend python -m alembic upgrade head
+          docker compose exec -T backend python -m alembic current | grep -F "048_order_external_reference (head)"
 
       - name: Build and serve frontend
         working-directory: frontend-svelte

@@ -41,6 +41,11 @@ class OrderBase(BaseModel):
     avg_entry_price: Price | None = Field(
         None, description="Fixed price value (USD/MT) — required when price_type=fixed"
     )
+    external_reference: str | None = Field(
+        None,
+        max_length=100,
+        description="External ERP/SAP PO or SO reference submitted by the user",
+    )
     counterparty_name: str | None = Field(
         None, max_length=200, description="Client or supplier name (free text)"
     )

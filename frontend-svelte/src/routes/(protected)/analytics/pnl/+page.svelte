@@ -1,236 +1,201 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatNumber, formatDate } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { pnlSnapshotsPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type { PnlSnapshot } from '$lib/api/types/entities';
-	import { validatePnlSnapshot } from '$lib/api/analytics-response-shape';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 
-	type ViewState = 'idle' | 'missing-param' | 'loading' | 'ready' | 'error' | 'malformed';
+	let { data } = $props();
+	const pnl = $derived(data.pnl);
+	const totals = $derived(pnl.totals);
+	const deals = $derived(pnl.deals ?? []);
 
-	let pnlData = $state<PnlSnapshot | null>(null);
-	let viewState = $state<ViewState>('idle');
-	let viewError = $state<string>('');
+	const money = (value: unknown): number => {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : 0;
+	};
 
-	// `/pl/snapshots` returns a single scalar `PLSnapshotResponse`
-	// (realized_pl + unrealized_mtm — Decimal-as-string, see
-	// schema.d.ts:2888). No request fires until all four required
-	// singleton params are supplied.
-	let entityType = $state<string>('hedge_contract');
-	let entityId = $state<string>('');
-	let periodStart = $state<string>('');
-	let periodEnd = $state<string>('');
-	let abortController: AbortController;
-
-	function paramsReady(): boolean {
-		return (
-			entityType.trim() !== '' &&
-			entityId.trim() !== '' &&
-			periodStart.trim() !== '' &&
-			periodEnd.trim() !== ''
-		);
+	function fmtUsd(value: unknown): string {
+		const amount = money(value);
+		const sign = amount > 0 ? '+' : amount < 0 ? '-' : '';
+		return `${sign}US$ ${Math.abs(amount).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 	}
 
-	async function loadData(signal?: AbortSignal) {
-		if (!paramsReady()) {
-			pnlData = null;
-			viewState = 'missing-param';
-			const missing: string[] = [];
-			if (!entityType.trim()) missing.push('entity_type');
-			if (!entityId.trim()) missing.push('entity_id');
-			if (!periodStart.trim()) missing.push('period_start');
-			if (!periodEnd.trim()) missing.push('period_end');
-			viewError = `Parâmetros obrigatórios: ${missing.join(', ')}`;
-			notifications.error(`P&L: ${viewError}`);
-			return;
-		}
-
-		viewState = 'loading';
-		try {
-			const res = await apiFetch(
-				pnlSnapshotsPath({
-					entity_type: entityType,
-					entity_id: entityId,
-					period_start: periodStart,
-					period_end: periodEnd,
-				}),
-				{ signal },
-			);
-			if (res.ok) {
-				let body: unknown;
-				try {
-					body = await res.json();
-				} catch {
-					pnlData = null;
-					viewState = 'malformed';
-					viewError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error(`P&L: ${viewError}`);
-					return;
-				}
-				// J-A6-03: never substitute missing required economic values
-				// with zero defaults. A malformed snapshot must surface as
-				// an explicit error state rather than render `formatNumber`
-				// over `undefined`.
-				const validation = validatePnlSnapshot(body);
-				if (!validation.ok) {
-					pnlData = null;
-					viewState = 'malformed';
-					viewError = `Snapshot P&L com campos obrigatórios ausentes ou inválidos: ${validation.missing.join(', ')}`;
-					notifications.error(`P&L: ${viewError}`);
-					return;
-				}
-				pnlData = validation.value;
-				viewState = 'ready';
-			} else {
-				pnlData = null;
-				viewState = 'error';
-				viewError = await describeApiError(res);
-				notifications.error(`P&L: ${viewError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			pnlData = null;
-			viewState = 'error';
-			viewError = e instanceof Error ? e.message : 'Erro de conexão';
-			notifications.error('Erro ao carregar P&L');
-		}
+	function fmtNumber(value: unknown, digits = 2): string {
+		return money(value).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
 
-	onMount(() => {
-		abortController = new AbortController();
-		// Do not fire a request on mount — required singleton params are not
-		// derivable from the page context. Operator must select them.
-		viewState = 'missing-param';
-		viewError =
-			'Informe entity_type, entity_id, period_start e period_end para carregar o snapshot.';
+	const dailyBars = $derived.by(() => {
+		const rows = deals.map((deal, idx) => [idx + 1, money(deal.total_pnl)] as [number, number]);
+		return rows.length > 0 ? rows : [[1, 0] as [number, number]];
+	});
+	const maxAbs = $derived(Math.max(1, ...dailyBars.map((d) => Math.abs(d[1]))));
+
+	const attribution = $derived.by(() => {
+		const byCommodity = new Map<string, { code: string; realized: number; mtm: number; total: number; kind: 'pos' | 'neg' }>();
+		for (const deal of deals) {
+			const code = deal.commodity ?? '—';
+			const current = byCommodity.get(code) ?? { code, realized: 0, mtm: 0, total: 0, kind: 'pos' as const };
+			current.realized += money(deal.hedge_pnl_realized);
+			current.mtm += money(deal.hedge_pnl_mtm);
+			current.total += money(deal.total_pnl);
+			current.kind = current.total < 0 ? 'neg' : 'pos';
+			byCommodity.set(code, current);
+		}
+		return Array.from(byCommodity.values()).sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
 	});
 
-	onDestroy(() => { abortController?.abort(); });
-
-	// realized_pl / unrealized_mtm are Decimal-as-string. Parse for sign
-	// (positive vs negative colour) and totals; the displayed scalar is
-	// fed through formatNumber, which preserves Decimal-string precision
-	// at the boundary.
-	function signOf(value: string | null | undefined): number {
-		if (value == null || value === '') return Number.NaN;
-		const n = Number(value);
-		return Number.isFinite(n) ? n : Number.NaN;
-	}
-
-	const realizedPlSign = $derived(pnlData ? signOf(pnlData.realized_pl) : Number.NaN);
-	const unrealizedMtmSign = $derived(pnlData ? signOf(pnlData.unrealized_mtm) : Number.NaN);
-	const totalPl = $derived(
-		Number.isFinite(realizedPlSign) && Number.isFinite(unrealizedMtmSign)
-			? realizedPlSign + unrealizedMtmSign
-			: Number.NaN,
-	);
+	const topContrib = $derived.by(() => {
+		const max = Math.max(1, ...deals.flatMap((deal) => deal.financial_items.map((item) => Math.abs(money(item.pnl)))));
+		return deals
+			.flatMap((deal) =>
+				deal.financial_items.map((item) => {
+					const pnlValue = money(item.pnl);
+					const quantity = money(item.quantity_mt);
+					const price = money(item.entry_price);
+					return {
+						id: item.reference ?? String(item.id).slice(0, 8),
+						commodity: deal.commodity,
+						cp: item.classification,
+						notional: fmtNumber(quantity * price, 0),
+						fixed: fmtNumber(item.entry_price),
+						current: item.market_price == null ? '—' : fmtNumber(item.market_price),
+						pnl: fmtUsd(item.pnl),
+						kind: pnlValue < 0 ? 'neg' as const : 'pos' as const,
+						contrib: Math.max(4, Math.round((Math.abs(pnlValue) / max) * 100)),
+					};
+				}),
+			)
+			.sort((a, b) => b.contrib - a.contrib)
+			.slice(0, 8);
+	});
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">P&L Snapshot</h1>
+<div class="page">
+	<PageHeader
+		eyebrow="Performance analytics"
+		title="P&L"
+		subtitle="Resultado realizado, não-realizado, atribuição e contribuintes financeiros."
+		meta={[`Snapshot ${data.snapshotDate}`, `${deals.length} deal(s)`, `Total ${fmtUsd(totals.total_pnl)}`]}
+		actions={[
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
-	<div class="mt-4 grid grid-cols-5 gap-3 items-end">
-		<div>
-			<label class="block text-xs text-surface-500" for="pnl-entity-type">entity_type</label>
-			<input
-				id="pnl-entity-type"
-				type="text"
-				bind:value={entityType}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
-		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="pnl-entity-id">entity_id (uuid)</label>
-			<input
-				id="pnl-entity-id"
-				type="text"
-				bind:value={entityId}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
-		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="pnl-period-start">period_start</label>
-			<input
-				id="pnl-period-start"
-				type="date"
-				bind:value={periodStart}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
-		</div>
-		<div>
-			<label class="block text-xs text-surface-500" for="pnl-period-end">period_end</label>
-			<input
-				id="pnl-period-end"
-				type="date"
-				bind:value={periodEnd}
-				class="w-full rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-200"
-			/>
-		</div>
-		<button
-			onclick={() => loadData()}
-			class="rounded border border-surface-700 px-3 py-1 text-sm text-surface-400 hover:bg-surface-800"
-		>
-			Carregar
-		</button>
+	<div class="institutional-analytics">
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi
+			label="P&L total"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
+			spark={dailyBars.map(([, v]) => v)} sparkColor={money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'}
+		/>
+		<Kpi label="Realizado"            value={fmtUsd(totals.hedge_pnl_realized)}  delta={`${deals.length} deal(s)`} deltaKind={money(totals.hedge_pnl_realized) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Não-realizado (MTM)"  value={fmtUsd(totals.hedge_pnl_mtm)}       delta="hedges abertos" deltaKind={money(totals.hedge_pnl_mtm) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Resultado físico"     value={fmtUsd(money(totals.physical_revenue) - money(totals.physical_cost))} delta="receita menos custo" deltaKind={money(totals.physical_revenue) - money(totals.physical_cost) < 0 ? 'neg' : 'pos'}/>
 	</div>
 
-	<div class="mt-6">
-		{#if viewState === 'loading'}
-			<div class="text-surface-500">Carregando P&L...</div>
-		{:else if viewState === 'missing-param'}
-			<div
-				class="rounded border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning"
-				data-testid="pnl-missing-param"
-			>
-				{viewError}
-			</div>
-		{:else if viewState === 'error' || viewState === 'malformed'}
-			<div class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-				Erro ao carregar P&L: {viewError}
-			</div>
-		{:else if pnlData}
-			<!--
-				/pl/snapshots returns a single PLSnapshotResponse with scalar
-				`realized_pl` and `unrealized_mtm`. Render the scalar
-				summary directly; there is no entries[] collection.
-			-->
-			<div class="grid grid-cols-3 gap-4">
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">P&L Realizado</div>
-					<div
-						class="text-lg font-semibold tabular-nums {Number.isFinite(realizedPlSign) && realizedPlSign >= 0 ? 'text-success' : 'text-danger'}"
-						data-testid="pnl-realized"
-					>
-						{formatNumber(pnlData.realized_pl)}
-					</div>
-				</div>
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">MTM Não-realizado</div>
-					<div
-						class="text-lg font-semibold tabular-nums {Number.isFinite(unrealizedMtmSign) && unrealizedMtmSign >= 0 ? 'text-accent' : 'text-danger'}"
-						data-testid="pnl-unrealized-mtm"
-					>
-						{formatNumber(pnlData.unrealized_mtm)}
-					</div>
-				</div>
-				<div class="rounded border border-surface-800 bg-surface-900 p-3">
-					<div class="text-xs text-surface-500">P&L Total</div>
-					<div class="text-lg font-semibold tabular-nums text-surface-200">
-						{formatNumber(totalPl)}
-					</div>
+	<div class="grid-7-5" style="margin-bottom: 16px;">
+		<Card title="P&L por deal" sub={`Snapshot ${data.snapshotDate} · USD`}>
+			<div style="height: 200px; position: relative; display: flex; align-items: center;">
+				<div class="row gap-1" style="align-items: stretch; height: 100%; flex: 1; padding: 0 4px;">
+					{#each dailyBars as [d, v] (d)}
+						{@const h = (Math.abs(v) / maxAbs) * 80}
+						<div style="flex: 1; display: flex; flex-direction: column; justify-content: center; position: relative; min-width: 0;">
+							{#if v >= 0}
+								<div style="margin-top: auto; margin-bottom: 50%; height: {h}%; background: var(--pos); border-radius: 1px 1px 0 0;"></div>
+							{:else}
+								<div style="margin-top: 50%; margin-bottom: auto; height: {h}%; background: var(--neg); border-radius: 0 0 1px 1px;"></div>
+							{/if}
+						</div>
+					{/each}
+					<div style="position: absolute; left: 4px; right: 4px; top: 50%; height: 1px; background: var(--line);"></div>
 				</div>
 			</div>
+		</Card>
 
-			<div class="mt-4 rounded border border-surface-800 bg-surface-900 p-3 text-sm space-y-1">
-				<div><span class="text-surface-500">Entity:</span> <span class="text-surface-200">{pnlData.entity_type} / {pnlData.entity_id}</span></div>
-				<div><span class="text-surface-500">Período:</span> <span class="text-surface-200">{formatDate(pnlData.period_start)} → {formatDate(pnlData.period_end)}</span></div>
-				<div><span class="text-surface-500">Correlation:</span> <span class="font-mono text-xs text-surface-400">{pnlData.correlation_id ?? '—'}</span></div>
-				<div><span class="text-surface-500">Created:</span> <span class="text-surface-400">{formatDate(pnlData.created_at)}</span></div>
-			</div>
-		{:else}
-			<div class="text-surface-500">Nenhum dado de P&L disponível</div>
-		{/if}
+		<Card title="Atribuição" sub={`Snapshot ${data.snapshotDate}`}>
+			<table class="tbl tbl-tight">
+				<thead>
+					<tr>
+						<th>Commodity</th>
+						<th class="num">Realizado</th>
+						<th class="num">MTM</th>
+						<th class="num">Total</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each attribution as a (a.code)}
+						<tr>
+							<td class="strong"><CommodityChip code={a.code}/></td>
+							<td class="num">{fmtUsd(a.realized)}</td>
+							<td class="num">{fmtUsd(a.mtm)}</td>
+							<td class="num strong" style="color: {a.kind === 'pos' ? 'var(--pos)' : 'var(--neg)'};">{fmtUsd(a.total)}</td>
+						</tr>
+					{/each}
+					{#if attribution.length === 0}
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="chart"
+									title="Nenhuma atribuição no snapshot"
+									message="A tabela será preenchida quando houver deals com P&L retornados pelo backend."
+								/>
+							</td>
+						</tr>
+					{/if}
+				</tbody>
+				<tfoot>
+					<tr style="border-top: 2px solid var(--line-strong);">
+						<td class="strong">Total</td>
+						<td class="num strong">{fmtUsd(totals.hedge_pnl_realized)}</td>
+						<td class="num strong">{fmtUsd(totals.hedge_pnl_mtm)}</td>
+						<td class="num strong" style="color: {money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'};">{fmtUsd(totals.total_pnl)}</td>
+					</tr>
+				</tfoot>
+			</table>
+		</Card>
+	</div>
+
+	<Card title="Top contribuintes" sub={`Contratos com maior impacto no snapshot ${data.snapshotDate}`} noPad>
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>Contrato</th>
+					<th>Commodity</th>
+					<th>Contraparte</th>
+					<th class="num">Notional (USD)</th>
+					<th class="num">Preço fixo</th>
+					<th class="num">Preço atual</th>
+					<th class="num">P&amp;L (USD)</th>
+					<th style="width: 160px;">Contribuição</th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each topContrib as t (t.id)}
+					<tr>
+						<td class="mono strong">{t.id}</td>
+						<td><CommodityChip code={t.commodity}/></td>
+						<td>{t.cp}</td>
+						<td class="num">{t.notional}</td>
+						<td class="num">{t.fixed}</td>
+						<td class="num">{t.current}</td>
+						<td class="num strong" style="color: {t.kind === 'pos' ? 'var(--pos)' : 'var(--neg)'};">{t.pnl}</td>
+						<td><Bar pct={t.contrib} kind={t.kind}/></td>
+					</tr>
+				{/each}
+				{#if topContrib.length === 0}
+					<tr>
+						<td colspan="8">
+							<EmptyState
+								icon="coins"
+								title="Nenhum contribuinte financeiro no snapshot"
+								message="Os maiores impactos aparecerão aqui quando houver itens financeiros com P&L."
+							/>
+						</td>
+					</tr>
+				{/if}
+			</tbody>
+		</table>
+	</Card>
 	</div>
 </div>

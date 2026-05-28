@@ -1,233 +1,131 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { apiFetch } from '$lib/api/fetch';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import Pager from '$lib/components/alcast/Pager.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { wsStore } from '$lib/stores/ws.svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatQuantityMT, formatDate, stateLabel, stateColor, intentLabel, directionLabel, directionColor } from '$lib/utils/format';
-	import type { Rfq } from '$lib/api/types/entities';
+	let { data } = $props();
+	const rfqs = $derived(data.rfqs);
+	type TabKey = 'all' | 'CREATED' | 'SENT' | 'QUOTED';
+	const tab = $derived((data.tab ?? 'all') as TabKey);
+	const totalLoaded = $derived(data.total ?? rfqs.length);
+	const canCreateRfqs = $derived(authStore.hasRole('risk_manager'));
+	const headerActions = $derived.by(() => [
+		{ label: 'Exportar', icon: 'download' as const, variant: 'secondary' as const },
+		...(canCreateRfqs
+			? [{ label: 'Nova RFQ', icon: 'plus' as const, variant: 'primary' as const, href: '/rfq/new' }]
+			: []),
+	]);
+	const stateCount = (state: string) => rfqs.filter((rfq) => rfq.state === state).length;
 
-	// ─── State ──────────────────────────────────────────────────────────
-	let rfqs = $state<Rfq[]>([]);
-	let isLoading = $state(false);
-	let nextCursor = $state<string | null>(null);
+	const TABS = $derived<[TabKey, string, number][]>([
+		['all',     'Todas',    totalLoaded],
+		['CREATED', 'Criadas',  stateCount('CREATED')],
+		['SENT',    'Enviadas', stateCount('SENT')],
+		['QUOTED',  'Cotadas',  stateCount('QUOTED')],
+	]);
 
-	// Filters
-	let filterState = $state('');
-	let filterIntent = $state('');
-	let filterDirection = $state('');
-	let filterCommodity = $state('');
-
-	// Quote count badges (updated via WS)
-	let quoteBadges = $state<Record<string, number>>({});
-
-	// ─── Fetch ──────────────────────────────────────────────────────────
-	async function fetchRfqs(cursor: string | null = null) {
-		isLoading = true;
-		try {
-			const params: Record<string, string> = {};
-			if (filterState) params.state = filterState;
-			if (filterIntent) params.intent = filterIntent;
-			if (filterDirection) params.direction = filterDirection;
-			if (filterCommodity) params.commodity = filterCommodity;
-			if (cursor) params.cursor = cursor;
-
-			const response = await apiFetch(`/rfqs?${new URLSearchParams(params)}`);
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			const data = await response.json();
-
-			if (cursor) {
-				rfqs = [...rfqs, ...data.items];
-			} else {
-				rfqs = data.items;
-			}
-			nextCursor = data.next_cursor;
-		} catch (e) {
-			notifications.error('Erro ao carregar RFQs');
-		} finally {
-			isLoading = false;
-		}
+	function setTab(next: TabKey) {
+		const query = next === 'all' ? '' : `?tab=${next}`;
+		goto(`/rfq${query}`, { noScroll: true });
 	}
 
-	function applyFilters() {
-		nextCursor = null;
-		fetchRfqs();
+	function fmtQty(qty: number, commodity: string): string {
+		if (commodity === 'USDBRL') return 'US$ ' + (qty / 1_000_000).toFixed(1) + ' M';
+		return qty.toLocaleString('pt-BR') + ' t';
 	}
 
-	function clearFilters() {
-		filterState = '';
-		filterIntent = '';
-		filterDirection = '';
-		filterCommodity = '';
-		applyFilters();
-	}
-
-	// ─── WS badge updates ───────────────────────────────────────────────
-	let unsubWs: (() => void) | null = null;
-
-	onMount(() => {
-		fetchRfqs();
-
-		unsubWs = wsStore.on('quote_received', (event) => {
-			const rfqId = event.rfq_id;
-			quoteBadges = {
-				...quoteBadges,
-				[rfqId]: (quoteBadges[rfqId] ?? 0) + 1,
-			};
-		});
-	});
-
-	onDestroy(() => {
-		unsubWs?.();
-	});
-
-	function getQuoteCount(rfq: Rfq): number {
-		const base = rfq.quotes?.length ?? 0;
-		return base + (quoteBadges[rfq.id] ?? 0);
-	}
-
-	const states = ['CREATED', 'SENT', 'QUOTED', 'AWARDED', 'CLOSED'];
-	const intents = ['COMMERCIAL_HEDGE', 'GLOBAL_POSITION', 'SPREAD'];
-	const directions = ['BUY', 'SELL'];
 </script>
 
-<div class="p-6">
-	<!-- Header -->
-	<div class="flex items-center justify-between">
-		<h1 class="text-lg font-semibold text-surface-200">RFQs</h1>
-		{#if authStore.hasRole('trader')}
-			<a
-				href="/rfq/new"
-				class="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"
-			>
-				+ Nova RFQ
-			</a>
-		{/if}
+<div class="page">
+	<PageHeader
+		eyebrow="RFQ blotter"
+		title="Solicitações de cotação"
+		subtitle="Originar, monitorar e converter cotações com contrapartes aprovadas."
+		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `${stateCount('QUOTED')} cotadas`]}
+		actions={headerActions}
+	/>
+
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="/rfqs" deltaKind="flat"/>
+		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="state=CREATED" deltaKind="flat"/>
+		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="state=SENT" deltaKind="flat"/>
+		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="state=QUOTED" deltaKind="flat"/>
 	</div>
 
-	<!-- Filters -->
-	<div class="mt-4 flex flex-wrap gap-3">
-		<select
-			bind:value={filterState}
-			onchange={applyFilters}
-			class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300"
-		>
-			<option value="">Estado</option>
-			{#each states as s}
-				<option value={s}>{stateLabel(s)}</option>
-			{/each}
-		</select>
+	<div class="institutional-blotter">
+	<Card noPad>
+		<div class="tbl-tools">
+			<div class="tabs-pill">
+				{#each TABS as [k, l, c] (k)}
+					<button type="button" class="tab" class:active={tab === k} onclick={() => setTab(k)}>
+						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
+					</button>
+				{/each}
+			</div>
+			<div class="sp"></div>
+			<button type="button" class="chip"><Icon name="filter"/>Commodity</button>
+			<button type="button" class="chip"><Icon name="filter"/>Intenção</button>
+			<button type="button" class="chip"><Icon name="filter"/>Período</button>
+		</div>
 
-		<select
-			bind:value={filterIntent}
-			onchange={applyFilters}
-			class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300"
-		>
-			<option value="">Intenção</option>
-			{#each intents as i}
-				<option value={i}>{intentLabel(i)}</option>
-			{/each}
-		</select>
-
-		<select
-			bind:value={filterDirection}
-			onchange={applyFilters}
-			class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300"
-		>
-			<option value="">Direção</option>
-			{#each directions as d}
-				<option value={d}>{directionLabel(d)}</option>
-			{/each}
-		</select>
-
-		<input
-			type="text"
-			bind:value={filterCommodity}
-			placeholder="Commodity..."
-			onkeydown={(e) => { if (e.key === 'Enter') applyFilters(); }}
-			class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300 placeholder-surface-600 w-36"
-		/>
-
-		{#if filterState || filterIntent || filterDirection || filterCommodity}
-			<button onclick={clearFilters} class="text-xs text-surface-500 hover:text-surface-300">
-				Limpar filtros
-			</button>
-		{/if}
-	</div>
-
-	<!-- Table -->
-	<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-		<table class="w-full text-sm">
+		<table class="tbl">
 			<thead>
-				<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-					<th class="px-3 py-2">#</th>
-					<th class="px-3 py-2">Estado</th>
-					<th class="px-3 py-2">Commodity</th>
-					<th class="px-3 py-2">Direção</th>
-					<th class="px-3 py-2">Qty (MT)</th>
-					<th class="px-3 py-2">Intenção</th>
-					<th class="px-3 py-2">Contrapartes</th>
-					<th class="px-3 py-2">Cotações</th>
-					<th class="px-3 py-2">Criado</th>
+				<tr>
+					<th>RFQ</th>
+					<th>Intenção</th>
+					<th>Commodity</th>
+					<th>Lado</th>
+					<th class="num">Quantidade</th>
+					<th>Janela</th>
+					<th class="num">Cotações</th>
+					<th>Status</th>
+					<th>Criada</th>
+					<th></th>
 				</tr>
 			</thead>
 			<tbody>
-				{#each rfqs as rfq (rfq.id)}
-					<tr
-						onclick={() => goto(`/rfq/${rfq.id}`)}
-						class="border-b border-surface-800/50 cursor-pointer hover:bg-surface-800/50 transition-colors"
-					>
-						<td class="px-3 py-2 font-mono text-xs text-surface-400">{rfq.rfq_number}</td>
-						<td class="px-3 py-2">
-							<span class="inline-block rounded px-1.5 py-0.5 text-xs font-medium {stateColor(rfq.state)}">
-								{stateLabel(rfq.state)}
-							</span>
+				{#each rfqs as r (r.id)}
+					<tr>
+						<td class="strong mono"><a href={`/rfq/${r.id}`}>{r.rfq}</a></td>
+						<td>
+							<Badge kind={r.intent === 'COMMERCIAL_HEDGE' ? 'info' : 'neutral'}>
+								{r.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : r.intent === 'SPREAD' ? 'Spread' : 'Posição global'}
+							</Badge>
 						</td>
-						<td class="px-3 py-2 text-surface-300">{rfq.commodity}</td>
-						<td class="px-3 py-2 font-medium {directionColor(rfq.direction)}">
-							{directionLabel(rfq.direction)}
-						</td>
-						<td class="px-3 py-2 text-surface-300 tabular-nums">{formatQuantityMT(rfq.quantity_mt)}</td>
-						<td class="px-3 py-2 text-surface-400 text-xs">{intentLabel(rfq.intent)}</td>
-						<td class="px-3 py-2 text-surface-400 text-center">{rfq.invitations?.length ?? 0}</td>
-						<td class="px-3 py-2 text-center">
-							{#if quoteBadges[rfq.id]}
-								<span class="inline-flex items-center rounded-full bg-accent/20 px-2 py-0.5 text-xs font-medium text-accent">
-									+{quoteBadges[rfq.id]}
-								</span>
-							{:else}
-								<span class="text-surface-500">{getQuoteCount(rfq)}</span>
-							{/if}
-						</td>
-						<td class="px-3 py-2 text-surface-500 text-xs">{formatDate(rfq.created_at)}</td>
+						<td><CommodityChip code={r.commodity}/></td>
+						<td><DirectionBadge dir={r.direction}/></td>
+						<td class="num">{fmtQty(r.qty, r.commodity)}</td>
+						<td>{r.window}</td>
+						<td class="num">{r.quotes}</td>
+						<td><StatePill state={r.state}/></td>
+						<td style="color: var(--muted); font-size: 12px;">{r.created}</td>
+						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
 					</tr>
-				{:else}
-					{#if !isLoading}
-						<tr>
-							<td colspan="9" class="px-3 py-8 text-center text-surface-500">
-								Nenhuma RFQ encontrada.
-							</td>
-						</tr>
-					{/if}
 				{/each}
+				{#if rfqs.length === 0}
+					<tr>
+							<td colspan="10">
+							<EmptyState
+								icon="rfq"
+								title="Nenhuma RFQ para o filtro selecionado"
+								message={canCreateRfqs ? 'Ajuste os filtros ou origine uma nova solicitação para a mesa.' : 'Ajuste os filtros ou consulte a mesa de risco para originar novas solicitações.'}
+								actionLabel={canCreateRfqs ? 'Nova RFQ' : undefined}
+								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
+							/>
+						</td>
+					</tr>
+				{/if}
 			</tbody>
 		</table>
+		<Pager from={rfqs.length > 0 ? 1 : 0} to={rfqs.length} total={totalLoaded}/>
+	</Card>
 	</div>
-
-	<!-- Loading / Pagination -->
-	{#if isLoading}
-		<div class="mt-4 text-center text-sm text-surface-500">Carregando...</div>
-	{/if}
-
-	{#if nextCursor && !isLoading}
-		<div class="mt-4 text-center">
-			<button
-				onclick={() => fetchRfqs(nextCursor)}
-				class="rounded border border-surface-700 px-4 py-1.5 text-sm text-surface-400 hover:bg-surface-800"
-			>
-				Carregar mais
-			</button>
-		</div>
-	{/if}
 </div>

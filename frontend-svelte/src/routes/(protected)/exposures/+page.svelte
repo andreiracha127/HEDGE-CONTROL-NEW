@@ -1,220 +1,217 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatQuantityMT } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { type ColumnDef } from '@tanstack/table-core';
-	import DataTable from '$lib/components/table/DataTable.svelte';
-	import type { Exposure, NetExposure, HedgeTask } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import Icon from '$lib/components/alcast/Icon.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import Pager from '$lib/components/alcast/Pager.svelte';
+	import { canonicalCommodityCode, exposureBucketsFrom } from '$lib/alcast/route-data';
+	import { authStore } from '$lib/stores/auth.svelte';
+	let { data } = $props();
+	const exposureRows = $derived(data.exposureRows ?? []);
+	const hedgeTasks = $derived((data.tasks?.items ?? data.tasks ?? []) as Record<string, any>[]);
+	const netRows = $derived((data.netExposure?.items ?? data.netExposure ?? []) as Record<string, any>[]);
+	const exposureBuckets = $derived(data.exposureBuckets ?? []);
+	const totalCommercial = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.commercial_mt ?? 0), 0));
+	const totalHedged = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.hedged_mt ?? 0), 0));
+	const totalResidual = $derived(exposureBuckets.reduce((sum, row) => sum + Math.abs(row.residual_mt ?? 0), 0));
+	const policyAdherence = $derived(totalCommercial > 0 ? (totalHedged / totalCommercial) * 100 : null);
+	const canCreateRfqs = $derived(authStore.hasRole('risk_manager'));
 
-	// ─── State ──────────────────────────────────────────────────────────
-	let exposures = $state<Exposure[]>([]);
-	let netExposure = $state<NetExposure | null>(null);
-	let hedgeTasks = $state<HedgeTask[]>([]);
-	let isLoading = $state(true);
-	let activeTab = $state<'exposures' | 'tasks'>('exposures');
-
-	// Grouping
-	let groupBy = $state<string[]>([]);
-	let abortController: AbortController;
-
-	async function loadData(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const [expRes, netRes, tasksRes] = await Promise.all([
-				apiFetch('/exposures/list?limit=200', { signal }),
-				apiFetch('/exposures/net', { signal }),
-				apiFetch('/exposures/tasks', { signal }),
-			]);
-
-			if (expRes.ok) {
-				const data = await expRes.json();
-				exposures = data.items ?? data;
-			}
-			if (netRes.ok) netExposure = await netRes.json();
-			if (tasksRes.ok) {
-				const data = await tasksRes.json();
-				hedgeTasks = data.items ?? data;
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar exposições');
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadData(abortController.signal);
-	});
-
-	onDestroy(() => { abortController?.abort(); });
-
-	// ─── Column Defs ────────────────────────────────────────────────────
-	const columns: ColumnDef<any, any>[] = [
-		{
-			accessorFn: (row) => row.commodity,
-			id: 'commodity',
-			header: 'Commodity',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.settlement_month,
-			id: 'settlement_month',
-			header: 'Mês',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.source_type,
-			id: 'source_type',
-			header: 'Tipo',
-			enableGrouping: true,
-		},
-		{
-			accessorFn: (row) => row.quantity_mt,
-			id: 'quantity_mt',
-			header: 'Qty (MT)',
-			cell: (info) => formatQuantityMT(info.getValue() as number),
-		},
-		{
-			accessorFn: (row) => row.direction,
-			id: 'direction',
-			header: 'Direção',
-		},
-		{
-			accessorFn: (row) => row.hedge_status,
-			id: 'hedge_status',
-			header: 'Status Hedge',
-			cell: (info) => {
-				const v = info.getValue() as string;
-				return v ?? '—';
-			},
-		},
-		{
-			accessorFn: (row) => row.net_exposure_mt,
-			id: 'net_exposure_mt',
-			header: 'Exposição Líquida',
-			cell: (info) => formatQuantityMT(info.getValue() as number),
-		},
+	let commodity = $state('ALUMINUM');
+	const COMMODITIES = [
+		{ label: 'AL-LME', value: 'ALUMINUM' },
+		{ label: 'CU-LME', value: 'COPPER' },
+		{ label: 'ZN-LME', value: 'ZINC' },
+		{ label: 'NI-LME', value: 'NICKEL' },
+		{ label: 'USDBRL', value: 'USDBRL' },
 	];
+	const filteredExposureBuckets = $derived.by(() =>
+		exposureBucketsFrom({
+			items: exposureRows.filter((bucket: Record<string, any>) => canonicalCommodityCode(bucket.commodity) === commodity),
+		}),
+	);
 
-	function hedgeStatusColor(status: string): string {
-		switch (status) {
-			case 'fully_hedged': return 'text-success';
-			case 'partially_hedged': return 'text-warning';
-			case 'open': return 'text-danger';
-			default: return 'text-surface-400';
-		}
+	function fmtMt(value: unknown): string {
+		const parsed = Number(value);
+		if (!Number.isFinite(parsed)) return '—';
+		return parsed.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
 	}
 
-	function toggleGroupBy(field: string) {
-		if (groupBy.includes(field)) {
-			groupBy = groupBy.filter(g => g !== field);
-		} else {
-			groupBy = [...groupBy, field];
-		}
+	function fmtPct(value: number | null): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return value.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+	}
+
+	function taskColor(status: unknown): string {
+		if (status === 'pending') return 'var(--orange)';
+		if (status === 'cancelled') return 'var(--muted)';
+		return 'var(--info)';
 	}
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Exposições</h1>
+<div class="page">
+	<PageHeader
+		eyebrow="Exposure control"
+		title="Exposições"
+		subtitle="Saldo comercial líquido, aderência à política e pendências de hedge."
+		meta={[`Comercial ${fmtMt(totalCommercial)} t`, `Residual ${fmtMt(totalResidual)} t`, `Política ${fmtPct(policyAdherence)}%`]}
+		actions={[
+			{ label: 'Recalcular', icon: 'refresh', variant: 'secondary' },
+			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
+		]}
+	/>
 
-	<!-- Net exposure summary cards -->
-	{#if netExposure}
-		<div class="mt-4 grid grid-cols-4 gap-4">
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Exposição Bruta</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatQuantityMT(netExposure.gross_exposure_mt)} MT
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Exposição Líquida</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{formatQuantityMT(netExposure.net_exposure_mt)} MT
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Hedge Ratio</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{netExposure.hedge_ratio != null ? (netExposure.hedge_ratio * 100).toFixed(1) + '%' : '—'}
-				</div>
-			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-3">
-				<div class="text-xs text-surface-500">Posições Abertas</div>
-				<div class="text-lg font-semibold tabular-nums text-surface-200">
-					{netExposure.open_positions ?? '—'}
-				</div>
-			</div>
-		</div>
-	{/if}
-
-	<!-- Tabs -->
-	<div class="mt-6 flex gap-4 border-b border-surface-800">
-		<button
-			onclick={() => activeTab = 'exposures'}
-			class="pb-2 text-sm {activeTab === 'exposures' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Exposições
-		</button>
-		<button
-			onclick={() => activeTab = 'tasks'}
-			class="pb-2 text-sm {activeTab === 'tasks' ? 'border-b-2 border-accent text-accent' : 'text-surface-500 hover:text-surface-300'}"
-		>
-			Hedge Tasks ({hedgeTasks.length})
-		</button>
+	<div class="institutional-monitoring">
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposures/list" deltaKind="flat"/>
+		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="exposures/list" deltaKind="flat"/>
+		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposures/list" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
+		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="hedged/commercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
 	</div>
 
-	{#if activeTab === 'exposures'}
-		<!-- Grouping controls -->
-		<div class="mt-4 flex gap-2">
-			<span class="text-xs text-surface-500">Agrupar por:</span>
-			{#each ['commodity', 'settlement_month', 'source_type'] as field}
-				<button
-					onclick={() => toggleGroupBy(field)}
-					class="rounded px-2 py-0.5 text-xs {groupBy.includes(field) ? 'bg-accent/20 text-accent' : 'bg-surface-800 text-surface-400 hover:text-surface-300'}"
-				>
-					{field === 'commodity' ? 'Commodity' : field === 'settlement_month' ? 'Mês' : 'Tipo'}
-				</button>
-			{/each}
-		</div>
-
-		<div class="mt-4">
-			<DataTable
-				data={exposures}
-				{columns}
-				enableGrouping={groupBy.length > 0}
-				{isLoading}
-				emptyMessage="Nenhuma exposição encontrada"
-			/>
-		</div>
-	{:else}
-		<!-- Hedge Tasks -->
-		<div class="mt-4 space-y-3">
-			{#each hedgeTasks as task (task.id ?? task.exposure_id)}
-				<div class="rounded border border-surface-800 bg-surface-900 p-4">
-					<div class="flex items-center justify-between">
-						<div>
-							<span class="text-sm font-medium text-surface-200">{task.commodity}</span>
-							<span class="ml-2 text-xs text-surface-500">{task.action ?? task.recommendation}</span>
-						</div>
-						{#if task.action === 'hedge_new' || task.recommendation === 'hedge_new'}
-							<a
-								href="/rfq/new"
-								class="rounded bg-accent/10 px-3 py-1 text-xs text-accent hover:bg-accent/20"
-							>
-								Criar RFQ
-							</a>
-						{/if}
-					</div>
-					<div class="mt-1 text-xs text-surface-500">
-						{formatQuantityMT(task.quantity_mt)} MT · {task.settlement_month ?? '—'}
-					</div>
+	<Card title="Exposição por commodity e janela" sub="Drill-down por mês de entrega" noPad>
+		{#snippet actions()}
+			<div class="row gap-2">
+				<div class="radio-group">
+					{#each COMMODITIES as c (c.value)}
+						<button type="button" class:active={commodity === c.value} onclick={() => (commodity = c.value)}>{c.label}</button>
+					{/each}
 				</div>
-			{:else}
-				<div class="text-sm text-surface-500">Nenhuma tarefa de hedge pendente</div>
-			{/each}
-		</div>
-	{/if}
+				<button type="button" class="btn btn-secondary btn-sm"><Icon name="filter"/>Filtros</button>
+			</div>
+		{/snippet}
+
+		<table class="tbl">
+			<thead>
+				<tr>
+					<th>Janela</th>
+					<th class="num">Comercial ativa</th>
+					<th class="num">Comercial passiva</th>
+					<th class="num">Saldo líquido</th>
+					<th class="num">Hedgeado</th>
+					<th class="num">Residual</th>
+					<th style="width: 220px;">Cobertura</th>
+					<th>Política</th>
+					<th></th>
+				</tr>
+			</thead>
+			<tbody>
+				{#each filteredExposureBuckets as b (b.month)}
+					{@const ok = b.ratio >= 70}
+					{@const warn = b.ratio >= 40 && b.ratio < 70}
+					<tr>
+						<td class="strong">{b.month}</td>
+						<td class="num">{b.commercial_active_mt.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num">{b.commercial_passive_mt.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}</td>
+						<td class="num strong">{b.commercial_mt.toLocaleString('pt-BR')}</td>
+						<td class="num">{b.hedged_mt.toLocaleString('pt-BR')}</td>
+						<td class="num" style="color: {b.residual_mt > 2000 ? 'var(--neg)' : 'var(--ink-2)'};">{b.residual_mt.toLocaleString('pt-BR')}</td>
+						<td>
+							<div class="row gap-3">
+								<Bar pct={b.ratio} kind={ok ? 'pos' : warn ? 'warn' : 'neg'}/>
+								<span class="tabular" style="width: 42px; text-align: right;">{b.ratio.toFixed(1)}%</span>
+							</div>
+						</td>
+						<td>
+							{#if ok}
+								<Badge kind="pos" dot>OK</Badge>
+							{:else if warn}
+								<Badge kind="warn" dot>Atenção</Badge>
+							{:else}
+								<Badge kind="neg" dot>Abaixo</Badge>
+							{/if}
+						</td>
+						<td>
+							<div class="tbl-actions">
+								{#if canCreateRfqs}
+									<a href="/rfq/new" class="btn btn-ghost btn-sm">Cobrir →</a>
+								{/if}
+							</div>
+						</td>
+					</tr>
+				{/each}
+				{#if filteredExposureBuckets.length === 0}
+					<tr>
+						<td colspan="9">
+							<EmptyState
+								icon="scale"
+								title="Nenhuma exposição para o filtro selecionado"
+								message={canCreateRfqs ? 'Selecione outra commodity ou confirme a carga de exposures/list.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
+								actionLabel={canCreateRfqs ? 'Criar RFQ de cobertura' : undefined}
+								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
+							/>
+						</td>
+					</tr>
+				{/if}
+			</tbody>
+		</table>
+		<Pager from={filteredExposureBuckets.length > 0 ? 1 : 0} to={filteredExposureBuckets.length} total={filteredExposureBuckets.length}/>
+	</Card>
+
+	<div class="grid-7-5" style="margin-top: 16px;">
+		<Card title="Exposição líquida" sub="Derivado de /exposures/net">
+			<table class="tbl tbl-tight">
+				<thead>
+					<tr>
+						<th>Commodity</th>
+						<th class="num">Long</th>
+						<th class="num">Short</th>
+						<th class="num">Net</th>
+						<th class="num">Hedge long</th>
+						<th class="num">Hedge short</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each netRows as row, i (row.commodity ?? i)}
+						<tr>
+							<td class="strong">{row.commodity ?? '—'}</td>
+							<td class="num">{fmtMt(row.long_tons)}</td>
+							<td class="num">{fmtMt(row.short_tons)}</td>
+							<td class="num strong">{fmtMt(row.net_tons)}</td>
+							<td class="num">{fmtMt(row.long_hedged)}</td>
+							<td class="num">{fmtMt(row.short_hedged)}</td>
+						</tr>
+					{/each}
+					{#if netRows.length === 0}
+						<tr>
+							<td colspan="6">
+								<EmptyState
+									icon="chart"
+									title="Nenhuma exposição líquida carregada"
+									message="A visão net será exibida quando /exposures/net retornar linhas."
+								/>
+							</td>
+						</tr>
+					{/if}
+				</tbody>
+			</table>
+		</Card>
+
+		<Card title="Pendências" sub="Itens que precisam de ação">
+			<div class="stack" style="gap: 0;">
+				{#each hedgeTasks as task (task.id)}
+					<div class="row gap-3" style="padding: 10px 0; border-bottom: 1px solid var(--line-soft);">
+						<div style="width: 4px; align-self: stretch; background: {taskColor(task.status)}; border-radius: 2px;"></div>
+						<div style="flex: 1;">
+							<div style="font-size: 12.5px; font-weight: 500;">{task.recommended_action ?? 'Ação de hedge'}</div>
+							<div style="font-size: 11.5px; color: var(--muted);">{fmtMt(task.recommended_tons)} t · exposição {task.exposure_id ?? '—'}</div>
+						</div>
+						<div style="font-size: 11px; color: var(--muted);">{task.status ?? '—'}</div>
+						<button type="button" class="btn btn-ghost btn-sm">Ver →</button>
+					</div>
+				{/each}
+				{#if hedgeTasks.length === 0}
+					<EmptyState
+						icon="shieldCheck"
+						title="Nenhuma pendência carregada"
+						message="Quando houver desvios de cobertura ou recomendações de hedge, eles aparecerão aqui."
+					/>
+				{/if}
+			</div>
+		</Card>
+	</div>
+	</div>
 </div>
