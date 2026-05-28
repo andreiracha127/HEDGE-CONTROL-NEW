@@ -29,9 +29,8 @@
 <div class="app">
 	<Sidebar {navBadges} {userName} {userRoles} {onLogout}/>
 	<div class="main">
-		<Topbar {crumbs}/>
+		<Topbar {crumbs} {userRoles}/>
 		{@render children()}
 	</div>
 </div>
-
 

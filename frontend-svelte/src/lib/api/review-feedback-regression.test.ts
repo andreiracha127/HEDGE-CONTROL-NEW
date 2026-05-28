@@ -196,6 +196,10 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain("priceType === 'fixed'");
 		expect(source).toContain('avg_entry_price: price');
 		expect(source).toContain('pricing_convention');
+		expect(source).toContain('variablePricingPayload');
+		expect(source).toContain('reference_month: referenceMonth');
+		expect(source).toContain('observation_date_start: observationStart');
+		expect(source).toContain('fixing_date: fixingDate');
 		expect(source).toMatch(/priceType === 'fixed'[\s\S]+:\s*\{[\s\S]*avg_entry_price: price[\s\S]*pricing_convention/);
 	});
 
@@ -274,6 +278,9 @@ describe('latest review feedback regressions', () => {
 
 		expect(source).toContain("let pricingConv = $state<'AVG' | 'AVGInter' | 'C2R'>('AVG')");
 		expect(source).toContain('pricing_convention: pricingConv');
+		expect(source).toContain('const formReady = $derived');
+		expect(source).toContain('hasPrice && pricingWindowReady');
+		expect(source).toContain('disabled: submitting || !formReady');
 		expect(source).toContain('<option value="AVG">');
 		expect(source).toContain('<option value="AVGInter">');
 		expect(source).toContain('<option value="C2R">');
@@ -341,6 +348,7 @@ describe('latest review feedback regressions', () => {
 		expect(source).toContain('result.response?.status ?? result.error.status ?? result.error.statusCode ?? 502');
 		expect(source).toContain('quotes: row.quote_count ?? row.quotes ?? row.submitted_quote_count ?? 0');
 		expect(source).not.toContain('quotes: row.invitations?.length');
+		expect(source).not.toContain('best: row.notional_usd_at_best');
 		expect(source).toContain('function signedExposureAmount');
 		expect(source).toContain("['long', 'buy', 'purchase', 'po']");
 		expect(source).toContain('const monthPart =');
@@ -351,6 +359,9 @@ describe('latest review feedback regressions', () => {
 		const whatIf = readRoute('(protected)/analytics/what-if/+page.svelte');
 		const orders = readRoute('(protected)/orders/+page.svelte');
 		const counterparties = readRoute('(protected)/counterparties/+page.svelte');
+		const appShell = readFileSync(resolve(process.cwd(), 'src', 'lib', 'components', 'alcast', 'AppShell.svelte'), 'utf8');
+		const topbar = readFileSync(resolve(process.cwd(), 'src', 'lib', 'components', 'alcast', 'Topbar.svelte'), 'utf8');
+		const layout = readRoute('+layout.ts');
 
 		expect(whatIf).toContain('const scenarioActions = $derived.by');
 		expect(whatIf).toContain('allowed');
@@ -359,6 +370,22 @@ describe('latest review feedback regressions', () => {
 		expect(orders).toContain('actions={headerActions}');
 		expect(counterparties).toContain("const canCreateCounterparties = $derived(authStore.hasAnyRole('trader', 'risk_manager'))");
 		expect(counterparties).toContain('actions={headerActions}');
+		expect(appShell).toContain('<Topbar {crumbs} {userRoles}/>');
+		expect(topbar).toContain('userRoles = [] as string[]');
+		expect(topbar).toContain("const canCreateOrders = $derived(userRoles.includes('trader'))");
+		expect(topbar).toContain('const commands = $derived.by');
+		expect(layout).toContain('const countList = async');
+		expect(layout).toContain('limit: 200, cursor');
+	});
+
+	it('omits unavailable RFQ best-price metrics from the list blotter', () => {
+		const source = readRoute('(protected)/rfq/+page.svelte');
+
+		expect(source).toContain("`${stateCount('QUOTED')} cotadas`");
+		expect(source).toContain('<Kpi label="Cotadas"');
+		expect(source).not.toContain('quotedNotional');
+		expect(source).not.toContain('fmtBest');
+		expect(source).not.toContain('r.best');
 	});
 
 	it('does not synthesize RFQ winners outside backend ranking', () => {

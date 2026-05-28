@@ -83,7 +83,6 @@ export function normalizeRfq(row: Record<string, any>): Record<string, any> {
 		delivery_end: row.delivery_window_end ?? row.delivery_end,
 		created: row.created_at ?? row.created,
 		quotes: row.quote_count ?? row.quotes ?? row.submitted_quote_count ?? 0,
-		best: row.notional_usd_at_best ?? row.best ?? null,
 		requester: row.created_by ?? row.requester ?? 'Sistema',
 	};
 }

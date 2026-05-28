@@ -1,20 +1,34 @@
 <script lang="ts">
-	import Icon from './Icon.svelte';
+	import Icon, { type IconName } from './Icon.svelte';
 
-	let { crumbs = [] as string[] }: { crumbs?: string[] } = $props();
+	type Command = {
+		label: string;
+		href: string;
+		icon: IconName;
+		detail: string;
+	};
+
+	let { crumbs = [] as string[], userRoles = [] as string[] }: { crumbs?: string[]; userRoles?: string[] } = $props();
 
 	const mode = import.meta.env.MODE;
 	const envLabel = mode === 'production' ? 'Produção' : mode === 'development' ? 'Desenvolvimento' : 'Homologação';
 	const envClass = mode === 'production' ? 'env-badge prod' : 'env-badge';
 	let commandOpen = $state(false);
 
-	const commands = [
-		{ label: 'Nova RFQ', href: '/rfq/new', icon: 'rfq' as const, detail: 'Originar cotação com contrapartes' },
-		{ label: 'Nova ordem', href: '/orders/new', icon: 'clipboard' as const, detail: 'Registrar fonte comercial da exposição' },
-		{ label: 'Aprovações', href: '/workflow-approvals', icon: 'shieldCheck' as const, detail: 'Decisões maker-checker pendentes' },
-		{ label: 'Auditoria', href: '/audit', icon: 'doc' as const, detail: 'Ledger imutável e verificação HMAC' },
-		{ label: 'What-if', href: '/analytics/what-if', icon: 'bolt' as const, detail: 'Stress tests de P&L e volume' },
-	];
+	const canCreateOrders = $derived(userRoles.includes('trader'));
+	const canUseRiskWorkflows = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
+	const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
+	const canUseAudit = $derived(userRoles.includes('auditor'));
+
+	const commands = $derived.by((): Command[] => {
+		const items: Command[] = [];
+		if (canUseRiskWorkflows) items.push({ label: 'Nova RFQ', href: '/rfq/new', icon: 'rfq', detail: 'Originar cotação com contrapartes' });
+		if (canCreateOrders) items.push({ label: 'Nova ordem', href: '/orders/new', icon: 'clipboard', detail: 'Registrar fonte comercial da exposição' });
+		if (canUseRiskWorkflows) items.push({ label: 'Aprovações', href: '/workflow-approvals', icon: 'shieldCheck', detail: 'Decisões maker-checker pendentes' });
+		if (canUseAudit) items.push({ label: 'Auditoria', href: '/audit', icon: 'doc', detail: 'Ledger imutável e verificação HMAC' });
+		if (canUseAnalysis) items.push({ label: 'What-if', href: '/analytics/what-if', icon: 'bolt', detail: 'Stress tests de P&L e volume' });
+		return items;
+	});
 </script>
 
 <header class="topbar">
@@ -67,4 +81,3 @@
 		</div>
 	</div>
 {/if}
-

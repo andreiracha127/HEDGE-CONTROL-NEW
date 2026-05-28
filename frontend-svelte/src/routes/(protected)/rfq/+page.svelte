@@ -16,13 +16,6 @@
 	const tab = $derived((data.tab ?? 'all') as TabKey);
 	const totalLoaded = $derived(data.total ?? rfqs.length);
 	const stateCount = (state: string) => rfqs.filter((rfq) => rfq.state === state).length;
-	const quotedNotional = $derived(
-		rfqs.reduce((sum, rfq) => {
-			const qty = Number(rfq.qty);
-			const best = Number(rfq.best);
-			return Number.isFinite(qty) && Number.isFinite(best) ? sum + Math.abs(qty * best) : sum;
-		}, 0),
-	);
 
 	const TABS = $derived<[TabKey, string, number][]>([
 		['all',     'Todas',    totalLoaded],
@@ -41,15 +34,6 @@
 		return qty.toLocaleString('pt-BR') + ' t';
 	}
 
-	function fmtBest(best: number | null, commodity: string): string {
-		if (best == null) return '—';
-		const digits = commodity === 'USDBRL' ? 4 : 2;
-		return best.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
-	}
-
-	function fmtUsdMillions(value: number): string {
-		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
-	}
 </script>
 
 <div class="page">
@@ -57,7 +41,7 @@
 		eyebrow="RFQ blotter"
 		title="Solicitações de cotação"
 		subtitle="Originar, monitorar e converter cotações com contrapartes aprovadas."
-		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `Notional cotado ${fmtUsdMillions(quotedNotional)}`]}
+		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `${stateCount('QUOTED')} cotadas`]}
 		actions={[
 			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
 			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
@@ -68,7 +52,7 @@
 		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="/rfqs" deltaKind="flat"/>
 		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="state=CREATED" deltaKind="flat"/>
 		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="state=SENT" deltaKind="flat"/>
-		<Kpi label="Notional cotado" value={fmtUsdMillions(quotedNotional)} delta="qty × melhor preço" deltaKind="flat"/>
+		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="state=QUOTED" deltaKind="flat"/>
 	</div>
 
 	<div class="institutional-blotter">
@@ -97,7 +81,6 @@
 					<th class="num">Quantidade</th>
 					<th>Janela</th>
 					<th class="num">Cotações</th>
-					<th class="num">Melhor</th>
 					<th>Status</th>
 					<th>Criada</th>
 					<th></th>
@@ -117,7 +100,6 @@
 						<td class="num">{fmtQty(r.qty, r.commodity)}</td>
 						<td>{r.window}</td>
 						<td class="num">{r.quotes}</td>
-						<td class="num strong">{fmtBest(r.best, r.commodity)}</td>
 						<td><StatePill state={r.state}/></td>
 						<td style="color: var(--muted); font-size: 12px;">{r.created}</td>
 						<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
@@ -125,7 +107,7 @@
 				{/each}
 				{#if rfqs.length === 0}
 					<tr>
-						<td colspan="11">
+							<td colspan="10">
 							<EmptyState
 								icon="rfq"
 								title="Nenhuma RFQ para o filtro selecionado"

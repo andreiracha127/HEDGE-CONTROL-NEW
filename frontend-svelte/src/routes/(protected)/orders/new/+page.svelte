@@ -21,6 +21,10 @@
 	let currency = $state('USD');
 	let cp = $state('');
 	let delivery = $state('2026-06-30');
+	let referenceMonth = $state('2026-06');
+	let observationStart = $state('2026-06-01');
+	let observationEnd = $state('2026-06-30');
+	let fixingDate = $state('2026-06-30');
 	let reference = $state('');
 	let notes = $state('');
 
@@ -28,6 +32,25 @@
 	const qtyNum = $derived(Number(qty) || 0);
 	const priceNum = $derived(Number(price) || 0);
 	const notional = $derived(qtyNum * priceNum);
+	const hasPrice = $derived(price.trim() !== '' && Number.isFinite(Number(price)));
+	const variablePricingPayload = $derived.by(() => {
+		if (priceType !== 'variable') return {};
+		if (pricingConv === 'AVG') return { reference_month: referenceMonth };
+		if (pricingConv === 'AVGInter') {
+			return {
+				observation_date_start: observationStart,
+				observation_date_end: observationEnd,
+			};
+		}
+		return { fixing_date: fixingDate };
+	});
+	const pricingWindowReady = $derived.by(() => {
+		if (priceType !== 'variable') return true;
+		if (pricingConv === 'AVG') return !!referenceMonth;
+		if (pricingConv === 'AVGInter') return !!observationStart && !!observationEnd;
+		return !!fixingDate;
+	});
+	const formReady = $derived(!!reference && !!cp && qtyNum > 0 && hasPrice && pricingWindowReady);
 	const deliveryLabel = $derived.by(() => {
 		if (!delivery) return '—';
 		try {
@@ -58,7 +81,7 @@
 				external_reference: reference,
 				...(priceType === 'fixed'
 					? { avg_entry_price: price }
-					: { avg_entry_price: price, pricing_convention: pricingConv }),
+					: { avg_entry_price: price, pricing_convention: pricingConv, ...variablePricingPayload }),
 				currency,
 				counterparty_id: selectedCounterparty?.id ?? null,
 				counterparty_name: selectedCounterparty?.name ?? cp,
@@ -86,7 +109,7 @@
 		actions={[
 			{ label: 'Cancelar', variant: 'ghost', href: '/orders' },
 			{ label: 'Salvar rascunho', variant: 'secondary' },
-			{ label: submitting ? 'Criando...' : 'Criar ordem', icon: 'shieldCheck', variant: 'primary', disabled: submitting || !reference || !cp || qtyNum <= 0, onclick: submit },
+			{ label: submitting ? 'Criando...' : 'Criar ordem', icon: 'shieldCheck', variant: 'primary', disabled: submitting || !formReady, onclick: submit },
 		]}
 	/>
 
@@ -188,6 +211,27 @@
 						</select>
 					</div>
 
+					{#if priceType === 'variable' && pricingConv === 'AVG'}
+						<div class="field">
+							<label class="field-label" for="order-reference-month">Mês de referência <span class="req">*</span></label>
+							<input id="order-reference-month" class="input" type="month" bind:value={referenceMonth}/>
+						</div>
+					{:else if priceType === 'variable' && pricingConv === 'AVGInter'}
+						<div class="field">
+							<label class="field-label" for="order-observation-start">Início da observação <span class="req">*</span></label>
+							<input id="order-observation-start" class="input" type="date" bind:value={observationStart}/>
+						</div>
+						<div class="field">
+							<label class="field-label" for="order-observation-end">Fim da observação <span class="req">*</span></label>
+							<input id="order-observation-end" class="input" type="date" bind:value={observationEnd}/>
+						</div>
+					{:else if priceType === 'variable' && pricingConv === 'C2R'}
+						<div class="field">
+							<label class="field-label" for="order-fixing-date">Data de fixing <span class="req">*</span></label>
+							<input id="order-fixing-date" class="input" type="date" bind:value={fixingDate}/>
+						</div>
+					{/if}
+
 					<div class="field">
 						<label class="field-label" for="order-price">{priceType === 'fixed' ? 'Preço fixo' : 'Prêmio / desconto vs LME'} <span class="req">*</span></label>
 						<div class="input-suffix">
@@ -262,11 +306,10 @@
 					<Validation ok={!!reference} label={reference ? 'Referência informada' : 'Referência obrigatória'}/>
 					<Validation ok={!!cp} label={cp ? 'Contraparte selecionada' : 'Sem contraparte'}/>
 					<Validation ok={qtyNum > 0} label="Quantidade válida"/>
-					<Validation ok={priceNum > 0} label="Preço informado"/>
-					<Validation ok label="Convenção de precificação suportada"/>
+					<Validation ok={hasPrice} label={hasPrice ? 'Preço informado' : 'Preço obrigatório'}/>
+					<Validation ok={pricingWindowReady} label={pricingWindowReady ? 'Janela de precificação informada' : 'Janela de precificação obrigatória'}/>
 				</div>
 			</Card>
 		</div>
 	</div>
 </div>
-

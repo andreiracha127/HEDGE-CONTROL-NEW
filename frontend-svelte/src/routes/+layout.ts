@@ -2,25 +2,46 @@ import { client } from '$lib/api/client';
 
 export const ssr = false;
 
-const safeCount = (result: PromiseSettledResult<{ data?: unknown }>): number | null => {
-	if (result.status !== 'fulfilled' || !result.value.data) return null;
-	const data = result.value.data as { total?: number; items?: unknown[] };
-	const total = data.total ?? data.items?.length ?? null;
-	return total && total > 0 ? total : null;
+type ListEnvelope = {
+	total?: number | null;
+	items?: unknown[];
+	next_cursor?: string | null;
+};
+
+type ListResult = {
+	data?: unknown;
+	error?: unknown;
+};
+
+const safeBadge = (count: number): number | null => (count > 0 ? count : null);
+
+const countList = async (fetchPage: (cursor?: string) => Promise<ListResult>): Promise<number | null> => {
+	let cursor: string | undefined;
+	let count = 0;
+	for (let page = 0; page < 20; page += 1) {
+		const result = await fetchPage(cursor);
+		if (result.error || !result.data) return safeBadge(count);
+		const data = result.data as ListEnvelope;
+		if (typeof data.total === 'number') return safeBadge(data.total);
+		count += data.items?.length ?? 0;
+		cursor = data.next_cursor ?? undefined;
+		if (!cursor) break;
+	}
+	return safeBadge(count);
 };
 
 export const load = async () => {
-	const [rfqs, orders, approvals] = await Promise.allSettled([
-		client.GET('/rfqs', { params: { query: { state: 'SENT', limit: 1 } } }),
-		client.GET('/orders', { params: { query: { limit: 1 } } }),
-		client.GET('/workflow-approvals', { params: { query: { status: 'pending', limit: 1 } } }),
+	const [rfqOpen, ordersToday, approvalsPending] = await Promise.all([
+		countList((cursor) => client.GET('/rfqs', { params: { query: { state: 'SENT', limit: 200, cursor } } })),
+		countList((cursor) => client.GET('/orders', { params: { query: { limit: 200, cursor } } })),
+		countList((cursor) => client.GET('/workflow-approvals', { params: { query: { status: 'pending', limit: 200, cursor } } })),
 	]);
 
 	return {
 		navBadges: {
-			rfqOpen: safeCount(rfqs),
-			ordersToday: safeCount(orders),
-			approvalsPending: safeCount(approvals),
+			rfqOpen,
+			ordersToday,
+			approvalsPending,
 		},
 	};
 };
