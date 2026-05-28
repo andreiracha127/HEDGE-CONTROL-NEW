@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { loginAsRiskManager } from './helpers';
 
+const RFQ_BOARD_HEADING = 'Solicitações de cotação';
+
 test.describe('RFQ Lifecycle', () => {
 	test.beforeEach(async ({ page }) => {
 		await loginAsRiskManager(page);
@@ -13,7 +15,7 @@ test.describe('RFQ Lifecycle', () => {
 
 	test('RFQ board loads and shows list or empty state', async ({ page }) => {
 		await page.goto('/rfq');
-		await expect(page.getByRole('heading', { name: /RFQ/ })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: RFQ_BOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 	});
 
 	test('navigates to new RFQ form', async ({ page }) => {
