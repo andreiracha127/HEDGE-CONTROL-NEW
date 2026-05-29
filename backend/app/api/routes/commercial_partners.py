@@ -25,6 +25,20 @@ from app.services.commercial_partner_service import CommercialPartnerService
 
 router = APIRouter()
 
+# kyc_status + credit/terms are NOT mutable via the generic PATCH route by ANY actor;
+# they change only via the dedicated audited endpoints. CommercialPartnerUpdate omits
+# these fields, so the generic PATCH handler inspects the RAW body and refuses with 403
+# (governance: explicit refusal, no silent drop).
+_PROTECTED_PATCH_FIELDS = {
+    "kyc_status",
+    "credit_limit",
+    "credit_currency",
+    "payment_conditions",
+    "approved_value",
+    "approved_currency",
+    "approved_terms",
+}
+
 
 @router.post("", response_model=CommercialPartnerRead, status_code=status.HTTP_201_CREATED)
 def create_commercial_partner(
@@ -100,6 +114,15 @@ def update_commercial_partner(
     if not cp:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Commercial partner not found"
+        )
+    raw_body = getattr(request.state, "audit_payload_obj", None)
+    if isinstance(raw_body, dict) and _PROTECTED_PATCH_FIELDS & raw_body.keys():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "kyc_status and credit/terms are not mutable via generic PATCH; use "
+                "POST {id}/kyc-status or PATCH {id}/credit."
+            ),
         )
     update_data = payload.model_dump(exclude_unset=True)
     if (

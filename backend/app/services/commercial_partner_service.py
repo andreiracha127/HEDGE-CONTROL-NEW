@@ -130,6 +130,9 @@ class CommercialPartnerService:
     def set_kyc_status(
         session: Session, cp_id: UUID, *, new_status: KycStatus
     ) -> tuple[CommercialPartner, KycStatus]:
+        # The route passes the Pydantic (schema) KycStatus, whose members are NOT
+        # identical to the model enum, so coerce by value before the `is` checks below.
+        new_status = KycStatus(getattr(new_status, "value", new_status))
         stmt = (
             select(CommercialPartner)
             .where(
