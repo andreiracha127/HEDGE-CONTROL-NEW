@@ -56,6 +56,12 @@
 > 13. **Migration validates hedge-side FKs** (RFQ/quote/contract/llm) before
 >     moving customer/supplier rows; **HB-3 `risk_flags` re-align is in W3
 >     scope**; **kind-mismatch refusals emit `order_rejected_kind_mismatch`**.
+> 14. Hedge admit = **effective `clear`** everywhere (header, fail-closed,
+>     gate-rule — a clear screening OR an adjudication of a `flagged`);
+>     identity-edit reset applies to **any** prior screening evidence (incl.
+>     `pending`+`flagged`); adjudication only supersedes the **latest still-
+>     `flagged`** screening; **inbound quote refusal records
+>     `service:webhook_inbound`** (not null); screening **thresholds bound to W2**.
 
 ## File Structure
 
@@ -315,8 +321,9 @@ applies to EVERY entity the platform transacts with.
 The gate field on the hedge domain is `sanctions_status`
 (`SanctionsStatus` enum, members {unscreened, clear, flagged, blocked};
 `unscreened` is the default initial state, written by NO screening). The
-gate ADMITS only `clear` — a `clear` written by an actual successful
-screening. `blocked` denies; `flagged` denies pending risk_manager
+gate ADMITS only an effective `clear` — a `clear` set by an actual
+successful screening OR by a risk_manager adjudication of a `flagged`
+result. `blocked` denies; `flagged` denies pending risk_manager
 adjudication to `clear`; and `unscreened` denies. The W1 model adds the
 `unscreened` member as the column default (NOT `clear`); screening writes
 only `clear`/`flagged`/`blocked`. A hedge counterparty's `sanctions_status`
@@ -355,9 +362,10 @@ Replace with:
   `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
   reached through a human-issued route or invoked by the
   `service:rfq_outbound` outbound worker — MUST refuse unless the target
-  hedge counterparty has a recorded sanctions screening whose result is
-  `clear` (this denies `blocked`, `flagged`, AND an unscreened row that
-  carries only a non-recorded default). The W3 dispatch is
+  hedge counterparty's effective `sanctions_status` is `clear` — set by a
+  recorded `clear` screening OR a risk_manager adjudication of a `flagged`
+  result (this denies `blocked`, unadjudicated `flagged`, AND an unscreened
+  row that carries only a non-recorded default). The W3 dispatch is
   responsible for sweeping every admission-purpose invocation site
   (the six `assert_kyc_approved` call sites in `rfq_service.py` at
   ~580, 853, 1029, 1297, 1469, 1583) and replacing the guard with the
@@ -683,12 +691,12 @@ No silent fallback (binding): a screening invocation that errors
 written from a successful screening that returned no above-threshold
 match.
 
-Result mapping (binding ranges; exact thresholds fixed in the W3
+Result mapping (binding ranges; exact thresholds fixed in the W2
 dispatch): no match → `clear`; a match at or above the HARD threshold →
 `blocked`; a match below the hard threshold but above the review
 threshold → `flagged` (requires risk_manager adjudication to `clear` or
 `blocked`). The threshold values are an implementation parameter recorded
-in the W3 dispatch, not silently chosen in code.
+in the W2 dispatch, not silently chosen in code.
 
 Evidence (binding): every screening invocation persists an append-only,
 immutable `sanctions_screenings` record: `{partner_type

@@ -343,13 +343,16 @@ Authorization invariants:
   - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
   - Screening-relevant identity fields (`name`, `country`, `tax_id`, `lei`)
     are the inputs to sanctions screening / KYC. If any of them is PATCHed
-    on a partner whose `kyc_status` is `approved` (or `sanctions_status` is
-    `clear`), the partner is RESET fail-closed — `kyc_status` → `pending`
-    and `sanctions_status` → `unscreened` — and must be re-screened and
-    re-approved before order creation resumes. Stale compliance evidence
-    MUST NOT survive an identity change (the order gate reads stored status,
-    so an un-reset identity edit would otherwise admit orders on evidence
-    that no longer matches the entity).
+    on a partner that carries ANY prior screening evidence — i.e.
+    `sanctions_status` is not `unscreened` (`clear`, `flagged`, or
+    `blocked`), regardless of `kyc_status` — that evidence was computed from
+    the OLD identity and is invalidated: the partner is RESET fail-closed
+    (`sanctions_status` → `unscreened`, and `kyc_status` → `pending` if it
+    was `approved`) and must be re-screened (and re-approved) before order
+    creation or RFQ admission resumes. This also closes the loophole where a
+    `pending`+`flagged` partner is given a new identity and then adjudicated
+    to `clear` without ever screening the new identity. Stale compliance
+    evidence MUST NOT survive an identity change.
 - The hedge-counterparty read invisibility for trader is specified in the
   bullet above (empty list / 404 by-id for `{trader}`-only actors). The
   condition is **trader-specific** (NOT "lacks risk_manager") because the
@@ -393,8 +396,9 @@ applies to EVERY entity the platform transacts with.
 The gate field on the hedge domain is `sanctions_status`
 (`SanctionsStatus` enum, members {unscreened, clear, flagged, blocked};
 `unscreened` is the default initial state, written by NO screening). The
-gate ADMITS only `clear` — a `clear` written by an actual successful
-screening. `blocked` denies; `flagged` denies pending risk_manager
+gate ADMITS only an effective `clear` — a `clear` set by an actual
+successful screening OR by a risk_manager adjudication of a `flagged`
+result. `blocked` denies; `flagged` denies pending risk_manager
 adjudication to `clear` (a sub-threshold potential match is not admissible
 until cleared); and `unscreened` denies. The W1 model adds the
 `unscreened` member as the column default (NOT `clear`), so a
@@ -475,13 +479,16 @@ Gate scope (binding):
   `rfq_quote_rejected_sanctions_not_cleared` with payload shape
   `{counterparty_id, sanctions_status_observed, rfq_id, inbound_message_id
   (nullable for human-issued path), rejection_path,
-  requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
+  requesting_actor_sub (= `service:webhook_inbound` on the inbound/LLM
+  path)}`. Sibling
   parity with `rfq_invitation_rejected_sanctions_not_cleared` and
   `rfq_award_rejected_sanctions_not_cleared`: the human-issued
   quote-submission path runs under a `risk_manager` JWT context so
   the actor sub is available exactly as it is on the award path and
   MUST be captured for audit attribution; the inbound/LLM path has
-  no human actor, so the field is nullable. The webhook protocol
+  no human actor, so the field records the `service:webhook_inbound`
+  identity (the stable downstream audit attribution after provider auth
+  succeeds; see Service identities above), NOT null. The webhook protocol
   itself is unchanged — the gate is the processing layer that
   decides whether the parsed quote persists into `RFQQuote`.
 
@@ -494,9 +501,10 @@ Gate scope (binding):
   `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
   requesting_actor_sub}`.
 
-The hedge sanctions gate is fail-closed: it admits ONLY a recorded
-`clear`; `blocked`, `flagged`, and unscreened all deny, with no bypass
-flag and no config override.
+The hedge sanctions gate is fail-closed: it admits ONLY an effective
+`clear` (a recorded `clear` screening OR a risk_manager adjudication of a
+`flagged`); `blocked`, unadjudicated `flagged`, and unscreened all deny,
+with no bypass flag and no config override.
 A hedge counterparty with no recorded screening MUST NOT be admitted on
 a defaulted `clear`; the W2 dispatch (screening) sets `sanctions_status` only from a
 recorded screening result (see "Sanctions screening governance"), and
