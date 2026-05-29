@@ -218,7 +218,7 @@
 			<Card noPad>
 				<DecisionDossier
 					title="Onboarding dossier"
-					verdict={onboardingReady ? 'Ready to submit' : 'Missing required fields'}
+					verdict={onboardingReady ? 'Pronto para enviar' : 'Campos obrigatórios pendentes'}
 					verdictKind={onboardingReady ? 'pos' : 'warn'}
 					items={[
 						{ label: 'Tipo', value: TYPE_LABEL[type] },

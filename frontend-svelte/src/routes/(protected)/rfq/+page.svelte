@@ -54,10 +54,10 @@
 	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="/rfqs" deltaKind="flat"/>
-		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="state=CREATED" deltaKind="flat"/>
-		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="state=SENT" deltaKind="flat"/>
-		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="state=QUOTED" deltaKind="flat"/>
+		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="total carregado" deltaKind="flat"/>
+		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="rascunhos" deltaKind="flat"/>
+		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="aguardando cotação" deltaKind="flat"/>
+		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="cotações recebidas" deltaKind="flat"/>
 	</div>
 
 	<div class="institutional-blotter">

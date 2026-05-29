@@ -17,7 +17,7 @@
 
 	function fmtPrice(c: Contract): string {
 		if (c.price == null) return '—';
-		return c.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) });
+		return c.price.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) });
 	}
 
 	function fmtQty(c: Contract): string {
@@ -28,7 +28,7 @@
 
 	function fmtMtm(value: number | null | undefined): string {
 		if (value == null) return '—';
-		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 </script>
 

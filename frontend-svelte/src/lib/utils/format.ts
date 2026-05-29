@@ -53,9 +53,85 @@ function formatDecimalString(
 	return (negative ? '-' : '') + intFormatted + ',' + fracPart;
 }
 
+const integerFormatter = new Intl.NumberFormat('pt-BR', {
+	maximumFractionDigits: 0,
+});
+
 export function formatDate(iso: string | null | undefined): string {
 	if (!iso) return '—';
 	return dateFormatter.format(new Date(iso));
+}
+
+// Whole-number pt-BR display (e.g. aggregated tonnage, counts). For
+// precision-critical backend NUMERIC(_, 3) quantities use ``formatQuantityMT``.
+export function formatInteger(value: number | string | null | undefined): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	return integerFormatter.format(n);
+}
+
+// Fixed-precision pt-BR display where the digit count is decided by the caller
+// (e.g. per-instrument price precision). Number-based — for precision-critical
+// price strings use ``formatPrice`` (6 decimals, BigInt-safe).
+export function formatDecimal(
+	value: number | string | null | undefined,
+	digits: number,
+): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	return new Intl.NumberFormat('pt-BR', {
+		minimumFractionDigits: digits,
+		maximumFractionDigits: digits,
+	}).format(n);
+}
+
+// Signed pt-BR integer: positive values gain an explicit ``+`` prefix so deltas
+// read unambiguously (e.g. MTM moves). Negative values keep their ``-``.
+export function formatSignedInteger(
+	value: number | string | null | undefined,
+): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	return (n >= 0 ? '+' : '-') + integerFormatter.format(Math.abs(n));
+}
+
+// USD amount with pt-BR grouping. ``signed`` prefixes ``+``/``-`` (for deltas);
+// unsigned preserves a native ``-`` for negatives.
+export function formatUSD(
+	value: number | string | null | undefined,
+	options: { signed?: boolean; digits?: number } = {},
+): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	const { signed = false, digits = 0 } = options;
+	const fmt = new Intl.NumberFormat('pt-BR', {
+		minimumFractionDigits: digits,
+		maximumFractionDigits: digits,
+	});
+	if (signed) return `${n >= 0 ? '+' : '-'}US$ ${fmt.format(Math.abs(n))}`;
+	return `US$ ${fmt.format(n)}`;
+}
+
+// Percentage display in pt-BR (comma decimal). Input is the already-computed
+// percentage value (e.g. 73.5 → "73,5%").
+export function formatPercent(
+	value: number | string | null | undefined,
+	digits = 2,
+	options: { signed?: boolean } = {},
+): string {
+	if (value == null) return '—';
+	const n = typeof value === 'string' ? Number(value) : value;
+	if (!Number.isFinite(n)) return '—';
+	const body = new Intl.NumberFormat('pt-BR', {
+		minimumFractionDigits: digits,
+		maximumFractionDigits: digits,
+	}).format(options.signed ? Math.abs(n) : n);
+	if (options.signed) return `${n >= 0 ? '+' : '-'}${body}%`;
+	return `${body}%`;
 }
 
 // Decimal-typed economic columns serialize as strings over the API.

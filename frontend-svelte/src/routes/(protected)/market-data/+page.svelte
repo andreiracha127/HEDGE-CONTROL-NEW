@@ -13,7 +13,7 @@
 	function fmtPrice(c: Record<string, any>): string {
 		if (c.last == null) return '—';
 		const digits = c.code === 'USDBRL' ? 4 : 2;
-		return c.last.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+		return c.last.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
 
 	function fmtDate(value: unknown): string {

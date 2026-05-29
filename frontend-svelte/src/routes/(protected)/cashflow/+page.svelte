@@ -71,7 +71,7 @@
 
 	function fmtUsd(value: number): string {
 		const prefix = value >= 0 ? '+US$ ' : '-US$ ';
-		return prefix + Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 });
+		return prefix + Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 });
 	}
 
 	function fmtShortDate(value: string | null | undefined): string {
@@ -197,7 +197,7 @@
 						<td><CommodityChip code={c.commodity}/></td>
 						<td>{c.cp}</td>
 						<td class="num strong" style="color: {c.amount_usd >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{c.amount_usd >= 0 ? '+' : ''}{c.amount_usd.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+							{c.amount_usd >= 0 ? '+' : ''}{c.amount_usd.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 						</td>
 						<td class="num">{fmtBrl(c)}</td>
 						<td>

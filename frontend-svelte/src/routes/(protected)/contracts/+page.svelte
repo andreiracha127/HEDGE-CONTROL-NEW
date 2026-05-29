@@ -69,7 +69,7 @@
 	function fmtPrice(c: Contract): string {
 		if (c.price == null) return '—';
 		const digits = c.commodity === 'USDBRL' ? 4 : 2;
-		return c.price.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+		return c.price.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
 
 	function fmtDate(value: string | null | undefined): string {
@@ -78,7 +78,7 @@
 
 	function fmtMtm(value: number | null | undefined): string {
 		if (value == null) return '—';
-		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtUsdMillions(value: number): string {
@@ -112,7 +112,7 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Contratos ativos"                  value={String(activeContracts.length)} delta={`${maturingContracts.length} vencendo em 30d`} deltaKind="flat"/>
 		<Kpi label="Notional total"                    value={fmtUsdMillions(totalNotional)}  delta={`${contracts.length} contrato(s)`}             deltaKind="flat"/>
-		<Kpi label="MTM agregado"                      value={`${aggregateMtm >= 0 ? '+US$ ' : '-US$ '}${Math.abs(aggregateMtm).toLocaleString('en-US', { maximumFractionDigits: 0 })}`} delta="carteira carregada" deltaKind={aggregateMtm >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="MTM agregado"                      value={`${aggregateMtm >= 0 ? '+US$ ' : '-US$ '}${Math.abs(aggregateMtm).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`} delta="carteira carregada" deltaKind={aggregateMtm >= 0 ? 'pos' : 'neg'}/>
 		<Kpi label="Contratos no vencimento (30d)"     value={String(maturingContracts.length)} delta={`Notional ${fmtUsdMillions(maturingNotional)}`} deltaKind="flat"/>
 	</div>
 

@@ -54,6 +54,23 @@
 		return 'neutral';
 	}
 
+	const STATUS_LABELS: Record<ApprovalStatus, string> = {
+		pending: 'Pendente',
+		approved: 'Aprovada',
+		rejected: 'Rejeitada',
+		expired: 'Expirada',
+		consumed: 'Consumida',
+		superseded: 'Substituída',
+	};
+
+	function statusLabel(status: ApprovalStatus): string {
+		return STATUS_LABELS[status] ?? status;
+	}
+
+	function roleLabel(role: 'risk_manager' | 'auditor'): string {
+		return role === 'auditor' ? 'Auditor' : 'Gestor de risco';
+	}
+
 	function barColor(approval: Approval): string {
 		if (approval.status === 'approved' || approval.status === 'consumed') return 'var(--pos)';
 		if (approval.status === 'rejected' || approval.status === 'expired') return 'var(--neg)';
@@ -62,9 +79,9 @@
 
 	function mutationLabel(value: string): string {
 		const labels: Record<string, string> = {
-			deal_create: 'Criacao de contrato',
-			deal_award: 'Award de RFQ',
-			hedge_contract_settle: 'Liquidacao de contrato',
+			deal_create: 'Criação de contrato',
+			deal_award: 'Adjudicação de RFQ',
+			hedge_contract_settle: 'Liquidação de contrato',
 		};
 		return labels[value] ?? value;
 	}
@@ -80,7 +97,7 @@
 	function thresholdLabel(value: string): string {
 		const labels: Record<string, string> = {
 			notional_usd: 'Notional',
-			settlement_amount_usd: 'Settlement',
+			settlement_amount_usd: 'Liquidação',
 		};
 		return labels[value] ?? value;
 	}
@@ -157,7 +174,7 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Pendentes" value={String(pendingApprovals.length)} delta={`${expiringSoon} vencendo em 24h`} deltaKind={expiringSoon > 0 ? 'neg' : 'flat'}/>
 		<Kpi label="Maior alçada" value={money(highestThreshold)} delta="limite solicitado"/>
-		<Kpi label="Carregadas" value={String(approvals.length)} delta="endpoint /workflow-approvals"/>
+		<Kpi label="Carregadas" value={String(approvals.length)} delta="total carregado"/>
 		<Kpi label="Permissão" value={canAct ? 'Ativa' : 'Restrita'} delta={`${actionableApprovals.length} acionável(is) pelo perfil`} deltaKind={canAct ? 'pos' : 'neg'}/>
 	</div>
 
@@ -178,7 +195,7 @@
 					<div style="align-self: stretch; background: {barColor(approval)}; border-radius: 2px;"></div>
 					<div class="approval-copy">
 						<div class="row gap-3" style="margin-bottom: 4px;">
-							<Badge kind={badgeKind(approval.status)} dot>{approval.status}</Badge>
+							<Badge kind={badgeKind(approval.status)} dot>{statusLabel(approval.status)}</Badge>
 							<span class="mono" style="font-size: 11px; color: var(--muted);">{approval.id}</span>
 							<span style="font-size: 11px; color: var(--muted);">· {thresholdLabel(approval.threshold_dimension)}</span>
 						</div>
@@ -206,14 +223,14 @@
 					</div>
 					<div class="approval-dossier">
 						<DecisionDossier
-							title="Decision dossier"
-							verdict={approval.status === 'pending' && canActOn(approval) ? 'Ready for decision' : approval.status}
+							title="Dossiê de decisão"
+							verdict={approval.status === 'pending' && canActOn(approval) ? 'Pronta para decisão' : statusLabel(approval.status)}
 							verdictKind={approval.status === 'pending' && canActOn(approval) ? 'warn' : badgeKind(approval.status)}
 							items={[
-								{ label: 'Required role', value: requiredApproverRole(approval.mutation_type) },
-								{ label: 'Requested', value: money(approval.threshold_at_request) },
-								{ label: 'Configured limit', value: money(approval.threshold_config_value) },
-								{ label: 'Expires', value: dateTime(approval.expires_at) },
+								{ label: 'Função exigida', value: roleLabel(requiredApproverRole(approval.mutation_type)) },
+								{ label: 'Solicitado', value: money(approval.threshold_at_request) },
+								{ label: 'Limite configurado', value: money(approval.threshold_config_value) },
+								{ label: 'Expira em', value: dateTime(approval.expires_at) },
 							]}
 						/>
 						<div class="approval-actions">

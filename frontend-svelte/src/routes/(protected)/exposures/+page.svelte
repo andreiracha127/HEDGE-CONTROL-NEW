@@ -66,10 +66,10 @@
 
 	<div class="institutional-monitoring">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposures/list" deltaKind="flat"/>
-		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="exposures/list" deltaKind="flat"/>
-		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposures/list" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
-		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="hedged/commercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
+		<Kpi label="Comercial total"        value={fmtMt(totalCommercial)} unit="t" delta="exposição comercial" deltaKind="flat"/>
+		<Kpi label="Hedgeado"               value={fmtMt(totalHedged)} unit="t" delta="volume coberto" deltaKind="flat"/>
+		<Kpi label="Residual"               value={fmtMt(totalResidual)} unit="t" delta="exposição não coberta" deltaKind={totalResidual === 0 ? 'flat' : 'neg'}/>
+		<Kpi label="Aderência à política"   value={fmtPct(policyAdherence)} unit={policyAdherence == null ? undefined : '%'} delta="hedge sobre comercial" deltaKind={policyAdherence == null ? 'flat' : policyAdherence >= 70 ? 'pos' : policyAdherence >= 40 ? 'flat' : 'neg'}/>
 	</div>
 
 	<Card title="Exposição por commodity e janela" sub="Drill-down por mês de entrega" noPad>
@@ -112,7 +112,7 @@
 						<td>
 							<div class="row gap-3">
 								<Bar pct={b.ratio} kind={ok ? 'pos' : warn ? 'warn' : 'neg'}/>
-								<span class="tabular" style="width: 42px; text-align: right;">{b.ratio.toFixed(1)}%</span>
+								<span class="tabular" style="width: 42px; text-align: right;">{fmtPct(b.ratio)}%</span>
 							</div>
 						</td>
 						<td>
@@ -139,7 +139,7 @@
 							<EmptyState
 								icon="scale"
 								title="Nenhuma exposição para o filtro selecionado"
-								message={canCreateRfqs ? 'Selecione outra commodity ou confirme a carga de exposures/list.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
+								message={canCreateRfqs ? 'Selecione outra commodity ou confirme a carga das exposições.' : 'Selecione outra commodity ou consulte a mesa de risco para originar cobertura.'}
 								actionLabel={canCreateRfqs ? 'Criar RFQ de cobertura' : undefined}
 								actionHref={canCreateRfqs ? '/rfq/new' : undefined}
 							/>

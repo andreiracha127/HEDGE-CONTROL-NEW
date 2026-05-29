@@ -8,6 +8,8 @@
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { formatInteger, formatDecimal, formatUSD, formatPercent } from '$lib/utils/format';
 	let { data } = $props();
 	const commodities = $derived(data.commodities);
 	const exposureBuckets = $derived(data.exposureBuckets);
@@ -26,10 +28,10 @@
 			: []),
 	]);
 	const riskVerdict = $derived.by(() => {
-		if (exposureRows.length === 0) return 'Data load pending';
-		if (totalCoverage >= 70) return 'Policy aligned';
-		if (totalCoverage >= 40) return 'Coverage watch';
-		return 'Residual risk';
+		if (exposureRows.length === 0) return 'Carga de dados pendente';
+		if (totalCoverage >= 70) return 'Aderente à política';
+		if (totalCoverage >= 40) return 'Cobertura em observação';
+		return 'Risco residual';
 	});
 	const riskVerdictKind = $derived.by((): DossierKind => {
 		if (exposureRows.length === 0 || totalCoverage >= 40 && totalCoverage < 70) return 'warn';
@@ -49,24 +51,16 @@
 	}
 
 	function fmt(v: number | null, code: string): string {
-		if (v == null || !Number.isFinite(v)) return '—';
-		const opts =
-			code === 'USDBRL'
-				? { minimumFractionDigits: 4, maximumFractionDigits: 4 }
-				: { minimumFractionDigits: 2, maximumFractionDigits: 2 };
-		return v.toLocaleString('en-US', opts);
+		return formatDecimal(v, code === 'USDBRL' ? 4 : 2);
 	}
 
 	function fmtMt(value: unknown): string {
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) return '—';
-		return parsed.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+		return formatInteger(value as number | string | null | undefined);
 	}
 
 	function fmtMtmDelta(value: unknown): string {
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) return '—';
-		return `${parsed >= 0 ? '+' : '-'}US$ ${Math.abs(parsed).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		if (value == null) return '—';
+		return formatUSD(value as number | string, { signed: true });
 	}
 
 	function marketChangePct(c: Record<string, any>): number | null {
@@ -80,19 +74,19 @@
 	}
 
 	function refreshPage() {
-		window.location.reload();
+		void invalidateAll();
 	}
 </script>
 
 <div class="page">
 	<PageHeader
 		eyebrow="Visão executiva"
-		title="Risk command center"
+		title="Central de risco"
 		subtitle="Cobertura, residual, RFQs abertas e mercado em uma leitura única da mesa."
 		meta={[
-			`${exposureRows.length} commodity(s) live`,
+			`${exposureRows.length} commodity(s) monitorada(s)`,
 			`${openRfqs.length} RFQ(s) enviadas`,
-			`Cobertura ${totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`,
+			`Cobertura ${formatDecimal(totalCoverage, 1)}%`,
 		]}
 		actions={headerActions}
 	/>
@@ -103,32 +97,32 @@
 		<Badge kind={openRfqs.length > 0 ? 'warn' : 'neutral'}>{openRfqs.length} RFQ(s) em curso</Badge>
 	</div>
 
-	<div class="kpi-row" style="margin-bottom: 16px;">
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="Exposição comercial"
 			value={fmtMt(totalCommercial)}
 			unit="t"
-			delta={`${exposureRows.length} commodity(s) live`}
+			delta={`${exposureRows.length} commodity(s) monitorada(s)`}
 			deltaKind="flat"
 		/>
 		<Kpi
 			label="Hedge ratio"
-			value={totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}
+			value={formatDecimal(totalCoverage, 1)}
 			unit="%"
-			delta="live exposure list"
+			delta="sobre exposição comercial"
 			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="Residual"
 			value={fmtMt(totalResidual)}
 			unit="t"
-			delta="derivado de exposures/list"
+			delta="exposição não coberta"
 			deltaKind={totalResidual === 0 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="RFQs enviadas"
 			value={String(openRfqs.length)}
-			delta="state=SENT"
+			delta="aguardando cotação"
 			deltaKind="flat"
 		/>
 	</div>
@@ -160,7 +154,7 @@
 								class="tabular"
 								style="width: 60px; text-align: right; font-size: 11px; color: var(--muted);"
 							>
-								{b.hedged_mt > 0 ? (b.hedged_mt / 1000).toFixed(1) + 'k/' : '0/'}{(b.commercial_mt / 1000).toFixed(1)}k t
+								{b.hedged_mt > 0 ? formatDecimal(b.hedged_mt / 1000, 1) + 'k/' : '0/'}{formatDecimal(b.commercial_mt / 1000, 1)}k t
 							</span>
 						</div>
 					{/each}
@@ -169,7 +163,7 @@
 				<EmptyState
 					icon="chart"
 					title="Nenhuma janela de cobertura carregada"
-					message="A matriz será preenchida quando a exposição comercial e os hedges chegarem de exposures/list."
+					message="A matriz será preenchida quando a exposição comercial e os hedges forem carregados."
 				/>
 			{/if}
 
@@ -255,8 +249,8 @@
 							<td colspan="6">
 								<EmptyState
 									icon="chart"
-									title="Nenhuma exposição live carregada"
-									message="A tabela permanece vazia até o backend retornar linhas de exposures/list."
+									title="Nenhuma exposição ativa carregada"
+									message="A tabela permanece vazia até que existam exposições comerciais registradas."
 								/>
 							</td>
 						</tr>
@@ -290,7 +284,7 @@
 									class="tabular"
 									style="font-size: 11px; color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};"
 								>
-									{chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(2)}%
+									{chg >= 0 ? '▲' : '▼'} {formatPercent(Math.abs(chg), 2)}
 								</div>
 							{/if}
 						</div>

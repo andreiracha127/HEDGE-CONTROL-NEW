@@ -436,7 +436,7 @@
 							{disabled}
 							onclick={() => toggleCP(cp.id)}
 							class="card"
-							style="padding: 12px; text-align: left; cursor: {disabled ? 'not-allowed' : 'pointer'}; border-color: {on ? 'var(--navy)' : 'var(--line-strong)'}; opacity: {disabled ? 0.5 : 1}; background: {on ? '#F4F7FC' : '#fff'};"
+							style="padding: 12px; text-align: left; cursor: {disabled ? 'not-allowed' : 'pointer'}; border-color: {on ? 'var(--navy)' : 'var(--line-strong)'}; opacity: {disabled ? 0.5 : 1}; background: {on ? 'var(--surface-sel)' : 'var(--surface)'};"
 						>
 							<div class="row gap-3">
 								<span class="check" class:on><span class="box"></span></span>
@@ -466,8 +466,8 @@
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
 			<Card noPad>
 				<DecisionDossier
-					title="RFQ dispatch dossier"
-					verdict={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'Ready to dispatch' : 'Blocked by validation'}
+					title="Dossiê de envio da RFQ"
+					verdict={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'Pronta para envio' : 'Bloqueada por validação'}
 					verdictKind={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'pos' : 'warn'}
 					items={[
 						{ label: 'Empresa', value: company },

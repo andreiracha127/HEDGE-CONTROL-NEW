@@ -80,22 +80,22 @@
 
 	function fmtPrice(contract: Contract): string {
 		if (contract.price == null) return '—';
-		return contract.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(contract) });
+		return contract.price.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(contract) });
 	}
 
 	function fmtNumber(value: number | null | undefined, digits = 0): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return value.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+		return value.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 	}
 
 	function fmtUsd(value: number | null | undefined): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtUnsignedUsd(value: number | null | undefined): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return `US$ ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `US$ ${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtRate(value: number | null | undefined): string {
@@ -318,7 +318,7 @@
 						<dt>Tipo</dt><dd>{c.type}</dd>
 						<dt>Commodity</dt><dd>{c.commodity}</dd>
 						<dt>Quantidade</dt><dd class="tabular">{fmtQty(c)}</dd>
-						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}</dd>
+						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}</dd>
 						<dt>Preço fixo</dt>
 						<dd class="tabular strong">
 							{fmtPrice(c)} {c.price == null ? '' : fmtPriceUnit(c)}
@@ -477,7 +477,7 @@
 								<td>{fmtDate(flow.date)}</td>
 								<td>{flow.desc ?? flow.description ?? 'Cash flow'}</td>
 								<td class="num strong" style="color: {amount >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-									{amount >= 0 ? '+' : ''}{amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+									{amount >= 0 ? '+' : ''}{amount.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 								</td>
 								<td>
 									{#if flow.direction === 'in'}
