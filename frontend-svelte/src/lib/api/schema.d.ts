@@ -5048,9 +5048,9 @@ export interface operations {
         parameters: {
             query?: {
                 /** @description Filter by kind */
-                kind?: string | null;
+                kind?: components["schemas"]["CommercialPartnerKind"] | null;
                 /** @description Filter by KYC status */
-                kyc_status?: string | null;
+                kyc_status?: components["schemas"]["KycStatus"] | null;
                 /** @description Filter by active status */
                 is_active?: boolean | null;
                 cursor?: string | null;

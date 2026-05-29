@@ -45,6 +45,7 @@ def _create_pre_049_schema(conn: sa.Connection) -> None:
         sa.Column("whatsapp_phone", sa.String(length=50)),
         sa.Column("credit_limit_usd", sa.Numeric(15, 2)),
         sa.Column("risk_rating", sa.String(length=10), nullable=False),
+        sa.Column("kyc_status", sa.String(length=12), nullable=False),
         sa.Column("sanctions_status", sa.String(length=12), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.Column("notes", sa.Text()),
@@ -69,12 +70,12 @@ def _create_pre_049_schema(conn: sa.Connection) -> None:
     md.create_all(conn)
 
 
-def _seed_counterparty(conn, cp_id, type_, name, credit=None, is_deleted=0):
+def _seed_counterparty(conn, cp_id, type_, name, credit=None, is_deleted=0, kyc_status="approved"):
     conn.execute(
         sa.text(
             "INSERT INTO counterparties (id, type, name, country, risk_rating, "
-            "sanctions_status, is_active, is_deleted, credit_limit_usd, created_at) VALUES "
-            "(:id, :type, :name, 'BRA', 'medium', 'clear', 1, :is_deleted, :credit, "
+            "kyc_status, sanctions_status, is_active, is_deleted, credit_limit_usd, created_at) VALUES "
+            "(:id, :type, :name, 'BRA', 'medium', :kyc_status, 'clear', 1, :is_deleted, :credit, "
             "'2026-01-01 00:00:00')"
         ),
         {
@@ -83,6 +84,7 @@ def _seed_counterparty(conn, cp_id, type_, name, credit=None, is_deleted=0):
             "name": name,
             "credit": credit,
             "is_deleted": is_deleted,
+            "kyc_status": kyc_status,
         },
     )
 
@@ -145,10 +147,11 @@ def test_049_migrates_customer_supplier_preserving_uuid_and_resets_fail_closed()
 
         # counterparties now hedge-only; hedge sanctions reset to unscreened
         remaining = conn.execute(
-            sa.text("SELECT type, sanctions_status FROM counterparties")
+            sa.text("SELECT type, kyc_status, sanctions_status FROM counterparties")
         ).fetchall()
         assert {r[0] for r in remaining} == {"broker"}
-        assert remaining[0][1] == "unscreened"
+        assert remaining[0][1] == "pending"
+        assert remaining[0][2] == "unscreened"
 
         # order still resolves to a commercial_partner with the same id
         oc = conn.execute(sa.text("SELECT counterparty_id FROM orders")).scalar_one()
@@ -217,3 +220,9 @@ def test_049_check_constraint_blocks_supplier_credit_limit():
                 ),
                 {"i": str(uuid.uuid4())},
             )
+
+
+def test_049_postgres_hedge_type_filter_casts_enum_to_text():
+    m = _load()
+    assert m._counterparty_type_expr(is_pg=True) == "type::text"
+    assert m._counterparty_type_expr(is_pg=False) == "type"

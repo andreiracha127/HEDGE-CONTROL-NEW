@@ -162,6 +162,23 @@ def test_service_identity_edit_resets_compliance_fail_closed():
         assert cp.kyc_status is KycStatus.pending
 
 
+def test_service_identity_clear_applies_explicit_null_and_resets_compliance():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session, tax_id="123456789", lei="5493001KJTIIGC8Y1R12")
+        cp.sanctions_status = SanctionsStatus.clear
+        cp.kyc_status = KycStatus.approved
+        session.commit()
+
+        CommercialPartnerService.update(session, cp, {"tax_id": None, "lei": None})
+
+        assert cp.tax_id is None
+        assert cp.lei is None
+        assert cp.sanctions_status is SanctionsStatus.unscreened
+        assert cp.kyc_status is KycStatus.pending
+
+
 def test_service_kyc_approve_blocked_unless_sanctions_clear():
     from fastapi import HTTPException
 
@@ -238,6 +255,35 @@ def test_router_create_and_get_roundtrip(client, auth_as):
 
     got = client.get(f"/commercial-partners/{body['id']}")
     assert got.status_code == 200
+
+
+def test_router_list_rejects_invalid_enum_filters(client, auth_as):
+    auth_as("trader")
+
+    resp = client.get("/commercial-partners", params={"kind": "bogus"})
+
+    assert resp.status_code == 422
+
+
+def test_router_reuses_tax_id_after_soft_delete(client, auth_as):
+    auth_as("trader")
+    payload = {
+        "kind": "customer",
+        "name": "Reusable Tax Co",
+        "country": "BRA",
+        "tax_id": "11222333000199",
+    }
+    created = client.post("/commercial-partners", json=payload)
+    assert created.status_code == 201, created.text
+    deleted = client.delete(f"/commercial-partners/{created.json()['id']}")
+    assert deleted.status_code == 200, deleted.text
+
+    recreated = client.post(
+        "/commercial-partners",
+        json={**payload, "name": "Reusable Tax Co II"},
+    )
+
+    assert recreated.status_code == 201, recreated.text
 
 
 def test_credit_decimal_is_exact_through_api(client, auth_as):

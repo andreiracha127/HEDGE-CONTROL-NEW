@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Enum,
+    Index,
     Numeric,
     String,
     Text,
@@ -48,7 +49,7 @@ class CommercialPartner(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     short_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
-    tax_id: Mapped[str | None] = mapped_column(String(50), nullable=True, unique=True)
+    tax_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
     country: Mapped[str] = mapped_column(String(3), nullable=False)
     city: Mapped[str | None] = mapped_column(String(100), nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -119,5 +120,12 @@ class CommercialPartner(Base):
             "approved_value IS NULL AND approved_currency IS NULL "
             "AND approved_terms IS NULL)",
             name="ck_commercial_partners_customer_no_supplier_terms",
+        ),
+        Index(
+            "uq_commercial_partners_tax_id",
+            "tax_id",
+            unique=True,
+            postgresql_where=sa.text("is_deleted = false"),
+            sqlite_where=sa.text("is_deleted = 0"),
         ),
     )

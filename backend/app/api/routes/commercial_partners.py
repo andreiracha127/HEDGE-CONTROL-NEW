@@ -15,12 +15,13 @@ from app.core.pagination import paginate
 from app.models.commercial_partner import CommercialPartner
 from app.schemas.commercial_partner import (
     CommercialPartnerCreate,
+    CommercialPartnerKind,
     CommercialPartnerListResponse,
     CommercialPartnerRead,
     CommercialPartnerUpdate,
     CreditApprovalRequest,
 )
-from app.schemas.counterparty import KycStatusTransitionRequest
+from app.schemas.counterparty import KycStatus, KycStatusTransitionRequest
 from app.services.commercial_partner_service import CommercialPartnerService
 
 router = APIRouter()
@@ -59,8 +60,8 @@ def create_commercial_partner(
 
 @router.get("", response_model=CommercialPartnerListResponse)
 def list_commercial_partners(
-    kind: str | None = Query(None, description="Filter by kind"),
-    kyc_status: str | None = Query(None, description="Filter by KYC status"),
+    kind: CommercialPartnerKind | None = Query(None, description="Filter by kind"),
+    kyc_status: KycStatus | None = Query(None, description="Filter by KYC status"),
     is_active: bool | None = Query(None, description="Filter by active status"),
     cursor: str | None = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -69,8 +70,8 @@ def list_commercial_partners(
 ) -> CommercialPartnerListResponse:
     query = CommercialPartnerService.list(
         session,
-        kind_filter=kind,
-        kyc_status_filter=kyc_status,
+        kind_filter=kind.value if kind else None,
+        kyc_status_filter=kyc_status.value if kyc_status else None,
         is_active_filter=is_active,
     )
     items, next_cursor = paginate(

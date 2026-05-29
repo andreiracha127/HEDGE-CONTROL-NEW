@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
@@ -21,6 +23,18 @@ _CREDIT_FIELDS = {
 }
 _CUSTOMER_CREDIT_FIELDS = {"credit_limit", "credit_currency", "payment_conditions"}
 _SUPPLIER_CREDIT_FIELDS = {"approved_value", "approved_currency", "approved_terms"}
+_NULLABLE_UPDATE_FIELDS = {
+    "short_name",
+    "tax_id",
+    "city",
+    "address",
+    "contact_name",
+    "contact_email",
+    "contact_phone",
+    "whatsapp_phone",
+    "lei",
+    "notes",
+}
 
 
 class CommercialPartnerService:
@@ -103,15 +117,16 @@ class CommercialPartnerService:
             )
 
         identity_changed = any(
-            key in _IDENTITY_FIELDS and value is not None and getattr(cp, key) != value
+            key in _IDENTITY_FIELDS and getattr(cp, key) != value
             for key, value in data.items()
         )
         for key, value in data.items():
-            if value is not None:
-                if key == "risk_rating":
-                    setattr(cp, key, RiskRating(value))
-                else:
-                    setattr(cp, key, value)
+            if value is None and key not in _NULLABLE_UPDATE_FIELDS:
+                continue
+            if key == "risk_rating":
+                setattr(cp, key, RiskRating(value))
+            else:
+                setattr(cp, key, value)
 
         # Identity-edit fail-closed reset (governance Authorization invariants):
         # stale compliance evidence must not survive an identity change.

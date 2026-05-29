@@ -51,6 +51,10 @@ def _json_type() -> sa.types.TypeEngine:
     return postgresql.JSONB(astext_type=sa.Text()).with_variant(sa.JSON(), "sqlite")
 
 
+def _counterparty_type_expr(*, is_pg: bool) -> str:
+    return "type::text" if is_pg else "type"
+
+
 def _ids_referencing(bind, table: str, partner_ids: set[str]) -> list[str]:
     """Return counterparty_id values in `table` that fall within partner_ids."""
     rows = bind.execute(
@@ -60,11 +64,12 @@ def _ids_referencing(bind, table: str, partner_ids: set[str]) -> list[str]:
 
 
 def _validate_pre_move(bind) -> None:
+    type_expr = _counterparty_type_expr(is_pg=bind.dialect.name == "postgresql")
     # (a) orders must not reference broker/bank counterparties (pre-fix data artifact).
     hedge_ids = {
         str(r[0])
         for r in bind.execute(
-            text("SELECT id FROM counterparties WHERE type IN ('broker','bank_br')")
+            text(f"SELECT id FROM counterparties WHERE {type_expr} IN ('broker','bank_br')")
         )
     }
     bad_orders = _ids_referencing(bind, "orders", hedge_ids)
@@ -81,7 +86,7 @@ def _validate_pre_move(bind) -> None:
     commercial_ids = {
         str(r[0])
         for r in bind.execute(
-            text("SELECT id FROM counterparties WHERE type IN ('customer','supplier')")
+            text(f"SELECT id FROM counterparties WHERE {type_expr} IN ('customer','supplier')")
         )
     }
     offenders: dict[str, list[str]] = {}
@@ -176,7 +181,6 @@ def upgrade() -> None:
         sa.Column("is_deleted", sa.Boolean(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("tax_id", name="uq_commercial_partners_tax_id"),
         sa.CheckConstraint(
             "kind <> 'supplier' OR ("
             "credit_limit IS NULL AND credit_currency IS NULL AND payment_conditions IS NULL)",
@@ -187,6 +191,14 @@ def upgrade() -> None:
             "approved_value IS NULL AND approved_currency IS NULL AND approved_terms IS NULL)",
             name="ck_commercial_partners_customer_no_supplier_terms",
         ),
+    )
+    op.create_index(
+        "uq_commercial_partners_tax_id",
+        "commercial_partners",
+        ["tax_id"],
+        unique=True,
+        postgresql_where=sa.text("is_deleted = false"),
+        sqlite_where=sa.text("is_deleted = 0"),
     )
 
     op.create_table(
@@ -261,8 +273,14 @@ def upgrade() -> None:
         )
     )
 
-    # 4. Reset hedge counterparties to unscreened (fail-closed, both domains).
-    op.execute(text("UPDATE counterparties SET sanctions_status = 'unscreened'"))
+    # 4. Reset hedge counterparties to pending/unscreened (fail-closed, both domains).
+    type_expr = _counterparty_type_expr(is_pg=is_pg)
+    op.execute(
+        text(
+            "UPDATE counterparties SET kyc_status = 'pending', sanctions_status = 'unscreened' "
+            f"WHERE {type_expr} IN ('broker','bank_br')"
+        )
+    )
 
     # 5. Repoint orders FK (PG only; on SQLite the original FK was created outside a
     #    batch and is not an enforced named constraint, and ids are preserved).
