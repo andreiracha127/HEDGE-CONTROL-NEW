@@ -196,17 +196,26 @@ deviation requires constitutional amendment, not silent override.
 Human roles (3, no admin/viewer):
 
 - `trader` (commercial team)
-  - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier},
-    EXCEPT mutations to `kyc_status` — see "Counterparty KYC gate" below.
-    `kyc_status` is risk_manager-only across all counterparty types.
+  - Commercial partner full access (read + CRUD) on `commercial_partners`
+    (kind ∈ {customer, supplier}), EXCEPT `kyc_status` and the credit/terms
+    fields — see "Commercial partner KYC + order gate" and "Credit and terms
+    governance" below. `kyc_status` transitions and credit/terms approval are
+    risk_manager-only.
+  - May TRIGGER sanctions screening and LEI validation on a
+    `commercial_partner` (the result-recording op is not a privileged write of
+    the gated fields; it writes a screening/validation record and the derived
+    `sanctions_status`/`lei_status`).
   - Order CRUD (Sales Orders + Purchase Orders)
-  - Read of operational primitives (orders, customer/supplier counterparties)
+  - Read of operational primitives (orders, commercial_partners)
   - Cannot: HedgeContracts, RFQs, Deals, Links, Scenario, MTM/P&L writes,
-    Counterparty {broker, bank_br} read or write, `kyc_status` mutations
-    on any counterparty type, audit log
+    hedge `counterparties` ({broker, bank_br}) read or write, `kyc_status` or
+    credit/terms mutations on `commercial_partners`, audit log
 
 - `risk_manager` (system owner)
-  - Counterparty CRUD all 4 types
+  - Hedge counterparty (`counterparties`, type ∈ {broker, bank_br}) CRUD
+  - Commercial partner (`commercial_partners`) full access, including the
+    `kyc_status` transitions and credit/terms approval that trader cannot
+    perform
   - HedgeContract full lifecycle
   - RFQ all operations
   - Deal lifecycle (create, links, snapshots)
