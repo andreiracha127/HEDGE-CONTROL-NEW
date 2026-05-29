@@ -636,6 +636,57 @@ violation that the HB-1 implementation PR closes; once that PR is
 merged, removal or weakening of any of the rules above requires a
 new amendment to this section, not a code change.
 
+Sanctions screening governance (binding):
+
+Sanctions screening is the UNIVERSAL compliance control — it applies to
+every entity the platform transacts with: both hedge `counterparties`
+({broker, bank_br}) and `commercial_partners` ({customer, supplier}).
+
+Provider (binding): the hosted OpenSanctions match API
+(`POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`,
+header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`). The query is a
+`Company`-schema match with properties `{name, jurisdiction: <country>,
+registrationNumber: <tax_id?>, leiCode: <lei?>}`. `OPENSANCTIONS_API_KEY`
+is REQUIRED (non-empty) in production/staging; an APP_ENV-gated boot
+validator MUST refuse to start when the feature is enabled and the key is
+absent, in the same shape as the `AUDIT_SIGNING_KEY` validator.
+
+Decoupling (binding): screening is a SEPARATE audited operation, never an
+inline dependency of a gate. Screening writes a `sanctions_status` onto
+the entity; the RFQ admission gate and the commercial order gate READ the
+stored `sanctions_status`. This means the external API being unreachable
+can NEVER take down order creation or RFQ admission — those paths read
+the last recorded status. Screening triggers: (a) on entity create, (b) a
+manual re-screen endpoint, (c) a scheduled daily re-screen running in the
+existing `scheduler` service (`SCHEDULER_DISABLED=false`), never in web
+workers.
+
+No silent fallback (binding): a screening invocation that errors
+(network/HTTP/parse failure) MUST record a screening record with
+`status = error` and `error_detail`, and MUST raise — it MUST NOT set
+`sanctions_status = clear` by default. A `clear` status is only ever
+written from a successful screening that returned no above-threshold
+match.
+
+Result mapping (binding ranges; exact thresholds fixed in the W3
+dispatch): no match → `clear`; a match at or above the HARD threshold →
+`blocked`; a match below the hard threshold but above the review
+threshold → `flagged` (requires risk_manager adjudication to `clear` or
+`blocked`). The threshold values are an implementation parameter recorded
+in the W3 dispatch, not silently chosen in code.
+
+Evidence (binding): every screening invocation persists an append-only,
+immutable `sanctions_screenings` record: `{partner_type
+(commercial|hedge), partner_id, screened_at, provider, algorithm,
+dataset_version, query_hash, top_score, match_count, matches_json, result
+(clear|flagged|blocked), actor_sub, status (success|error),
+error_detail}`. The entity's `sanctions_status` reflects the LATEST
+record's `result`. Screening records are never updated or deleted —
+reconstructability requires the full screening history. No PII beyond what
+is necessary for the match query leaves the platform; the design accepts
+that the hosted API receives the partner name/jurisdiction/identifiers for
+the match (a consequence of the hosted-provider decision).
+
 Workflow Approval gate (binding, Pilot Hard Blocker 2):
 
 The platform admits three institutionally consequential mutations
