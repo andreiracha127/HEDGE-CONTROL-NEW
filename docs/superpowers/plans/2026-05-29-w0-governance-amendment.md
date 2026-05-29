@@ -33,6 +33,17 @@
 > 5. **Migration resets fail-closed** — commercial `kyc_status`→`pending`,
 >    `sanctions_status`→unscreened on both domains — no carried
 >    `approved`/default-`clear` without screening evidence.
+> 6. **`SanctionsStatus` gains an explicit `unscreened` member** (default,
+>    NOT `clear`); the gate admits only a recorded `clear`.
+> 7. **Adjudication path** — risk_manager overrides a `flagged` via
+>    `POST {id}/adjudicate-sanctions`, writing an immutable
+>    `sanctions_adjudications` row that supersedes the screening without
+>    mutating it.
+> 8. **Wave order** — screening lands in W2; the commercial order gate +
+>    RFQ re-target land in W3 (depend on W2). A gate must not precede the
+>    screening that makes partners admissible.
+> 9. **Pre-FK migration validation** — orders referencing broker/bank rows
+>    HALT the migration with a remediation report (no silent orphaning).
 
 ## File Structure
 
@@ -290,14 +301,15 @@ dossier (LEI, credit) does not apply to them, but sanctions screening
 applies to EVERY entity the platform transacts with.
 
 The gate field on the hedge domain is `sanctions_status`
-(`SanctionsStatus` enum, members {clear, flagged, blocked}). The gate
-ADMITS only a recorded `clear` — a `clear` written by an actual
-successful screening. `blocked` denies; `flagged` denies pending
-risk_manager adjudication to `clear`; and an UNSCREENED counterparty (no
-recorded screening) denies. The W1 model MUST NOT leave `sanctions_status`
-at a default `clear` indistinguishable from a screened `clear`. A hedge
-counterparty's `sanctions_status` is set by the sanctions-screening
-lifecycle (see "Sanctions screening governance" below).
+(`SanctionsStatus` enum, members {unscreened, clear, flagged, blocked};
+`unscreened` is the default initial state, written by NO screening). The
+gate ADMITS only `clear` — a `clear` written by an actual successful
+screening. `blocked` denies; `flagged` denies pending risk_manager
+adjudication to `clear`; and `unscreened` denies. The W1 model adds the
+`unscreened` member as the column default (NOT `clear`); screening writes
+only `clear`/`flagged`/`blocked`. A hedge counterparty's `sanctions_status`
+is set by the sanctions-screening lifecycle (see "Sanctions screening
+governance" below).
 ```
 
 - [ ] **Step 2: Replace the gate-rule body so admission checks sanctions, not kyc**

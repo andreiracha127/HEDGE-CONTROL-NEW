@@ -382,16 +382,15 @@ dossier (LEI, credit) does not apply to them, but sanctions screening
 applies to EVERY entity the platform transacts with.
 
 The gate field on the hedge domain is `sanctions_status`
-(`SanctionsStatus` enum, members {clear, flagged, blocked}). The gate
-ADMITS only a recorded `clear` — a `clear` written by an actual
-successful screening. `blocked` denies; `flagged` denies pending
-risk_manager adjudication to `clear` (a sub-threshold potential match is
-not admissible until cleared); and an UNSCREENED counterparty (no
-recorded screening) denies. The W1 model MUST NOT leave `sanctions_status`
-at a default `clear` indistinguishable from a screened `clear`: an
-explicit unscreened initial state — or an equivalent "latest successful
-screening result == clear" check against `sanctions_screenings` — is
-required so an unscreened counterparty is never silently admitted. A hedge
+(`SanctionsStatus` enum, members {unscreened, clear, flagged, blocked};
+`unscreened` is the default initial state, written by NO screening). The
+gate ADMITS only `clear` — a `clear` written by an actual successful
+screening. `blocked` denies; `flagged` denies pending risk_manager
+adjudication to `clear` (a sub-threshold potential match is not admissible
+until cleared); and `unscreened` denies. The W1 model adds the
+`unscreened` member as the column default (NOT `clear`), so a
+never-screened counterparty is never silently admitted; screening writes
+only `clear`/`flagged`/`blocked` (never `unscreened`). A hedge
 counterparty's `sanctions_status` is set by the sanctions-screening
 lifecycle (see "Sanctions screening governance" below).
 
@@ -489,7 +488,7 @@ The hedge sanctions gate is fail-closed: it admits ONLY a recorded
 `clear`; `blocked`, `flagged`, and unscreened all deny, with no bypass
 flag and no config override.
 A hedge counterparty with no recorded screening MUST NOT be admitted on
-a defaulted `clear`; the W3 dispatch sets `sanctions_status` only from a
+a defaulted `clear`; the W2 dispatch (screening) sets `sanctions_status` only from a
 recorded screening result (see "Sanctions screening governance"), and
 RFQ admission for an unscreened hedge counterparty is treated as denied
 until a `clear` screening exists. Operators wanting to admit a `blocked`
@@ -660,8 +659,14 @@ Schema (binding):
   `commercial_partners` and `sanctions_screenings` tables (+ enums), and
   migrates the existing customer/supplier rows out of `counterparties`
   into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
-  stays valid), then repoints the `orders` FK to `commercial_partners` and
-  restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
+  stays valid). Before the FK repoint, a pre-migration validation
+  enumerates `orders` whose `counterparty_id` references a broker/bank
+  `counterparties` row (a pre-fix data artifact of the order form that
+  listed hedge counterparties); if any exist the migration HALTS with a
+  remediation report rather than orphaning or guessing — each affected
+  order is manually re-pointed to the correct `commercial_partner` (or
+  voided) first. It then repoints the `orders` FK to `commercial_partners`
+  and restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
   FAIL-CLOSED — commercial `kyc_status` → `pending`, and `sanctions_status`
   → an unscreened state on BOTH domains — rather than carrying a legacy
   `approved` / default-`clear` without `sanctions_screenings` evidence, so
@@ -723,12 +728,12 @@ No silent fallback (binding): a screening invocation that errors
 written from a successful screening that returned no above-threshold
 match.
 
-Result mapping (binding ranges; exact thresholds fixed in the W3
+Result mapping (binding ranges; exact thresholds fixed in the W2
 dispatch): no match → `clear`; a match at or above the HARD threshold →
 `blocked`; a match below the hard threshold but above the review
 threshold → `flagged` (requires risk_manager adjudication to `clear` or
 `blocked`). The threshold values are an implementation parameter recorded
-in the W3 dispatch, not silently chosen in code.
+in the W2 dispatch, not silently chosen in code.
 
 Evidence (binding): every screening invocation persists an append-only,
 immutable `sanctions_screenings` record: `{partner_type
@@ -736,14 +741,31 @@ immutable `sanctions_screenings` record: `{partner_type
 dataset_version, query_hash, top_score, match_count, matches_json, result
 (clear|flagged|blocked, NULL when status=error), actor_sub, status
 (success|error), error_detail}`. The entity's `sanctions_status` is
-updated ONLY from the latest SUCCESSFUL (status=success) screening's
-`result`; rows with status=error are recorded for audit (with
-`result=NULL`) and never overwrite `sanctions_status`. Screening records
+derived from the latest SUCCESSFUL (status=success) screening's `result`,
+UNLESS a later risk_manager adjudication supersedes it (see "Adjudication"
+below); rows with status=error are recorded for audit (with `result=NULL`)
+and never overwrite `sanctions_status`. Screening records
 are never updated or deleted —
 reconstructability requires the full screening history. No PII beyond what
 is necessary for the match query leaves the platform; the design accepts
 that the hosted API receives the partner name/jurisdiction/identifiers for
 the match (a consequence of the hosted-provider decision).
+
+Adjudication (binding): a `flagged` (or otherwise non-`clear`) result is
+not permanently terminal. risk_manager MAY adjudicate it via a dedicated
+endpoint (`POST {id}/adjudicate-sanctions` on the relevant router) that
+records an APPEND-ONLY, immutable `sanctions_adjudications` artifact
+`{partner_type, partner_id, superseded_screening_id, decision
+(clear|blocked), reason (mandatory, min 8 chars), adjudicating_actor_sub,
+adjudicated_at}` and sets the entity `sanctions_status` to the decision.
+The adjudication NEVER mutates the immutable `sanctions_screenings` row —
+it supersedes it as the source of the current `sanctions_status`. A later
+successful screening supersedes a prior adjudication in turn (latest event
+wins — screening or adjudication — by timestamp). Adjudication is
+risk_manager-only and HMAC-signed (event `sanctions_status_adjudicated`),
+preventing a false-positive `flagged` from permanently blocking RFQ
+admission / commercial KYC approval until the provider itself returns
+`clear`.
 
 LEI validation governance (binding):
 
@@ -1475,9 +1497,10 @@ constitutional enumeration). The steps are:
    day: contracts missing the day's MTM price (per the
    PriceQuote provenance binding in MARKET-DATA GOVERNANCE),
    unhedged exposures above the operational guardrail, compliance
-   regressions on entities with active positions (sanctions →
-   `blocked` on hedge counterparties with active deals, per the
-   re-targeted hedge sanctions gate above; KYC or sanctions
+   regressions on entities with active positions (sanctions to any
+   non-`clear` state — `blocked`, `flagged`, or `unscreened` — on hedge
+   counterparties with active deals, per the re-targeted hedge sanctions
+   gate above; KYC or sanctions
    regressions on commercial partners with active orders, per the
    commercial partner KYC + order gate above — NOTE: the deployed
    HB-3 risk_flags step currently inspects `kyc_status` on hedge

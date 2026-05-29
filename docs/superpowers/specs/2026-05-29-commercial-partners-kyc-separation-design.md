@@ -73,7 +73,7 @@ Called in order creation (PO/SO) in `order_service`:
 | lei_legal_name | str(200) | nullable (from GLEIF) |
 | lei_checked_at | datetime | nullable |
 | kyc_status | Enum(`pending`,`approved`,`expired`,`rejected`) | default `pending` (fail-closed) |
-| sanctions_status | Enum(`clear`,`flagged`,`blocked`) | set by the screening lifecycle (§7); a partner cannot reach `kyc_status=approved` without a recorded `clear` screening (§6 invariant), so a never-screened partner is gated out by the kyc check regardless of this field |
+| sanctions_status | Enum(`unscreened`,`clear`,`flagged`,`blocked`) | default `unscreened` (NOT `clear`); screening writes `clear`/`flagged`/`blocked`. A partner cannot reach `kyc_status=approved` without a recorded `clear` screening (§6), so a never-screened (`unscreened`) partner is gated out by both the kyc check and the gate's clear requirement |
 | risk_rating | Enum(`low`,`medium`,`high`) | default `medium` |
 | **customer-only** `credit_limit` | Numeric(18,2) Decimal | nullable; CHECK null when kind=supplier |
 | **customer-only** `credit_currency` | str(3) | nullable |
@@ -89,10 +89,13 @@ Called in order creation (PO/SO) in `order_service`:
 ### 5.2 `sanctions_screenings` (append-only, immutable)
 `id`, `partner_type` (`commercial`|`hedge`), `partner_id`, `screened_at`, `provider` (`opensanctions`), `algorithm` (`logic-v2`), `dataset_version`, `query_hash`, `top_score` (Numeric), `match_count`, `matches_json`, `result` (`clear`|`flagged`|`blocked`; **NULL when `status`=`error`**), `actor_sub`, `status` (`success`|`error`), `error_detail`. The partner's `sanctions_status` is set **only** from the latest **successful** (`status`=`success`) screening's `result`; `error` rows are recorded for audit and never overwrite it. Never updated/deleted.
 
+**`sanctions_adjudications`** (append-only, immutable): `{id, partner_type, partner_id, superseded_screening_id, decision (`clear`|`blocked`), reason, adjudicating_actor_sub, adjudicated_at}` — a risk_manager override of a `flagged` screening; sets `sanctions_status` without mutating the screening row. Current `sanctions_status` = latest of {successful screening result, adjudication} by timestamp (a later screening supersedes a prior adjudication, and vice-versa).
+
 ### 5.3 Migration (numeric chain, single-head; ENUM lifecycle care)
 - Create enums + `commercial_partners` + `sanctions_screenings`. Named ENUMs explicitly created before `ALTER TABLE ADD COLUMN`; explicit `CAST(... AS <enum>)` for text literals (per CLAUDE.md fresh-Postgres rules).
 - Copy `counterparties` rows where `type ∈ {customer, supplier}` into `commercial_partners` **with the same `id`** (kind = old type; map credit_limit→customer credit_limit / supplier approved_value as appropriate; carry risk_rating/contacts/notes/timestamps). **Reset fail-closed**: `kyc_status` → `pending` and `sanctions_status` → unscreened — do NOT carry a legacy `approved` / default-`clear` without `sanctions_screenings` evidence, else the commercial order gate would pass without a recorded clear screening. The pilot pre-condition re-establishes `approved`+`clear` for the named pilots via real screening + risk_manager sign-off. (Hedge `counterparties` are likewise reset to an unscreened `sanctions_status`.)
-- Repoint `orders.counterparty_id` FK: `counterparties.id` → `commercial_partners.id` (values unchanged because UUIDs were reused).
+- **Pre-FK validation (fail-closed)**: before repointing, enumerate `orders` whose `counterparty_id` references a broker/bank `counterparties` row (a pre-fix data artifact of the order form that listed hedge counterparties). If any exist, the migration HALTS with a remediation report — each affected order is manually re-pointed to the correct `commercial_partner` (or voided) first. NO silent orphaning or guessing.
+- Repoint `orders.counterparty_id` FK: `counterparties.id` → `commercial_partners.id` (values unchanged because the migrated commercial UUIDs were reused; the pre-FK validation guarantees no surviving broker/bank reference).
 - Restrict `counterparties` to hedge: remove/soft-retire migrated customer/supplier rows; keep `type ∈ {broker, bank_br}` going forward.
 - Guard with `tests/test_alembic_chain.py` (single head) + the `alembic-fresh-postgres` CI job.
 
@@ -108,7 +111,7 @@ Invariants: `kyc_status → approved` requires a recorded `clear` sanctions scre
 
 ## 7. Services / integration
 
-- **`sanctions_screening_service`** — `POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`, header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`, request body = OpenSanctions `EntityMatchQuery` envelope `{"queries": {"q1": {"schema": "Company", "properties": {"name": [..], "jurisdiction": [<country>], "registrationNumber": [<tax_id>], "leiCode": [<lei>]}}}}` (top-level `queries` map, ARRAY-valued properties — a bare entity body 422s). Map response `match`/`score` → `result`: no match → `clear`; match below hard threshold → `flagged` (risk_manager adjudicates); match ≥ hard threshold → `blocked`. Thresholds defined in the Wave-3 dispatch. Persist immutable `sanctions_screenings` row + update partner `sanctions_status`. **Hard-fail** (record `status=error`, raise) on API/network error — never set `clear` silently. `OPENSANCTIONS_API_KEY` required in prod/staging via an APP_ENV-gated boot validator (same shape as `AUDIT_SIGNING_KEY`). Decoupled triggers: on create, manual `POST /commercial-partners/{id}/screen` and `POST /counterparties/{id}/screen` (hedge, risk_manager), and a scheduled daily re-screen in the existing `scheduler` service (covers both domains), attributed to the new `service:sanctions_screening` identity (added to the AUTHORIZATION MATRIX in W0).
+- **`sanctions_screening_service`** — `POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`, header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`, request body = OpenSanctions `EntityMatchQuery` envelope `{"queries": {"q1": {"schema": "Company", "properties": {"name": [..], "jurisdiction": [<country>], "registrationNumber": [<tax_id>], "leiCode": [<lei>]}}}}` (top-level `queries` map, ARRAY-valued properties — a bare entity body 422s). Map response `match`/`score` → `result`: no match → `clear`; match below hard threshold → `flagged` (risk_manager adjudicates); match ≥ hard threshold → `blocked`. Thresholds defined in the Wave-2 dispatch. Persist immutable `sanctions_screenings` row + update partner `sanctions_status`. **Hard-fail** (record `status=error`, raise) on API/network error — never set `clear` silently. `OPENSANCTIONS_API_KEY` required in prod/staging via an APP_ENV-gated boot validator (same shape as `AUDIT_SIGNING_KEY`). Decoupled triggers: on create, manual `POST /commercial-partners/{id}/screen` and `POST /counterparties/{id}/screen` (hedge, risk_manager), and a scheduled daily re-screen in the existing `scheduler` service (covers both domains), attributed to the new `service:sanctions_screening` identity (added to the AUTHORIZATION MATRIX in W0).
 - **`lei_validation_service`** — offline ISO 7064 MOD 97-10 checksum + `GET https://api.gleif.org/api/v1/lei-records/{lei}` (no key) → `registrationStatus` (ISSUED/LAPSED) + legal name. Set `lei_status` + `lei_legal_name` + `lei_checked_at`. Warn (not block) on invalid checksum, lapsed status, or legal-name mismatch vs `name`.
 - **`commercial_partner_service`** — CRUD with audit-trail emission (mirrors `counterparty_service`); `kyc_status` transition (risk_manager, screening-clear invariant); credit/terms approval (risk_manager).
 
@@ -119,10 +122,12 @@ Invariants: `kyc_status → approved` requires a recorded `clear` sanctions scre
 - `POST {id}/kyc-status` (risk_manager) — reuse `KycStatusTransitionRequest` shape.
 - `POST {id}/screen` — trigger sanctions screening.
 - `POST {id}/validate-lei` — trigger LEI validation.
+- `POST {id}/adjudicate-sanctions` (risk_manager) — override a `flagged` screening to `clear`/`blocked` with mandatory reason; writes an immutable `sanctions_adjudications` row, never mutates the screening.
 - `PATCH {id}/credit` (risk_manager) — customer limit/conditions or supplier value/terms.
 
 `counterparties` (hedge) router — add:
 - `POST {id}/screen` (risk_manager) — trigger sanctions screening on a hedge counterparty. Screening is universal, so hedge counterparties need a manual re-screen path to move an RFQ-blocking `sanctions_status` back to `clear` without waiting for the scheduled re-screen.
+- `POST {id}/adjudicate-sanctions` (risk_manager) — override a `flagged` hedge screening to `clear`/`blocked` (same immutable-adjudication semantics as the commercial router).
 
 Orders purchase/sales routes call the commercial gate and validate kind. Regenerate `frontend-svelte/src/lib/api/schema.d.ts` from `/openapi.json` in the same change (avoid drift; mind `Field()` constraint → `title` JSDoc drift).
 
@@ -150,8 +155,8 @@ Maps to the repo's amendment → dispatch → implementation protocol. Each wave
 |------|-------|------------|
 | **W0** | Governance amendment (docs) — encodes D1–D6, RBAC, gates, pilot re-map | — |
 | **W1** | Data model + migration + `commercial_partner_service` CRUD + routes + RBAC (no external calls) | W0 |
-| **W2** | Commercial order gate + kind validation (PO→supplier, SO→customer) | W1 |
-| **W3** | Sanctions screening service (OpenSanctions hosted) + endpoints + scheduled re-screen + status lifecycle, **then** RFQ gate re-target (kyc → sanctions) once hedge statuses are populated | W1 |
+| **W2** | Sanctions screening service (OpenSanctions hosted) + endpoints + scheduled re-screen + status lifecycle (`unscreened` default, adjudication path) — must precede any gate that requires a recorded `clear` | W1 |
+| **W3** | Commercial order gate + kind validation (PO→supplier, SO→customer) **and** RFQ gate re-target (kyc → sanctions, recorded-`clear`) — depends on W2 so partners can reach approved+clear and hedge statuses are populated | W2 |
 | **W4** | LEI validation service (GLEIF) + endpoint | W1 |
 | **W5** | Frontend: three registration surfaces + order-form fix + compliance panels + schema regen | W1–W4 |
 | **W6** | Credit/terms approval flows (customer limits/conditions; supplier value/terms) + display | W1, W5 |
