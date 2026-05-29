@@ -374,12 +374,17 @@ applies to EVERY entity the platform transacts with.
 
 The gate field on the hedge domain is `sanctions_status`
 (`SanctionsStatus` enum, members {clear, flagged, blocked}). The gate
-DENIES only `blocked`. `clear` admits. `flagged` admits (it is an
-informational sub-threshold potential match awaiting risk_manager
-adjudication; adjudication resolves it to `clear` or `blocked`). A hedge
+ADMITS only a recorded `clear` — a `clear` written by an actual
+successful screening. `blocked` denies; `flagged` denies pending
+risk_manager adjudication to `clear` (a sub-threshold potential match is
+not admissible until cleared); and an UNSCREENED counterparty (no
+recorded screening) denies. The W1 model MUST NOT leave `sanctions_status`
+at a default `clear` indistinguishable from a screened `clear`: an
+explicit unscreened initial state — or an equivalent "latest successful
+screening result == clear" check against `sanctions_screenings` — is
+required so an unscreened counterparty is never silently admitted. A hedge
 counterparty's `sanctions_status` is set by the sanctions-screening
-lifecycle (see "Sanctions screening governance" below), never defaulted
-to `clear` without a recorded screening.
+lifecycle (see "Sanctions screening governance" below).
 
 Gate scope (binding):
 
@@ -413,15 +418,17 @@ Gate scope (binding):
   Gate rule: any service-layer code path that creates an
   `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
   reached through a human-issued route or invoked by the
-  `service:rfq_outbound` outbound worker — MUST refuse if the target
-  hedge counterparty's `sanctions_status == blocked`. The W3 dispatch is
+  `service:rfq_outbound` outbound worker — MUST refuse unless the target
+  hedge counterparty has a recorded sanctions screening whose result is
+  `clear` (this denies `blocked`, `flagged`, AND an unscreened row that
+  carries only a non-recorded default). The W3 dispatch is
   responsible for sweeping every admission-purpose invocation site
   (the six `assert_kyc_approved` call sites in `rfq_service.py` at
   ~580, 853, 1029, 1297, 1469, 1583) and replacing the guard with the
   sanctions check (`assert_sanctions_clear`). Refusal is HTTP 422 for
   human-issued requests (or the equivalent application-layer rejection
   for service-driven paths). An audit event of type
-  `rfq_invitation_rejected_sanctions_blocked` MUST be recorded BEFORE
+  `rfq_invitation_rejected_sanctions_not_cleared` MUST be recorded BEFORE
   the rejection response is returned. Audit payload MUST include:
   `counterparty_id`, `sanctions_status_observed`, `requesting_actor_sub`,
   `attempted_purpose` (one of `{rfq_invite, refresh}`), and `rfq_id`
@@ -439,19 +446,20 @@ Gate scope (binding):
   explicitly partitioned.
 
 - RFQ quote ingestion: inbound quotes from a hedge counterparty whose
-  `sanctions_status` has dropped to `blocked` since the invitation was
+  `sanctions_status` is no longer a recorded `clear` (re-screened to
+  `blocked` or `flagged`) since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
   Service identities above). The gate applies equally to the
   human-issued quote-submission route (`POST
   /rfqs/{rfq_id}/quotes`) and to the LLM-parsed inbound path
   downstream of `webhook_processor`. Audit event
-  `rfq_quote_rejected_sanctions_blocked` with payload shape
+  `rfq_quote_rejected_sanctions_not_cleared` with payload shape
   `{counterparty_id, sanctions_status_observed, rfq_id, inbound_message_id
   (nullable for human-issued path), rejection_path,
   requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
-  parity with `rfq_invitation_rejected_sanctions_blocked` and
-  `rfq_award_rejected_sanctions_blocked`: the human-issued
+  parity with `rfq_invitation_rejected_sanctions_not_cleared` and
+  `rfq_award_rejected_sanctions_not_cleared`: the human-issued
   quote-submission path runs under a `risk_manager` JWT context so
   the actor sub is available exactly as it is on the award path and
   MUST be captured for audit attribution; the inbound/LLM path has
@@ -461,15 +469,16 @@ Gate scope (binding):
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
-  awarded quote's hedge counterparty `sanctions_status == blocked` at the
-  moment of award, even if the original invitation was created when the
-  counterparty was clear. Audit event
-  `rfq_award_rejected_sanctions_blocked` with payload
+  awarded quote's hedge counterparty `sanctions_status != clear` (or has
+  no recorded `clear` screening) at the moment of award, even if the
+  original invitation was created when the counterparty was clear. Audit
+  event `rfq_award_rejected_sanctions_not_cleared` with payload
   `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
   requesting_actor_sub}`.
 
-The hedge sanctions gate is fail-closed against an explicit `blocked`:
-a `blocked` status denies with no bypass flag and no config override.
+The hedge sanctions gate is fail-closed: it admits ONLY a recorded
+`clear`; `blocked`, `flagged`, and unscreened all deny, with no bypass
+flag and no config override.
 A hedge counterparty with no recorded screening MUST NOT be admitted on
 a defaulted `clear`; the W3 dispatch sets `sanctions_status` only from a
 recorded screening result (see "Sanctions screening governance"), and
@@ -669,9 +678,15 @@ every entity the platform transacts with: both hedge `counterparties`
 
 Provider (binding): the hosted OpenSanctions match API
 (`POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`,
-header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`). The query is a
-`Company`-schema match with properties `{name, jurisdiction: <country>,
-registrationNumber: <tax_id?>, leiCode: <lei?>}`. `OPENSANCTIONS_API_KEY`
+header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`). The request body
+is the OpenSanctions `EntityMatchQuery` envelope — a top-level `queries`
+map keyed by a caller-chosen id, each value `{schema: "Company",
+properties: {...}}` with ARRAY-valued properties, e.g.
+`{"queries": {"q1": {"schema": "Company", "properties": {"name":
+["<name>"], "jurisdiction": ["<country>"], "registrationNumber":
+["<tax_id>"], "leiCode": ["<lei>"]}}}}`. A bare entity body (no `queries`
+map, or scalar property values) is rejected by the API.
+`OPENSANCTIONS_API_KEY`
 is REQUIRED (non-empty) in production/staging; an APP_ENV-gated boot
 validator MUST refuse to start when the feature is enabled and the key is
 absent, in the same shape as the `AUDIT_SIGNING_KEY` validator.
@@ -704,9 +719,12 @@ Evidence (binding): every screening invocation persists an append-only,
 immutable `sanctions_screenings` record: `{partner_type
 (commercial|hedge), partner_id, screened_at, provider, algorithm,
 dataset_version, query_hash, top_score, match_count, matches_json, result
-(clear|flagged|blocked), actor_sub, status (success|error),
-error_detail}`. The entity's `sanctions_status` reflects the LATEST
-record's `result`. Screening records are never updated or deleted —
+(clear|flagged|blocked, NULL when status=error), actor_sub, status
+(success|error), error_detail}`. The entity's `sanctions_status` is
+updated ONLY from the latest SUCCESSFUL (status=success) screening's
+`result`; rows with status=error are recorded for audit (with
+`result=NULL`) and never overwrite `sanctions_status`. Screening records
+are never updated or deleted —
 reconstructability requires the full screening history. No PII beyond what
 is necessary for the match query leaves the platform; the design accepts
 that the hosted API receives the partner name/jurisdiction/identifiers for

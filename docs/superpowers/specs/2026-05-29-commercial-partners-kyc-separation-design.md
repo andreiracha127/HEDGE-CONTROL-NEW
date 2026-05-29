@@ -108,7 +108,7 @@ Invariants: `kyc_status → approved` requires a recorded `clear` sanctions scre
 
 ## 7. Services / integration
 
-- **`sanctions_screening_service`** — `POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`, header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`, batch query `{schema: "Company", properties: {name, jurisdiction: <country>, registrationNumber: <tax_id?>, leiCode: <lei?>}}`. Map response `match`/`score` → `result`: no match → `clear`; match below hard threshold → `flagged` (risk_manager adjudicates); match ≥ hard threshold → `blocked`. Thresholds defined in the Wave-3 dispatch. Persist immutable `sanctions_screenings` row + update partner `sanctions_status`. **Hard-fail** (record `status=error`, raise) on API/network error — never set `clear` silently. `OPENSANCTIONS_API_KEY` required in prod/staging via an APP_ENV-gated boot validator (same shape as `AUDIT_SIGNING_KEY`). Decoupled triggers: on create, manual `POST /commercial-partners/{id}/screen`, and a scheduled daily re-screen in the existing `scheduler` service.
+- **`sanctions_screening_service`** — `POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`, header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`, request body = OpenSanctions `EntityMatchQuery` envelope `{"queries": {"q1": {"schema": "Company", "properties": {"name": [..], "jurisdiction": [<country>], "registrationNumber": [<tax_id>], "leiCode": [<lei>]}}}}` (top-level `queries` map, ARRAY-valued properties — a bare entity body 422s). Map response `match`/`score` → `result`: no match → `clear`; match below hard threshold → `flagged` (risk_manager adjudicates); match ≥ hard threshold → `blocked`. Thresholds defined in the Wave-3 dispatch. Persist immutable `sanctions_screenings` row + update partner `sanctions_status`. **Hard-fail** (record `status=error`, raise) on API/network error — never set `clear` silently. `OPENSANCTIONS_API_KEY` required in prod/staging via an APP_ENV-gated boot validator (same shape as `AUDIT_SIGNING_KEY`). Decoupled triggers: on create, manual `POST /commercial-partners/{id}/screen` and `POST /counterparties/{id}/screen` (hedge, risk_manager), and a scheduled daily re-screen in the existing `scheduler` service (covers both domains).
 - **`lei_validation_service`** — offline ISO 7064 MOD 97-10 checksum + `GET https://api.gleif.org/api/v1/lei-records/{lei}` (no key) → `registrationStatus` (ISSUED/LAPSED) + legal name. Set `lei_status` + `lei_legal_name` + `lei_checked_at`. Warn (not block) on invalid checksum, lapsed status, or legal-name mismatch vs `name`.
 - **`commercial_partner_service`** — CRUD with audit-trail emission (mirrors `counterparty_service`); `kyc_status` transition (risk_manager, screening-clear invariant); credit/terms approval (risk_manager).
 
@@ -120,6 +120,9 @@ Invariants: `kyc_status → approved` requires a recorded `clear` sanctions scre
 - `POST {id}/screen` — trigger sanctions screening.
 - `POST {id}/validate-lei` — trigger LEI validation.
 - `PATCH {id}/credit` (risk_manager) — customer limit/conditions or supplier value/terms.
+
+`counterparties` (hedge) router — add:
+- `POST {id}/screen` (risk_manager) — trigger sanctions screening on a hedge counterparty. Screening is universal, so hedge counterparties need a manual re-screen path to move an RFQ-blocking `sanctions_status` back to `clear` without waiting for the scheduled re-screen.
 
 Orders purchase/sales routes call the commercial gate and validate kind. Regenerate `frontend-svelte/src/lib/api/schema.d.ts` from `/openapi.json` in the same change (avoid drift; mind `Field()` constraint → `title` JSDoc drift).
 
