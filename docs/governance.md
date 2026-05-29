@@ -468,8 +468,8 @@ Gate scope (binding):
   explicitly partitioned.
 
 - RFQ quote ingestion: inbound quotes from a hedge counterparty whose
-  `sanctions_status` is no longer a recorded `clear` (re-screened to
-  `blocked` or `flagged`) since the invitation was
+  effective `sanctions_status` is no longer `clear` (re-screened to
+  `blocked`/`flagged`, or otherwise not effectively cleared) since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
   Service identities above). The gate applies equally to the
@@ -494,8 +494,9 @@ Gate scope (binding):
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
-  awarded quote's hedge counterparty `sanctions_status != clear` (or has
-  no recorded `clear` screening) at the moment of award, even if the
+  awarded quote's hedge counterparty's effective `sanctions_status` is not
+  `clear` at the moment of award (an adjudicated-`clear` counterparty passes
+  — the adjudication is the evidence; see "Adjudication"), even if the
   original invitation was created when the counterparty was clear. Audit
   event `rfq_award_rejected_sanctions_not_cleared` with payload
   `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
@@ -513,6 +514,15 @@ until a `clear` screening exists. Operators wanting to admit a `blocked`
 counterparty MUST first remediate and re-screen (or risk_manager must
 adjudicate a `flagged` result) so the recorded status becomes `clear`;
 the gate then admits naturally.
+
+Identity-edit reset (hedge, binding): editing a screening-relevant identity
+field (`name`, `country`, `tax_id`, `lei`) on a hedge `counterparty` whose
+`sanctions_status` is not `unscreened` invalidates the prior screening
+evidence (it was computed from the old identity) — the counterparty is
+RESET to `unscreened` and MUST be re-screened before RFQ admission resumes.
+This mirrors the commercial-partner identity-reset rule in the
+AUTHORIZATION MATRIX; stale `clear` (or adjudication) evidence MUST NOT
+admit a changed identity into the RFQ lifecycle.
 
 Status transitions (binding):
 
@@ -688,7 +698,13 @@ Schema (binding):
   listed hedge counterparties); if any exist the migration HALTS with a
   remediation report rather than orphaning or guessing — each affected
   order is manually re-pointed to the correct `commercial_partner` (or
-  voided) first. It then repoints the `orders` FK to `commercial_partners`
+  voided) first. Symmetrically, before any customer/supplier row is removed
+  or restricted, hedge-domain references to it (`RFQInvitation`, `RFQQuote`,
+  `HedgeContract`, and `llm_decision_artifact` `.counterparty_id`) are
+  enumerated; if any exist the migration HALTS with a remediation report and
+  those rows are NOT removed until the references are corrected (no silent FK
+  breakage of the existing `counterparties.id` foreign keys). It then
+  repoints the `orders` FK to `commercial_partners`
   and restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
   FAIL-CLOSED — commercial `kyc_status` → `pending`, and `sanctions_status`
   → an unscreened state on BOTH domains — rather than carrying a legacy

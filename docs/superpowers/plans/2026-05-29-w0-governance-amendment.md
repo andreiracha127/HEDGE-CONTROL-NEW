@@ -422,8 +422,8 @@ Replace with:
 
 ```
 - RFQ quote ingestion: inbound quotes from a hedge counterparty whose
-  `sanctions_status` is no longer a recorded `clear` (re-screened to
-  `blocked` or `flagged`) since the invitation was
+  effective `sanctions_status` is no longer `clear` (re-screened to
+  `blocked`/`flagged`, or otherwise not effectively cleared) since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
   Service identities above). The gate applies equally to the
@@ -445,8 +445,9 @@ Replace with:
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
-  awarded quote's hedge counterparty `sanctions_status != clear` (or has
-  no recorded `clear` screening) at the moment of award, even if the
+  awarded quote's hedge counterparty's effective `sanctions_status` is not
+  `clear` at the moment of award (an adjudicated-`clear` counterparty passes
+  — the adjudication is the evidence; see "Adjudication"), even if the
   original invitation was created when the counterparty was clear. Audit
   event `rfq_award_rejected_sanctions_not_cleared` with payload
   `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
@@ -473,7 +474,7 @@ Replace with:
 The hedge sanctions gate is fail-closed against an explicit `blocked`:
 a `blocked` status denies with no bypass flag and no config override.
 A hedge counterparty with no recorded screening MUST NOT be admitted on
-a defaulted `clear`; the W3 dispatch sets `sanctions_status` only from a
+a defaulted `clear`; the W2 dispatch (screening) sets `sanctions_status` only from a
 recorded screening result (see "Sanctions screening governance"), and
 RFQ admission for an unscreened hedge counterparty is treated as denied
 until a `clear` screening exists. Operators wanting to admit a `blocked`
@@ -1026,7 +1027,7 @@ Per the repo protocol (review gates as of 2026-05-26): Codex Connector is the so
 - §5.2 sanctions_screenings evidence shape → Task 5 (governance-level); table DDL is W1.
 - LEI (§7 services) → Task 6. Credit (§7) → Task 7. Pilot re-map → Task 8.
 
-**2. Placeholder scan** — no "TBD/TODO/handle appropriately". The only deferral is the sanctions score THRESHOLD values, explicitly bound to the W3 dispatch in Task 5 by constitutional decision (ranges given: clear / flagged / blocked), which is correct governance granularity, not a placeholder.
+**2. Placeholder scan** — no "TBD/TODO/handle appropriately". The only deferral is the sanctions score THRESHOLD values, explicitly bound to the W2 dispatch (screening) in Task 5 by constitutional decision (ranges given: clear / flagged / blocked), which is correct governance granularity, not a placeholder.
 
 **3. Type/name consistency** — audit event names are consistent across Tasks 3/4/8/10: RFQ events `rfq_{invitation,quote,award}_rejected_sanctions_not_cleared`; order events `order_rejected_{kyc_not_approved,sanctions_blocked,kind_mismatch}`; transition `commercial_partner_kyc_status_changed`; credit `commercial_partner_credit_approved`. Field names (`sanctions_status`, `kyc_status`, `lei_status`, `credit_limit`, `approved_value`) match the spec §5.1.
 
