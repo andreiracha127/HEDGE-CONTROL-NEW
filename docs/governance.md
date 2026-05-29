@@ -541,6 +541,63 @@ Status transitions (binding):
   unpersistable (the quote-ingestion path re-checks at the
   internal-processing boundary).
 
+Commercial partner KYC + order gate (binding, Pilot Hard Blocker 1):
+
+This is the re-targeted home of the constitutional KYC hard block. A
+`commercial_partner` (kind ∈ {customer, supplier}) is the source of all
+commercial exposure (orders). Order creation is fail-closed against the
+partner's compliance state.
+
+Gate scope (binding): the order-creation paths — Purchase Order create
+(`POST /orders/purchase`) and Sales Order create (`POST /orders/sales`)
+— MUST refuse unless the referenced `commercial_partner` satisfies ALL of:
+
+  - **Kind coherence**: a Purchase Order MUST reference a partner with
+    `kind == supplier`; a Sales Order MUST reference a partner with
+    `kind == customer`. A mismatch is refused (the order is buying from a
+    supplier / selling to a customer; the inverse is a category error).
+  - **KYC admission**: `kyc_status == approved`. The other three members
+    (`pending`, `expired`, `rejected`) all deny; the default on creation
+    is `pending`, so a never-approved partner is gated out.
+  - **Sanctions admission**: `sanctions_status != blocked` (a `clear` or
+    `flagged` partner passes the sanctions leg; `blocked` denies). Note
+    that `kyc_status == approved` already implies a recorded `clear`
+    screening per the transition invariant above, so the two legs are
+    consistent and the `!= blocked` leg additionally catches a partner
+    that WAS approved but has since been re-screened to `blocked`.
+
+Refusal is HTTP 422. An audit event MUST be recorded BEFORE the rejection
+response is returned, HMAC-signed per `audit_trail_service`:
+
+  - `order_rejected_kyc_not_approved` when the kyc leg fails, payload
+    `{commercial_partner_id, kind, order_type (PO|SO), kyc_status_observed,
+    requesting_actor_sub}`.
+  - `order_rejected_sanctions_blocked` when the sanctions leg fails,
+    payload `{commercial_partner_id, kind, order_type, sanctions_status_observed,
+    requesting_actor_sub}`.
+  - `order_rejected_kind_mismatch` when kind coherence fails, payload
+    `{commercial_partner_id, kind, order_type, requesting_actor_sub}`.
+
+The audit row MUST survive the request rollback: the implementation uses
+the dual-session pattern already established in
+`backend/app/services/kyc_gate.py` (write the rejection audit on a
+separate committed `SessionLocal`, then raise HTTPException so the outer
+`unit_of_work` rolls back the failed mutation while the audit row
+persists). The partner MUST be loaded via the service getter (not raw
+`db.get`) so a soft-deleted partner fails closed with 404.
+
+LEI is advisory at this gate: an invalid checksum, a lapsed GLEIF
+registration, or a legal-name mismatch produces a warning surfaced to the
+caller but does NOT block order creation (see "LEI validation
+governance"). LEI is warn-not-block by constitutional decision.
+
+The gate is fail-closed and has NO bypass flag and NO config override.
+There is no credit-utilization leg at this gate in the current scope:
+approved credit limits / approved supplier values are RECORDED and
+audited (see "Credit and terms governance") but do not block order
+creation by utilization; a cumulative-exposure credit gate is a separate
+future amendment.
+
 Pilot scope binding (operational pre-condition for Pilot Hard
 Blocker 1 closure):
 
