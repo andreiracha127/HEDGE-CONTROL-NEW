@@ -601,27 +601,45 @@ future amendment.
 Pilot scope binding (operational pre-condition for Pilot Hard
 Blocker 1 closure):
 
-The 8 counterparties enumerated in
-`docs/2026-05-tech-lead-executive-analysis.md` §4 — Stonex Financial,
-Marex, Banco BS2, Itaú, Alecar, Rusal, Casa do Alumínio, Aluminios
-del Mexico — MUST be persisted with `kyc_status = approved` BEFORE
-pilot launch. This persistence is an operational pre-condition
-recorded in §7 of the pilot brief as part of the risk_manager
-sign-off. Any counterparty present in the platform but NOT in this
-list remains at default `kyc_status = pending` and is therefore
-gated out of every RFQ lifecycle event by the rules above. Adding a
-9th pilot counterparty is governed by §4 of the pilot brief (requires
-re-signature) AND by an explicit `kyc_status = approved` persistence
-event with audit trail.
+The 8 pilot entities enumerated in
+`docs/2026-05-tech-lead-executive-analysis.md` §4 split across the two
+domains by their economic role. The W1 migration places each entity in
+the correct table; the risk_manager sign-off (§7 of the pilot brief)
+records the per-domain pre-condition below.
+
+  - HEDGE counterparties (`counterparties`, broker/bank — RFQ recipients):
+    Stonex Financial, Marex, Banco BS2, Itaú. Each MUST have a recorded
+    sanctions screening with result `clear` BEFORE pilot launch. An
+    unscreened or `blocked` hedge counterparty is gated out of every RFQ
+    lifecycle event by the hedge sanctions gate.
+  - COMMERCIAL partners (`commercial_partners`, customer/supplier — order
+    sources): Alecar, Rusal, Casa do Alumínio, Aluminios del Mexico. Each
+    MUST be persisted with `kyc_status = approved` AND a recorded
+    sanctions screening with result `clear` BEFORE pilot launch. A partner
+    not meeting both is gated out of order creation by the commercial KYC
+    + order gate.
+
+(The exact hedge-vs-commercial partition of each named entity is fixed in
+the W1 migration dispatch against the source list; the four/four split
+above is the governing intent.) Any entity present in the platform but NOT
+in this list remains at its fail-closed default (hedge: unscreened →
+denied; commercial: `kyc_status = pending` → denied). Adding a 9th pilot
+entity is governed by §4 of the pilot brief (requires re-signature) AND by
+the explicit per-domain approval/screening persistence events with audit
+trail.
 
 Schema (binding):
 
-- NO alembic migration is required for the gate itself. The
-  `Counterparty.kyc_status` column and `KycStatus` enum already exist
-  (introduced in the Phase A1 Counterparty model creation). The
-  HB-1 implementation dispatch therefore prescribes service-layer
-  guards + audit-event wiring + tests; it does NOT prescribe a model
-  or migration change for the gate.
+- A migration IS required for the re-targeted model (this supersedes the
+  original HB-1 "no migration" note). The W1 dispatch creates the
+  `commercial_partners` and `sanctions_screenings` tables (+ enums), and
+  migrates the existing customer/supplier rows out of `counterparties`
+  into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
+  stays valid), then repoints the `orders` FK to `commercial_partners` and
+  restricts `counterparties` to {broker, bank_br}. The vestigial
+  `counterparties.kyc_status` column is kept by W1 and dropped in a later
+  migration. ENUM lifecycle for fresh Postgres follows the CLAUDE.md rules
+  (explicit `.create()` before `ALTER TABLE`, explicit `CAST(... AS <enum>)`).
 
 - The full KYC documentary suite (`KycDocument`, `CreditCheck`,
   `KycCheck` models with linked attestation documents) is P1
