@@ -7,6 +7,11 @@ Economic precision policy:
 """
 
 from app.models.audit import AuditEvent
+from app.models.commercial_partner import (
+    CommercialPartner,
+    CommercialPartnerKind,
+    LeiStatus,
+)
 from app.models.cashflow import (
     CashFlowBaselineSnapshot,
     CashFlowLedgerEntry,
@@ -92,6 +97,8 @@ __all__ = [
     "ApprovalPolicy",
     "ApprovalStatus",
     "AuditEvent",
+    "CommercialPartner",
+    "CommercialPartnerKind",
     "CashFlowBaselineSnapshot",
     "CashFlowLedgerEntry",
     "CashSettlementPrice",
@@ -123,6 +130,7 @@ __all__ = [
     "InboundWebhookDelivery",
     "InboundWebhookMessage",
     "KycStatus",
+    "LeiStatus",
     "LLMDecisionArtifact",
     "MTMObjectType",
     "MTMSnapshot",
