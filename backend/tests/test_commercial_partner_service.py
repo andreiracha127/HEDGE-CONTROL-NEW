@@ -45,3 +45,48 @@ def test_commercial_partner_supplier_cannot_carry_customer_credit_fields():
         session.add(cp)
         with pytest.raises(IntegrityError):
             session.commit()
+
+
+def test_sanctions_tables_exist_and_accept_rows():
+    from datetime import datetime, timezone
+
+    from app.models.sanctions import (
+        AdjudicationDecision,
+        SanctionsAdjudication,
+        SanctionsPartnerType,
+        SanctionsScreening,
+        ScreeningResult,
+        ScreeningStatus,
+    )
+
+    with SessionLocal() as session:
+        partner_id = uuid.uuid4()
+        screening = SanctionsScreening(
+            partner_type=SanctionsPartnerType.commercial,
+            partner_id=partner_id,
+            screened_at=datetime.now(timezone.utc),
+            provider="opensanctions",
+            algorithm="logic-v2",
+            query_hash="deadbeef",
+            match_count=0,
+            result=ScreeningResult.clear,
+            actor_sub="risk-1",
+            status=ScreeningStatus.success,
+        )
+        session.add(screening)
+        session.commit()
+        session.refresh(screening)
+
+        adj = SanctionsAdjudication(
+            partner_type=SanctionsPartnerType.commercial,
+            partner_id=partner_id,
+            superseded_screening_id=screening.id,
+            decision=AdjudicationDecision.clear,
+            reason="false positive, confirmed",
+            adjudicating_actor_sub="risk-1",
+            adjudicated_at=datetime.now(timezone.utc),
+        )
+        session.add(adj)
+        session.commit()
+        assert screening.status is ScreeningStatus.success
+        assert adj.decision is AdjudicationDecision.clear
