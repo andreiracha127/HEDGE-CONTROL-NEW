@@ -3,11 +3,16 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import get_current_actor_roles, get_current_actor_sub, require_any_role, require_role
-from app.core.database import get_session
-from app.core.pagination import paginate
 from app.api.dependencies.audit import audit_event, mark_audit_success
 from app.api.dependencies.uow import unit_of_work
+from app.core.auth import (
+    get_current_actor_roles,
+    get_current_actor_sub,
+    require_any_role,
+    require_role,
+)
+from app.core.database import get_session
+from app.core.pagination import paginate
 from app.models.counterparty import Counterparty, CounterpartyType
 from app.schemas.counterparty import (
     CounterpartyCreate,
@@ -40,22 +45,29 @@ def create_counterparty(
     request: Request,
     actor_roles: list[str] = Depends(get_current_actor_roles),
     actor_sub: str = Depends(get_current_actor_sub),
-    _: None = Depends(
-        audit_event(entity_type="counterparty", event_type="created")
-    ),
+    _: None = Depends(audit_event(entity_type="counterparty", event_type="created")),
     __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
-    if "risk_manager" not in actor_roles and not _is_trader_counterparty_type(
-        payload.type
-    ):
+    # counterparties is hedge-only after W1: trader has no hedge write access, and
+    # customer/supplier partners are managed via /commercial-partners.
+    if "risk_manager" not in actor_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Trader role can only manage customer/supplier counterparties",
+            detail="Hedge counterparties are risk_manager-only.",
         )
-    if payload.tax_id and not CounterpartyService.check_tax_id_unique(
-        session, payload.tax_id
-    ):
+    if payload.type.value in {
+        CounterpartyType.customer.value,
+        CounterpartyType.supplier.value,
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "customer/supplier partners are managed via /commercial-partners, "
+                "not /counterparties (hedge brokers/banks only)."
+            ),
+        )
+    if payload.tax_id and not CounterpartyService.check_tax_id_unique(session, payload.tax_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="tax_id already exists",
@@ -77,8 +89,10 @@ def list_counterparties(
     _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
     session: Session = Depends(get_session),
 ) -> CounterpartyListResponse:
-    if _is_trader_only(actor_roles) and type is not None and type not in (
-        _TRADER_COUNTERPARTY_TYPES
+    if (
+        _is_trader_only(actor_roles)
+        and type is not None
+        and type not in (_TRADER_COUNTERPARTY_TYPES)
     ):
         return CounterpartyListResponse(items=[], next_cursor=None)
     query = CounterpartyService.list(
@@ -111,13 +125,9 @@ def get_counterparty(
 ) -> CounterpartyRead:
     cp = CounterpartyService.get_by_id(session, counterparty_id)
     if not cp:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
     if _is_trader_only(actor_roles) and not _is_trader_counterparty_type(cp.type):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
     return CounterpartyRead.model_validate(cp)
 
 
@@ -128,17 +138,13 @@ def update_counterparty(
     request: Request,
     actor_roles: list[str] = Depends(get_current_actor_roles),
     actor_sub: str = Depends(get_current_actor_sub),
-    _: None = Depends(
-        audit_event(entity_type="counterparty", event_type="updated")
-    ),
+    _: None = Depends(audit_event(entity_type="counterparty", event_type="updated")),
     __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
     cp = CounterpartyService.get_by_id(session, counterparty_id)
     if not cp:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
     update_data = payload.model_dump(exclude_unset=True)
     if "risk_manager" not in actor_roles:
         if not _is_trader_counterparty_type(cp.type):
@@ -150,14 +156,17 @@ def update_counterparty(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Trader role cannot mutate counterparty type",
             )
-    if "tax_id" in update_data and update_data["tax_id"] is not None:
-        if not CounterpartyService.check_tax_id_unique(
+    if (
+        "tax_id" in update_data
+        and update_data["tax_id"] is not None
+        and not CounterpartyService.check_tax_id_unique(
             session, update_data["tax_id"], exclude_id=cp.id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="tax_id already exists",
-            )
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="tax_id already exists",
+        )
     with unit_of_work(session, request=request):
         cp = CounterpartyService.update(session, cp, update_data, commit=False)
         mark_audit_success(request, cp.id, metadata={"actor_sub": actor_sub})
@@ -170,21 +179,15 @@ def delete_counterparty(
     request: Request,
     actor_roles: list[str] = Depends(get_current_actor_roles),
     actor_sub: str = Depends(get_current_actor_sub),
-    _: None = Depends(
-        audit_event(entity_type="counterparty", event_type="deleted")
-    ),
+    _: None = Depends(audit_event(entity_type="counterparty", event_type="deleted")),
     __: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:
     cp = CounterpartyService.get_by_id(session, counterparty_id)
     if not cp:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
     if "risk_manager" not in actor_roles and not _is_trader_counterparty_type(cp.type):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
     with unit_of_work(session, request=request):
         cp = CounterpartyService.soft_delete(session, cp, commit=False)
         mark_audit_success(request, cp.id, metadata={"actor_sub": actor_sub})
@@ -201,9 +204,7 @@ def transition_kyc_status(
     payload: KycStatusTransitionRequest,
     request: Request,
     actor_sub: str = Depends(get_current_actor_sub),
-    _: None = Depends(
-        audit_event(entity_type="counterparty", event_type="kyc_status_changed")
-    ),
+    _: None = Depends(audit_event(entity_type="counterparty", event_type="kyc_status_changed")),
     __: None = Depends(require_role("risk_manager")),
     session: Session = Depends(get_session),
 ) -> CounterpartyRead:

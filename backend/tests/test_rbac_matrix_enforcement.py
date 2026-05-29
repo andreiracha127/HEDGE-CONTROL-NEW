@@ -198,9 +198,10 @@ def test_require_service_identity_rejects_unknown_name() -> None:
 @pytest.mark.parametrize(
     ("role", "type_", "expected_status"),
     [
-        ("trader", "broker", 403),
-        ("trader", "customer", 201),
+        ("trader", "broker", 403),  # trader has no hedge write access
+        ("trader", "customer", 403),  # trader-only refused before type check
         ("risk_manager", "broker", 201),
+        ("risk_manager", "customer", 422),  # customer/supplier belong in /commercial-partners
     ],
 )
 def test_counterparty_post_type_gate(
@@ -220,11 +221,11 @@ def test_counterparty_patch_trader_404s_broker(client, auth_as, session) -> None
     assert response.status_code == 404
 
 
-def test_counterparty_patch_trader_accepts_customer(client, auth_as, session) -> None:
-    customer = _insert_counterparty(session, CounterpartyType.customer, "customer patch")
+def test_counterparty_patch_trader_404s_any_hedge_row(client, auth_as, session) -> None:
+    broker = _insert_counterparty(session, CounterpartyType.broker, "broker patch")
     auth_as("trader")
-    response = client.patch(f"/counterparties/{customer.id}", json={"city": "Rio"})
-    assert response.status_code == 200
+    response = client.patch(f"/counterparties/{broker.id}", json={"city": "Rio"})
+    assert response.status_code == 404
 
 
 def test_counterparty_delete_trader_404s_broker(client, auth_as, session) -> None:
@@ -234,9 +235,7 @@ def test_counterparty_delete_trader_404s_broker(client, auth_as, session) -> Non
     assert response.status_code == 404
 
 
-def test_counterparty_get_list_trader_filters_broker_bank(client, auth_as, session) -> None:
-    _insert_counterparty(session, CounterpartyType.customer, "customer list")
-    _insert_counterparty(session, CounterpartyType.supplier, "supplier list")
+def test_counterparty_get_list_trader_sees_empty(client, auth_as, session) -> None:
     _insert_counterparty(session, CounterpartyType.broker, "broker list")
     _insert_counterparty(session, CounterpartyType.bank_br, "bank list")
     auth_as("trader")
@@ -244,8 +243,7 @@ def test_counterparty_get_list_trader_filters_broker_bank(client, auth_as, sessi
     response = client.get("/counterparties")
 
     assert response.status_code == 200
-    types = {item["type"] for item in response.json()["items"]}
-    assert types == {"customer", "supplier"}
+    assert response.json()["items"] == []
 
 
 def test_counterparty_get_by_id_trader_404s_broker(client, auth_as, session) -> None:
