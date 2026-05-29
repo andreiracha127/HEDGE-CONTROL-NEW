@@ -90,3 +90,23 @@ def test_sanctions_tables_exist_and_accept_rows():
         session.commit()
         assert screening.status is ScreeningStatus.success
         assert adj.decision is AdjudicationDecision.clear
+
+
+def test_commercial_partner_create_schema_rejects_kyc_and_credit_fields():
+    from app.schemas.commercial_partner import CommercialPartnerCreate
+
+    # kyc_status / credit fields are NOT part of the create schema at all
+    payload = CommercialPartnerCreate(kind="customer", name="Acme", country="BRA")
+    dumped = payload.model_dump()
+    assert "kyc_status" not in dumped
+    assert "credit_limit" not in dumped
+    assert "approved_value" not in dumped
+
+
+def test_credit_approval_request_parses_decimal():
+    from decimal import Decimal
+
+    from app.schemas.commercial_partner import CreditApprovalRequest
+
+    req = CreditApprovalRequest(credit_limit="12345.67", credit_currency="USD")
+    assert req.credit_limit == Decimal("12345.67")
