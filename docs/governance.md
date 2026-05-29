@@ -763,17 +763,23 @@ workers, and attributed to the `service:sanctions_screening` identity.
 
 No silent fallback (binding): a screening invocation that errors
 (network/HTTP/parse failure) MUST record a screening record with
-`status = error` and `error_detail`, and MUST raise — it MUST NOT set
-`sanctions_status = clear` by default. A `clear` status is only ever
+`status = error` and `error_detail` ON A SEPARATE, COMMITTED SESSION
+(commit-before-raise — the same dual-session pattern as
+`backend/app/services/kyc_gate.py` and the commercial order gate, because
+service/route paths run inside `unit_of_work`, which rolls back the
+request session on ANY exception; without the separate session the error
+evidence would be rolled back exactly on the failures it must record),
+and MUST raise — it MUST NOT set `sanctions_status = clear` by default. A `clear` status is only ever
 written from a successful screening that returned no above-threshold
 match.
 
 Result mapping (binding ranges; exact thresholds fixed in the W2
-dispatch): no match → `clear`; a match at or above the HARD threshold →
-`blocked`; a match below the hard threshold but above the review
-threshold → `flagged` (requires risk_manager adjudication to `clear` or
-`blocked`). The threshold values are an implementation parameter recorded
-in the W2 dispatch, not silently chosen in code.
+dispatch): no match, OR a match below the REVIEW threshold → `clear`
+(low-confidence noise is NOT flagged); a match at or above the REVIEW
+threshold but below the HARD threshold → `flagged` (requires risk_manager
+adjudication to `clear` or `blocked`); a match at or above the HARD
+threshold → `blocked`. The threshold values are an implementation
+parameter recorded in the W2 dispatch, not silently chosen in code.
 
 Evidence (binding): every screening invocation persists an append-only,
 immutable `sanctions_screenings` record: `{partner_type
