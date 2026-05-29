@@ -120,7 +120,7 @@
 						<td class="mono" style="font-size: 12px;">{e.action}</td>
 						<td class="mono">{e.entity}</td>
 						<td style="color: var(--ink-3);">{e.detail}</td>
-						<td class="mono" style="font-size: 11px; color: var(--muted-2);">{fmtChecksum(e.checksum)}</td>
+						<td class="mono" style="font-size: 11px; color: var(--muted);">{fmtChecksum(e.checksum)}</td>
 						<td>
 							<button
 								type="button"

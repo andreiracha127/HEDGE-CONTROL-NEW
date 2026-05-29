@@ -125,7 +125,7 @@
 					<button
 						type="button"
 						class="card"
-						style="padding: 14px; text-align: left; cursor: pointer; border-color: {orderType === 'PO' ? 'var(--navy)' : 'var(--line-strong)'}; background: {orderType === 'PO' ? '#F4F7FC' : '#fff'};"
+						style="padding: 14px; text-align: left; cursor: pointer; border-color: {orderType === 'PO' ? 'var(--navy)' : 'var(--line-strong)'}; background: {orderType === 'PO' ? 'var(--surface-sel)' : 'var(--surface)'};"
 						onclick={() => (orderType = 'PO')}
 					>
 						<div class="row gap-2">
@@ -137,7 +137,7 @@
 					<button
 						type="button"
 						class="card"
-						style="padding: 14px; text-align: left; cursor: pointer; border-color: {orderType === 'SO' ? 'var(--navy)' : 'var(--line-strong)'}; background: {orderType === 'SO' ? '#F4F7FC' : '#fff'};"
+						style="padding: 14px; text-align: left; cursor: pointer; border-color: {orderType === 'SO' ? 'var(--navy)' : 'var(--line-strong)'}; background: {orderType === 'SO' ? 'var(--surface-sel)' : 'var(--surface)'};"
 						onclick={() => (orderType = 'SO')}
 					>
 						<div class="row gap-2">
@@ -152,11 +152,11 @@
 			<Card title="2. Identificação">
 				<div class="field-grid">
 					<div class="field">
-						<label class="field-label">
+						<label class="field-label" for="order-reference">
 							Número de referência (PO/SO) <span class="req">*</span>
 							<InfoTip>Espelho do ERP/SAP. Usado para vincular RFQs de hedge a esta ordem comercial.</InfoTip>
 						</label>
-						<input class="input mono" placeholder={isPO ? 'PO-2026-1185' : 'SO-2026-0943'} bind:value={reference}/>
+						<input id="order-reference" class="input mono" placeholder={isPO ? 'PO-2026-1185' : 'SO-2026-0943'} bind:value={reference}/>
 					</div>
 					<div class="field">
 						<label class="field-label" for="order-counterparty">Contraparte <span class="req">*</span></label>
@@ -187,25 +187,25 @@
 					</div>
 
 					<div class="field" style="grid-column: 1 / -1;">
-						<label class="field-label">
+						<span class="field-label" id="order-price-type-label">
 							Tipo de preço <span class="req">*</span>
 							<InfoTip width={280}>
 								<strong>Fixo:</strong> preço definido em contrato — sem exposição a preço, mas pode haver exposição cambial.<br/><br/>
 								<strong>Variável:</strong> atrelado ao LME — gera exposição à commodity até a liquidação.
 							</InfoTip>
-						</label>
-						<div class="radio-group">
+						</span>
+						<div class="radio-group" role="group" aria-labelledby="order-price-type-label">
 							<button type="button" class:active={priceType === 'fixed'} onclick={() => (priceType = 'fixed')}>Preço fixo</button>
 							<button type="button" class:active={priceType === 'variable'} onclick={() => (priceType = 'variable')}>Preço variável (indexado)</button>
 						</div>
 					</div>
 
 					<div class="field">
-						<label class="field-label">
+						<label class="field-label" for="order-pricing-convention">
 							Convenção de precificação <span class="req">*</span>
 							<InfoTip width={260}>Define qual cotação LME será usada na liquidação variável (Official, Cash, 3-Month, ou médias mensais).</InfoTip>
 						</label>
-						<select class="select" bind:value={pricingConv}>
+						<select id="order-pricing-convention" class="select" bind:value={pricingConv}>
 							<option value="AVG">LME Average (mês de entrega)</option>
 							<option value="AVGInter">LME Average entre datas</option>
 							<option value="C2R">C2R / fixing date</option>
@@ -251,11 +251,11 @@
 					</div>
 
 					<div class="field">
-						<label class="field-label">
+						<label class="field-label" for="order-delivery">
 							Data de entrega <span class="req">*</span>
 							<InfoTip>Define a janela de exposição.</InfoTip>
 						</label>
-						<input class="input" type="date" bind:value={delivery}/>
+						<input id="order-delivery" class="input" type="date" bind:value={delivery}/>
 					</div>
 				</div>
 			</Card>

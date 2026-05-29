@@ -8,6 +8,8 @@
 	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { invalidateAll } from '$app/navigation';
+	import { formatInteger, formatDecimal, formatUSD, formatPercent } from '$lib/utils/format';
 	let { data } = $props();
 	const commodities = $derived(data.commodities);
 	const exposureBuckets = $derived(data.exposureBuckets);
@@ -49,24 +51,16 @@
 	}
 
 	function fmt(v: number | null, code: string): string {
-		if (v == null || !Number.isFinite(v)) return '—';
-		const opts =
-			code === 'USDBRL'
-				? { minimumFractionDigits: 4, maximumFractionDigits: 4 }
-				: { minimumFractionDigits: 2, maximumFractionDigits: 2 };
-		return v.toLocaleString('en-US', opts);
+		return formatDecimal(v, code === 'USDBRL' ? 4 : 2);
 	}
 
 	function fmtMt(value: unknown): string {
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) return '—';
-		return parsed.toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+		return formatInteger(value as number | string | null | undefined);
 	}
 
 	function fmtMtmDelta(value: unknown): string {
-		const parsed = Number(value);
-		if (!Number.isFinite(parsed)) return '—';
-		return `${parsed >= 0 ? '+' : '-'}US$ ${Math.abs(parsed).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		if (value == null) return '—';
+		return formatUSD(value as number | string, { signed: true });
 	}
 
 	function marketChangePct(c: Record<string, any>): number | null {
@@ -80,7 +74,7 @@
 	}
 
 	function refreshPage() {
-		window.location.reload();
+		void invalidateAll();
 	}
 </script>
 
@@ -92,7 +86,7 @@
 		meta={[
 			`${exposureRows.length} commodity(s) monitoradas`,
 			`${openRfqs.length} RFQ(s) enviadas`,
-			`Cobertura ${totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`,
+			`Cobertura ${formatDecimal(totalCoverage, 1)}%`,
 		]}
 		actions={headerActions}
 	/>
@@ -113,7 +107,7 @@
 		/>
 		<Kpi
 			label="Índice de cobertura"
-			value={totalCoverage.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}
+			value={formatDecimal(totalCoverage, 1)}
 			unit="%"
 			delta="cobertura sobre exposição"
 			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
@@ -160,7 +154,7 @@
 								class="tabular"
 								style="width: 60px; text-align: right; font-size: 11px; color: var(--muted);"
 							>
-								{b.hedged_mt > 0 ? (b.hedged_mt / 1000).toFixed(1) + 'k/' : '0/'}{(b.commercial_mt / 1000).toFixed(1)}k t
+								{b.hedged_mt > 0 ? formatDecimal(b.hedged_mt / 1000, 1) + 'k/' : '0/'}{formatDecimal(b.commercial_mt / 1000, 1)}k t
 							</span>
 						</div>
 					{/each}
@@ -290,7 +284,7 @@
 									class="tabular"
 									style="font-size: 11px; color: {chg >= 0 ? 'var(--pos)' : 'var(--neg)'};"
 								>
-									{chg >= 0 ? '▲' : '▼'} {Math.abs(chg).toFixed(2)}%
+									{chg >= 0 ? '▲' : '▼'} {formatPercent(Math.abs(chg), 2)}
 								</div>
 							{/if}
 						</div>

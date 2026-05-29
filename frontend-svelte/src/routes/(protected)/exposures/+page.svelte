@@ -112,7 +112,7 @@
 						<td>
 							<div class="row gap-3">
 								<Bar pct={b.ratio} kind={ok ? 'pos' : warn ? 'warn' : 'neg'}/>
-								<span class="tabular" style="width: 42px; text-align: right;">{b.ratio.toFixed(1)}%</span>
+								<span class="tabular" style="width: 42px; text-align: right;">{fmtPct(b.ratio)}%</span>
 							</div>
 						</td>
 						<td>

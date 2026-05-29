@@ -81,22 +81,22 @@
 
 	function fmtPrice(contract: Contract): string {
 		if (contract.price == null) return '—';
-		return contract.price.toLocaleString('en-US', { minimumFractionDigits: priceDigits(contract) });
+		return contract.price.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(contract) });
 	}
 
 	function fmtNumber(value: number | null | undefined, digits = 0): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return value.toLocaleString('en-US', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+		return value.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits });
 	}
 
 	function fmtUsd(value: number | null | undefined): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtUnsignedUsd(value: number | null | undefined): string {
 		if (value == null || !Number.isFinite(value)) return '—';
-		return `US$ ${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `US$ ${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtRate(value: number | null | undefined): string {
@@ -284,7 +284,7 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="Notional"
-			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toFixed(2)}`}
+			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
 			unit="M"
 			delta={`${fmtQty(c)} @ ${fmtPrice(c)}`}
 		/>
@@ -296,7 +296,7 @@
 		/>
 		<Kpi
 			label="P&L desde a contratação"
-			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toFixed(2) + ' %'}
+			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %'}
 			delta={'preço mid ' + fmtNumber(mid, priceDigits(c))}
 			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
 		/>
@@ -323,7 +323,7 @@
 						<dt>Tipo</dt><dd>{c.type}</dd>
 						<dt>Commodity</dt><dd>{c.commodity}</dd>
 						<dt>Quantidade</dt><dd class="tabular">{fmtQty(c)}</dd>
-						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('en-US', { maximumFractionDigits: 0 })}`}</dd>
+						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}</dd>
 						<dt>Preço fixo</dt>
 						<dd class="tabular strong">
 							{fmtPrice(c)} {c.price == null ? '' : fmtPriceUnit(c)}
@@ -379,7 +379,7 @@
 					<div class="row gap-3" style="align-items: baseline;">
 						<span style="font-size: 12px; color: var(--muted);">Δ Preço:</span>
 						<span class="tabular" style="font-size: 14px; font-weight: 500; color: {priceDelta() == null ? 'var(--muted)' : priceDelta()! >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toFixed(priceDigits(c))}`}
+							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}`}
 						</span>
 						<span style="font-size: 12px; color: var(--muted);">·</span>
 						<span style="font-size: 12px; color: var(--muted);">MTM:</span>
@@ -482,7 +482,7 @@
 								<td>{fmtDate(flow.date)}</td>
 								<td>{flow.desc ?? flow.description ?? 'Liquidação projetada'}</td>
 								<td class="num strong" style="color: {amount >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-									{amount >= 0 ? '+' : ''}{amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+									{amount >= 0 ? '+' : ''}{amount.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 								</td>
 								<td>
 									{#if flow.direction === 'in'}
@@ -530,7 +530,7 @@
 						{@const dDay = mtmDelta(row, i)}
 						<tr>
 							<td>{fmtDate(row.date ?? row.as_of_date ?? row.created_at)}</td>
-							<td class="num tabular">{p == null ? '—' : p.toFixed(priceDigits(c))}</td>
+							<td class="num tabular">{p == null ? '—' : p.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
 							<td class="num tabular strong" style="color: {m == null || m >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 								{fmtUsd(m)}
 							</td>

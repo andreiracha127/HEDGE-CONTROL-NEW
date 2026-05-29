@@ -437,7 +437,7 @@
 							{disabled}
 							onclick={() => toggleCP(cp.id)}
 							class="card"
-							style="padding: 12px; text-align: left; cursor: {disabled ? 'not-allowed' : 'pointer'}; border-color: {on ? 'var(--navy)' : 'var(--line-strong)'}; opacity: {disabled ? 0.5 : 1}; background: {on ? '#F4F7FC' : '#fff'};"
+							style="padding: 12px; text-align: left; cursor: {disabled ? 'not-allowed' : 'pointer'}; border-color: {on ? 'var(--navy)' : 'var(--line-strong)'}; opacity: {disabled ? 0.5 : 1}; background: {on ? 'var(--surface-sel)' : 'var(--surface)'};"
 						>
 							<div class="row gap-3">
 								<span class="check" class:on><span class="box"></span></span>

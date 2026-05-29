@@ -171,9 +171,9 @@
 										<Badge kind="pos">Melhor executável</Badge>
 									{/if}
 								</td>
-								<td class="num strong">{q.price != null ? q.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
+								<td class="num strong">{q.price != null ? q.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
 								<td class="num" style="color: {q.spread === 0 ? 'var(--pos)' : 'var(--ink-2)'};">
-									{q.spread != null ? (q.spread === 0 ? '—' : '+' + q.spread.toFixed(2)) : '—'}
+									{q.spread != null ? (q.spread === 0 ? '—' : '+' + q.spread.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : '—'}
 								</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.valid ?? '—'}</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.received ?? '—'}</td>
@@ -224,7 +224,7 @@
 						<dl class="kv">
 							<dt>Notional (melhor)</dt>
 							<dd class="tabular strong">
-								US$ {(rfq.qty * best.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}
+								US$ {(rfq.qty * best.price).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 							</dd>
 						</dl>
 					{:else}
@@ -245,10 +245,10 @@
 					verdict={awardVerdict}
 					verdictKind={awardVerdictKind}
 					items={[
-						{ label: 'Melhor cotação', value: best?.price != null ? best.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' },
+						{ label: 'Melhor cotação', value: best?.price != null ? best.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' },
 						{ label: 'Cotações elegíveis', value: actionableQuotes },
 						{ label: 'Alçada', value: canManageRfq ? 'Risk Manager' : 'Restrita' },
-						{ label: 'Notional', value: best?.price != null ? `US$ ${(rfq.qty * best.price).toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—' },
+						{ label: 'Notional', value: best?.price != null ? `US$ ${(rfq.qty * best.price).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}` : '—' },
 					]}
 				/>
 			</Card>

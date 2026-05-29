@@ -54,7 +54,7 @@
 	function fmtPrice(c: Contract): string {
 		if (c.price == null) return '—';
 		const digits = c.commodity === 'USDBRL' ? 4 : 2;
-		return c.price.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+		return c.price.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
 
 	function fmtDate(value: string | null | undefined): string {
@@ -67,7 +67,7 @@
 
 	function fmtMtm(value: number | null | undefined): string {
 		if (value == null) return '—';
-		return `${value >= 0 ? '+' : ''}${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtUsdMillions(value: number | null | undefined): string {
@@ -102,7 +102,7 @@
 			<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="relacionamento ativo"/>
 			<Kpi
 				label="MTM (USD)"
-				value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('en-US', { maximumFractionDigits: 0 })}
+				value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
 				delta="marcação consolidada"
 				deltaKind={mtm >= 0 ? 'pos' : 'neg'}
 			/>

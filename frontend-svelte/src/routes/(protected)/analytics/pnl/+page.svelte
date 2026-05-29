@@ -19,11 +19,11 @@
 	function fmtUsd(value: unknown): string {
 		const amount = money(value);
 		const sign = amount > 0 ? '+' : amount < 0 ? '-' : '';
-		return `${sign}US$ ${Math.abs(amount).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+		return `${sign}US$ ${Math.abs(amount).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
 	}
 
 	function fmtNumber(value: unknown, digits = 2): string {
-		return money(value).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+		return money(value).toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 	}
 
 	const dailyBars = $derived.by(() => {

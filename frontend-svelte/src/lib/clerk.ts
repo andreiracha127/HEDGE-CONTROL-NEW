@@ -11,6 +11,25 @@ declare global {
 
 type ClerkLoadOptions = NonNullable<Parameters<ClerkInstance['load']>[0]>;
 
+// Force the Clerk widget to the platform's light theme regardless of the OS
+// prefers-color-scheme. The app is a single light theme (see app.css tokens);
+// without this, a dark-mode OS renders a dark Clerk card on the light auth
+// screen. Values mirror the CSS custom properties in src/app.css.
+const CLERK_APPEARANCE: ClerkLoadOptions['appearance'] = {
+	variables: {
+		colorPrimary: '#001B5C', // --navy
+		colorText: '#131826', // --ink
+		colorTextSecondary: '#6B7280', // --muted
+		colorBackground: '#FFFFFF', // --surface
+		colorInputBackground: '#FFFFFF', // --surface
+		colorInputText: '#131826', // --ink
+		colorDanger: '#B43B43', // --neg
+		colorSuccess: '#166E47', // --pos
+		fontFamily: '"IBM Plex Sans", system-ui, -apple-system, sans-serif',
+		borderRadius: '4px', // --r-sm
+	},
+};
+
 // TODO(post-cluster-3): swap from the dev publishable key to pk_live_... for the custom domain.
 const PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 
@@ -126,6 +145,7 @@ export async function initClerk(): Promise<void> {
 		await clerk.load({
 			signInUrl: '/login',
 			signUpUrl: '/sign-up',
+			appearance: CLERK_APPEARANCE,
 			ui: { ClerkUI: window.__internal_ClerkUICtor },
 		});
 	})().catch((error: unknown) => {
