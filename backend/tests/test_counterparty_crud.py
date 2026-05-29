@@ -47,7 +47,7 @@ def test_create_counterparty_defaults(client):
     assert r.status_code == 201
     body = r.json()
     assert body["kyc_status"] == "pending"
-    assert body["sanctions_status"] == "clear"
+    assert body["sanctions_status"] == "unscreened"
     assert body["risk_rating"] == "medium"
 
 

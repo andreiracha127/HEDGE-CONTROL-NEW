@@ -32,7 +32,7 @@ class CounterpartyService:
             payment_terms_days=data.get("payment_terms_days") or 30,
             credit_limit_usd=data.get("credit_limit_usd"),
             kyc_status=KycStatus.pending,
-            sanctions_status=SanctionsStatus(data.get("sanctions_status", "clear")),
+            sanctions_status=SanctionsStatus(data.get("sanctions_status", "unscreened")),
             risk_rating=RiskRating(data.get("risk_rating", "medium")),
             is_active=data.get("is_active", True),
             notes=data.get("notes"),
