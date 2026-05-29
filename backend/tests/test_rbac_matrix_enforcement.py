@@ -664,3 +664,118 @@ def test_westmetall_scheduler_attributes_service_actor(monkeypatch, session) -> 
         row.payload.get("metadata", {}).get("actor_sub") == "service:westmetall_ingest"
         for row in rows
     )
+
+
+# ---------------------------------------------------------------------------
+# Commercial Partners RBAC matrix (W1)
+# ---------------------------------------------------------------------------
+
+
+def _commercial_payload(kind: str, name: str | None = None) -> dict:
+    return {
+        "kind": kind,
+        "name": name or f"{kind} CP",
+        "country": "BRA",
+        "tax_id": f"{kind}-{uuid.uuid4()}",
+        "whatsapp_phone": "+5511999990000",
+    }
+
+
+def test_commercial_partner_trader_can_crud_identity(client, auth_as):
+    auth_as("trader")
+    created = client.post("/commercial-partners", json=_commercial_payload("customer"))
+    assert created.status_code == 201, created.text
+    cp_id = created.json()["id"]
+    assert client.get(f"/commercial-partners/{cp_id}").status_code == 200
+    patched = client.patch(f"/commercial-partners/{cp_id}", json={"city": "Rio"})
+    assert patched.status_code == 200
+    assert client.delete(f"/commercial-partners/{cp_id}").status_code == 200
+
+
+def test_commercial_partner_trader_cannot_set_kyc_status(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("trader")
+    resp = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "trader attempt"},
+    )
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_trader_cannot_approve_credit(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("trader")
+    resp = client.patch(f"/commercial-partners/{cp_id}/credit", json={"credit_limit": "100.00"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_generic_patch_rejects_kyc_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    # even risk_manager cannot mutate kyc_status via generic PATCH
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"kyc_status": "approved"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_generic_patch_rejects_credit_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"credit_limit": "5.00"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_risk_manager_kyc_requires_sanctions_clear(client, auth_as, session):
+    from app.models.commercial_partner import CommercialPartner
+    from app.models.counterparty import SanctionsStatus
+
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    # unscreened → approve denied (422)
+    denied = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "premature approve"},
+    )
+    assert denied.status_code == 422
+    # flip to clear, then approve succeeds
+    cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+    cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
+    ok = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "screening cleared"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["kyc_status"] == "approved"
+
+
+def test_commercial_partner_auditor_read_only(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("supplier")).json()["id"]
+    auth_as("auditor")
+    assert client.get(f"/commercial-partners/{cp_id}").status_code == 200
+    assert client.get("/commercial-partners").status_code == 200
+    # auditor cannot write
+    assert (
+        client.post("/commercial-partners", json=_commercial_payload("customer")).status_code == 403
+    )
+    assert client.patch(f"/commercial-partners/{cp_id}", json={"city": "X"}).status_code == 403
+
+
+def test_commercial_partner_identity_edit_resets_compliance(client, auth_as, session):
+    from app.models.commercial_partner import CommercialPartner
+    from app.models.counterparty import KycStatus, SanctionsStatus
+
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+    cp.sanctions_status = SanctionsStatus.clear
+    cp.kyc_status = KycStatus.approved
+    session.commit()
+
+    auth_as("trader")
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"name": "Renamed Co"})
+    assert resp.status_code == 200
+    assert resp.json()["sanctions_status"] == "unscreened"
+    assert resp.json()["kyc_status"] == "pending"
