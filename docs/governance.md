@@ -307,49 +307,44 @@ direct Order/RFQ writes from the webhook entrypoint), etc.
 
 Authorization invariants:
 
-- Counterparty mutations by `trader` require server-side authorization
-  per HTTP method (route gate `require_any_role(trader, risk_manager)`
-  is the first layer in all three; the second layer differs by method
-  because PATCH and DELETE cannot rely on a payload type field):
-  - POST: payload gate — assert `payload.type ∈ {customer, supplier}`
-    when actor lacks risk_manager. Source of authorization is the
-    incoming type.
-  - PATCH: stored-record gate — load the existing counterparty, assert
-    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager,
-    AND reject any payload field that would mutate `type` (current
-    `CounterpartyUpdate` schema does not expose `type`, but the
-    rejection guards future schema evolution). Source of authorization
-    is the stored type, not the payload (the payload has no type field).
-  - DELETE: stored-record gate — load the existing counterparty, assert
-    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager.
-    DELETE has no request body; the stored-type check is the only
-    authorization layer beyond the route gate.
-- Counterparty reads by `trader` are also type-restricted (the prohibition
-  is read-and-write, not write-only — broker/bank rows must be invisible
-  to commercial actors). The condition is **trader-specific** (NOT
-  "lacks risk_manager") because the GET route gate is
-  `require_any_role(trader, risk_manager, auditor)` — auditor enters the
-  handler and is read-only on every endpoint by matrix definition,
-  including broker/bank rows for oversight purposes:
-  - GET /counterparties (list): when the actor's effective role set is
-    `{trader}` only (no risk_manager, no auditor), the list query MUST
-    filter `type IN (customer, supplier)` server-side. The response
-    never contains broker/bank rows, never even leaks counts. Auditors
-    and risk_managers receive the unfiltered list.
-  - GET /counterparties/{id}: when the actor's effective role set is
-    `{trader}` only, load the existing counterparty + assert
-    `existing.type ∈ {customer, supplier}`; raise HTTP 404 (NOT 403)
-    if the stored type is broker/bank, to avoid leaking existence of
-    the row. Auditors and risk_managers receive the row regardless of
-    type.
-
-  Note on the symmetric mutation invariants above (POST/PATCH/DELETE):
-  the "when actor lacks risk_manager" condition there is correct because
-  those route gates are `require_any_role(trader, risk_manager)` —
-  auditor is rejected at the route gate before the handler runs, so
-  "lacks risk_manager" is equivalent to "is trader" inside the handler.
-  The GET route gate includes auditor, which is why the GET invariants
-  must use the explicit trader-only condition instead.
+- Hedge `counterparties` ({broker, bank_br}) are invisible to trader-only
+  actors on every method. The route gates are `require_any_role(trader,
+  risk_manager)` for writes and `require_any_role(trader, risk_manager,
+  auditor)` for reads; the second layer denies trader-only access:
+  - GET (list + by-id): a `{trader}`-only actor receives an empty list
+    and a 404 by-id (NOT 403 — existence must not leak). risk_manager and
+    auditor receive all rows.
+  - POST / PATCH / DELETE: a `{trader}`-only actor is refused. For by-id
+    methods the stored row is loaded and a 404 returned when the actor is
+    trader-only (existence non-leak). The `counterparties` table holds
+    ONLY hedge types after the W1 migration, so there is no per-type branch
+    left on this table — trader simply has no hedge-counterparty access.
+- Commercial partner mutations by `trader` (on `commercial_partners`) are
+  authorized by the table itself, not by a per-row type branch (every row
+  is commercial). The route gate `require_any_role(trader, risk_manager)`
+  is the first layer; the second layer protects the risk_manager-only
+  fields:
+  - POST: trader MAY create a `commercial_partner` (kind ∈ {customer,
+    supplier}); the create payload MUST NOT set `kyc_status` (server
+    forces default `pending`) nor any credit/terms field (those require a
+    separate risk_manager approval op).
+  - PATCH: trader MAY update identity/contact/LEI-input fields; a trader
+    payload that targets `kyc_status` or any credit/terms field is refused
+    with HTTP 403. risk_manager may patch all fields.
+  - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
+- The hedge-counterparty read invisibility for trader is specified in the
+  bullet above (empty list / 404 by-id for `{trader}`-only actors). The
+  condition is **trader-specific** (NOT "lacks risk_manager") because the
+  GET route gate is `require_any_role(trader, risk_manager, auditor)` —
+  auditor enters the handler and is read-only on every endpoint by matrix
+  definition, including hedge rows for oversight purposes.
+- `commercial_partners` reads are permitted to all three human roles
+  (trader, risk_manager, auditor); there is no per-row type restriction
+  because every row is commercial. The risk_manager-only protection is on
+  the WRITE side (kyc_status + credit/terms), not the read side — trader
+  reads the full commercial partner record including its current
+  `kyc_status`, `sanctions_status`, `lei_status`, and approved credit/terms
+  so the order-entry UI can show compliance state.
 - Audit log routes are auditor-only dedicated reads. No operational role
   (`trader` or `risk_manager`) can read audit events, and no role —
   including auditor or risk_manager — can delete audit events. The auditor
