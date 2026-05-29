@@ -110,3 +110,99 @@ def test_credit_approval_request_parses_decimal():
 
     req = CreditApprovalRequest(credit_limit="12345.67", credit_currency="USD")
     assert req.credit_limit == Decimal("12345.67")
+
+
+def _new_partner(session, kind=CommercialPartnerKind.customer, **overrides):
+    cp = CommercialPartner(
+        kind=kind, name=overrides.pop("name", "Acme"), country="BRA", **overrides
+    )
+    session.add(cp)
+    session.commit()
+    session.refresh(cp)
+    return cp
+
+
+def test_service_update_rejects_kyc_status():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.update(session, cp, {"kyc_status": "approved"})
+        assert exc.value.status_code == 403
+
+
+def test_service_update_rejects_credit_fields():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.update(session, cp, {"credit_limit": "10.00"})
+        assert exc.value.status_code == 403
+
+
+def test_service_identity_edit_resets_compliance_fail_closed():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)
+        cp.sanctions_status = SanctionsStatus.clear
+        cp.kyc_status = KycStatus.approved
+        session.commit()
+        CommercialPartnerService.update(session, cp, {"name": "Acme Renamed"})
+        assert cp.sanctions_status is SanctionsStatus.unscreened
+        assert cp.kyc_status is KycStatus.pending
+
+
+def test_service_kyc_approve_blocked_unless_sanctions_clear():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)  # sanctions_status defaults to unscreened
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.set_kyc_status(
+                session, cp.id, new_status=KycStatus.approved
+            )
+        assert exc.value.status_code == 422
+
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+        updated, previous = CommercialPartnerService.set_kyc_status(
+            session, cp.id, new_status=KycStatus.approved
+        )
+        assert updated.kyc_status is KycStatus.approved
+        assert previous is KycStatus.pending
+
+
+def test_service_approve_credit_customer_decimal_roundtrip():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session, kind=CommercialPartnerKind.customer)
+        cp2, changed, previous, new_values = CommercialPartnerService.approve_credit(
+            session, cp, {"credit_limit": Decimal("12345.67"), "credit_currency": "USD"}
+        )
+        session.refresh(cp2)
+        assert cp2.credit_limit == Decimal("12345.67")
+        assert "credit_limit" in changed
+
+
+def test_service_approve_credit_rejects_cross_kind_fields():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session, kind=CommercialPartnerKind.customer)
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.approve_credit(
+                session, cp, {"approved_value": Decimal("1.00")}  # supplier field on a customer
+            )
+        assert exc.value.status_code == 422
