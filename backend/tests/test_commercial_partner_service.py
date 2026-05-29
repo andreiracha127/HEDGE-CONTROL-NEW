@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 from decimal import Decimal
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.core.auth import get_current_user
 from app.core.database import SessionLocal
+from app.main import app
 from app.models.commercial_partner import (
     CommercialPartner,
     CommercialPartnerKind,
@@ -48,7 +51,7 @@ def test_commercial_partner_supplier_cannot_carry_customer_credit_fields():
 
 
 def test_sanctions_tables_exist_and_accept_rows():
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from app.models.sanctions import (
         AdjudicationDecision,
@@ -64,7 +67,7 @@ def test_sanctions_tables_exist_and_accept_rows():
         screening = SanctionsScreening(
             partner_type=SanctionsPartnerType.commercial,
             partner_id=partner_id,
-            screened_at=datetime.now(timezone.utc),
+            screened_at=datetime.now(UTC),
             provider="opensanctions",
             algorithm="logic-v2",
             query_hash="deadbeef",
@@ -84,7 +87,7 @@ def test_sanctions_tables_exist_and_accept_rows():
             decision=AdjudicationDecision.clear,
             reason="false positive, confirmed",
             adjudicating_actor_sub="risk-1",
-            adjudicated_at=datetime.now(timezone.utc),
+            adjudicated_at=datetime.now(UTC),
         )
         session.add(adj)
         session.commit()
@@ -167,9 +170,7 @@ def test_service_kyc_approve_blocked_unless_sanctions_clear():
     with SessionLocal() as session:
         cp = _new_partner(session)  # sanctions_status defaults to unscreened
         with pytest.raises(HTTPException) as exc:
-            CommercialPartnerService.set_kyc_status(
-                session, cp.id, new_status=KycStatus.approved
-            )
+            CommercialPartnerService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
         assert exc.value.status_code == 422
 
         cp.sanctions_status = SanctionsStatus.clear
@@ -203,6 +204,37 @@ def test_service_approve_credit_rejects_cross_kind_fields():
         cp = _new_partner(session, kind=CommercialPartnerKind.customer)
         with pytest.raises(HTTPException) as exc:
             CommercialPartnerService.approve_credit(
-                session, cp, {"approved_value": Decimal("1.00")}  # supplier field on a customer
+                session,
+                cp,
+                {"approved_value": Decimal("1.00")},  # supplier field on a customer
             )
         assert exc.value.status_code == 422
+
+
+def _as_roles(*roles: str, sub: str = "test-user") -> dict:
+    return {"sub": sub, "roles": list(roles)}
+
+
+@pytest.fixture()
+def auth_as():
+    def _set(*roles: str, sub: str = "test-user") -> None:
+        app.dependency_overrides[get_current_user] = lambda: _as_roles(*roles, sub=sub)
+
+    yield _set
+    app.dependency_overrides.clear()
+
+
+def test_router_create_and_get_roundtrip(client, auth_as):
+    auth_as("trader")
+    resp = client.post(
+        "/commercial-partners",
+        json={"kind": "customer", "name": "Roundtrip Co", "country": "BRA"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["kind"] == "customer"
+    assert body["kyc_status"] == "pending"
+    assert body["sanctions_status"] == "unscreened"
+
+    got = client.get(f"/commercial-partners/{body['id']}")
+    assert got.status_code == 200

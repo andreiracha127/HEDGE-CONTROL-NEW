@@ -2,8 +2,10 @@ from app.api.routes import (
     audit,
     cashflow,
     cashflow_ledger,
+    commercial_partners,
     contracts,
     counterparties,
+    csp_report,
     deals,
     exposures,
     finance_pipeline,
@@ -16,15 +18,16 @@ from app.api.routes import (
     webhooks,
     westmetall,
     workflow_approvals,
-    csp_report,
 )
 
 __all__ = [
     "audit",
     "cashflow",
     "cashflow_ledger",
+    "commercial_partners",
     "contracts",
     "counterparties",
+    "csp_report",
     "deals",
     "exposures",
     "finance_pipeline",
@@ -37,5 +40,4 @@ __all__ = [
     "webhooks",
     "westmetall",
     "workflow_approvals",
-    "csp_report",
 ]
