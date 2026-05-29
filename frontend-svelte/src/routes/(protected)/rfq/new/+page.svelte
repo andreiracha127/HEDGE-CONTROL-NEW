@@ -12,6 +12,7 @@
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { validateMtQuantity } from '$lib/rfq/quantity';
+	import { safeBusinessText } from '$lib/alcast/presentation';
 	let { data } = $props();
 	const counterparties = $derived(data.counterparties);
 	const orders = $derived(data.orders ?? []);
@@ -194,7 +195,7 @@
 			body: buildPreviewPayload(),
 		});
 		if (previewError || !preview) {
-			notifications.error(`Falha ao gerar texto da RFQ: ${previewError?.detail ?? 'erro desconhecido'}`);
+			notifications.error(`Falha ao gerar texto da RFQ: ${safeBusinessText(previewError?.detail, 'não foi possível gerar a prévia')}`);
 			return null;
 		}
 		return preview;
@@ -279,7 +280,7 @@
 		});
 		submitting = false;
 		if (apiError) {
-			notifications.error(`Falha ao enviar RFQ: ${apiError.detail ?? 'erro desconhecido'}`);
+			notifications.error(`Falha ao enviar RFQ: ${safeBusinessText(apiError.detail, 'não foi possível enviar a RFQ')}`);
 			return;
 		}
 		notifications.success(`RFQ ${created?.rfq_number ?? created?.id} enviada a ${selectedCounterparties.length} contraparte(s)`);
@@ -295,7 +296,7 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="RFQ execution room"
+		eyebrow="Sala de cotação"
 		title="Nova RFQ"
 		subtitle={`${company} · ${commodity} · ${tradeType} · ${INTENT_LABEL[intent]}`}
 		meta={[direction, `${qtyNum.toLocaleString('pt-BR')} MT`, selectedCounterparties.length > 0 ? `${selectedCounterparties.length} contraparte(s)` : 'Sem contraparte', rfqRoleReady ? 'Risk manager' : 'Sem alçada']}
@@ -309,7 +310,7 @@
 
 	<div class="detail-grid institutional-rfq-entry">
 		<div class="stack gap-4">
-			<Card title="1. Trade setup" sub="Empresa, commodity, intenção e quantidade">
+			<Card title="1. Estrutura da cotação" sub="Empresa, commodity, intenção e quantidade">
 				<div class="field-grid">
 					<div class="field" style="grid-column: 1 / -1;">
 						<div class="field-label">Empresa <span class="req">*</span></div>
@@ -397,7 +398,7 @@
 			</Card>
 
 			<Card
-				title="2. Trade 1"
+				title="2. Operação 1"
 				sub={showLeg2 ? 'Swap · configure duas pernas (compra fixa × venda variável ou inverso)' : 'Forward · configure uma única perna'}
 			>
 				{#snippet actions()}
@@ -409,10 +410,10 @@
 					</div>
 				{/snippet}
 
-				<LegEditor bind:leg={leg1} label="Leg 1" onSideChange={setLeg1Side}/>
+				<LegEditor bind:leg={leg1} label="Perna 1" onSideChange={setLeg1Side}/>
 				{#if showLeg2}
 					<div class="divider"></div>
-					<LegEditor bind:leg={leg2} label="Leg 2" onSideChange={setLeg2Side}/>
+					<LegEditor bind:leg={leg2} label="Perna 2" onSideChange={setLeg2Side}/>
 				{/if}
 			</Card>
 
@@ -467,17 +468,17 @@
 			<Card noPad>
 				<DecisionDossier
 					title="Dossiê de envio da RFQ"
-					verdict={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'Pronta para envio' : 'Bloqueada por validação'}
+					verdict={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'Pronta para envio' : 'Validações pendentes'}
 					verdictKind={quantityValidation.ok && legsReady && datesReady && intentReady && recipientsReady && rfqRoleReady ? 'pos' : 'warn'}
 					items={[
 						{ label: 'Empresa', value: company },
 						{ label: 'Commodity', value: commodity },
 						{ label: 'Intenção', value: INTENT_LABEL[intent] },
-						{ label: 'Trade', value: tradeType },
+						{ label: 'Operação', value: tradeType },
 						{ label: 'Quantidade', value: `${qtyNum.toLocaleString('pt-BR')} MT` },
 						{ label: 'Direção', value: direction },
-						{ label: 'Leg 1', value: leg1.priceType ? `${leg1.side === 'buy' ? 'Compra' : 'Venda'} · ${leg1.priceType}` : '—' },
-						{ label: 'Leg 2', value: showLeg2 && leg2.priceType ? `${leg2.side === 'buy' ? 'Compra' : 'Venda'} · ${leg2.priceType}` : showLeg2 ? '—' : 'N/A' },
+						{ label: 'Perna 1', value: leg1.priceType ? `${leg1.side === 'buy' ? 'Compra' : 'Venda'} · ${leg1.priceType}` : '—' },
+						{ label: 'Perna 2', value: showLeg2 && leg2.priceType ? `${leg2.side === 'buy' ? 'Compra' : 'Venda'} · ${leg2.priceType}` : showLeg2 ? '—' : 'N/A' },
 					]}
 				/>
 			</Card>
@@ -491,12 +492,12 @@
 					/>
 					<Validation
 						ok={!!leg1.priceType}
-						label={leg1.priceType ? `Leg 1 configurada (${leg1.priceType})` : 'Leg 1 sem price type'}
+						label={leg1.priceType ? `Perna 1 configurada (${leg1.priceType})` : 'Perna 1 sem tipo de preço'}
 					/>
 					{#if showLeg2}
 						<Validation
 							ok={!!leg2.priceType}
-							label={leg2.priceType ? `Leg 2 configurada (${leg2.priceType})` : 'Leg 2 sem price type'}
+							label={leg2.priceType ? `Perna 2 configurada (${leg2.priceType})` : 'Perna 2 sem tipo de preço'}
 						/>
 					{/if}
 					<Validation
@@ -519,9 +520,9 @@
 			<Card title="Governança">
 				<dl class="kv">
 					<dt>Alçada</dt><dd>Risk Manager</dd>
-					<dt>Aprovação</dt><dd><Badge kind="neutral" dot>Sujeita ao workflow</Badge></dd>
+					<dt>Aprovação</dt><dd><Badge kind="neutral" dot>Sujeita à fila de aprovações</Badge></dd>
 					<dt>Política IFRS</dt><dd>Hedge accounting</dd>
-					<dt>Mark-to-market</dt><dd>Conforme serviço de marcação carregado</dd>
+					<dt>MTM</dt><dd>Conforme marcação disponível</dd>
 				</dl>
 			</Card>
 		</div>

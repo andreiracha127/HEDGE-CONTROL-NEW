@@ -8,15 +8,28 @@
 	import AppShell from '$lib/components/alcast/AppShell.svelte';
 	import ToastStack from '$lib/components/alcast/ToastStack.svelte';
 
+	type BreadcrumbItem = {
+		label: string;
+		href?: string;
+	};
+
 	let { children, data } = $props();
+	let clerkDisplayName = $state<string | null>(null);
 
 	$effect(() => {
 		if (authStore.isAuthenticated) {
 			wsStore.connect();
 			void initClerk().catch(() => {
 				/* Restored cookie sessions can render before Clerk loads; refresh remains best-effort. */
+			}).then(() => {
+				try {
+					clerkDisplayName = nameFromClerkUser(clerk.user);
+				} catch {
+					clerkDisplayName = null;
+				}
 			});
 		} else {
+			clerkDisplayName = null;
 			wsStore.disconnect();
 		}
 	});
@@ -35,10 +48,25 @@
 
 	const crumbs = $derived(crumbsFor(page.url.pathname));
 	const navBadges = $derived(data?.navBadges ?? { rfqOpen: null, ordersToday: null, approvalsPending: null });
+	const displayUserName = $derived(safeDisplayName(clerkDisplayName ?? authStore.userName));
 
-	function crumbsFor(pathname: string): string[] {
+	function nameFromClerkUser(user: typeof clerk.user): string | null {
+		const fullName = user?.fullName?.trim();
+		if (fullName) return fullName;
+		const joined = [user?.firstName, user?.lastName].filter(Boolean).join(' ').trim();
+		if (joined) return joined;
+		return user?.primaryEmailAddress?.emailAddress ?? null;
+	}
+
+	function safeDisplayName(value: string): string {
+		const trimmed = value.trim();
+		if (!trimmed || /^user_[A-Za-z0-9]+$/.test(trimmed)) return 'Usuário autenticado';
+		return trimmed;
+	}
+
+	function crumbsFor(pathname: string): BreadcrumbItem[] {
 		const segments = pathname.split('/').filter(Boolean);
-		if (segments.length === 0) return ['Hedge Control', 'Visão geral'];
+		if (segments.length === 0) return [{ label: 'Hedge Control', href: '/' }, { label: 'Visão geral' }];
 
 		const labels: Record<string, string> = {
 			exposures: 'Exposições',
@@ -57,12 +85,37 @@
 			audit: 'Auditoria',
 		};
 
-		return ['Hedge Control', ...segments.map((segment) => labels[segment] ?? segment)];
+		const hrefBySegment: Record<string, string> = {
+			exposures: '/exposures',
+			orders: '/orders',
+			rfq: '/rfq',
+			contracts: '/contracts',
+			counterparties: '/counterparties',
+			cashflow: '/cashflow',
+			analytics: '/analytics/pnl',
+			pnl: '/analytics/pnl',
+			mtm: '/analytics/mtm',
+			'what-if': '/analytics/what-if',
+			'market-data': '/market-data',
+			'workflow-approvals': '/workflow-approvals',
+			audit: '/audit',
+		};
+
+		return [
+			{ label: 'Hedge Control', href: '/' },
+			...segments.map((segment, index) => {
+				const isCurrent = index === segments.length - 1;
+				return {
+					label: labels[segment] ?? segment,
+					href: isCurrent ? undefined : hrefBySegment[segment],
+				};
+			}),
+		];
 	}
 </script>
 
 {#if authStore.isAuthenticated}
-	<AppShell {crumbs} {navBadges} userName={authStore.userName} userRoles={authStore.userRoles} onLogout={logout}>
+	<AppShell {crumbs} {navBadges} userName={displayUserName} userRoles={authStore.userRoles} onLogout={logout}>
 		{@render children()}
 	</AppShell>
 {:else}

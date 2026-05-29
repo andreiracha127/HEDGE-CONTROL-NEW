@@ -5,6 +5,10 @@ function read(relativeUrl: string): string {
 	return readFileSync(new URL(relativeUrl, import.meta.url), 'utf8');
 }
 
+function visibleSurface(source: string): string {
+	return source.replace(/<script[\s\S]*?<\/script>/g, '');
+}
+
 describe('institutional UI consistency', () => {
 	it('keeps high-value routes on the Alcast institutional design system', () => {
 		const routeFiles = [
@@ -193,6 +197,76 @@ describe('institutional UI consistency', () => {
 			const source = read(routeFile);
 			expect(source, routeFile).toContain('EmptyState');
 			expect(source, routeFile).not.toContain('class="tbl-empty"');
+		}
+	});
+
+	it('keeps the shell navigable and protects the operator identity display', () => {
+		const layout = read('../../routes/+layout.svelte');
+		const topbar = read('../components/alcast/Topbar.svelte');
+		const sidebar = read('../components/alcast/Sidebar.svelte');
+		const css = read('../../app.css');
+
+		expect(layout).toContain('href:');
+		expect(layout).toContain('clerk.user');
+		expect(layout).toContain('displayUserName');
+		expect(topbar).toContain('type BreadcrumbItem');
+		expect(topbar).toContain('role="search"');
+		expect(topbar).toContain('aria-label="Ações rápidas"');
+		expect(topbar).toContain('topbar-menu-toggle');
+		expect(topbar).toContain('aria-controls="primary-navigation"');
+		expect(topbar).toContain('Recolher navegação');
+		expect(sidebar).toContain('safeUserName');
+		expect(sidebar).toContain('Usuário autenticado');
+		expect(sidebar).toContain('id="primary-navigation"');
+		expect(sidebar).toContain('class:collapsed');
+		expect(css).toContain('.app.sidebar-collapsed');
+		expect(css).toContain('.topbar-menu-toggle');
+		expect(css).not.toMatch(/\.sidebar\.collapsed\s+\.sidebar-toggle\s*\{[^}]*position:\s*absolute/s);
+	});
+
+	it('does not leak backend contract language into visible institutional pages', () => {
+		const visibleRoutes = [
+			'../../routes/(protected)/+page.svelte',
+			'../../routes/(protected)/exposures/+page.svelte',
+			'../../routes/(protected)/orders/+page.svelte',
+			'../../routes/(protected)/orders/new/+page.svelte',
+			'../../routes/(protected)/rfq/+page.svelte',
+			'../../routes/(protected)/rfq/new/+page.svelte',
+			'../../routes/(protected)/rfq/[id]/+page.svelte',
+			'../../routes/(protected)/contracts/+page.svelte',
+			'../../routes/(protected)/contracts/[id]/+page.svelte',
+			'../../routes/(protected)/cashflow/+page.svelte',
+			'../../routes/(protected)/analytics/pnl/+page.svelte',
+			'../../routes/(protected)/analytics/mtm/+page.svelte',
+			'../../routes/(protected)/analytics/what-if/+page.svelte',
+			'../../routes/(protected)/market-data/+page.svelte',
+			'../../routes/(protected)/counterparties/+page.svelte',
+			'../../routes/(protected)/counterparties/new/+page.svelte',
+			'../../routes/(protected)/counterparties/[id]/+page.svelte',
+			'../../routes/(protected)/workflow-approvals/+page.svelte',
+		];
+		const forbidden = [
+			/state=[A-Z_]+/,
+			/\bendpoint\b/i,
+			/\bbackend\b/i,
+			/\bpayload\b/i,
+			/exposures\/list/i,
+			/exposures\/net/i,
+			/mtm_value/i,
+			/hedged\/commercial/i,
+			/dire[çc][aã]o buy/i,
+			/dire[çc][aã]o sell/i,
+			/Data load pending/i,
+			/retornar dados/i,
+			/retornar linhas/i,
+			/retornar eventos/i,
+		];
+
+		for (const routeFile of visibleRoutes) {
+			const source = visibleSurface(read(routeFile));
+			for (const pattern of forbidden) {
+				expect(source, `${routeFile} must not expose ${pattern}`).not.toMatch(pattern);
+			}
 		}
 	});
 });

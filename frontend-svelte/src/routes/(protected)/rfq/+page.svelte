@@ -46,7 +46,7 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="RFQ blotter"
+		eyebrow="Mesa de cotações"
 		title="Solicitações de cotação"
 		subtitle="Originar, monitorar e converter cotações com contrapartes aprovadas."
 		meta={[`${totalLoaded} RFQ(s)`, `${stateCount('SENT')} enviadas`, `${stateCount('QUOTED')} cotadas`]}
@@ -54,10 +54,10 @@
 	/>
 
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="total carregado" deltaKind="flat"/>
-		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="rascunhos" deltaKind="flat"/>
-		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="aguardando cotação" deltaKind="flat"/>
-		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="cotações recebidas" deltaKind="flat"/>
+		<Kpi label="RFQs carregadas" value={String(totalLoaded)} delta="mesa de cotações" deltaKind="flat"/>
+		<Kpi label="Criadas" value={String(stateCount('CREATED'))} delta="rascunhos originados" deltaKind="flat"/>
+		<Kpi label="Enviadas" value={String(stateCount('SENT'))} delta="em negociação" deltaKind="flat"/>
+		<Kpi label="Cotadas" value={String(stateCount('QUOTED'))} delta="com resposta" deltaKind="flat"/>
 	</div>
 
 	<div class="institutional-blotter">

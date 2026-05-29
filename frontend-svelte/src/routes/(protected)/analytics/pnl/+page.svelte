@@ -74,10 +74,10 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Performance analytics"
+		eyebrow="Análise de resultado"
 		title="P&L"
 		subtitle="Resultado realizado, não-realizado, atribuição e contribuintes financeiros."
-		meta={[`Snapshot ${data.snapshotDate}`, `${deals.length} deal(s)`, `Total ${fmtUsd(totals.total_pnl)}`]}
+		meta={[`Data-base ${data.snapshotDate}`, `${deals.length} operação(ões)`, `Total ${fmtUsd(totals.total_pnl)}`]}
 		actions={[
 			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
 		]}
@@ -86,16 +86,16 @@
 	<div class="institutional-analytics">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
-			label="P&L total"        value={fmtUsd(totals.total_pnl)}  delta={`snapshot ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
+			label="P&L total"        value={fmtUsd(totals.total_pnl)}  delta={`data-base ${data.snapshotDate}`} deltaKind={money(totals.total_pnl) < 0 ? 'neg' : 'pos'}
 			spark={dailyBars.map(([, v]) => v)} sparkColor={money(totals.total_pnl) < 0 ? 'var(--neg)' : 'var(--pos)'}
 		/>
-		<Kpi label="Realizado"            value={fmtUsd(totals.hedge_pnl_realized)}  delta={`${deals.length} deal(s)`} deltaKind={money(totals.hedge_pnl_realized) < 0 ? 'neg' : 'pos'}/>
-		<Kpi label="Não-realizado (MTM)"  value={fmtUsd(totals.hedge_pnl_mtm)}       delta="hedges abertos" deltaKind={money(totals.hedge_pnl_mtm) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Realizado"            value={fmtUsd(totals.hedge_pnl_realized)}  delta={`${deals.length} operação(ões)`} deltaKind={money(totals.hedge_pnl_realized) < 0 ? 'neg' : 'pos'}/>
+		<Kpi label="Não realizado (MTM)"  value={fmtUsd(totals.hedge_pnl_mtm)}       delta="posições abertas" deltaKind={money(totals.hedge_pnl_mtm) < 0 ? 'neg' : 'pos'}/>
 		<Kpi label="Resultado físico"     value={fmtUsd(money(totals.physical_revenue) - money(totals.physical_cost))} delta="receita menos custo" deltaKind={money(totals.physical_revenue) - money(totals.physical_cost) < 0 ? 'neg' : 'pos'}/>
 	</div>
 
 	<div class="grid-7-5" style="margin-bottom: 16px;">
-		<Card title="P&L por deal" sub={`Snapshot ${data.snapshotDate} · USD`}>
+		<Card title="P&L por operação" sub={`Data-base ${data.snapshotDate} · USD`}>
 			<div style="height: 200px; position: relative; display: flex; align-items: center;">
 				<div class="row gap-1" style="align-items: stretch; height: 100%; flex: 1; padding: 0 4px;">
 					{#each dailyBars as [d, v] (d)}
@@ -113,7 +113,7 @@
 			</div>
 		</Card>
 
-		<Card title="Atribuição" sub={`Snapshot ${data.snapshotDate}`}>
+		<Card title="Atribuição" sub={`Data-base ${data.snapshotDate}`}>
 			<table class="tbl tbl-tight">
 				<thead>
 					<tr>
@@ -137,8 +137,8 @@
 							<td colspan="4">
 								<EmptyState
 									icon="chart"
-									title="Nenhuma atribuição no snapshot"
-									message="A tabela será preenchida quando houver deals com P&L retornados pelo backend."
+									title="Nenhuma atribuição carregada"
+									message="As atribuições aparecerão quando houver operações com P&L na data-base."
 								/>
 							</td>
 						</tr>
@@ -156,7 +156,7 @@
 		</Card>
 	</div>
 
-	<Card title="Top contribuintes" sub={`Contratos com maior impacto no snapshot ${data.snapshotDate}`} noPad>
+	<Card title="Maiores contribuições" sub={`Contratos com maior impacto na data-base ${data.snapshotDate}`} noPad>
 		<table class="tbl">
 			<thead>
 				<tr>
@@ -188,7 +188,7 @@
 						<td colspan="8">
 							<EmptyState
 								icon="coins"
-								title="Nenhum contribuinte financeiro no snapshot"
+								title="Nenhum contribuinte financeiro carregado"
 								message="Os maiores impactos aparecerão aqui quando houver itens financeiros com P&L."
 							/>
 						</td>

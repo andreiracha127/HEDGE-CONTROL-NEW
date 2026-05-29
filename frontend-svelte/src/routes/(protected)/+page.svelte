@@ -28,9 +28,9 @@
 			: []),
 	]);
 	const riskVerdict = $derived.by(() => {
-		if (exposureRows.length === 0) return 'Carga de dados pendente';
-		if (totalCoverage >= 70) return 'Aderente à política';
-		if (totalCoverage >= 40) return 'Cobertura em observação';
+		if (exposureRows.length === 0) return 'Aguardando dados';
+		if (totalCoverage >= 70) return 'Política atendida';
+		if (totalCoverage >= 40) return 'Cobertura em atenção';
 		return 'Risco residual';
 	});
 	const riskVerdictKind = $derived.by((): DossierKind => {
@@ -81,10 +81,10 @@
 <div class="page">
 	<PageHeader
 		eyebrow="Visão executiva"
-		title="Central de risco"
+		title="Centro de comando de risco"
 		subtitle="Cobertura, residual, RFQs abertas e mercado em uma leitura única da mesa."
 		meta={[
-			`${exposureRows.length} commodity(s) monitorada(s)`,
+			`${exposureRows.length} commodity(s) monitoradas`,
 			`${openRfqs.length} RFQ(s) enviadas`,
 			`Cobertura ${formatDecimal(totalCoverage, 1)}%`,
 		]}
@@ -102,27 +102,27 @@
 			label="Exposição comercial"
 			value={fmtMt(totalCommercial)}
 			unit="t"
-			delta={`${exposureRows.length} commodity(s) monitorada(s)`}
+			delta={`${exposureRows.length} commodity(s) monitoradas`}
 			deltaKind="flat"
 		/>
 		<Kpi
-			label="Hedge ratio"
+			label="Índice de cobertura"
 			value={formatDecimal(totalCoverage, 1)}
 			unit="%"
-			delta="sobre exposição comercial"
+			delta="cobertura sobre exposição"
 			deltaKind={totalCoverage >= 70 ? 'pos' : totalCoverage >= 40 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="Residual"
 			value={fmtMt(totalResidual)}
 			unit="t"
-			delta="exposição não coberta"
+			delta="saldo após hedges"
 			deltaKind={totalResidual === 0 ? 'flat' : 'neg'}
 		/>
 		<Kpi
 			label="RFQs enviadas"
 			value={String(openRfqs.length)}
-			delta="aguardando cotação"
+			delta="cotações enviadas"
 			deltaKind="flat"
 		/>
 	</div>
@@ -163,7 +163,7 @@
 				<EmptyState
 					icon="chart"
 					title="Nenhuma janela de cobertura carregada"
-					message="A matriz será preenchida quando a exposição comercial e os hedges forem carregados."
+					message="Atualize a base de posições para visualizar a cobertura por mês."
 				/>
 			{/if}
 
@@ -249,8 +249,8 @@
 							<td colspan="6">
 								<EmptyState
 									icon="chart"
-									title="Nenhuma exposição ativa carregada"
-									message="A tabela permanece vazia até que existam exposições comerciais registradas."
+									title="Nenhuma exposição carregada"
+									message="Atualize a base de posições para visualizar saldos comerciais e cobertura."
 								/>
 							</td>
 						</tr>
@@ -259,7 +259,7 @@
 			</table>
 		</Card>
 
-		<Card title="Cotações de mercado" sub="Westmetall cash settlement">
+		<Card title="Cotações de mercado" sub="Fonte: Market Data">
 			{#snippet actions()}
 				<Badge kind="pos" dot>ao vivo</Badge>
 			{/snippet}

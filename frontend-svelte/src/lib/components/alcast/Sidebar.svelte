@@ -22,11 +22,13 @@
 		userName,
 		userRoles,
 		onLogout,
+		collapsed = false,
 	}: {
 		navBadges: NavBadges;
 		userName: string;
 		userRoles: string[];
 		onLogout: () => void | Promise<void>;
+		collapsed?: boolean;
 	} = $props();
 
 	const roleLabels: Record<string, string> = {
@@ -35,17 +37,25 @@
 		trader: 'Trader',
 	};
 
+	function isRawSubject(value: string): boolean {
+		return /^user_[A-Za-z0-9]+$/.test(value.trim());
+	}
+
+	const safeUserName = $derived(
+		userName.trim().length > 0 && !isRawSubject(userName) ? userName.trim() : 'Usuário autenticado',
+	);
+
 	const displayRole = $derived.by(() => {
 		for (const role of ['auditor', 'risk_manager', 'trader']) {
 			if (userRoles.includes(role)) return roleLabels[role];
 		}
-		return 'Unknown';
+		return 'Perfil pendente';
 	});
 	const canUseAnalysis = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
 	const canUseRiskWorkflows = $derived(userRoles.includes('risk_manager') || userRoles.includes('auditor'));
 
 	const initials = $derived(
-		userName
+		safeUserName
 			.split(/\s+/)
 			.filter(Boolean)
 			.slice(0, 2)
@@ -99,10 +109,10 @@
 	}
 </script>
 
-<aside class="sidebar">
+<aside id="primary-navigation" class="sidebar" class:collapsed={collapsed} aria-label="Navegação principal">
 	<div class="sidebar-brand">
 		<Logo size={26}/>
-		<div>
+		<div class="sidebar-brand-copy">
 			<div class="sidebar-brand-name">Alcast Hedge</div>
 			<div class="sidebar-brand-sub">Hedge Control Platform</div>
 		</div>
@@ -114,7 +124,7 @@
 			<div class="sidebar-section-label">{section.label}</div>
 			<nav class="sidebar-nav">
 				{#each section.items as item (item.key)}
-					<a class="sb-item" class:active={isActive(item.href)} href={item.href} data-label={item.label}>
+					<a class="sb-item" class:active={isActive(item.href)} href={item.href} data-label={item.label} title={collapsed ? item.label : undefined}>
 						<Icon name={item.icon}/>
 						<span>{item.label}</span>
 						{#if item.badge}
@@ -129,8 +139,8 @@
 
 	<div class="sb-foot">
 		<div class="sb-foot-avatar">{initials}</div>
-		<div style="min-width: 0;">
-			<div class="sb-foot-name">{userName}</div>
+		<div class="sb-foot-meta">
+			<div class="sb-foot-name">{safeUserName}</div>
 			<div class="sb-foot-role">{displayRole}</div>
 			<button type="button" class="btn-link tiny" onclick={onLogout}>Sair</button>
 		</div>

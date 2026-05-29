@@ -139,6 +139,15 @@ describe('login page — Clerk SDK surface', () => {
 		expect(source).not.toMatch(/fetch\([^)]*\/auth\/session/);
 	});
 
+	it('keeps Clerk path-routing substeps on the login surface', () => {
+		const catchAllSource = readFileSync(
+			resolve(ROUTES, '(public)', 'login', '[...rest]', '+page.svelte'),
+			'utf8',
+		);
+		expect(catchAllSource).toContain("import LoginPage from '../+page.svelte'");
+		expect(catchAllSource).toContain('<LoginPage />');
+	});
+
 	it('loads the Clerk UI bundle before mounting prebuilt components', () => {
 		expect(clerkSource).toContain('@clerk/clerk-js@6/dist/clerk.browser.js');
 		expect(clerkSource).toContain('@clerk/ui@1/dist/ui.browser.js');
@@ -170,6 +179,15 @@ describe('sign-up page — Clerk SDK surface', () => {
 		expect(source).toContain('clerk.mountSignUp');
 		expect(source).toContain('authStore.establishSession');
 		expect(source).not.toMatch(/fetch\([^)]*\/auth\/session/);
+	});
+
+	it('keeps Clerk path-routing substeps on the sign-up surface', () => {
+		const catchAllSource = readFileSync(
+			resolve(ROUTES, '(public)', 'sign-up', '[...rest]', '+page.svelte'),
+			'utf8',
+		);
+		expect(catchAllSource).toContain("import SignUpPage from '../+page.svelte'");
+		expect(catchAllSource).toContain('<SignUpPage />');
 	});
 });
 

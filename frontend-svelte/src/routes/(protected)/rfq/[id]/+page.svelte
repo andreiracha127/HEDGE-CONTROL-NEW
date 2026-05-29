@@ -13,6 +13,7 @@
 	import { client } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
+	import { displayActor, safeBusinessText, stateBadge } from '$lib/alcast/presentation';
 	let { data } = $props();
 	const optionalData = $derived(data as Record<string, any>);
 	const rfqs = $derived(data.rfqs);
@@ -30,7 +31,7 @@
 	const canAwardRfq = $derived(canManageRfq && rfq.state === 'QUOTED' && Boolean(data.canAwardRfq));
 	const actionableQuotes = $derived(quotes.filter((q) => q.status !== 'pending').length);
 	const pendingQuotes = $derived(quotes.filter((q) => q.status === 'pending').length);
-	const awardVerdict = $derived(canAwardRfq ? 'Ready to award' : rfq.state === 'QUOTED' ? 'Needs eligible quote' : `State ${rfq.state}`);
+	const awardVerdict = $derived(canAwardRfq ? 'Pronta para adjudicação' : rfq.state === 'QUOTED' ? 'Cotação elegível pendente' : stateBadge(rfq.state).label);
 	const awardVerdictKind = $derived(canAwardRfq ? 'pos' : rfq.state === 'QUOTED' ? 'warn' : 'neutral');
 	const headerMeta = $derived([
 		rfq.commodity,
@@ -42,7 +43,7 @@
 		stateEvents.map((event) => ({
 			label: eventWhat(event),
 			time: eventWhen(event),
-			actor: String(event.user_id ?? event.triggering_counterparty_id ?? event.trigger ?? 'Sistema'),
+			actor: displayActor(event.user_id ?? event.triggering_counterparty_id ?? event.trigger, 'Sistema'),
 			kind: eventKind(event),
 		})),
 	);
@@ -61,13 +62,13 @@
 	}
 
 	function eventWhat(event: Record<string, any>): string {
-		if (event.reason) return event.reason;
-		if (event.from_state) return `${event.from_state} → ${event.to_state}`;
-		return `RFQ ${event.to_state}`;
+		if (event.reason) return safeBusinessText(event.reason, 'Evento registrado');
+		if (event.from_state) return `${stateBadge(event.from_state).label} → ${stateBadge(event.to_state).label}`;
+		return `RFQ ${stateBadge(event.to_state).label}`;
 	}
 
 	function errorDetail(detail: unknown): string {
-		return typeof detail === 'string' ? detail : 'erro desconhecido';
+		return typeof detail === 'string' ? safeBusinessText(detail, 'não foi possível concluir a ação') : 'não foi possível concluir a ação';
 	}
 
 	async function handleActionResult(apiError: { detail?: unknown } | undefined, success: string) {
@@ -115,8 +116,8 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="RFQ award cockpit"
-		title={rfq.id}
+		eyebrow="Adjudicação de RFQ"
+		title={rfq.rfq}
 		subtitle={`${rfq.commodity} · ${rfq.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : rfq.intent === 'SPREAD' ? 'Spread' : 'Posição global'}`}
 		meta={headerMeta}
 		actions={[
@@ -137,7 +138,7 @@
 			</div>
 
 			<Card
-				title="Quote ladder"
+				title="Ranking de cotações"
 				sub="Ranking executável de preços, validade e elegibilidade"
 				noPad
 			>
@@ -167,7 +168,7 @@
 								<td class="strong">
 									{q.cp}
 									{#if isBest}
-										<Badge kind="pos">Best executable</Badge>
+										<Badge kind="pos">Melhor executável</Badge>
 									{/if}
 								</td>
 								<td class="num strong">{q.price != null ? q.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
@@ -194,7 +195,7 @@
 									<EmptyState
 										icon="rfq"
 										title="Nenhuma cotação carregada"
-										message="A ladder será preenchida quando as contrapartes retornarem preços executáveis."
+										message="As cotações aparecerão quando as contrapartes retornarem preços executáveis."
 									/>
 								</td>
 							</tr>
@@ -206,7 +207,7 @@
 			<div class="grid-2">
 				<Card title="Resumo da operação">
 					<dl class="kv">
-						<dt>RFQ</dt><dd class="mono">{rfq.id}</dd>
+						<dt>RFQ</dt><dd>{rfq.rfq}</dd>
 						<dt>Intenção</dt><dd>{rfq.intent === 'COMMERCIAL_HEDGE' ? 'Hedge comercial' : rfq.intent === 'SPREAD' ? 'Spread' : 'Posição global'}</dd>
 						<dt>Tipo</dt><dd>{rfq.instrument_type ?? rfq.product_type ?? '—'}</dd>
 						<dt>Lado</dt><dd><DirectionBadge dir={rfq.direction}/></dd>
@@ -240,19 +241,19 @@
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
 			<Card noPad>
 				<DecisionDossier
-					title="Award dossier"
+					title="Dossiê de adjudicação"
 					verdict={awardVerdict}
 					verdictKind={awardVerdictKind}
 					items={[
-						{ label: 'Best quote', value: best?.price != null ? best.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' },
-						{ label: 'Eligible quotes', value: actionableQuotes },
-						{ label: 'Maker-checker', value: canManageRfq ? 'Risk Manager' : 'Restricted' },
+						{ label: 'Melhor cotação', value: best?.price != null ? best.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—' },
+						{ label: 'Cotações elegíveis', value: actionableQuotes },
+						{ label: 'Alçada', value: canManageRfq ? 'Risk Manager' : 'Restrita' },
 						{ label: 'Notional', value: best?.price != null ? `US$ ${(rfq.qty * best.price).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}` : '—' },
 					]}
 				/>
 			</Card>
 
-			<Card title="Execution timeline" sub="Trilha completa de auditoria">
+			<Card title="Linha do tempo" sub="Trilha completa de auditoria">
 				<ExecutionTimeline events={timelineEvents} emptyTitle="Sem eventos de estado registrados"/>
 			</Card>
 

@@ -8,6 +8,7 @@
 	import Icon from '$lib/components/alcast/Icon.svelte';
 	import Kpi from '$lib/components/alcast/Kpi.svelte';
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import { displayActor, safeBusinessText, stateBadge } from '$lib/alcast/presentation';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 
@@ -54,23 +55,6 @@
 		return 'neutral';
 	}
 
-	const STATUS_LABELS: Record<ApprovalStatus, string> = {
-		pending: 'Pendente',
-		approved: 'Aprovada',
-		rejected: 'Rejeitada',
-		expired: 'Expirada',
-		consumed: 'Consumida',
-		superseded: 'Substituída',
-	};
-
-	function statusLabel(status: ApprovalStatus): string {
-		return STATUS_LABELS[status] ?? status;
-	}
-
-	function roleLabel(role: 'risk_manager' | 'auditor'): string {
-		return role === 'auditor' ? 'Auditor' : 'Gestor de risco';
-	}
-
 	function barColor(approval: Approval): string {
 		if (approval.status === 'approved' || approval.status === 'consumed') return 'var(--pos)';
 		if (approval.status === 'rejected' || approval.status === 'expired') return 'var(--neg)';
@@ -83,7 +67,7 @@
 			deal_award: 'Adjudicação de RFQ',
 			hedge_contract_settle: 'Liquidação de contrato',
 		};
-		return labels[value] ?? value;
+		return labels[value] ?? safeBusinessText(value, 'Ação operacional');
 	}
 
 	function requiredApproverRole(mutationType: string): 'risk_manager' | 'auditor' {
@@ -99,7 +83,7 @@
 			notional_usd: 'Notional',
 			settlement_amount_usd: 'Liquidação',
 		};
-		return labels[value] ?? value;
+		return labels[value] ?? safeBusinessText(value, 'Alçada');
 	}
 
 	function money(value: string | number): string {
@@ -119,7 +103,7 @@
 	}
 
 	function errorDetail(detail: unknown): string {
-		return typeof detail === 'string' ? detail : 'erro desconhecido';
+		return typeof detail === 'string' ? safeBusinessText(detail, 'não foi possível processar a decisão') : 'não foi possível processar a decisão';
 	}
 
 	async function grant(id: string) {
@@ -162,9 +146,9 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Maker-checker"
+		eyebrow="Governança"
 		title="Aprovações"
-		subtitle={`Workflow de aprovações pendentes · ${pendingApprovals.length} item${pendingApprovals.length === 1 ? '' : 's'} aguardando ação`}
+		subtitle={`Fila de aprovações pendentes · ${pendingApprovals.length} item${pendingApprovals.length === 1 ? '' : 's'} aguardando ação`}
 		meta={[`${approvals.length} carregada${approvals.length === 1 ? '' : 's'}`, `${actionableApprovals.length} acionável${actionableApprovals.length === 1 ? '' : 'is'} pelo perfil`, `${expiringSoon} vencendo em 24h`]}
 		actions={[
 			{ label: 'Atualizar', icon: 'refresh', variant: 'secondary', onclick: () => invalidateAll() },
@@ -174,7 +158,7 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi label="Pendentes" value={String(pendingApprovals.length)} delta={`${expiringSoon} vencendo em 24h`} deltaKind={expiringSoon > 0 ? 'neg' : 'flat'}/>
 		<Kpi label="Maior alçada" value={money(highestThreshold)} delta="limite solicitado"/>
-		<Kpi label="Carregadas" value={String(approvals.length)} delta="total carregado"/>
+		<Kpi label="Carregadas" value={String(approvals.length)} delta="fila de aprovações"/>
 		<Kpi label="Permissão" value={canAct ? 'Ativa' : 'Restrita'} delta={`${actionableApprovals.length} acionável(is) pelo perfil`} deltaKind={canAct ? 'pos' : 'neg'}/>
 	</div>
 
@@ -183,7 +167,7 @@
 			<EmptyState
 				icon="shieldCheck"
 				title="Nenhuma aprovação pendente"
-				message="Quando uma mutação exceder alçada ou exigir maker-checker, o dossiê aparecerá aqui."
+				message="Quando uma operação exceder alçada ou exigir dupla aprovação, ela aparecerá aqui."
 				actionLabel="Atualizar"
 				onAction={() => invalidateAll()}
 			/>
@@ -191,11 +175,12 @@
 	{:else}
 		<div class="stack gap-3">
 			{#each approvals as approval (approval.id)}
+				{@const approvalState = stateBadge(approval.status)}
 				<div class="card approval-decision-card" style="border-left-color: {barColor(approval)};">
 					<div style="align-self: stretch; background: {barColor(approval)}; border-radius: 2px;"></div>
 					<div class="approval-copy">
 						<div class="row gap-3" style="margin-bottom: 4px;">
-							<Badge kind={badgeKind(approval.status)} dot>{statusLabel(approval.status)}</Badge>
+							<Badge kind={approvalState.kind} dot>{approvalState.label}</Badge>
 							<span class="mono" style="font-size: 11px; color: var(--muted);">{approval.id}</span>
 							<span style="font-size: 11px; color: var(--muted);">· {thresholdLabel(approval.threshold_dimension)}</span>
 						</div>
@@ -204,7 +189,7 @@
 							{money(approval.threshold_at_request)} solicitado · limite {money(approval.threshold_config_value)}
 						</div>
 						<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">
-							Solicitado por {approval.requested_by} · expira {dateTime(approval.expires_at)}
+							Solicitado por {displayActor(approval.requested_by)} · expira {dateTime(approval.expires_at)}
 						</div>
 						{#if rejecting === approval.id}
 							<div class="row gap-2" style="margin-top: 10px;">
@@ -224,11 +209,11 @@
 					<div class="approval-dossier">
 						<DecisionDossier
 							title="Dossiê de decisão"
-							verdict={approval.status === 'pending' && canActOn(approval) ? 'Pronta para decisão' : statusLabel(approval.status)}
+							verdict={approval.status === 'pending' && canActOn(approval) ? 'Pronta para decisão' : stateBadge(approval.status).label}
 							verdictKind={approval.status === 'pending' && canActOn(approval) ? 'warn' : badgeKind(approval.status)}
 							items={[
-								{ label: 'Função exigida', value: roleLabel(requiredApproverRole(approval.mutation_type)) },
-								{ label: 'Solicitado', value: money(approval.threshold_at_request) },
+								{ label: 'Perfil requerido', value: requiredApproverRole(approval.mutation_type) === 'auditor' ? 'Auditor' : 'Risk Manager' },
+								{ label: 'Valor solicitado', value: money(approval.threshold_at_request) },
 								{ label: 'Limite configurado', value: money(approval.threshold_config_value) },
 								{ label: 'Expira em', value: dateTime(approval.expires_at) },
 							]}

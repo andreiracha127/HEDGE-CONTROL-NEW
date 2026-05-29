@@ -89,10 +89,10 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Cash control"
+		eyebrow="Controle de caixa"
 		title="Fluxo de caixa projetado"
 		subtitle="Liquidações financeiras de derivativos, concentração e integração operacional."
-		meta={[`${cashflow.length} evento(s)`, `Net 90d ${fmtUsd(projectedNet90d)}`, nextSettlement ? `Próxima ${fmtShortDate(nextSettlement.date)}` : 'Sem liquidação futura']}
+		meta={[`${cashflow.length} evento(s)`, `Saldo 90d ${fmtUsd(projectedNet90d)}`, nextSettlement ? `Próxima ${fmtShortDate(nextSettlement.date)}` : 'Sem liquidação futura']}
 		actions={[
 			{ label: 'Exportar', icon: 'download', variant: 'secondary' },
 			{ label: 'Sincronizar SAP', icon: 'refresh', variant: 'primary' },
@@ -101,9 +101,9 @@
 
 	<div class="institutional-monitoring">
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
-		<Kpi label="Inflow projetado (90d)"  value={fmtUsd(projectedInflow90d)}  delta={`${cashflow90d.filter((c) => c.amount_usd > 0).length} liquidação(ões)`} deltaKind="pos"/>
-		<Kpi label="Outflow projetado (90d)" value={fmtUsd(projectedOutflow90d)} delta={`${cashflow90d.filter((c) => c.amount_usd < 0).length} liquidação(ões)`} deltaKind="neg"/>
-		<Kpi label="Net (90d)"               value={fmtUsd(projectedNet90d)}     delta={`${cashflow90d.length} evento(s)`}                    deltaKind={projectedNet90d >= 0 ? 'pos' : 'neg'}/>
+		<Kpi label="Entradas projetadas (90d)"  value={fmtUsd(projectedInflow90d)}  delta={`${cashflow90d.filter((c) => c.amount_usd > 0).length} liquidação(ões)`} deltaKind="pos"/>
+		<Kpi label="Saídas projetadas (90d)" value={fmtUsd(projectedOutflow90d)} delta={`${cashflow90d.filter((c) => c.amount_usd < 0).length} liquidação(ões)`} deltaKind="neg"/>
+		<Kpi label="Saldo projetado (90d)"               value={fmtUsd(projectedNet90d)}     delta={`${cashflow90d.length} evento(s)`}                    deltaKind={projectedNet90d >= 0 ? 'pos' : 'neg'}/>
 		<Kpi label="Próxima liquidação"      value={fmtShortDate(nextSettlement?.date)} delta={nextSettlement ? `${nextSettlement.desc} · ${nextSettlement.cp}` : 'sem eventos'} deltaKind="flat"/>
 	</div>
 
@@ -137,12 +137,12 @@
 				<EmptyState
 					icon="coins"
 					title="Nenhuma liquidação mensal carregada"
-					message="A timeline será preenchida quando houver eventos de caixa no horizonte selecionado."
+					message="Nenhuma liquidação foi encontrada no horizonte selecionado."
 				/>
 			{/if}
 		</Card>
 
-		<Card title="Concentração por contraparte" sub="Inflow projetado · 90 dias">
+		<Card title="Concentração por contraparte" sub="Entradas projetadas · 90 dias">
 			{#if cpConcentration.length}
 				<div class="stack" style="gap: 8px;">
 					{#each cpConcentration as r (r.cp)}
@@ -159,13 +159,13 @@
 				<div class="divider"></div>
 				<div class="row gap-2" style="font-size: 11.5px;">
 					<Badge kind={cpConcentration[0]?.pct > 50 ? 'warn' : 'pos'} dot>Concentração</Badge>
-					<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem inflows no horizonte'}</span>
+					<span style="color: var(--muted);">{cpConcentration[0] ? `${cpConcentration[0].pct.toFixed(1)} % do fluxo · ${cpConcentration[0].cp}` : 'sem entradas no horizonte'}</span>
 				</div>
 			{:else}
 				<EmptyState
 					icon="users"
 					title="Sem concentração no horizonte"
-					message="Nenhum inflow projetado em 90 dias foi carregado para análise por contraparte."
+					message="Nenhuma entrada projetada em 90 dias foi encontrada para análise por contraparte."
 				/>
 			{/if}
 		</Card>
@@ -216,7 +216,7 @@
 							<EmptyState
 								icon="coins"
 								title="Nenhuma liquidação carregada"
-								message="Os eventos de caixa aparecerão aqui quando o backend retornar a projeção."
+								message="Nenhum evento de caixa foi encontrado para os filtros atuais."
 							/>
 						</td>
 					</tr>

@@ -7,6 +7,7 @@ import {
 	type WsEventType,
 	type WsEventMap,
 } from '$lib/api/types/ws-events';
+import { WS_URL } from '$lib/api/base';
 
 export type WsStatus = 'closed' | 'connecting' | 'open' | 'authenticated' | 'error';
 
@@ -43,11 +44,8 @@ class WsStore {
 		this.#intentionalClose = false;
 		this.status = 'connecting';
 
-		const baseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
-		const wsUrl = baseUrl.replace(/^http/, 'ws') + '/ws';
-
 		try {
-			this.#ws = new WebSocket(wsUrl);
+			this.#ws = new WebSocket(WS_URL);
 		} catch {
 			this.status = 'error';
 			this.#scheduleReconnect();

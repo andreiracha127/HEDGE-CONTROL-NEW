@@ -4,7 +4,7 @@
 		| 'coins' | 'chart' | 'scale' | 'globe' | 'shieldCheck' | 'bell'
 		| 'search' | 'plus' | 'chevronDown' | 'chevronRight' | 'filter'
 		| 'download' | 'refresh' | 'more' | 'up' | 'down' | 'settings'
-		| 'bolt' | 'externalLink' | 'arrowLeft' | 'arrowRight' | 'lock'
+		| 'bolt' | 'externalLink' | 'arrowLeft' | 'arrowRight' | 'menu' | 'lock'
 		| 'info' | 'doc';
 
 	let { name }: { name: IconName } = $props();
@@ -64,6 +64,8 @@
 	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/><path d="M9 12h12"/></svg>
 {:else if name === 'arrowRight'}
 	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/><path d="M15 12H3"/></svg>
+{:else if name === 'menu'}
+	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/></svg>
 {:else if name === 'lock'}
 	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/></svg>
 {:else if name === 'info'}
@@ -71,5 +73,4 @@
 {:else if name === 'doc'}
 	<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/></svg>
 {/if}
-
 

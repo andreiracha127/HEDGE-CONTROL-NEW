@@ -7,6 +7,7 @@
 	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
 	import { notifications } from '$lib/stores/notifications.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { ratingLabel, safeBusinessText } from '$lib/alcast/presentation';
 
 	type CounterpartyType = 'broker' | 'bank_br' | 'customer' | 'supplier';
 
@@ -71,7 +72,7 @@
 		});
 		submitting = false;
 		if (apiError) {
-			notifications.error(`Falha ao criar contraparte: ${apiError.detail ?? 'erro desconhecido'}`);
+			notifications.error(`Falha ao criar contraparte: ${safeBusinessText(apiError.detail, 'não foi possível criar a contraparte')}`);
 			return;
 		}
 		notifications.success(`Contraparte ${created?.name ?? name} criada`);
@@ -81,9 +82,9 @@
 
 <div class="page">
 	<PageHeader
-		eyebrow="Counterparty onboarding"
+		eyebrow="Cadastro de contraparte"
 		title="Nova contraparte"
-		subtitle="Cadastro inicial com KYC, sanctions screening e limite para revisão de Risco."
+		subtitle="Cadastro inicial com KYC, triagem de sanções e limite para revisão de Risco."
 		meta={[TYPE_LABEL[type], `País ${country}`, `Limite ${limitSummary}`]}
 		actions={[
 			{ label: 'Cancelar', variant: 'ghost', href: '/counterparties' },
@@ -168,7 +169,7 @@
 				</div>
 			</Card>
 
-			<Card title="3. Financeiro & compliance" sub="Limites de crédito, classificação e screening de sanções">
+			<Card title="3. Financeiro & compliance" sub="Limites de crédito, classificação e triagem de sanções">
 				<div class="field-grid">
 					<div class="field">
 						<label class="field-label" for="counterparty-payment-terms">Prazo de pagamento</label>
@@ -197,13 +198,13 @@
 					</div>
 					<div class="field">
 						<label class="field-label">
-							Sanctions screening
+							Triagem de sanções
 							<InfoTip>Resultado da varredura OFAC / Bacen / EU sanctions.</InfoTip>
 						</label>
 						<div class="radio-group">
-							<button type="button" class:active={sanctions === 'clear'} onclick={() => (sanctions = 'clear')}>Clear</button>
-							<button type="button" class:active={sanctions === 'flagged'} onclick={() => (sanctions = 'flagged')}>Flagged</button>
-							<button type="button" class:active={sanctions === 'blocked'} onclick={() => (sanctions = 'blocked')}>Blocked</button>
+							<button type="button" class:active={sanctions === 'clear'} onclick={() => (sanctions = 'clear')}>Livre</button>
+							<button type="button" class:active={sanctions === 'flagged'} onclick={() => (sanctions = 'flagged')}>Em revisão</button>
+							<button type="button" class:active={sanctions === 'blocked'} onclick={() => (sanctions = 'blocked')}>Bloqueada</button>
 						</div>
 					</div>
 					<div class="field" style="grid-column: 1 / -1;">
@@ -217,8 +218,8 @@
 		<div class="stack gap-4" style="position: sticky; top: 72px; align-self: start;">
 			<Card noPad>
 				<DecisionDossier
-					title="Onboarding dossier"
-					verdict={onboardingReady ? 'Pronto para enviar' : 'Campos obrigatórios pendentes'}
+					title="Dossiê de cadastro"
+					verdict={onboardingReady ? 'Pronta para envio' : 'Campos obrigatórios pendentes'}
 					verdictKind={onboardingReady ? 'pos' : 'warn'}
 					items={[
 						{ label: 'Tipo', value: TYPE_LABEL[type] },
@@ -226,8 +227,8 @@
 						{ label: 'Abreviação', value: shortName || '—' },
 						{ label: 'País', value: country },
 						{ label: 'Limite', value: limitSummary },
-						{ label: 'Risco', value: riskRating },
-						{ label: 'Sanctions', value: sanctions },
+						{ label: 'Risco', value: ratingLabel(riskRating) },
+						{ label: 'Sanções', value: sanctions === 'clear' ? 'Livre' : sanctions === 'flagged' ? 'Em revisão' : 'Bloqueada' },
 					]}
 				/>
 			</Card>

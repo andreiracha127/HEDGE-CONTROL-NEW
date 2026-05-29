@@ -1,6 +1,6 @@
 import { authStore } from '$lib/stores/auth.svelte';
+import { API_BASE } from './base';
 
-export const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 /**
