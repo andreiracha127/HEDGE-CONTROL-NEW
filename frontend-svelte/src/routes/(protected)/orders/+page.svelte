@@ -85,7 +85,7 @@
 			<div class="tabs-pill">
 				{#each TABS as [k, l, c] (k)}
 					<button type="button" class="tab" class:active={tab === k} onclick={() => (tab = k)}>
-						{l} <span style="color: var(--muted-2); margin-left: 4px;">{c}</span>
+						{l} <span style="color: var(--muted); margin-left: 4px;">{c}</span>
 					</button>
 				{/each}
 			</div>

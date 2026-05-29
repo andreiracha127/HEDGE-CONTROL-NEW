@@ -284,7 +284,7 @@
 	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
 		<Kpi
 			label="Notional"
-			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toFixed(2)}`}
+			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
 			unit="M"
 			delta={`${fmtQty(c)} @ ${fmtPrice(c)}`}
 		/>
@@ -296,7 +296,7 @@
 		/>
 		<Kpi
 			label="P&L desde a contratação"
-			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toFixed(2) + ' %'}
+			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %'}
 			delta={'preço mid ' + fmtNumber(mid, priceDigits(c))}
 			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
 		/>
@@ -379,7 +379,7 @@
 					<div class="row gap-3" style="align-items: baseline;">
 						<span style="font-size: 12px; color: var(--muted);">Δ Preço:</span>
 						<span class="tabular" style="font-size: 14px; font-weight: 500; color: {priceDelta() == null ? 'var(--muted)' : priceDelta()! >= 0 ? 'var(--pos)' : 'var(--neg)'};">
-							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toFixed(priceDigits(c))}`}
+							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}`}
 						</span>
 						<span style="font-size: 12px; color: var(--muted);">·</span>
 						<span style="font-size: 12px; color: var(--muted);">MTM:</span>
@@ -530,7 +530,7 @@
 						{@const dDay = mtmDelta(row, i)}
 						<tr>
 							<td>{fmtDate(row.date ?? row.as_of_date ?? row.created_at)}</td>
-							<td class="num tabular">{p == null ? '—' : p.toFixed(priceDigits(c))}</td>
+							<td class="num tabular">{p == null ? '—' : p.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
 							<td class="num tabular strong" style="color: {m == null || m >= 0 ? 'var(--pos)' : 'var(--neg)'};">
 								{fmtUsd(m)}
 							</td>

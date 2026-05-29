@@ -173,7 +173,7 @@
 								</td>
 								<td class="num strong">{q.price != null ? q.price.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '—'}</td>
 								<td class="num" style="color: {q.spread === 0 ? 'var(--pos)' : 'var(--ink-2)'};">
-									{q.spread != null ? (q.spread === 0 ? '—' : '+' + q.spread.toFixed(2)) : '—'}
+									{q.spread != null ? (q.spread === 0 ? '—' : '+' + q.spread.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })) : '—'}
 								</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.valid ?? '—'}</td>
 								<td style="font-size: 12px; color: var(--muted);">{q.received ?? '—'}</td>
