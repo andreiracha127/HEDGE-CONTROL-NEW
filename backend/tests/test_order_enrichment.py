@@ -1,7 +1,5 @@
 """Tests for Order enrichment + SoPoLink — component 1.2."""
 
-from uuid import uuid4
-
 
 def _create_so(client, **overrides):
     data = {"price_type": "fixed", "quantity_mt": 100.0, **overrides}
@@ -30,10 +28,13 @@ def test_create_so_with_new_fields(client):
 
 
 def test_create_po_with_counterparty(client):
-    # Create a counterparty first
+    # After W1, a Purchase Order's counterparty is a commercial supplier;
+    # orders.counterparty_id FK → commercial_partners.id.
     cp = client.post(
-        "/counterparties", json={"type": "supplier", "name": "Sup1", "country": "USA"}
+        "/commercial-partners",
+        json={"kind": "supplier", "name": "Sup1", "country": "USA"},
     )
+    assert cp.status_code == 201, cp.text
     cp_id = cp.json()["id"]
     r = _create_po(client, counterparty_id=cp_id)
     assert r.status_code == 201

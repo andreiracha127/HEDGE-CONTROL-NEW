@@ -622,6 +622,21 @@ class TestRouteCoverageStatic:
         ("PATCH", "/counterparties/{counterparty_id}"): "covered institutional mutation",
         ("DELETE", "/counterparties/{counterparty_id}"): "covered institutional mutation",
         ("POST", "/counterparties/{counterparty_id}/kyc-status"): "covered institutional mutation",
+        # W1: commercial partner domain (customer/supplier decoupled from hedge counterparties)
+        ("POST", "/commercial-partners"): "covered institutional mutation",
+        ("PATCH", "/commercial-partners/{commercial_partner_id}"): "covered institutional mutation",
+        (
+            "DELETE",
+            "/commercial-partners/{commercial_partner_id}",
+        ): "covered institutional mutation",
+        (
+            "POST",
+            "/commercial-partners/{commercial_partner_id}/kyc-status",
+        ): "covered institutional mutation",
+        (
+            "PATCH",
+            "/commercial-partners/{commercial_partner_id}/credit",
+        ): "covered institutional mutation",
         ("POST", "/orders/sales"): "covered institutional mutation",
         ("POST", "/orders/purchase"): "covered institutional mutation",
         ("POST", "/orders/links"): "covered institutional mutation",

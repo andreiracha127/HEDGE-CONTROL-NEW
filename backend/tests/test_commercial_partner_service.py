@@ -187,7 +187,7 @@ def test_service_approve_credit_customer_decimal_roundtrip():
 
     with SessionLocal() as session:
         cp = _new_partner(session, kind=CommercialPartnerKind.customer)
-        cp2, changed, previous, new_values = CommercialPartnerService.approve_credit(
+        cp2, changed, _previous, _new_values = CommercialPartnerService.approve_credit(
             session, cp, {"credit_limit": Decimal("12345.67"), "credit_currency": "USD"}
         )
         session.refresh(cp2)
@@ -238,3 +238,38 @@ def test_router_create_and_get_roundtrip(client, auth_as):
 
     got = client.get(f"/commercial-partners/{body['id']}")
     assert got.status_code == 200
+
+
+def test_credit_decimal_is_exact_through_api(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post(
+        "/commercial-partners",
+        json={"kind": "customer", "name": "Decimal Co", "country": "BRA"},
+    ).json()["id"]
+    resp = client.patch(
+        f"/commercial-partners/{cp_id}/credit",
+        json={"credit_limit": "12345.67", "credit_currency": "USD"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.67")  # exact, no float drift
+
+
+def test_credit_approved_emits_audit_event(client, auth_as, session):
+    from app.models.audit import AuditEvent
+
+    auth_as("risk_manager")
+    cp_id = client.post(
+        "/commercial-partners",
+        json={"kind": "supplier", "name": "Audit Co", "country": "BRA"},
+    ).json()["id"]
+    resp = client.patch(
+        f"/commercial-partners/{cp_id}/credit",
+        json={"approved_value": "999.99", "approved_currency": "USD"},
+    )
+    assert resp.status_code == 200, resp.text
+    events = (
+        session.query(AuditEvent)
+        .filter(AuditEvent.event_type == "commercial_partner_credit_approved")
+        .all()
+    )
+    assert len(events) >= 1
