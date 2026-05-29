@@ -4,7 +4,7 @@
 
 **Goal:** Amend the constitutional source of truth (`docs/governance.md`, with a consistency check on `docs/systemconstitucion.md`) to encode the commercial-partner / hedge-counterparty separation and the re-targeted KYC model, so that downstream implementation waves (W1–W6) have an authoritative contract to conform to.
 
-**Architecture:** Docs-only constitutional amendment. The AUTHORIZATION MATRIX gains a second counterparty domain (`commercial_partners`); the "Counterparty KYC gate (Pilot Hard Blocker 1)" section is split into a **hedge sanctions gate** (RFQ admission re-targeted from `kyc_status` to requiring a recorded `clear` sanctions screening) and a **commercial partner KYC + order gate** (new fail-closed hard block on order creation), plus new subsections governing sanctions screening, LEI validation, and credit/terms. There is no code in this wave; verification is internal-consistency + stale-reference sweep + the repo's Codex PR review.
+**Architecture:** Docs-only constitutional amendment. The AUTHORIZATION MATRIX gains a second counterparty domain (`commercial_partners`); the "Counterparty KYC gate (Pilot Hard Blocker 1)" section is split into a **hedge sanctions gate** (RFQ admission re-targeted from `kyc_status` to requiring an effective `clear` — a clear screening or a risk_manager adjudication) and a **commercial partner KYC + order gate** (new fail-closed hard block on order creation), plus new subsections governing sanctions screening, LEI validation, and credit/terms. There is no code in this wave; verification is internal-consistency + stale-reference sweep + the repo's Codex PR review.
 
 **Tech Stack:** Markdown (`docs/governance.md`, `docs/systemconstitucion.md`); `git`; `Grep` for consistency sweeps.
 
@@ -19,7 +19,7 @@
 > This plan was executed, then AMENDED during Codex review absorption.
 > **`docs/governance.md` is authoritative** over any inline "Replace with:"
 > prose below. Binding deltas that supersede the original blocks:
-> 1. **Hedge RFQ gate admits ONLY a recorded `clear`** (denies `blocked`,
+> 1. **Hedge RFQ gate admits ONLY an effective `clear`** (denies `blocked`,
 >    `flagged`, AND unscreened-default) — NOT "deny only `blocked`". The 3
 >    RFQ events are `rfq_*_rejected_sanctions_not_cleared` (NOT
 >    `*_sanctions_blocked`). The **commercial** order gate stays
@@ -34,7 +34,7 @@
 >    `sanctions_status`→unscreened on both domains — no carried
 >    `approved`/default-`clear` without screening evidence.
 > 6. **`SanctionsStatus` gains an explicit `unscreened` member** (default,
->    NOT `clear`); the gate admits only a recorded `clear`.
+>    NOT `clear`); the gate admits only an effective `clear` (screening or adjudication).
 > 7. **Adjudication path** — risk_manager overrides a `flagged` via
 >    `POST {id}/adjudicate-sanctions`, writing an immutable
 >    `sanctions_adjudications` row that supersedes the screening without
@@ -592,8 +592,9 @@ Gate scope (binding): the order-creation paths — Purchase Order create
     is `pending`, so a never-approved partner is gated out.
   - **Sanctions admission**: `sanctions_status != blocked` (a `clear` or
     `flagged` partner passes the sanctions leg; `blocked` denies). Note
-    that `kyc_status == approved` already implies a recorded `clear`
-    screening per the transition invariant above, so the two legs are
+    that `kyc_status == approved` already implies an effective `clear`
+    (a clear screening OR a risk_manager adjudication) per the transition
+    invariant above, so the two legs are
     consistent and the `!= blocked` leg additionally catches a partner
     that WAS approved but has since been re-screened to `blocked`.
 

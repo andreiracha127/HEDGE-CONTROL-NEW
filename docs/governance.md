@@ -617,8 +617,9 @@ Gate scope (binding): the order-creation paths — Purchase Order create
     is `pending`, so a never-approved partner is gated out.
   - **Sanctions admission**: `sanctions_status != blocked` (a `clear` or
     `flagged` partner passes the sanctions leg; `blocked` denies). Note
-    that `kyc_status == approved` already implies a recorded `clear`
-    screening per the transition invariant above, so the two legs are
+    that `kyc_status == approved` already implies an effective `clear`
+    (a clear screening OR a risk_manager adjudication) per the transition
+    invariant above, so the two legs are
     consistent and the `!= blocked` leg additionally catches a partner
     that WAS approved but has since been re-screened to `blocked`.
 

@@ -156,7 +156,7 @@ Maps to the repo's amendment → dispatch → implementation protocol. Each wave
 |------|-------|------------|
 | **W0** | Governance amendment (docs) — encodes D1–D6, RBAC, gates, pilot re-map | — |
 | **W1** | Data model + migration + `commercial_partner_service` CRUD + routes + RBAC (no external calls) | W0 |
-| **W2** | Sanctions screening service (OpenSanctions hosted) + endpoints + scheduled re-screen + status lifecycle (`unscreened` default, adjudication path) — must precede any gate that requires a recorded `clear` | W1 |
+| **W2** | Sanctions screening service (OpenSanctions hosted) + endpoints + scheduled re-screen + status lifecycle (`unscreened` default, adjudication path) — must precede any gate that requires an effective `clear` | W1 |
 | **W3** | Commercial order gate + kind validation (PO→supplier, SO→customer); RFQ gate re-target (kyc → sanctions, recorded-`clear`); **and re-align the deployed HB-3 `risk_flags` step** (`finance_pipeline_service`) off hedge `kyc_status` onto the two-domain compliance model — depends on W2 so partners can reach approved+clear and hedge statuses are populated | W2 |
 | **W4** | LEI validation service (GLEIF) + endpoint | W1 |
 | **W5** | Frontend: three registration surfaces + order-form fix + compliance panels + schema regen | W1–W4 |
