@@ -127,7 +127,7 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://hc:hc@localhost:5433/hedgecontrol
         run: |
-          python -m alembic current | grep -F "048_order_external_reference (head)"
+          python -m alembic current | grep -F "049_commercial_partners_foundation (head)"
 
   e2e-smoke:
     name: "E2E: Smoke (pytest journey + RBAC)"
@@ -199,7 +199,7 @@ jobs:
       - name: Run app migrations for E2E stack
         run: |
           docker compose exec -T backend python -m alembic upgrade head
-          docker compose exec -T backend python -m alembic current | grep -F "048_order_external_reference (head)"
+          docker compose exec -T backend python -m alembic current | grep -F "049_commercial_partners_foundation (head)"
 
       - name: Check schema drift
         working-directory: frontend-svelte
@@ -302,7 +302,7 @@ jobs:
       - name: Run app migrations for full E2E stack
         run: |
           docker compose exec -T backend python -m alembic upgrade head
-          docker compose exec -T backend python -m alembic current | grep -F "048_order_external_reference (head)"
+          docker compose exec -T backend python -m alembic current | grep -F "049_commercial_partners_foundation (head)"
 
       - name: Build and serve frontend
         working-directory: frontend-svelte
