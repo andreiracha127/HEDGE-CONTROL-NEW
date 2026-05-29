@@ -240,10 +240,16 @@ def test_counterparty_get_list_trader_sees_empty(client, auth_as, session) -> No
     _insert_counterparty(session, CounterpartyType.bank_br, "bank list")
     auth_as("trader")
 
-    response = client.get("/counterparties")
-
-    assert response.status_code == 200
-    assert response.json()["items"] == []
+    # No filter, and an explicit (now hedge-only-impossible) type filter both
+    # return empty — trader has no hedge-counterparty access, period.
+    for url in (
+        "/counterparties",
+        "/counterparties?type=customer",
+        "/counterparties?type=broker",
+    ):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.json()["items"] == []
 
 
 def test_counterparty_get_by_id_trader_404s_broker(client, auth_as, session) -> None:
