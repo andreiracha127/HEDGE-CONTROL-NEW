@@ -687,6 +687,35 @@ is necessary for the match query leaves the platform; the design accepts
 that the hosted API receives the partner name/jurisdiction/identifiers for
 the match (a consequence of the hosted-provider decision).
 
+LEI validation governance (binding):
+
+LEI (Legal Entity Identifier, ISO 17442) validation applies to
+`commercial_partners` only (international-trade safety for customers and
+suppliers). LEI is OPTIONAL per partner (not every domestic entity holds
+one) and is WARN-NOT-BLOCK: an absent, invalid, lapsed, or name-mismatched
+LEI never blocks registration or order creation.
+
+Two-stage validation (binding):
+
+  - Offline checksum: the LEI MUST pass the ISO 17442 / ISO 7064
+    MOD 97-10 checksum (20 alphanumeric characters, last two are the
+    check digits). A failed checksum sets `lei_status = invalid`.
+  - Online lookup: `GET https://api.gleif.org/api/v1/lei-records/{lei}`
+    (the public GLEIF API, no API key). The response yields the
+    registration status (e.g. ISSUED / LAPSED) and the registered legal
+    name. Map registration ISSUED → `lei_status = issued` (treated as
+    valid); LAPSED → `lei_status = lapsed`. Persist the returned legal
+    name in `lei_legal_name` and the check timestamp in `lei_checked_at`.
+
+Name cross-check (advisory): if `lei_legal_name` diverges materially from
+the partner `name`, surface a warning to the caller; do NOT block. The
+divergence is informational for the risk_manager.
+
+The GLEIF lookup is decoupled from any gate (like screening): it writes
+`lei_status`/`lei_legal_name`/`lei_checked_at` onto the partner; no gate
+hard-blocks on LEI. A GLEIF lookup error sets `lei_status = error` and
+surfaces a warning — it does not fabricate a valid status.
+
 Workflow Approval gate (binding, Pilot Hard Blocker 2):
 
 The platform admits three institutionally consequential mutations
