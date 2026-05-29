@@ -512,10 +512,13 @@ Status transitions (binding):
   it is scheduled for removal in a later migration.)
 
 - A `commercial_partners` transition to `approved` is BLOCKED unless the
-  partner has a recorded sanctions screening with result `clear` (see
-  "Sanctions screening governance"). risk_manager cannot approve a
-  partner that is `flagged` or `blocked`; the flagged case must be
-  adjudicated to `clear` first.
+  partner's effective `sanctions_status` is `clear` — established EITHER by
+  a successful `clear` screening OR by a risk_manager adjudication of a
+  `flagged` result to `clear` (see "Sanctions screening governance" →
+  "Adjudication"). risk_manager cannot approve a partner whose effective
+  `sanctions_status` is `unscreened`, `flagged`, or `blocked`; a `flagged`
+  case must be adjudicated to `clear` first, and a `blocked` case must be
+  remediated and re-screened to `clear` (it cannot be adjudicated away).
 
 - Every transition MUST emit an audit event of type
   `commercial_partner_kyc_status_changed` with payload
@@ -531,7 +534,8 @@ Status transitions (binding):
     not yet been KYC-approved. Default state on creation. Order gate
     denies.
   - `approved` — KYC verification complete; risk_manager has signed
-    off (requires a recorded `clear` sanctions screening). Only
+    off (requires effective `sanctions_status` = `clear`, by a `clear`
+    screening or a risk_manager adjudication of a `flagged` result). Only
     admit-state for the order gate's kyc leg.
   - `expired` — previously approved commercial partner whose KYC has
     lapsed (e.g. annual renewal cycle missed). Order gate denies. Path
@@ -751,8 +755,10 @@ is necessary for the match query leaves the platform; the design accepts
 that the hosted API receives the partner name/jurisdiction/identifiers for
 the match (a consequence of the hosted-provider decision).
 
-Adjudication (binding): a `flagged` (or otherwise non-`clear`) result is
-not permanently terminal. risk_manager MAY adjudicate it via a dedicated
+Adjudication (binding): a `flagged` result — a sub-threshold potential
+match, NOT a `blocked` hard hit — is not permanently terminal.
+risk_manager MAY adjudicate ONLY a `flagged` result (to `clear` if a false
+positive, or to `blocked` if confirmed) via a dedicated
 endpoint (`POST {id}/adjudicate-sanctions` on the relevant router) that
 records an APPEND-ONLY, immutable `sanctions_adjudications` artifact
 `{partner_type, partner_id, superseded_screening_id, decision

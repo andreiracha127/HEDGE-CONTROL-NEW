@@ -73,7 +73,7 @@ Called in order creation (PO/SO) in `order_service`:
 | lei_legal_name | str(200) | nullable (from GLEIF) |
 | lei_checked_at | datetime | nullable |
 | kyc_status | Enum(`pending`,`approved`,`expired`,`rejected`) | default `pending` (fail-closed) |
-| sanctions_status | Enum(`unscreened`,`clear`,`flagged`,`blocked`) | default `unscreened` (NOT `clear`); screening writes `clear`/`flagged`/`blocked`. A partner cannot reach `kyc_status=approved` without a recorded `clear` screening (§6), so a never-screened (`unscreened`) partner is gated out by both the kyc check and the gate's clear requirement |
+| sanctions_status | Enum(`unscreened`,`clear`,`flagged`,`blocked`) | default `unscreened` (NOT `clear`); screening writes `clear`/`flagged`/`blocked`. A partner cannot reach `kyc_status=approved` without an effective `clear` (a `clear` screening OR a risk_manager adjudication of a `flagged` result; §6), so an `unscreened` or unresolved-`flagged` partner is gated out |
 | risk_rating | Enum(`low`,`medium`,`high`) | default `medium` |
 | **customer-only** `credit_limit` | Numeric(18,2) Decimal | nullable; CHECK null when kind=supplier |
 | **customer-only** `credit_currency` | str(3) | nullable |
@@ -107,7 +107,7 @@ Called in order creation (PO/SO) in `order_service`:
 | **risk_manager** | full CRUD + manage screening | identity/contact CRUD; `kyc_status` transitions + credit/terms approval via dedicated flows (NOT generic PATCH); full read |
 | **auditor** | read-only | read-only |
 
-Invariants: `kyc_status → approved` requires a recorded `clear` sanctions screening; credit/terms mutation is risk_manager-only and audited (`commercial_partner_credit_approved`). RBAC tests in `tests/test_rbac_matrix_enforcement.py`.
+Invariants: `kyc_status → approved` requires effective `sanctions_status` = `clear` (a successful `clear` screening OR a risk_manager adjudication of a `flagged` result; a `blocked` must be remediated + re-screened, never adjudicated away); credit/terms mutation is risk_manager-only and audited (`commercial_partner_credit_approved`). RBAC tests in `tests/test_rbac_matrix_enforcement.py`.
 
 ## 7. Services / integration
 

@@ -505,10 +505,12 @@ Replace with:
   it is scheduled for removal in a later migration.)
 
 - A `commercial_partners` transition to `approved` is BLOCKED unless the
-  partner has a recorded sanctions screening with result `clear` (see
-  "Sanctions screening governance"). risk_manager cannot approve a
-  partner that is `flagged` or `blocked`; the flagged case must be
-  adjudicated to `clear` first.
+  partner's effective `sanctions_status` is `clear` — established EITHER by
+  a successful `clear` screening OR by a risk_manager adjudication of a
+  `flagged` result to `clear`. risk_manager cannot approve a partner whose
+  effective `sanctions_status` is `unscreened`, `flagged`, or `blocked`; a
+  `flagged` case must be adjudicated to `clear` first, and a `blocked` case
+  must be remediated and re-screened (it cannot be adjudicated away).
 
 - Every transition MUST emit an audit event of type
   `commercial_partner_kyc_status_changed` with payload
