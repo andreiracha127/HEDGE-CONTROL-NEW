@@ -44,6 +44,18 @@
 >    screening that makes partners admissible.
 > 9. **Pre-FK migration validation** — orders referencing broker/bank rows
 >    HALT the migration with a remediation report (no silent orphaning).
+> 10. **Identity-field re-screen** — PATCHing a screening-relevant identity
+>     field (name/country/tax_id/lei) on an approved/clear partner resets it
+>     fail-closed (re-screen + re-approve).
+> 11. **Hedge gate + adjudication** — hedge RFQ admission accepts effective
+>     `clear` (screening OR adjudication); adjudication is valid only against
+>     the LATEST screening while still `flagged` (cannot override a newer
+>     `blocked`).
+> 12. **`service:sanctions_screening` added to the JWT-pattern invariant**;
+>     the `sanctions_adjudications` table is created in the W1 migration.
+> 13. **Migration validates hedge-side FKs** (RFQ/quote/contract/llm) before
+>     moving customer/supplier rows; **HB-3 `risk_flags` re-align is in W3
+>     scope**; **kind-mismatch refusals emit `order_rejected_kind_mismatch`**.
 
 ## File Structure
 

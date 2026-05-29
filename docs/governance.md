@@ -341,6 +341,15 @@ Authorization invariants:
     the `commercial_partner_kyc_status_changed` /
     `commercial_partner_credit_approved` HMAC-signed audit events.
   - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
+  - Screening-relevant identity fields (`name`, `country`, `tax_id`, `lei`)
+    are the inputs to sanctions screening / KYC. If any of them is PATCHed
+    on a partner whose `kyc_status` is `approved` (or `sanctions_status` is
+    `clear`), the partner is RESET fail-closed — `kyc_status` → `pending`
+    and `sanctions_status` → `unscreened` — and must be re-screened and
+    re-approved before order creation resumes. Stale compliance evidence
+    MUST NOT survive an identity change (the order gate reads stored status,
+    so an un-reset identity edit would otherwise admit orders on evidence
+    that no longer matches the entity).
 - The hedge-counterparty read invisibility for trader is specified in the
   bullet above (empty list / 404 by-id for `{trader}`-only actors). The
   condition is **trader-specific** (NOT "lacks risk_manager") because the
@@ -359,9 +368,9 @@ Authorization invariants:
   including auditor or risk_manager — can delete audit events. The auditor
   role is the read-only oversight layer.
 - Internal-issued service identities (`service:westmetall_ingest`,
-  `service:rfq_outbound`, `service:cashflow_pipeline`) follow the same
-  `actor_sub` JWT pattern as human auth (uniformity established by
-  Cluster 2 backend hardening). `service:webhook_inbound` is explicitly
+  `service:rfq_outbound`, `service:cashflow_pipeline`,
+  `service:sanctions_screening`) follow the same `actor_sub` JWT pattern as
+  human auth (uniformity established by Cluster 2 backend hardening). `service:webhook_inbound` is explicitly
   exempt from this JWT invariant: `/webhooks/whatsapp` preserves the
   provider-authentication protocol at ingress, and
   `service:webhook_inbound` is only the downstream internal audit
@@ -427,9 +436,10 @@ Gate scope (binding):
   `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
   reached through a human-issued route or invoked by the
   `service:rfq_outbound` outbound worker — MUST refuse unless the target
-  hedge counterparty has a recorded sanctions screening whose result is
-  `clear` (this denies `blocked`, `flagged`, AND an unscreened row that
-  carries only a non-recorded default). The W3 dispatch is
+  hedge counterparty's effective `sanctions_status` is `clear` — set by a
+  recorded `clear` screening OR a risk_manager adjudication of a `flagged`
+  result to `clear` (this denies `blocked`, unadjudicated `flagged`, AND an
+  unscreened row that carries only a non-recorded default). The W3 dispatch is
   responsible for sweeping every admission-purpose invocation site
   (the six `assert_kyc_approved` call sites in `rfq_service.py` at
   ~580, 853, 1029, 1297, 1469, 1583) and replacing the guard with the
@@ -660,7 +670,8 @@ Schema (binding):
 
 - A migration IS required for the re-targeted model (this supersedes the
   original HB-1 "no migration" note). The W1 dispatch creates the
-  `commercial_partners` and `sanctions_screenings` tables (+ enums), and
+  `commercial_partners`, `sanctions_screenings`, and `sanctions_adjudications`
+  tables (+ enums), and
   migrates the existing customer/supplier rows out of `counterparties`
   into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
   stays valid). Before the FK repoint, a pre-migration validation
@@ -765,9 +776,14 @@ records an APPEND-ONLY, immutable `sanctions_adjudications` artifact
 (clear|blocked), reason (mandatory, min 8 chars), adjudicating_actor_sub,
 adjudicated_at}` and sets the entity `sanctions_status` to the decision.
 The adjudication NEVER mutates the immutable `sanctions_screenings` row —
-it supersedes it as the source of the current `sanctions_status`. A later
-successful screening supersedes a prior adjudication in turn (latest event
-wins — screening or adjudication — by timestamp). Adjudication is
+it supersedes it as the source of the current `sanctions_status`.
+Adjudication is VALID ONLY against the LATEST screening, and ONLY when that
+latest screening is `flagged` — a `flagged` already superseded by a newer
+`blocked` or `clear` screening CANNOT be adjudicated (this closes the
+loophole where a stale `flagged` is adjudicated to `clear` to override a
+newer `blocked` hard hit). A later successful screening supersedes a prior
+adjudication in turn (latest event wins — screening or adjudication — by
+timestamp). Adjudication is
 risk_manager-only and HMAC-signed (event `sanctions_status_adjudicated`),
 preventing a false-positive `flagged` from permanently blocking RFQ
 admission / commercial KYC approval until the provider itself returns
