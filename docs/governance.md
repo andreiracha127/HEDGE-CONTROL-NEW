@@ -716,6 +716,39 @@ The GLEIF lookup is decoupled from any gate (like screening): it writes
 hard-blocks on LEI. A GLEIF lookup error sets `lei_status = error` and
 surfaces a warning — it does not fabricate a valid status.
 
+Credit and terms governance (binding):
+
+Credit/terms are commercial-domain attributes on `commercial_partners`,
+asymmetric by kind:
+
+  - customer: an approved financial credit limit (`credit_limit`,
+    `credit_currency`) and approved payment conditions
+    (`payment_conditions`). Semantics: the maximum receivable exposure
+    Alcast extends to the customer, plus the approved payment terms.
+  - supplier: an approved value (`approved_value`, `approved_currency`)
+    and approved terms (`approved_terms`). Semantics: the value/terms
+    Alcast is authorized to commit to this supplier.
+
+Precision (binding): all monetary credit/value fields are `Decimal`
+end-to-end (Numeric columns), never `float`. This corrects the legacy
+`credit_limit_usd: float` violation and conforms to the platform precision
+contract.
+
+Authorization (binding): setting or changing any credit/terms field is
+risk_manager-only (trader is refused with HTTP 403, per the AUTHORIZATION
+MATRIX commercial-partner invariants). Every credit/terms mutation emits
+an audit event `commercial_partner_credit_approved` with payload
+`{commercial_partner_id, kind, fields_changed, previous_values,
+new_values, approving_actor_sub}`, HMAC-signed.
+
+Scope boundary (binding): in the current scope credit/terms are RECORDED
+and audited but do NOT gate order creation by utilization — the commercial
+order gate is kyc + sanctions + kind only (see "Commercial partner KYC +
+order gate"). A cumulative-exposure credit-utilization gate (refusing an
+order that would push aggregate open receivable/payable beyond the
+approved limit) is a SEPARATE future amendment; until it lands, no code
+path may silently enforce a utilization block.
+
 Workflow Approval gate (binding, Pilot Hard Blocker 2):
 
 The platform admits three institutionally consequential mutations
