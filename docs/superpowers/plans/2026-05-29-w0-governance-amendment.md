@@ -4,7 +4,7 @@
 
 **Goal:** Amend the constitutional source of truth (`docs/governance.md`, with a consistency check on `docs/systemconstitucion.md`) to encode the commercial-partner / hedge-counterparty separation and the re-targeted KYC model, so that downstream implementation waves (W1–W6) have an authoritative contract to conform to.
 
-**Architecture:** Docs-only constitutional amendment. The AUTHORIZATION MATRIX gains a second counterparty domain (`commercial_partners`); the "Counterparty KYC gate (Pilot Hard Blocker 1)" section is split into a **hedge sanctions gate** (RFQ admission re-targeted from `kyc_status` to `sanctions_status != blocked`) and a **commercial partner KYC + order gate** (new fail-closed hard block on order creation), plus new subsections governing sanctions screening, LEI validation, and credit/terms. There is no code in this wave; verification is internal-consistency + stale-reference sweep + the repo's Codex PR review.
+**Architecture:** Docs-only constitutional amendment. The AUTHORIZATION MATRIX gains a second counterparty domain (`commercial_partners`); the "Counterparty KYC gate (Pilot Hard Blocker 1)" section is split into a **hedge sanctions gate** (RFQ admission re-targeted from `kyc_status` to requiring a recorded `clear` sanctions screening) and a **commercial partner KYC + order gate** (new fail-closed hard block on order creation), plus new subsections governing sanctions screening, LEI validation, and credit/terms. There is no code in this wave; verification is internal-consistency + stale-reference sweep + the repo's Codex PR review.
 
 **Tech Stack:** Markdown (`docs/governance.md`, `docs/systemconstitucion.md`); `git`; `Grep` for consistency sweeps.
 
@@ -13,6 +13,26 @@
 **Scope note:** This is the first of seven waves (W0–W6). It produces a self-contained, mergeable deliverable (an amendment-only PR, matching the repo's established amendment→dispatch→implementation protocol; cf. PR #96 amendment-only precedent). It changes **no** code, so no tests run; the implementation waves carry the code + tests that conform to this amendment.
 
 ---
+
+> ## ⚠️ POST-EXECUTION AMENDMENT (Codex absorption, PR #111)
+>
+> This plan was executed, then AMENDED during Codex review absorption.
+> **`docs/governance.md` is authoritative** over any inline "Replace with:"
+> prose below. Binding deltas that supersede the original blocks:
+> 1. **Hedge RFQ gate admits ONLY a recorded `clear`** (denies `blocked`,
+>    `flagged`, AND unscreened-default) — NOT "deny only `blocked`". The 3
+>    RFQ events are `rfq_*_rejected_sanctions_not_cleared` (NOT
+>    `*_sanctions_blocked`). The **commercial** order gate stays
+>    `sanctions_status != blocked` per the locked decision — unchanged.
+> 2. **`sanctions_screenings.result` is NULL when `status=error`**; entity
+>    `sanctions_status` updates only from the latest SUCCESSFUL screening.
+> 3. **Generic PATCH excludes `kyc_status` + credit/terms for ALL actors**
+>    (incl. risk_manager); they change only via the dedicated audited flows.
+> 4. **New service identity `service:sanctions_screening`** for the
+>    scheduled re-screen mutation (added to the AUTHORIZATION MATRIX).
+> 5. **Migration resets fail-closed** — commercial `kyc_status`→`pending`,
+>    `sanctions_status`→unscreened on both domains — no carried
+>    `approved`/default-`clear` without screening evidence.
 
 ## File Structure
 
@@ -152,9 +172,11 @@ Replace with:
     supplier}); the create payload MUST NOT set `kyc_status` (server
     forces default `pending`) nor any credit/terms field (those require a
     separate risk_manager approval op).
-  - PATCH: trader MAY update identity/contact/LEI-input fields; a trader
-    payload that targets `kyc_status` or any credit/terms field is refused
-    with HTTP 403. risk_manager may patch all fields.
+  - PATCH: the generic PATCH route mutates identity/contact/LEI-input
+    fields ONLY. `kyc_status` and credit/terms are NOT mutable via generic
+    PATCH by ANY actor (including risk_manager) — a payload targeting them
+    is refused with HTTP 403. Those fields change only via the dedicated
+    audited flows (`POST {id}/kyc-status`, `PATCH {id}/credit`).
   - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
 ```
 
@@ -269,12 +291,13 @@ applies to EVERY entity the platform transacts with.
 
 The gate field on the hedge domain is `sanctions_status`
 (`SanctionsStatus` enum, members {clear, flagged, blocked}). The gate
-DENIES only `blocked`. `clear` admits. `flagged` admits (it is an
-informational sub-threshold potential match awaiting risk_manager
-adjudication; adjudication resolves it to `clear` or `blocked`). A hedge
+ADMITS only a recorded `clear` — a `clear` written by an actual
+successful screening. `blocked` denies; `flagged` denies pending
+risk_manager adjudication to `clear`; and an UNSCREENED counterparty (no
+recorded screening) denies. The W1 model MUST NOT leave `sanctions_status`
+at a default `clear` indistinguishable from a screened `clear`. A hedge
 counterparty's `sanctions_status` is set by the sanctions-screening
-lifecycle (see "Sanctions screening governance" below), never defaulted
-to `clear` without a recorded screening.
+lifecycle (see "Sanctions screening governance" below).
 ```
 
 - [ ] **Step 2: Replace the gate-rule body so admission checks sanctions, not kyc**
@@ -307,15 +330,17 @@ Replace with:
   Gate rule: any service-layer code path that creates an
   `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
   reached through a human-issued route or invoked by the
-  `service:rfq_outbound` outbound worker — MUST refuse if the target
-  hedge counterparty's `sanctions_status == blocked`. The W3 dispatch is
+  `service:rfq_outbound` outbound worker — MUST refuse unless the target
+  hedge counterparty has a recorded sanctions screening whose result is
+  `clear` (this denies `blocked`, `flagged`, AND an unscreened row that
+  carries only a non-recorded default). The W3 dispatch is
   responsible for sweeping every admission-purpose invocation site
   (the six `assert_kyc_approved` call sites in `rfq_service.py` at
   ~580, 853, 1029, 1297, 1469, 1583) and replacing the guard with the
   sanctions check (`assert_sanctions_clear`). Refusal is HTTP 422 for
   human-issued requests (or the equivalent application-layer rejection
   for service-driven paths). An audit event of type
-  `rfq_invitation_rejected_sanctions_blocked` MUST be recorded BEFORE
+  `rfq_invitation_rejected_sanctions_not_cleared` MUST be recorded BEFORE
   the rejection response is returned. Audit payload MUST include:
   `counterparty_id`, `sanctions_status_observed`, `requesting_actor_sub`,
   `attempted_purpose` (one of `{rfq_invite, refresh}`), and `rfq_id`
@@ -365,19 +390,20 @@ Replace with:
 
 ```
 - RFQ quote ingestion: inbound quotes from a hedge counterparty whose
-  `sanctions_status` has dropped to `blocked` since the invitation was
+  `sanctions_status` is no longer a recorded `clear` (re-screened to
+  `blocked` or `flagged`) since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
   Service identities above). The gate applies equally to the
   human-issued quote-submission route (`POST
   /rfqs/{rfq_id}/quotes`) and to the LLM-parsed inbound path
   downstream of `webhook_processor`. Audit event
-  `rfq_quote_rejected_sanctions_blocked` with payload shape
+  `rfq_quote_rejected_sanctions_not_cleared` with payload shape
   `{counterparty_id, sanctions_status_observed, rfq_id, inbound_message_id
   (nullable for human-issued path), rejection_path,
   requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
-  parity with `rfq_invitation_rejected_sanctions_blocked` and
-  `rfq_award_rejected_sanctions_blocked`: the human-issued
+  parity with `rfq_invitation_rejected_sanctions_not_cleared` and
+  `rfq_award_rejected_sanctions_not_cleared`: the human-issued
   quote-submission path runs under a `risk_manager` JWT context so
   the actor sub is available exactly as it is on the award path and
   MUST be captured for audit attribution; the inbound/LLM path has
@@ -387,10 +413,10 @@ Replace with:
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
-  awarded quote's hedge counterparty `sanctions_status == blocked` at the
-  moment of award, even if the original invitation was created when the
-  counterparty was clear. Audit event
-  `rfq_award_rejected_sanctions_blocked` with payload
+  awarded quote's hedge counterparty `sanctions_status != clear` (or has
+  no recorded `clear` screening) at the moment of award, even if the
+  original invitation was created when the counterparty was clear. Audit
+  event `rfq_award_rejected_sanctions_not_cleared` with payload
   `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
   requesting_actor_sub}`.
 ```
@@ -483,7 +509,7 @@ Replace with:
 - [ ] **Step 6: Run the stale-reference sweep for the renamed audit events**
 
 Run: `grep -n "rejected_kyc_not_approved\|counterparty_kyc_status_changed\|Counterparty KYC gate" docs/governance.md`
-Expected: zero hits in the gate-scope body (all RFQ events now `*_rejected_sanctions_blocked`; the kyc transition event is `commercial_partner_kyc_status_changed`). Any remaining `*_rejected_kyc_not_approved` hit must be the commercial order gate added in Task 4 (acceptable) — confirm context.
+Expected: zero hits in the gate-scope body (all RFQ events now `*_rejected_sanctions_not_cleared`; the kyc transition event is `commercial_partner_kyc_status_changed`). Any remaining `*_rejected_kyc_not_approved` hit must be the commercial order gate added in Task 4 (acceptable) — confirm context.
 
 - [ ] **Step 7: Commit**
 
@@ -642,9 +668,12 @@ Evidence (binding): every screening invocation persists an append-only,
 immutable `sanctions_screenings` record: `{partner_type
 (commercial|hedge), partner_id, screened_at, provider, algorithm,
 dataset_version, query_hash, top_score, match_count, matches_json, result
-(clear|flagged|blocked), actor_sub, status (success|error),
-error_detail}`. The entity's `sanctions_status` reflects the LATEST
-record's `result`. Screening records are never updated or deleted —
+(clear|flagged|blocked, NULL when status=error), actor_sub, status
+(success|error), error_detail}`. The entity's `sanctions_status` is
+updated ONLY from the latest SUCCESSFUL (status=success) screening's
+`result`; rows with status=error are recorded for audit (with
+`result=NULL`) and never overwrite `sanctions_status`. Screening records
+are never updated or deleted —
 reconstructability requires the full screening history. No PII beyond what
 is necessary for the match query leaves the platform; the design accepts
 that the hosted API receives the partner name/jurisdiction/identifiers for
@@ -839,10 +868,13 @@ Replace with:
   migrates the existing customer/supplier rows out of `counterparties`
   into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
   stays valid), then repoints the `orders` FK to `commercial_partners` and
-  restricts `counterparties` to {broker, bank_br}. The vestigial
-  `counterparties.kyc_status` column is kept by W1 and dropped in a later
-  migration. ENUM lifecycle for fresh Postgres follows the CLAUDE.md rules
-  (explicit `.create()` before `ALTER TABLE`, explicit `CAST(... AS <enum>)`).
+  restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
+  FAIL-CLOSED — commercial `kyc_status` → `pending`, and `sanctions_status`
+  → an unscreened state on BOTH domains — rather than carrying a legacy
+  `approved` / default-`clear` without `sanctions_screenings` evidence. The
+  vestigial `counterparties.kyc_status` column is kept by W1 and dropped in
+  a later migration. ENUM lifecycle for fresh Postgres follows the CLAUDE.md
+  rules (explicit `.create()` before `ALTER TABLE`, explicit `CAST(... AS <enum>)`).
 ```
 
 - [ ] **Step 3: Commit**
@@ -896,7 +928,7 @@ Expected: zero hits, EXCEPT intentional references inside the commercial gate (w
 - [ ] **Step 2: Event-name parity sweep**
 
 Run: `grep -n "_rejected_sanctions_blocked\|_rejected_kyc_not_approved\|order_rejected_kind_mismatch\|commercial_partner_kyc_status_changed\|commercial_partner_credit_approved" docs/governance.md`
-Expected: the three RFQ events are all `*_rejected_sanctions_blocked`; the order gate has `order_rejected_kyc_not_approved`, `order_rejected_sanctions_blocked`, `order_rejected_kind_mismatch`; the kyc transition is `commercial_partner_kyc_status_changed`; the credit event is `commercial_partner_credit_approved`. No orphan `rfq_*_rejected_kyc_not_approved` remains.
+Expected: the three RFQ events are all `*_rejected_sanctions_not_cleared`; the order gate has `order_rejected_kyc_not_approved`, `order_rejected_sanctions_blocked`, `order_rejected_kind_mismatch`; the kyc transition is `commercial_partner_kyc_status_changed`; the credit event is `commercial_partner_credit_approved`. No orphan `rfq_*_rejected_kyc_not_approved` remains.
 
 - [ ] **Step 3: Cross-reference sweep**
 
@@ -962,6 +994,6 @@ Per the repo protocol (review gates as of 2026-05-26): Codex Connector is the so
 
 **2. Placeholder scan** — no "TBD/TODO/handle appropriately". The only deferral is the sanctions score THRESHOLD values, explicitly bound to the W3 dispatch in Task 5 by constitutional decision (ranges given: clear / flagged / blocked), which is correct governance granularity, not a placeholder.
 
-**3. Type/name consistency** — audit event names are consistent across Tasks 3/4/8/10: RFQ events `rfq_{invitation,quote,award}_rejected_sanctions_blocked`; order events `order_rejected_{kyc_not_approved,sanctions_blocked,kind_mismatch}`; transition `commercial_partner_kyc_status_changed`; credit `commercial_partner_credit_approved`. Field names (`sanctions_status`, `kyc_status`, `lei_status`, `credit_limit`, `approved_value`) match the spec §5.1.
+**3. Type/name consistency** — audit event names are consistent across Tasks 3/4/8/10: RFQ events `rfq_{invitation,quote,award}_rejected_sanctions_not_cleared`; order events `order_rejected_{kyc_not_approved,sanctions_blocked,kind_mismatch}`; transition `commercial_partner_kyc_status_changed`; credit `commercial_partner_credit_approved`. Field names (`sanctions_status`, `kyc_status`, `lei_status`, `credit_limit`, `approved_value`) match the spec §5.1.
 
 **Note for the executor:** This wave is docs-only. There is intentionally no `pytest`/`npm` step — verification is the grep sweeps + the end-to-end read (Task 10) + the Codex PR review. Do NOT add code or tests in this wave; W1 carries the model + migration + tests that conform to this amendment.

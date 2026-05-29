@@ -249,14 +249,18 @@ Role combinability (binding):
   is therefore equivalent to "is trader-only", which is the intended
   scope of trader-restriction rules.
 
-Service identities (4 operational + 1 test-only) — split by authentication source:
+Service identities (5 operational + 1 test-only) — split by authentication source:
 
-Internal-issued (3, JWT signed by backend, short-lived TTL ~5min, same
+Internal-issued (4, JWT signed by backend, short-lived TTL ~5min, same
 actor_sub pattern as human authentication):
 
 - `service:westmetall_ingest` — cron-driven market-data ingest
 - `service:rfq_outbound` — outbound RFQ delivery worker
 - `service:cashflow_pipeline` — cashflow_ledger + finance_pipeline writes
+- `service:sanctions_screening` — scheduled sanctions re-screen worker;
+  writes `sanctions_screenings` rows and the derived `sanctions_status` on
+  both hedge `counterparties` and `commercial_partners`. Confined to
+  screening writes (no order / RFQ / deal / credit / `kyc_status` mutation)
 
 Test-only internal-issued (1, JWT signed by backend, valid only when
 `APP_ENV=test`; MUST be rejected in staging/production and any other
@@ -328,9 +332,14 @@ Authorization invariants:
     supplier}); the create payload MUST NOT set `kyc_status` (server
     forces default `pending`) nor any credit/terms field (those require a
     separate risk_manager approval op).
-  - PATCH: trader MAY update identity/contact/LEI-input fields; a trader
-    payload that targets `kyc_status` or any credit/terms field is refused
-    with HTTP 403. risk_manager may patch all fields.
+  - PATCH: the generic PATCH route mutates identity/contact/LEI-input
+    fields ONLY. `kyc_status` and credit/terms are NOT mutable via generic
+    PATCH by ANY actor (including risk_manager) — a payload targeting them
+    is refused with HTTP 403. Those fields change only via the dedicated
+    audited flows (`POST {id}/kyc-status`, `PATCH {id}/credit`), which
+    enforce the recorded-clear-screening check, the mandatory reason, and
+    the `commercial_partner_kyc_status_changed` /
+    `commercial_partner_credit_approved` HMAC-signed audit events.
   - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
 - The hedge-counterparty read invisibility for trader is specified in the
   bullet above (empty list / 404 by-id for `{trader}`-only actors). The
@@ -652,7 +661,13 @@ Schema (binding):
   migrates the existing customer/supplier rows out of `counterparties`
   into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
   stays valid), then repoints the `orders` FK to `commercial_partners` and
-  restricts `counterparties` to {broker, bank_br}. The vestigial
+  restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
+  FAIL-CLOSED — commercial `kyc_status` → `pending`, and `sanctions_status`
+  → an unscreened state on BOTH domains — rather than carrying a legacy
+  `approved` / default-`clear` without `sanctions_screenings` evidence, so
+  the "approval requires a recorded clear screening" invariant holds; the
+  pilot pre-condition then re-establishes `approved` + `clear` for the
+  named pilots via real screening + risk_manager sign-off. The vestigial
   `counterparties.kyc_status` column is kept by W1 and dropped in a later
   migration. ENUM lifecycle for fresh Postgres follows the CLAUDE.md rules
   (explicit `.create()` before `ALTER TABLE`, explicit `CAST(... AS <enum>)`).
@@ -699,7 +714,7 @@ can NEVER take down order creation or RFQ admission — those paths read
 the last recorded status. Screening triggers: (a) on entity create, (b) a
 manual re-screen endpoint, (c) a scheduled daily re-screen running in the
 existing `scheduler` service (`SCHEDULER_DISABLED=false`), never in web
-workers.
+workers, and attributed to the `service:sanctions_screening` identity.
 
 No silent fallback (binding): a screening invocation that errors
 (network/HTTP/parse failure) MUST record a screening record with
