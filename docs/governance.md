@@ -507,24 +507,27 @@ Status transitions (binding):
   text (minimum 8 characters; enforced at the schema/service layer
   before persistence). HMAC-signed per audit-trail invariant.
 
-- Member semantics (binding, applies to all transitions to/from each
-  state):
-  - `pending` — counterparty exists in the platform but has not yet
-    been KYC-approved. Default state on creation. Gate denies.
+- Member semantics (binding, applies to all `commercial_partner`
+  `kyc_status` transitions; "the gate" here is the commercial order
+  gate below):
+  - `pending` — the commercial partner exists in the platform but has
+    not yet been KYC-approved. Default state on creation. Order gate
+    denies.
   - `approved` — KYC verification complete; risk_manager has signed
-    off. Only admit-state for the gate.
-  - `expired` — previously approved counterparty whose KYC has
-    lapsed (e.g. annual renewal cycle missed). Gate denies. Path
+    off (requires a recorded `clear` sanctions screening). Only
+    admit-state for the order gate's kyc leg.
+  - `expired` — previously approved commercial partner whose KYC has
+    lapsed (e.g. annual renewal cycle missed). Order gate denies. Path
     forward: risk_manager-initiated `expired → approved` transition
     with reason.
   - `rejected` — explicit administrative hold (e.g. compliance
-    failure, sanctions hit, or risk-rating downgrade). Gate denies
-    with the same semantics as `pending`/`expired`. Path forward
-    requires explicit risk_manager-initiated `rejected → approved`
-    transition with reason citing the remediation. The `rejected`
-    state is institutionally distinct from `expired` (rejected =
-    "we said no", expired = "approval lapsed in time"); both deny
-    identically at the gate.
+    failure, sanctions hit, or risk-rating downgrade). Order gate
+    denies with the same semantics as `pending`/`expired`. Path
+    forward requires explicit risk_manager-initiated `rejected →
+    approved` transition with reason citing the remediation. The
+    `rejected` state is institutionally distinct from `expired`
+    (rejected = "we said no", expired = "approval lapsed in time");
+    both deny identically at the gate.
 
 - No auto-promotion: `pending → approved`, `expired → approved`, and
   `rejected → approved` transitions are NEVER performed by background
@@ -534,12 +537,16 @@ Status transitions (binding):
 
 - Revocation paths (`approved → pending`, `approved → expired`,
   `approved → rejected`) are valid and follow the same audit-event
-  contract. Once revoked, the gate rules above apply immediately —
-  in-flight RFQ invitations to that counterparty become unawardable
-  (the award path re-checks `kyc_status` at award moment per the gate
-  scope rules) and in-flight quotes from that counterparty become
-  unpersistable (the quote-ingestion path re-checks at the
-  internal-processing boundary).
+  contract. Once a commercial partner's `kyc_status` is revoked, the
+  commercial order gate applies immediately — any new Purchase/Sales
+  Order referencing that partner is refused at creation (the order
+  gate re-checks `kyc_status` at creation moment per the gate scope
+  rules). Orders already created before the revocation are not
+  retroactively invalidated by this gate; remediation of an existing
+  exposure is a separate operational concern. (Hedge sanctions
+  revocation is governed separately above: a re-screen to `blocked`
+  makes in-flight RFQ invitations unawardable and inbound quotes
+  unpersistable per the hedge sanctions gate.)
 
 Commercial partner KYC + order gate (binding, Pilot Hard Blocker 1):
 
@@ -1434,9 +1441,15 @@ constitutional enumeration). The steps are:
 5. `risk_flags` — surfaces institutional risk anomalies for the
    day: contracts missing the day's MTM price (per the
    PriceQuote provenance binding in MARKET-DATA GOVERNANCE),
-   unhedged exposures above the operational guardrail, KYC
-   regressions on counterparties with active deals (per the HB-1
-   KYC gate amendment above), and workflow approvals still
+   unhedged exposures above the operational guardrail, compliance
+   regressions on entities with active positions (sanctions →
+   `blocked` on hedge counterparties with active deals, per the
+   re-targeted hedge sanctions gate above; KYC or sanctions
+   regressions on commercial partners with active orders, per the
+   commercial partner KYC + order gate above — NOTE: the deployed
+   HB-3 risk_flags step currently inspects `kyc_status` on hedge
+   counterparties and MUST be re-aligned to this two-domain model in
+   the W3 wave), and workflow approvals still
    `pending` or `approved` past their `expires_at` (per the HB-2
    Workflow Approval gate amendment above). The step writes a
    `FinancePipelineRiskFlag` row per surfaced anomaly (table
