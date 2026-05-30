@@ -732,6 +732,13 @@ def test_commercial_partner_generic_patch_rejects_credit_for_all(client, auth_as
     assert resp.status_code == 403
 
 
+def test_commercial_partner_generic_patch_rejects_risk_rating_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"risk_rating": "low"})
+    assert resp.status_code == 403
+
+
 def test_commercial_partner_risk_manager_kyc_requires_sanctions_clear(client, auth_as, session):
     from app.models.commercial_partner import CommercialPartner
     from app.models.counterparty import SanctionsStatus

@@ -2177,7 +2177,6 @@ export interface components {
             name?: string | null;
             /** Notes */
             notes?: string | null;
-            risk_rating?: components["schemas"]["RiskRating"] | null;
             /** Short Name */
             short_name?: string | null;
             /** Tax Id */

@@ -59,7 +59,6 @@ class CommercialPartnerUpdate(BaseModel):
     contact_phone: str | None = Field(None, max_length=50)
     whatsapp_phone: str | None = Field(None, max_length=50)
     lei: str | None = Field(None, max_length=20)
-    risk_rating: RiskRating | None = None
     is_active: bool | None = None
     notes: str | None = None
 

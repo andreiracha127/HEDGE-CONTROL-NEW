@@ -38,6 +38,7 @@ _PROTECTED_PATCH_FIELDS = {
     "approved_value",
     "approved_currency",
     "approved_terms",
+    "risk_rating",
 }
 
 
@@ -121,8 +122,8 @@ def update_commercial_partner(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "kyc_status and credit/terms are not mutable via generic PATCH; use "
-                "POST {id}/kyc-status or PATCH {id}/credit."
+                "kyc_status, credit/terms, and risk fields are not mutable via generic "
+                "PATCH; use POST {id}/kyc-status or PATCH {id}/credit where applicable."
             ),
         )
     update_data = payload.model_dump(exclude_unset=True)

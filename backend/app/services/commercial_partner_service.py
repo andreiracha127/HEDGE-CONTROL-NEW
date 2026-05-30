@@ -115,6 +115,11 @@ class CommercialPartnerService:
                     "update path cannot mutate credit/terms."
                 ),
             )
+        if "risk_rating" in data:
+            raise HTTPException(
+                status_code=403,
+                detail="risk_rating mutations require the dedicated risk workflow.",
+            )
 
         applied_data: dict = {}
         for key, value in data.items():
@@ -127,10 +132,7 @@ class CommercialPartnerService:
         )
         lei_changed = "lei" in applied_data and cp.lei != applied_data["lei"]
         for key, value in applied_data.items():
-            if key == "risk_rating":
-                setattr(cp, key, RiskRating(value))
-            else:
-                setattr(cp, key, value)
+            setattr(cp, key, value)
 
         if lei_changed:
             cp.lei_status = LeiStatus.not_provided

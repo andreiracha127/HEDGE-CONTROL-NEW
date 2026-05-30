@@ -158,6 +158,18 @@ def test_service_update_rejects_credit_fields():
         assert exc.value.status_code == 403
 
 
+def test_service_update_rejects_risk_rating():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.update(session, cp, {"risk_rating": "low"})
+        assert exc.value.status_code == 403
+
+
 def test_service_identity_edit_resets_compliance_fail_closed():
     from app.services.commercial_partner_service import CommercialPartnerService
 
