@@ -106,6 +106,15 @@ class CounterpartyService:
         cp = session.execute(stmt).scalar_one_or_none()
         if not cp:
             raise HTTPException(status_code=404, detail="Counterparty not found")
+        new_status = KycStatus(getattr(new_status, "value", new_status))
+        if new_status is KycStatus.approved and cp.sanctions_status is not SanctionsStatus.clear:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "kyc_status cannot transition to approved unless the counterparty's "
+                    f"sanctions_status is clear (observed: {cp.sanctions_status.value})."
+                ),
+            )
         previous_status = cp.kyc_status
         cp.kyc_status = new_status
         session.flush()

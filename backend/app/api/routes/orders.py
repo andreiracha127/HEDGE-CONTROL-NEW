@@ -3,7 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
-from app.core.auth import require_any_role, require_role
+from app.core.auth import get_current_actor_sub, require_any_role, require_role
 from app.core.database import get_session
 from app.core.rate_limit import RATE_LIMIT_MUTATION, limiter
 from app.api.dependencies.audit import audit_event, mark_audit_success
@@ -27,6 +27,7 @@ router = APIRouter()
 def create_sales_order(
     payload: SalesOrderCreate,
     request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
     _: None = Depends(
         audit_event(
             entity_type="order",
@@ -37,7 +38,9 @@ def create_sales_order(
     session: Session = Depends(get_session),
 ) -> OrderRead:
     with unit_of_work(session, request=request):
-        order = OrderService.create_sales_order(session, payload, commit=False)
+        order = OrderService.create_sales_order(
+            session, payload, requesting_actor_sub=actor_sub, commit=False
+        )
         mark_audit_success(request, order.id)
     return OrderRead.model_validate(order)
 
@@ -47,6 +50,7 @@ def create_sales_order(
 def create_purchase_order(
     payload: PurchaseOrderCreate,
     request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
     _: None = Depends(
         audit_event(
             entity_type="order",
@@ -57,7 +61,9 @@ def create_purchase_order(
     session: Session = Depends(get_session),
 ) -> OrderRead:
     with unit_of_work(session, request=request):
-        order = OrderService.create_purchase_order(session, payload, commit=False)
+        order = OrderService.create_purchase_order(
+            session, payload, requesting_actor_sub=actor_sub, commit=False
+        )
         mark_audit_success(request, order.id)
     return OrderRead.model_validate(order)
 

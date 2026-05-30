@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
+from app.core.precision import PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE
 from app.models.base import Base
 from app.models.counterparty import KycStatus, RiskRating, SanctionsStatus
 
@@ -86,12 +87,16 @@ class CommercialPartner(Base):
     )
 
     # customer-only credit fields (CHECK: NULL when kind=supplier)
-    credit_limit: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    credit_limit: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    )
     credit_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     payment_conditions: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
 
     # supplier-only terms fields (CHECK: NULL when kind=customer)
-    approved_value: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    approved_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(PRICE_NUMERIC_PRECISION, PRICE_NUMERIC_SCALE), nullable=True
+    )
     approved_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     approved_terms: Mapped[dict | None] = mapped_column(JsonPayload, nullable=True)
 

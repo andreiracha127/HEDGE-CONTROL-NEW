@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.main import app
 from app.models.audit import AuditEvent
-from app.models.counterparty import Counterparty, KycStatus
+from app.models.counterparty import Counterparty, KycStatus, SanctionsStatus
 from app.models.quotes import RFQQuote
 from app.schemas.rfq import RFQQuoteCreate
 from app.services.audit_trail_service import _reset_signing_key_cache
@@ -56,6 +56,9 @@ def test_risk_manager_can_transition_pending_to_approved(
     cp = _create_counterparty(client, "Cpty RM Approved")
     cp_id = cp["id"]
     assert cp["kyc_status"] == "pending"
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
 
     # 2. Mock risk_manager role explicitly
     app.dependency_overrides[get_current_user] = lambda: {
@@ -88,6 +91,31 @@ def test_risk_manager_can_transition_pending_to_approved(
         assert audit_event.payload["metadata"]["new_status"] == "approved"
         assert audit_event.payload["metadata"]["actor_sub"] == "rm-user"
         assert audit_event.payload["metadata"]["reason"] == "KYC cleared via external provider"
+
+
+def test_risk_manager_cannot_approve_unscreened_hedge_counterparty(
+    client: TestClient, session: Session
+) -> None:
+    cp = _create_counterparty(client, "Cpty Unscreened")
+    cp_id = cp["id"]
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "rm-user",
+        "roles": ["risk_manager"],
+    }
+    try:
+        r = client.post(
+            f"/counterparties/{cp_id}/kyc-status",
+            json={"new_status": "approved", "reason": "KYC cleared via external provider"},
+        )
+        assert r.status_code == 422
+        assert "sanctions_status" in str(r.json()["detail"])
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    session.expire_all()
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    assert db_cp.kyc_status == KycStatus.pending
 
 
 def test_trader_cannot_transition_kyc_status(client: TestClient) -> None:
@@ -134,6 +162,9 @@ def test_kyc_transition_rolls_back_when_audit_signing_fails(
 ) -> None:
     cp = _create_counterparty(client, "Audit Failure Rollback")
     cp_id = cp["id"]
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
 
     app.dependency_overrides[get_current_user] = lambda: {
         "sub": "rm-user",
@@ -159,6 +190,9 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
     # 1. Create and approve counterparty
     cp = _create_counterparty(client, "Attribution Corp")
     cp_id = cp["id"]
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
     r_kyc = client.post(
         f"/counterparties/{cp_id}/kyc-status",
         json={"new_status": "approved", "reason": "Test transition reason"},
@@ -241,6 +275,9 @@ def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> Non
     cp_id = cp["id"]
 
     from app.services.counterparty_service import CounterpartyService
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
 
     # Call set_kyc_status directly which uses with_for_update() locking internally
     db_cp, _ = CounterpartyService.set_kyc_status(

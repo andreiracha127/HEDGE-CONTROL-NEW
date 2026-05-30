@@ -28,6 +28,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
 from app.models.audit import AuditEvent
 from app.models.cashflow import (
     CashFlowBaselineSnapshot,
@@ -40,7 +41,7 @@ from app.models.contracts import (
     HedgeContractStatus,
     HedgeLegSide,
 )
-from app.models.counterparty import Counterparty
+from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.deal import Deal, DealLink
 from app.models.exposure import HedgeTask, HedgeTaskStatus
 from app.models.finance_pipeline import FinancePipelineRun
@@ -805,10 +806,15 @@ def _create_counterparty_via_api(
     )
     assert resp.status_code == 201
     cp_id = resp.json()["id"]
-    client.post(
+    with SessionLocal() as session:
+        cp = session.get(Counterparty, UUID(cp_id))
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+    approval = client.post(
         f"/counterparties/{cp_id}/kyc-status",
         json={"new_status": "approved", "reason": "Test approval"},
     )
+    assert approval.status_code == 200, approval.text
     return cp_id
 
 

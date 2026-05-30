@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.precision import to_decimal
+from app.core.precision import quantize_money
 from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind, LeiStatus
 from app.models.counterparty import KycStatus, RiskRating, SanctionsStatus
 
@@ -184,8 +184,7 @@ class CommercialPartnerService:
             if cp.kind is CommercialPartnerKind.customer
             else _SUPPLIER_CREDIT_FIELDS
         )
-        provided = {k: v for k, v in data.items() if v is not None}
-        cross_kind = provided.keys() - allowed
+        cross_kind = data.keys() - allowed
         if cross_kind:
             raise HTTPException(
                 status_code=422,
@@ -197,9 +196,13 @@ class CommercialPartnerService:
         previous_values: dict = {}
         new_values: dict = {}
         changed: list[str] = []
-        for key, value in provided.items():
+        for key, value in data.items():
             previous_values[key] = _jsonable(getattr(cp, key))
-            stored = to_decimal(value) if key in {"credit_limit", "approved_value"} else value
+            stored = (
+                quantize_money(value)
+                if value is not None and key in {"credit_limit", "approved_value"}
+                else value
+            )
             setattr(cp, key, stored)
             new_values[key] = _jsonable(stored)
             changed.append(key)

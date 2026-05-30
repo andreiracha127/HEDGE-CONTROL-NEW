@@ -6,13 +6,17 @@ Follows the same ``@staticmethod`` + ``session: Session`` convention used by
 """
 
 from datetime import datetime, timezone
+import uuid
 from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
 from app.core.pagination import paginate
 from app.core.precision import quantize_price
+from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind
+from app.models.counterparty import KycStatus, SanctionsStatus
 from app.models.deal import DealLinkedType
 from app.models.orders import (
     Order,
@@ -22,6 +26,8 @@ from app.models.orders import (
     SoPoLink,
 )
 from app.services.deal_engine import DealEngineService
+from app.services.audit_trail_service import AuditTrailService
+from app.services.commercial_partner_service import CommercialPartnerService
 from app.schemas.orders import (
     OrderListResponse,
     OrderRead,
@@ -45,11 +51,16 @@ class OrderService:
         session: Session,
         payload: SalesOrderCreate,
         *,
+        requesting_actor_sub: str | None = None,
         commit: bool = True,
     ) -> Order:
         """Create a Sales Order (SO)."""
         return OrderService._create_order(
-            session, payload, OrderType.sales, commit=commit
+            session,
+            payload,
+            OrderType.sales,
+            requesting_actor_sub=requesting_actor_sub,
+            commit=commit,
         )
 
     @staticmethod
@@ -57,11 +68,16 @@ class OrderService:
         session: Session,
         payload: PurchaseOrderCreate,
         *,
+        requesting_actor_sub: str | None = None,
         commit: bool = True,
     ) -> Order:
         """Create a Purchase Order (PO)."""
         return OrderService._create_order(
-            session, payload, OrderType.purchase, commit=commit
+            session,
+            payload,
+            OrderType.purchase,
+            requesting_actor_sub=requesting_actor_sub,
+            commit=commit,
         )
 
     @staticmethod
@@ -222,6 +238,7 @@ class OrderService:
         payload: SalesOrderCreate | PurchaseOrderCreate,
         order_type: OrderType,
         *,
+        requesting_actor_sub: str | None = None,
         commit: bool = True,
     ) -> Order:
         """Shared logic for SO / PO creation."""
@@ -238,6 +255,14 @@ class OrderService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="pricing_convention is required when avg_entry_price is set for variable orders",
                 )
+
+        if payload.counterparty_id is not None:
+            OrderService._assert_commercial_partner_admissible(
+                session,
+                payload.counterparty_id,
+                order_type=order_type,
+                requesting_actor_sub=requesting_actor_sub,
+            )
 
         order = Order(
             order_type=order_type,
@@ -279,3 +304,107 @@ class OrderService:
         else:
             session.flush()
         return order
+
+    @staticmethod
+    def _assert_commercial_partner_admissible(
+        session: Session,
+        commercial_partner_id: UUID,
+        *,
+        order_type: OrderType,
+        requesting_actor_sub: str | None,
+    ) -> CommercialPartner:
+        cp = CommercialPartnerService.get_by_id(session, commercial_partner_id)
+        if cp is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Commercial partner not found",
+            )
+
+        expected_kind = (
+            CommercialPartnerKind.customer
+            if order_type is OrderType.sales
+            else CommercialPartnerKind.supplier
+        )
+        if cp.kind is not expected_kind:
+            OrderService._record_order_rejection(
+                cp,
+                event_type="order_rejected_kind_mismatch",
+                order_type=order_type,
+                requesting_actor_sub=requesting_actor_sub,
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "order_rejected_kind_mismatch",
+                    "commercial_partner_id": str(cp.id),
+                    "kind": cp.kind.value,
+                    "expected_kind": expected_kind.value,
+                },
+            )
+
+        if cp.kyc_status is not KycStatus.approved:
+            OrderService._record_order_rejection(
+                cp,
+                event_type="order_rejected_kyc_not_approved",
+                order_type=order_type,
+                requesting_actor_sub=requesting_actor_sub,
+                extra_payload={"kyc_status_observed": cp.kyc_status.value},
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "order_rejected_kyc_not_approved",
+                    "commercial_partner_id": str(cp.id),
+                    "kyc_status_observed": cp.kyc_status.value,
+                },
+            )
+
+        if cp.sanctions_status is SanctionsStatus.blocked:
+            OrderService._record_order_rejection(
+                cp,
+                event_type="order_rejected_sanctions_blocked",
+                order_type=order_type,
+                requesting_actor_sub=requesting_actor_sub,
+                extra_payload={"sanctions_status_observed": cp.sanctions_status.value},
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "order_rejected_sanctions_blocked",
+                    "commercial_partner_id": str(cp.id),
+                    "sanctions_status_observed": cp.sanctions_status.value,
+                },
+            )
+
+        return cp
+
+    @staticmethod
+    def _record_order_rejection(
+        cp: CommercialPartner,
+        *,
+        event_type: str,
+        order_type: OrderType,
+        requesting_actor_sub: str | None,
+        extra_payload: dict | None = None,
+    ) -> None:
+        payload = {
+            "commercial_partner_id": str(cp.id),
+            "kind": cp.kind.value,
+            "order_type": order_type.value,
+            "requesting_actor_sub": requesting_actor_sub,
+            **(extra_payload or {}),
+        }
+        audit_session = SessionLocal()
+        try:
+            AuditTrailService.record(
+                audit_session,
+                event_id=uuid.uuid4(),
+                entity_type="commercial_partner",
+                entity_id=cp.id,
+                event_type=event_type,
+                payload_raw="",
+                payload_obj=payload,
+                commit=True,
+            )
+        finally:
+            audit_session.close()

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, Enum, Integer, Numeric, String, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -79,7 +79,7 @@ class SanctionsAdjudication(Base):
     )
     partner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
     superseded_screening_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False
+        UUID(as_uuid=True), ForeignKey("sanctions_screenings.id"), nullable=False
     )
     decision: Mapped[AdjudicationDecision] = mapped_column(
         Enum(AdjudicationDecision, name="sanctions_adjudication_decision"),

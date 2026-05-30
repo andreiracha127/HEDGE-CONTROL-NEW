@@ -50,6 +50,11 @@ def test_commercial_partner_supplier_cannot_carry_customer_credit_fields():
             session.commit()
 
 
+def test_commercial_partner_credit_columns_use_platform_money_scale():
+    assert CommercialPartner.__table__.c.credit_limit.type.scale == 6
+    assert CommercialPartner.__table__.c.approved_value.type.scale == 6
+
+
 def test_sanctions_tables_exist_and_accept_rows():
     from datetime import datetime
 
@@ -212,6 +217,27 @@ def test_service_approve_credit_customer_decimal_roundtrip():
         assert "credit_limit" in changed
 
 
+def test_service_approve_credit_applies_explicit_nulls():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(
+            session,
+            kind=CommercialPartnerKind.customer,
+            credit_limit=Decimal("12345.670000"),
+            credit_currency="USD",
+        )
+        cp2, changed, previous, new_values = CommercialPartnerService.approve_credit(
+            session, cp, {"credit_limit": None, "credit_currency": None}
+        )
+        session.refresh(cp2)
+        assert cp2.credit_limit is None
+        assert cp2.credit_currency is None
+        assert changed == ["credit_limit", "credit_currency"]
+        assert previous["credit_limit"] == "12345.670000"
+        assert new_values["credit_limit"] is None
+
+
 def test_service_approve_credit_rejects_cross_kind_fields():
     from fastapi import HTTPException
 
@@ -298,6 +324,20 @@ def test_credit_decimal_is_exact_through_api(client, auth_as):
     )
     assert resp.status_code == 200, resp.text
     assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.67")  # exact, no float drift
+
+
+def test_credit_decimal_preserves_six_decimal_scale_through_api(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post(
+        "/commercial-partners",
+        json={"kind": "customer", "name": "Scale Co", "country": "BRA"},
+    ).json()["id"]
+    resp = client.patch(
+        f"/commercial-partners/{cp_id}/credit",
+        json={"credit_limit": "12345.123456", "credit_currency": "USD"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.123456")
 
 
 def test_credit_approved_emits_audit_event(client, auth_as, session):

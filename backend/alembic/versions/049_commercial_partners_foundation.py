@@ -163,10 +163,10 @@ def upgrade() -> None:
             nullable=False,
             server_default=sa.text("'medium'"),
         ),
-        sa.Column("credit_limit", sa.Numeric(18, 2), nullable=True),
+        sa.Column("credit_limit", sa.Numeric(18, 6), nullable=True),
         sa.Column("credit_currency", sa.String(length=3), nullable=True),
         sa.Column("payment_conditions", _json_type(), nullable=True),
-        sa.Column("approved_value", sa.Numeric(18, 2), nullable=True),
+        sa.Column("approved_value", sa.Numeric(18, 6), nullable=True),
         sa.Column("approved_currency", sa.String(length=3), nullable=True),
         sa.Column("approved_terms", _json_type(), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
@@ -237,6 +237,11 @@ def upgrade() -> None:
         sa.Column("adjudicating_actor_sub", sa.String(length=200), nullable=False),
         sa.Column("adjudicated_at", sa.DateTime(timezone=True), nullable=False),
         sa.PrimaryKeyConstraint("id"),
+        sa.ForeignKeyConstraint(
+            ["superseded_screening_id"],
+            ["sanctions_screenings.id"],
+            name="fk_sanctions_adjudications_superseded_screening_id",
+        ),
     )
 
     # 3. Copy customer/supplier rows (UUID reuse, kind-mapped credit, fail-closed reset).

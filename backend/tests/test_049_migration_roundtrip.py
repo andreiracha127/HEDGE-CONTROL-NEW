@@ -222,6 +222,27 @@ def test_049_check_constraint_blocks_supplier_credit_limit():
             )
 
 
+def test_049_credit_columns_use_platform_money_scale_and_adjudication_fk():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        _create_pre_049_schema(conn)
+        _run(conn, "upgrade")
+
+        columns = {
+            column["name"]: column for column in sa.inspect(conn).get_columns("commercial_partners")
+        }
+        assert columns["credit_limit"]["type"].scale == 6
+        assert columns["approved_value"]["type"].scale == 6
+
+        foreign_keys = sa.inspect(conn).get_foreign_keys("sanctions_adjudications")
+        assert any(
+            fk["constrained_columns"] == ["superseded_screening_id"]
+            and fk["referred_table"] == "sanctions_screenings"
+            and fk["referred_columns"] == ["id"]
+            for fk in foreign_keys
+        )
+
+
 def test_049_postgres_hedge_type_filter_casts_enum_to_text():
     m = _load()
     assert m._counterparty_type_expr(is_pg=True) == "type::text"
