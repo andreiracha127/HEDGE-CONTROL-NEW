@@ -32,7 +32,7 @@ class CounterpartyService:
             payment_terms_days=data.get("payment_terms_days") or 30,
             credit_limit_usd=data.get("credit_limit_usd"),
             kyc_status=KycStatus.pending,
-            sanctions_status=SanctionsStatus(data.get("sanctions_status", "unscreened")),
+            sanctions_status=SanctionsStatus.unscreened,
             risk_rating=RiskRating(data.get("risk_rating", "medium")),
             is_active=data.get("is_active", True),
             notes=data.get("notes"),
@@ -77,11 +77,14 @@ class CounterpartyService:
                 status_code=403,
                 detail="kyc_status mutations require the dedicated risk_manager transition endpoint (POST /counterparties/{id}/kyc-status). Generic update path cannot mutate kyc_status.",
             )
+        if "sanctions_status" in data:
+            raise HTTPException(
+                status_code=403,
+                detail="sanctions_status mutations require the dedicated sanctions screening/adjudication flow. Generic update path cannot mutate sanctions_status.",
+            )
         for key, value in data.items():
             if value is not None:
-                if key == "sanctions_status":
-                    setattr(cp, key, SanctionsStatus(value))
-                elif key == "risk_rating":
+                if key == "risk_rating":
                     setattr(cp, key, RiskRating(value))
                 else:
                     setattr(cp, key, value)

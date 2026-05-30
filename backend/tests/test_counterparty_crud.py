@@ -29,6 +29,7 @@ def test_create_counterparty(client):
     assert body["name"] == "Aluminium Corp"
     assert body["type"] == "broker"
     assert body["kyc_status"] == "pending"
+    assert body["sanctions_status"] == "unscreened"
     assert body["is_deleted"] is False
 
     # Now approve it via the transition endpoint
@@ -122,6 +123,33 @@ def test_update_counterparty(client):
     assert r2.status_code == 200
     assert r2.json()["name"] == "New Name"
     assert r2.json()["credit_limit_usd"] == 1000000.0
+
+
+def test_create_forces_sanctions_unscreened(client):
+    r = client.post(
+        ENDPOINT,
+        json={
+            "type": "broker",
+            "name": "Forced Sanctions",
+            "country": "BRA",
+            "sanctions_status": "clear",
+        },
+    )
+
+    assert r.status_code == 201
+    assert r.json()["sanctions_status"] == "unscreened"
+
+
+def test_update_rejects_manual_sanctions_status(client):
+    created = client.post(
+        ENDPOINT,
+        json={"type": "broker", "name": "Patch Sanctions", "country": "BRA"},
+    )
+    cp_id = created.json()["id"]
+
+    patched = client.patch(f"{ENDPOINT}/{cp_id}", json={"sanctions_status": "clear"})
+
+    assert patched.status_code == 403
 
 
 def test_soft_delete_counterparty(client):

@@ -2230,8 +2230,6 @@ export interface components {
             payment_terms_days: number;
             /** @default medium */
             risk_rating: components["schemas"]["RiskRating"];
-            /** @default unscreened */
-            sanctions_status: components["schemas"]["SanctionsStatus"];
             /** Short Name */
             short_name?: string | null;
             /** Tax Id */

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
@@ -203,6 +203,25 @@ def test_service_identity_required_null_does_not_reset_compliance():
         assert cp.country == "BRA"
         assert cp.sanctions_status is SanctionsStatus.clear
         assert cp.kyc_status is KycStatus.approved
+
+
+def test_service_lei_change_resets_stale_lei_validation():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    checked_at = datetime.now(UTC)
+    with SessionLocal() as session:
+        cp = _new_partner(session, lei="5493001KJTIIGC8Y1R12")
+        cp.lei_status = LeiStatus.valid
+        cp.lei_legal_name = "Old Legal Name"
+        cp.lei_checked_at = checked_at
+        session.commit()
+
+        CommercialPartnerService.update(session, cp, {"lei": "54930084UKLVMY22DS16"})
+
+        assert cp.lei == "54930084UKLVMY22DS16"
+        assert cp.lei_status is LeiStatus.not_provided
+        assert cp.lei_legal_name is None
+        assert cp.lei_checked_at is None
 
 
 def test_service_kyc_approve_blocked_unless_sanctions_clear():

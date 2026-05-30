@@ -125,11 +125,17 @@ class CommercialPartnerService:
             key in _IDENTITY_FIELDS and getattr(cp, key) != value
             for key, value in applied_data.items()
         )
+        lei_changed = "lei" in applied_data and cp.lei != applied_data["lei"]
         for key, value in applied_data.items():
             if key == "risk_rating":
                 setattr(cp, key, RiskRating(value))
             else:
                 setattr(cp, key, value)
+
+        if lei_changed:
+            cp.lei_status = LeiStatus.not_provided
+            cp.lei_legal_name = None
+            cp.lei_checked_at = None
 
         # Identity-edit fail-closed reset (governance Authorization invariants):
         # stale compliance evidence must not survive an identity change.

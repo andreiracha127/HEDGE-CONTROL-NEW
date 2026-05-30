@@ -50,7 +50,6 @@ class CounterpartyCreate(BaseModel):
     )
     payment_terms_days: int = 30
     credit_limit_usd: float | None = None
-    sanctions_status: SanctionsStatus = SanctionsStatus.unscreened
     risk_rating: RiskRating = RiskRating.medium
     is_active: bool = True
     notes: str | None = None
