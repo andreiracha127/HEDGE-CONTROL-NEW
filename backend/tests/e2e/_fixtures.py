@@ -9,6 +9,7 @@ from decimal import Decimal
 from backend.tests.e2e._personas import as_risk_manager
 
 from app.core.database import SessionLocal
+from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.market_data import CashSettlementPrice
 from app.services.westmetall_cash_settlement import SOURCE_WESTMETALL, SYMBOL_DAILY
 
@@ -51,13 +52,13 @@ def seed_counterparties(trace_id: str) -> dict[str, str]:
                     "city": "Sao Paulo",
                     "tax_id": tax_id,
                     "whatsapp_phone": "+5511999990000",
-                    "sanctions_status": "clear",
                     "risk_rating": "low",
                 },
             )
             assert created.status_code == 201, created.text
             cp = created.json()
             out[key] = cp["id"]
+            _mark_counterparty_sanctions_clear(cp["id"])
             approved = client.post(
                 f"/counterparties/{cp['id']}/kyc-status",
                 json={
@@ -97,6 +98,21 @@ def seed_counterparties(trace_id: str) -> dict[str, str]:
             out[key] = created.json()["id"]
 
     return out
+
+
+def _mark_counterparty_sanctions_clear(counterparty_id: str) -> None:
+    """Test seed hook for the external sanctions-screening result."""
+    session = SessionLocal()
+    try:
+        cp = session.get(Counterparty, uuid.UUID(counterparty_id))
+        assert cp is not None
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 def seed_westmetall_prices(
