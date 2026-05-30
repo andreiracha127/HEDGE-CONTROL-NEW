@@ -27,7 +27,6 @@ router = APIRouter()
 def create_sales_order(
     payload: SalesOrderCreate,
     request: Request,
-    actor_sub: str = Depends(get_current_actor_sub),
     _: None = Depends(
         audit_event(
             entity_type="order",
@@ -35,6 +34,7 @@ def create_sales_order(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> OrderRead:
     with unit_of_work(session, request=request):
@@ -50,7 +50,6 @@ def create_sales_order(
 def create_purchase_order(
     payload: PurchaseOrderCreate,
     request: Request,
-    actor_sub: str = Depends(get_current_actor_sub),
     _: None = Depends(
         audit_event(
             entity_type="order",
@@ -58,6 +57,7 @@ def create_purchase_order(
         )
     ),
     __: None = Depends(require_role("trader")),
+    actor_sub: str = Depends(get_current_actor_sub),
     session: Session = Depends(get_session),
 ) -> OrderRead:
     with unit_of_work(session, request=request):
