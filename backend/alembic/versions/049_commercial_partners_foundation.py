@@ -10,6 +10,8 @@ Revises: 048_order_external_reference
 Create Date: 2026-05-29
 """
 
+import json
+
 import sqlalchemy as sa
 from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
@@ -103,6 +105,28 @@ def _validate_pre_move(bind) -> None:
         hits = _ids_referencing(bind, ref_table, commercial_ids)
         if hits:
             offenders[ref_table] = sorted(set(hits))
+    # rfq_state_events stores hedge counterparty ids under differently-named columns
+    # (triggering_counterparty_id, and winning_counterparty_ids as a JSON array of
+    # ids) — the literal counterparty_id scan above misses them. Scan explicitly so a
+    # legacy event referencing a customer/supplier halts cleanly instead of being
+    # orphaned by the DELETE.
+    if "rfq_state_events" in existing_tables:
+        rfq_hits: set[str] = set()
+        for trig, winners in bind.execute(
+            text(
+                "SELECT triggering_counterparty_id, winning_counterparty_ids FROM rfq_state_events"
+            )
+        ).fetchall():
+            if trig is not None and str(trig) in commercial_ids:
+                rfq_hits.add(str(trig))
+            if winners:
+                try:
+                    parsed = json.loads(winners)
+                except (ValueError, TypeError):
+                    parsed = []
+                rfq_hits.update(str(w) for w in parsed if str(w) in commercial_ids)
+        if rfq_hits:
+            offenders["rfq_state_events"] = sorted(rfq_hits)
     if offenders:
         raise RuntimeError(
             "Refusing to migrate: hedge-domain references point at commercial "
@@ -254,9 +278,12 @@ def upgrade() -> None:
     if is_pg:
         kind_expr = "type::text::commercial_partner_kind"
         rating_expr = "risk_rating::text::commercial_risk_rating"
+        # legacy payment_terms_days -> kind-appropriate JSON terms column (no data loss).
+        terms_obj = "jsonb_build_object('payment_terms_days', payment_terms_days)"
     else:
         kind_expr = "type"
         rating_expr = "risk_rating"
+        terms_obj = "json_object('payment_terms_days', payment_terms_days)"
     op.execute(
         text(
             f"""
@@ -265,6 +292,7 @@ def upgrade() -> None:
                 contact_name, contact_email, contact_phone, whatsapp_phone,
                 lei_status, kyc_status, sanctions_status, risk_rating,
                 credit_limit, credit_currency, approved_value, approved_currency,
+                payment_conditions, approved_terms,
                 is_active, notes, created_at, updated_at, is_deleted, deleted_at
             )
             SELECT
@@ -275,6 +303,10 @@ def upgrade() -> None:
                 CASE WHEN type = 'customer' AND credit_limit_usd IS NOT NULL THEN 'USD' ELSE NULL END,
                 CASE WHEN type = 'supplier' THEN credit_limit_usd ELSE NULL END,
                 CASE WHEN type = 'supplier' AND credit_limit_usd IS NOT NULL THEN 'USD' ELSE NULL END,
+                CASE WHEN type = 'customer' AND payment_terms_days IS NOT NULL
+                     THEN {terms_obj} ELSE NULL END,
+                CASE WHEN type = 'supplier' AND payment_terms_days IS NOT NULL
+                     THEN {terms_obj} ELSE NULL END,
                 is_active, notes, created_at, updated_at, is_deleted, deleted_at
             FROM counterparties
             WHERE type IN ('customer', 'supplier')

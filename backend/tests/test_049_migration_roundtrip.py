@@ -44,6 +44,7 @@ def _create_pre_049_schema(conn: sa.Connection) -> None:
         sa.Column("contact_phone", sa.String(length=50)),
         sa.Column("whatsapp_phone", sa.String(length=50)),
         sa.Column("credit_limit_usd", sa.Numeric(15, 2)),
+        sa.Column("payment_terms_days", sa.Integer()),
         sa.Column("risk_rating", sa.String(length=10), nullable=False),
         sa.Column("kyc_status", sa.String(length=12), nullable=False),
         sa.Column("sanctions_status", sa.String(length=12), nullable=False),
@@ -70,13 +71,23 @@ def _create_pre_049_schema(conn: sa.Connection) -> None:
     md.create_all(conn)
 
 
-def _seed_counterparty(conn, cp_id, type_, name, credit=None, is_deleted=0, kyc_status="approved"):
+def _seed_counterparty(
+    conn,
+    cp_id,
+    type_,
+    name,
+    credit=None,
+    is_deleted=0,
+    kyc_status="approved",
+    payment_terms_days=None,
+):
     conn.execute(
         sa.text(
             "INSERT INTO counterparties (id, type, name, country, risk_rating, "
-            "kyc_status, sanctions_status, is_active, is_deleted, credit_limit_usd, created_at) VALUES "
+            "kyc_status, sanctions_status, is_active, is_deleted, credit_limit_usd, "
+            "payment_terms_days, created_at) VALUES "
             "(:id, :type, :name, 'BRA', 'medium', :kyc_status, 'clear', 1, :is_deleted, :credit, "
-            "'2026-01-01 00:00:00')"
+            ":ptd, '2026-01-01 00:00:00')"
         ),
         {
             "id": cp_id,
@@ -85,6 +96,7 @@ def _seed_counterparty(conn, cp_id, type_, name, credit=None, is_deleted=0, kyc_
             "credit": credit,
             "is_deleted": is_deleted,
             "kyc_status": kyc_status,
+            "ptd": payment_terms_days,
         },
     )
 
@@ -110,8 +122,8 @@ def test_049_migrates_customer_supplier_preserving_uuid_and_resets_fail_closed()
         supp_id = str(uuid.uuid4())
         broker_id = str(uuid.uuid4())
         del_id = str(uuid.uuid4())
-        _seed_counterparty(conn, cust_id, "customer", "Cust", credit=1000)
-        _seed_counterparty(conn, supp_id, "supplier", "Supp", credit=2000)
+        _seed_counterparty(conn, cust_id, "customer", "Cust", credit=1000, payment_terms_days=45)
+        _seed_counterparty(conn, supp_id, "supplier", "Supp", credit=2000, payment_terms_days=60)
         _seed_counterparty(conn, broker_id, "broker", "Brk")
         # a soft-deleted customer must still migrate (an order may FK it)
         _seed_counterparty(conn, del_id, "customer", "DelCust", credit=500, is_deleted=1)
@@ -126,7 +138,7 @@ def test_049_migrates_customer_supplier_preserving_uuid_and_resets_fail_closed()
         rows = conn.execute(
             sa.text(
                 "SELECT id, kind, kyc_status, sanctions_status, credit_limit, approved_value, "
-                "credit_currency, approved_currency, is_deleted "
+                "credit_currency, approved_currency, is_deleted, payment_conditions, approved_terms "
                 "FROM commercial_partners"
             )
         ).fetchall()
@@ -141,6 +153,17 @@ def test_049_migrates_customer_supplier_preserving_uuid_and_resets_fail_closed()
         assert Decimal(str(by_id[supp_id][5])) == Decimal("2000.00")  # supplier approved_value
         assert by_id[supp_id][4] is None  # supplier has no credit_limit
         assert by_id[supp_id][7] == "USD"  # supplier approved_currency derived
+
+        # legacy payment_terms_days mapped into the kind-appropriate JSON terms column,
+        # not silently dropped on migration (no data loss; cross-kind column stays NULL).
+        import json as _json
+
+        cust_terms = _json.loads(by_id[cust_id][9])  # customer payment_conditions
+        assert cust_terms["payment_terms_days"] == 45
+        assert by_id[cust_id][10] is None  # customer has no approved_terms (cross-kind)
+        supp_terms = _json.loads(by_id[supp_id][10])  # supplier approved_terms
+        assert supp_terms["payment_terms_days"] == 60
+        assert by_id[supp_id][9] is None  # supplier has no payment_conditions (cross-kind)
         # soft-deleted customer migrated, is_deleted preserved (FK safety)
         assert del_id in by_id
         assert bool(by_id[del_id][8]) is True
@@ -204,6 +227,53 @@ def test_049_halts_when_legacy_hedges_point_at_commercial_counterparty():
         )
 
         with pytest.raises(RuntimeError, match="hedges"):
+            _run(conn, "upgrade")
+
+
+def _create_rfq_state_events_table(conn) -> None:
+    sa.Table(
+        "rfq_state_events",
+        sa.MetaData(),
+        sa.Column("id", sa.String(length=36), primary_key=True),
+        sa.Column("triggering_counterparty_id", sa.String(length=100)),
+        sa.Column("winning_counterparty_ids", sa.Text()),
+    ).create(conn)
+
+
+def test_049_halts_when_rfq_event_triggering_id_points_at_commercial_counterparty():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        _create_pre_049_schema(conn)
+        _create_rfq_state_events_table(conn)
+        cust_id = str(uuid.uuid4())
+        _seed_counterparty(conn, cust_id, "customer", "Cust")
+        conn.execute(
+            sa.text(
+                "INSERT INTO rfq_state_events (id, triggering_counterparty_id) VALUES (:i, :c)"
+            ),
+            {"i": str(uuid.uuid4()), "c": cust_id},
+        )
+        with pytest.raises(RuntimeError, match="rfq_state_events"):
+            _run(conn, "upgrade")
+
+
+def test_049_halts_when_rfq_event_winning_ids_contain_commercial_counterparty():
+    import json as _json
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        _create_pre_049_schema(conn)
+        _create_rfq_state_events_table(conn)
+        supp_id = str(uuid.uuid4())
+        _seed_counterparty(conn, supp_id, "supplier", "Supp")
+        conn.execute(
+            sa.text("INSERT INTO rfq_state_events (id, winning_counterparty_ids) VALUES (:i, :w)"),
+            {
+                "i": str(uuid.uuid4()),
+                "w": _json.dumps([str(uuid.uuid4()), supp_id], sort_keys=True),
+            },
+        )
+        with pytest.raises(RuntimeError, match="rfq_state_events"):
             _run(conn, "upgrade")
 
 
