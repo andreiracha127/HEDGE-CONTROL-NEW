@@ -14,6 +14,7 @@ from app.services.counterparty_service import CounterpartyService
 from app.services.rfq_service import RFQService
 from app.schemas.rfq import RFQQuoteCreate
 from app.models.rfqs import RFQInvitation, RFQInvitationPurpose, RFQState, RFQIntent
+from conftest import mark_counterparty_sanctions_clear
 
 def _create_counterparty(client: TestClient, name: str, phone: str = "+5511999990001") -> dict:
     resp = client.post(
@@ -112,6 +113,7 @@ def test_award_rejects_non_approved_at_award_moment(client: TestClient, session:
     cp_id = cp["id"]
 
     # 2. Approve counterparty
+    mark_counterparty_sanctions_clear(cp_id)
     r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     assert r_kyc.status_code == 200
 
@@ -186,6 +188,7 @@ def test_gate_rejects_soft_deleted_counterparty(client: TestClient, session: Ses
     cp_id = cp["id"]
 
     # 2. Approve counterparty
+    mark_counterparty_sanctions_clear(cp_id)
     r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     assert r_kyc.status_code == 200
 
@@ -272,6 +275,7 @@ def test_outbox_notifications_fire_despite_post_event_kyc_revocation(client: Tes
     cp_id = cp["id"]
 
     # 2. Approve counterparty
+    mark_counterparty_sanctions_clear(cp_id)
     r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     assert r_kyc.status_code == 200
 
@@ -329,6 +333,7 @@ def test_quote_ingestion_rejects_degraded_kyc_human_path(client: TestClient, ses
     # 1. Create counterparty & approve
     cp = _create_counterparty(client, "Degraded Human Quoter")
     cp_id = cp["id"]
+    mark_counterparty_sanctions_clear(cp_id)
     r_kyc = client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Initial setup"})
     assert r_kyc.status_code == 200
 
@@ -383,6 +388,7 @@ def test_quote_ingestion_rejects_degraded_kyc_llm_path(client: TestClient, sessi
     # 1. Create counterparty & approve
     cp = _create_counterparty(client, "Degraded LLM Quoter")
     cp_id = cp["id"]
+    mark_counterparty_sanctions_clear(cp_id)
     client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Initial setup"})
 
     # 2. Create RFQ

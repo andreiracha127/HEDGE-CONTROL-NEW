@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.core.database import SessionLocal
 from app.core.utils import now_utc
 from app.models.rfqs import RFQ
+from conftest import mark_counterparty_sanctions_clear
 
 
 def _create_sales_order(client: TestClient) -> dict:
@@ -50,6 +51,7 @@ def _create_counterparty(client: TestClient) -> str:
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
+    mark_counterparty_sanctions_clear(cp_id)
     client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     return cp_id
 

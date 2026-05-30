@@ -1,6 +1,7 @@
 import os
 import sys
 from collections.abc import Mapping
+from uuid import UUID
 
 import pytest
 
@@ -44,6 +45,7 @@ from app.core.auth import (
 from app.core.database import engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.main import app
+from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.base import Base
 from app import models as _models
 
@@ -112,6 +114,17 @@ def session():
         yield session
     finally:
         session.close()
+
+
+def mark_counterparty_sanctions_clear(counterparty_id) -> None:
+    """Test setup helper for fixtures that need an already-screened hedge counterparty."""
+    if isinstance(counterparty_id, str):
+        counterparty_id = UUID(counterparty_id)
+    with SessionLocal() as db:
+        counterparty = db.get(Counterparty, counterparty_id)
+        assert counterparty is not None
+        counterparty.sanctions_status = SanctionsStatus.clear
+        db.commit()
 
 
 @pytest.fixture(autouse=True)

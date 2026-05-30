@@ -2,6 +2,7 @@
 
 import pytest
 from uuid import uuid4
+from conftest import mark_counterparty_sanctions_clear
 
 
 ENDPOINT = "/counterparties"
@@ -35,6 +36,7 @@ def test_create_counterparty(client):
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
+    mark_counterparty_sanctions_clear(cp_id)
     r_kyc = client.post(f"{ENDPOINT}/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "RM manually approved via API test"})
     assert r_kyc.status_code == 200
     assert r_kyc.json()["kyc_status"] == "approved"
@@ -80,6 +82,7 @@ def test_list_filter_by_kyc_status(client):
     )
     assert r1.status_code == 201
     cp1_id = r1.json()["id"]
+    mark_counterparty_sanctions_clear(cp1_id)
     r_kyc = client.post(f"{ENDPOINT}/{cp1_id}/kyc-status", json={"new_status": "approved", "reason": "RM manually approved via API test"})
     assert r_kyc.status_code == 200
 

@@ -16,7 +16,7 @@ from app.models.contracts import (
     HedgeContractStatus,
     HedgeLegSide,
 )
-from app.models.counterparty import Counterparty
+from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.deal import Deal, DealLink, DealLinkedType, DealPNLSnapshot, DealStatus
 from app.models.market_data import CashSettlementPrice
 from app.models.orders import Order, OrderType, PriceType
@@ -81,6 +81,7 @@ def _create_counterparty(session: Session) -> Counterparty:
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
     # test fixture only — sets kyc_status to APPROVED so the gate does not block this test.
+    cp.sanctions_status = SanctionsStatus.clear
     CounterpartyService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
     session.commit()
     session.refresh(cp)
