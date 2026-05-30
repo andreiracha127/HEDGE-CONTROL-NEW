@@ -13,6 +13,13 @@ from app.models.counterparty import (
     SanctionsStatus,
 )
 
+# Screening-relevant identity fields. A generic-PATCH change to any of these
+# invalidates prior screening evidence (the RFQ gate ``assert_kyc_approved``
+# admits on ``kyc_status``), so compliance must fail closed on identity edits.
+# Mirrors CommercialPartnerService._IDENTITY_FIELDS (less ``lei``, which the
+# hedge Counterparty model does not carry).
+_IDENTITY_FIELDS = {"name", "country", "tax_id"}
+
 
 class CounterpartyService:
     @staticmethod
@@ -82,12 +89,25 @@ class CounterpartyService:
                 status_code=403,
                 detail="sanctions_status mutations require the dedicated sanctions screening/adjudication flow. Generic update path cannot mutate sanctions_status.",
             )
+        identity_changed = any(
+            key in _IDENTITY_FIELDS and value is not None and getattr(cp, key) != value
+            for key, value in data.items()
+        )
         for key, value in data.items():
             if value is not None:
                 if key == "risk_rating":
                     setattr(cp, key, RiskRating(value))
                 else:
                     setattr(cp, key, value)
+
+        # Identity-edit fail-closed reset (governance Authorization invariants):
+        # stale screening evidence must not survive an identity change, otherwise
+        # the RFQ gate would admit a broker/bank under a never-screened identity.
+        if identity_changed and cp.sanctions_status is not SanctionsStatus.unscreened:
+            cp.sanctions_status = SanctionsStatus.unscreened
+            if cp.kyc_status is KycStatus.approved:
+                cp.kyc_status = KycStatus.pending
+
         session.flush()
         if commit:
             session.commit()
@@ -110,14 +130,13 @@ class CounterpartyService:
         if not cp:
             raise HTTPException(status_code=404, detail="Counterparty not found")
         new_status = KycStatus(getattr(new_status, "value", new_status))
-        if new_status is KycStatus.approved and cp.sanctions_status is not SanctionsStatus.clear:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "kyc_status cannot transition to approved unless the counterparty's "
-                    f"sanctions_status is clear (observed: {cp.sanctions_status.value})."
-                ),
-            )
+        # Hedge kyc_status is DECOUPLED from sanctions_status (governance.md:529/542:
+        # the sanctions-clear-before-approved precondition is commercial-only; hedge
+        # kyc is vestigial per :538-540). The universal sanctions control lands in W2
+        # (screening writer) + W3 (RFQ gate re-target from kyc -> sanctions); coupling
+        # hedge kyc approval to sanctions in W1 has no constitutional basis and would
+        # freeze the W1 RFQ gate (which still reads kyc_status) with no W1 path to set
+        # sanctions clear. No sanctions precondition is enforced here.
         previous_status = cp.kyc_status
         cp.kyc_status = new_status
         session.flush()
