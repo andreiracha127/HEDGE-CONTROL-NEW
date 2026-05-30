@@ -116,7 +116,11 @@ def test_credit_approval_request_parses_decimal():
 
     from app.schemas.commercial_partner import CreditApprovalRequest
 
-    req = CreditApprovalRequest(credit_limit="12345.67", credit_currency="USD")
+    req = CreditApprovalRequest(
+        reason="credit review complete",
+        credit_limit="12345.67",
+        credit_currency="USD",
+    )
     assert req.credit_limit == Decimal("12345.67")
 
 
@@ -184,6 +188,23 @@ def test_service_identity_clear_applies_explicit_null_and_resets_compliance():
         assert cp.kyc_status is KycStatus.pending
 
 
+def test_service_identity_required_null_does_not_reset_compliance():
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session, name="Acme")
+        cp.sanctions_status = SanctionsStatus.clear
+        cp.kyc_status = KycStatus.approved
+        session.commit()
+
+        CommercialPartnerService.update(session, cp, {"name": None, "country": None})
+
+        assert cp.name == "Acme"
+        assert cp.country == "BRA"
+        assert cp.sanctions_status is SanctionsStatus.clear
+        assert cp.kyc_status is KycStatus.approved
+
+
 def test_service_kyc_approve_blocked_unless_sanctions_clear():
     from fastapi import HTTPException
 
@@ -209,6 +230,7 @@ def test_service_approve_credit_customer_decimal_roundtrip():
 
     with SessionLocal() as session:
         cp = _new_partner(session, kind=CommercialPartnerKind.customer)
+        cp.sanctions_status = SanctionsStatus.clear
         cp2, changed, _previous, _new_values = CommercialPartnerService.approve_credit(
             session, cp, {"credit_limit": Decimal("12345.67"), "credit_currency": "USD"}
         )
@@ -227,6 +249,7 @@ def test_service_approve_credit_applies_explicit_nulls():
             credit_limit=Decimal("12345.670000"),
             credit_currency="USD",
         )
+        cp.sanctions_status = SanctionsStatus.clear
         cp2, changed, previous, new_values = CommercialPartnerService.approve_credit(
             session, cp, {"credit_limit": None, "credit_currency": None}
         )
@@ -245,6 +268,7 @@ def test_service_approve_credit_rejects_cross_kind_fields():
 
     with SessionLocal() as session:
         cp = _new_partner(session, kind=CommercialPartnerKind.customer)
+        cp.sanctions_status = SanctionsStatus.clear
         with pytest.raises(HTTPException) as exc:
             CommercialPartnerService.approve_credit(
                 session,
@@ -252,6 +276,24 @@ def test_service_approve_credit_rejects_cross_kind_fields():
                 {"approved_value": Decimal("1.00")},  # supplier field on a customer
             )
         assert exc.value.status_code == 422
+
+
+def test_service_approve_credit_requires_clear_sanctions():
+    from fastapi import HTTPException
+
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session, kind=CommercialPartnerKind.customer)
+        with pytest.raises(HTTPException) as exc:
+            CommercialPartnerService.approve_credit(
+                session,
+                cp,
+                {"credit_limit": Decimal("1.00")},
+            )
+
+        assert exc.value.status_code == 422
+        assert exc.value.detail["code"] == "commercial_partner_credit_rejected_sanctions_not_clear"
 
 
 def _as_roles(*roles: str, sub: str = "test-user") -> dict:
@@ -318,12 +360,39 @@ def test_credit_decimal_is_exact_through_api(client, auth_as):
         "/commercial-partners",
         json={"kind": "customer", "name": "Decimal Co", "country": "BRA"},
     ).json()["id"]
+    with SessionLocal() as session:
+        cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+    resp = client.patch(
+        f"/commercial-partners/{cp_id}/credit",
+        json={
+            "reason": "credit review complete",
+            "credit_limit": "12345.67",
+            "credit_currency": "USD",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.67")  # exact, no float drift
+
+
+def test_credit_approval_requires_reason_through_api(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post(
+        "/commercial-partners",
+        json={"kind": "customer", "name": "No Reason Co", "country": "BRA"},
+    ).json()["id"]
+    with SessionLocal() as session:
+        cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+
     resp = client.patch(
         f"/commercial-partners/{cp_id}/credit",
         json={"credit_limit": "12345.67", "credit_currency": "USD"},
     )
-    assert resp.status_code == 200, resp.text
-    assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.67")  # exact, no float drift
+
+    assert resp.status_code == 422
 
 
 def test_credit_decimal_preserves_six_decimal_scale_through_api(client, auth_as):
@@ -332,9 +401,17 @@ def test_credit_decimal_preserves_six_decimal_scale_through_api(client, auth_as)
         "/commercial-partners",
         json={"kind": "customer", "name": "Scale Co", "country": "BRA"},
     ).json()["id"]
+    with SessionLocal() as session:
+        cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
     resp = client.patch(
         f"/commercial-partners/{cp_id}/credit",
-        json={"credit_limit": "12345.123456", "credit_currency": "USD"},
+        json={
+            "reason": "credit review complete",
+            "credit_limit": "12345.123456",
+            "credit_currency": "USD",
+        },
     )
     assert resp.status_code == 200, resp.text
     assert Decimal(str(resp.json()["credit_limit"])) == Decimal("12345.123456")
@@ -348,9 +425,16 @@ def test_credit_approved_emits_audit_event(client, auth_as, session):
         "/commercial-partners",
         json={"kind": "supplier", "name": "Audit Co", "country": "BRA"},
     ).json()["id"]
+    cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+    cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
     resp = client.patch(
         f"/commercial-partners/{cp_id}/credit",
-        json={"approved_value": "999.99", "approved_currency": "USD"},
+        json={
+            "reason": "credit review complete",
+            "approved_value": "999.99",
+            "approved_currency": "USD",
+        },
     )
     assert resp.status_code == 200, resp.text
     events = (

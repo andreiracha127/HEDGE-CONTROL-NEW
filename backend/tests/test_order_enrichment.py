@@ -111,6 +111,13 @@ def test_create_so_rejects_hedge_counterparty_id_before_commit(client):
     assert r.status_code == 404
 
 
+def test_create_so_rejects_missing_commercial_partner(client):
+    r = _create_so(client, __skip_default_counterparty=True)
+
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "order_rejected_missing_commercial_partner"
+
+
 def test_order_defaults_currency_usd(client):
     r = _create_so(client)
     assert r.status_code == 201

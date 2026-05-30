@@ -65,6 +65,7 @@ class CommercialPartnerUpdate(BaseModel):
 
 
 class CreditApprovalRequest(BaseModel):
+    reason: str = Field(min_length=8, max_length=1000)
     # customer fields
     credit_limit: Decimal | None = None
     credit_currency: str | None = Field(None, min_length=3, max_length=3)

@@ -116,13 +116,16 @@ class CommercialPartnerService:
                 ),
             )
 
-        identity_changed = any(
-            key in _IDENTITY_FIELDS and getattr(cp, key) != value
-            for key, value in data.items()
-        )
+        applied_data: dict = {}
         for key, value in data.items():
             if value is None and key not in _NULLABLE_UPDATE_FIELDS:
                 continue
+            applied_data[key] = value
+        identity_changed = any(
+            key in _IDENTITY_FIELDS and getattr(cp, key) != value
+            for key, value in applied_data.items()
+        )
+        for key, value in applied_data.items():
             if key == "risk_rating":
                 setattr(cp, key, RiskRating(value))
             else:
@@ -179,6 +182,15 @@ class CommercialPartnerService:
     def approve_credit(
         session: Session, cp: CommercialPartner, data: dict, *, commit: bool = True
     ) -> tuple[CommercialPartner, list[str], dict, dict]:
+        if cp.sanctions_status is not SanctionsStatus.clear:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "commercial_partner_credit_rejected_sanctions_not_clear",
+                    "commercial_partner_id": str(cp.id),
+                    "sanctions_status_observed": cp.sanctions_status.value,
+                },
+            )
         allowed = (
             _CUSTOMER_CREDIT_FIELDS
             if cp.kind is CommercialPartnerKind.customer

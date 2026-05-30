@@ -222,6 +222,7 @@ def approve_credit(
             status_code=status.HTTP_404_NOT_FOUND, detail="Commercial partner not found"
         )
     data = payload.model_dump(exclude_unset=True)
+    reason = data.pop("reason")
     with unit_of_work(session, request=request):
         cp, changed, previous_values, new_values = CommercialPartnerService.approve_credit(
             session, cp, data, commit=False
@@ -236,6 +237,7 @@ def approve_credit(
                 "previous_values": previous_values,
                 "new_values": new_values,
                 "approving_actor_sub": actor_sub,
+                "reason": reason,
             },
         )
     return CommercialPartnerRead.model_validate(cp)

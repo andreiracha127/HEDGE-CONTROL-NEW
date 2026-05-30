@@ -45,7 +45,8 @@ from app.core.auth import (
 from app.core.database import engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.main import app
-from app.models.counterparty import Counterparty, SanctionsStatus
+from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind
+from app.models.counterparty import Counterparty, KycStatus, SanctionsStatus
 from app.models.base import Base
 from app import models as _models
 
@@ -96,13 +97,26 @@ class _DefaultCommodityTestClient(TestClient):
         if (
             url in {"/orders/sales", "/orders/purchase"}
             and isinstance(json_payload, dict)
-            and "commodity" not in json_payload
         ):
             json_payload = dict(json_payload)
-            if json_payload.pop("__skip_default_commodity", False):
-                kwargs["json"] = json_payload
-            else:
-                json_payload["commodity"] = "ALUMINUM"
+            if "commodity" not in json_payload:
+                if json_payload.pop("__skip_default_commodity", False):
+                    kwargs["json"] = json_payload
+                else:
+                    json_payload["commodity"] = "ALUMINUM"
+                    kwargs["json"] = json_payload
+            if "counterparty_id" not in json_payload:
+                if json_payload.pop("__skip_default_counterparty", False):
+                    kwargs["json"] = json_payload
+                else:
+                    kind = (
+                        CommercialPartnerKind.customer
+                        if url == "/orders/sales"
+                        else CommercialPartnerKind.supplier
+                    )
+                    json_payload["counterparty_id"] = str(
+                        _create_approved_commercial_partner(kind)
+                    )
                 kwargs["json"] = json_payload
         return super().post(url, *args, **kwargs)
 
@@ -125,6 +139,21 @@ def mark_counterparty_sanctions_clear(counterparty_id) -> None:
         assert counterparty is not None
         counterparty.sanctions_status = SanctionsStatus.clear
         db.commit()
+
+
+def _create_approved_commercial_partner(kind: CommercialPartnerKind) -> UUID:
+    with SessionLocal() as db:
+        cp = CommercialPartner(
+            kind=kind,
+            name=f"Test {kind.value.title()}",
+            country="BRA",
+            kyc_status=KycStatus.approved,
+            sanctions_status=SanctionsStatus.clear,
+        )
+        db.add(cp)
+        db.commit()
+        db.refresh(cp)
+        return cp.id
 
 
 @pytest.fixture(autouse=True)

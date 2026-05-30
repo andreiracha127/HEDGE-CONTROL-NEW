@@ -256,13 +256,21 @@ class OrderService:
                     detail="pricing_convention is required when avg_entry_price is set for variable orders",
                 )
 
-        if payload.counterparty_id is not None:
-            OrderService._assert_commercial_partner_admissible(
-                session,
-                payload.counterparty_id,
-                order_type=order_type,
-                requesting_actor_sub=requesting_actor_sub,
+        if payload.counterparty_id is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "order_rejected_missing_commercial_partner",
+                    "order_type": order_type.value,
+                },
             )
+
+        OrderService._assert_commercial_partner_admissible(
+            session,
+            payload.counterparty_id,
+            order_type=order_type,
+            requesting_actor_sub=requesting_actor_sub,
+        )
 
         order = Order(
             order_type=order_type,

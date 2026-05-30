@@ -186,6 +186,27 @@ def test_049_halts_when_hedge_ref_points_at_commercial_counterparty():
             _run(conn, "upgrade")
 
 
+def test_049_halts_when_legacy_hedges_point_at_commercial_counterparty():
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as conn:
+        _create_pre_049_schema(conn)
+        sa.Table(
+            "hedges",
+            sa.MetaData(),
+            sa.Column("id", sa.String(length=36), primary_key=True),
+            sa.Column("counterparty_id", sa.String(length=100)),
+        ).create(conn)
+        cust_id = str(uuid.uuid4())
+        _seed_counterparty(conn, cust_id, "customer", "Cust")
+        conn.execute(
+            sa.text("INSERT INTO hedges (id, counterparty_id) VALUES (:i, :c)"),
+            {"i": str(uuid.uuid4()), "c": cust_id},
+        )
+
+        with pytest.raises(RuntimeError, match="hedges"):
+            _run(conn, "upgrade")
+
+
 def test_049_check_constraint_blocks_cross_kind_credit():
     engine = sa.create_engine("sqlite:///:memory:")
     with engine.begin() as conn:

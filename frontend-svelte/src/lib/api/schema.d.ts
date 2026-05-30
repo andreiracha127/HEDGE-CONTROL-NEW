@@ -2355,6 +2355,8 @@ export interface components {
             payment_conditions?: {
                 [key: string]: unknown;
             } | null;
+            /** Reason */
+            reason: string;
         };
         /** DealCreate */
         DealCreate: {

@@ -65,6 +65,7 @@ def _ids_referencing(bind, table: str, partner_ids: set[str]) -> list[str]:
 
 def _validate_pre_move(bind) -> None:
     type_expr = _counterparty_type_expr(is_pg=bind.dialect.name == "postgresql")
+    existing_tables = set(sa.inspect(bind).get_table_names())
     # (a) orders must not reference broker/bank counterparties (pre-fix data artifact).
     hedge_ids = {
         str(r[0])
@@ -93,9 +94,12 @@ def _validate_pre_move(bind) -> None:
     for ref_table in (
         "rfq_invitations",
         "rfq_quotes",
+        "hedges",
         "hedge_contracts",
         "llm_decision_artifacts",
     ):
+        if ref_table not in existing_tables:
+            continue
         hits = _ids_referencing(bind, ref_table, commercial_ids)
         if hits:
             offenders[ref_table] = sorted(set(hits))
