@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
 from backend.tests.e2e._personas import as_auditor, as_risk_manager, as_service, as_trader
 
 
@@ -25,11 +24,13 @@ def _rfq_payload(counterparty_id: str) -> dict[str, Any]:
 def test_trader_sees_customer_supplier_but_broker_is_hidden(
     seeded_counterparties: dict[str, str],
 ) -> None:
+    # After W1: /counterparties is hedge-only (broker/bank_br).
+    # Traders see an empty list (no hedge counterparties visible to trader role).
+    # customer/supplier now live in /commercial-partners.
     with as_trader() as client:
         visible = client.get("/counterparties")
         assert visible.status_code == 200
-        visible_types = {item["type"] for item in visible.json()["items"]}
-        assert visible_types <= {"customer", "supplier"}
+        assert visible.json()["items"] == []
 
         broker = client.get(f"/counterparties/{seeded_counterparties['broker']}")
         assert broker.status_code == 404
@@ -63,7 +64,7 @@ def test_rfq_create_role_matrix(
     seeded_counterparties: dict[str, str],
 ) -> None:
     with persona() as client:
-        response = client.post("/rfqs", json=_rfq_payload(seeded_counterparties["supplier"]))
+        response = client.post("/rfqs", json=_rfq_payload(seeded_counterparties["broker"]))
         assert response.status_code == expected, response.text
 
 
@@ -94,5 +95,5 @@ def test_service_identity_cannot_use_human_rfq_route(
     seeded_counterparties: dict[str, str],
 ) -> None:
     with as_service("service:westmetall_ingest") as client:
-        response = client.post("/rfqs", json=_rfq_payload(seeded_counterparties["supplier"]))
+        response = client.post("/rfqs", json=_rfq_payload(seeded_counterparties["broker"]))
         assert response.status_code in (401, 403)

@@ -28,6 +28,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy.orm import Session
 
+from app.core.database import SessionLocal
 from app.models.audit import AuditEvent
 from app.models.cashflow import (
     CashFlowBaselineSnapshot,
@@ -40,7 +41,7 @@ from app.models.contracts import (
     HedgeContractStatus,
     HedgeLegSide,
 )
-from app.models.counterparty import Counterparty
+from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.deal import Deal, DealLink
 from app.models.exposure import HedgeTask, HedgeTaskStatus
 from app.models.finance_pipeline import FinancePipelineRun
@@ -84,6 +85,7 @@ def _create_counterparty(session: Session) -> uuid.UUID:
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
     # test fixture only — sets kyc_status to APPROVED so the gate does not block this test.
+    cp.sanctions_status = SanctionsStatus.clear
     CounterpartyService.set_kyc_status(session, cp.id, new_status=KycStatus.approved)
     session.commit()
     session.refresh(cp)
@@ -622,6 +624,21 @@ class TestRouteCoverageStatic:
         ("PATCH", "/counterparties/{counterparty_id}"): "covered institutional mutation",
         ("DELETE", "/counterparties/{counterparty_id}"): "covered institutional mutation",
         ("POST", "/counterparties/{counterparty_id}/kyc-status"): "covered institutional mutation",
+        # W1: commercial partner domain (customer/supplier decoupled from hedge counterparties)
+        ("POST", "/commercial-partners"): "covered institutional mutation",
+        ("PATCH", "/commercial-partners/{commercial_partner_id}"): "covered institutional mutation",
+        (
+            "DELETE",
+            "/commercial-partners/{commercial_partner_id}",
+        ): "covered institutional mutation",
+        (
+            "POST",
+            "/commercial-partners/{commercial_partner_id}/kyc-status",
+        ): "covered institutional mutation",
+        (
+            "PATCH",
+            "/commercial-partners/{commercial_partner_id}/credit",
+        ): "covered institutional mutation",
         ("POST", "/orders/sales"): "covered institutional mutation",
         ("POST", "/orders/purchase"): "covered institutional mutation",
         ("POST", "/orders/links"): "covered institutional mutation",
@@ -790,10 +807,15 @@ def _create_counterparty_via_api(
     )
     assert resp.status_code == 201
     cp_id = resp.json()["id"]
-    client.post(
+    with SessionLocal() as session:
+        cp = session.get(Counterparty, UUID(cp_id))
+        cp.sanctions_status = SanctionsStatus.clear
+        session.commit()
+    approval = client.post(
         f"/counterparties/{cp_id}/kyc-status",
         json={"new_status": "approved", "reason": "Test approval"},
     )
+    assert approval.status_code == 200, approval.text
     return cp_id
 
 

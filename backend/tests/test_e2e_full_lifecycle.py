@@ -11,6 +11,7 @@ from app.core.database import SessionLocal
 from app.models.contracts import HedgeContract
 from app.models.linkages import HedgeOrderLinkage
 from app.models.market_data import CashSettlementPrice
+from conftest import mark_counterparty_sanctions_clear
 
 
 # -- helpers ----------------------------------------------------------------
@@ -32,6 +33,7 @@ def _create_counterparty(client, name: str = "Counterparty 1") -> str:
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
+    mark_counterparty_sanctions_clear(cp_id)
     client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     return cp_id
 

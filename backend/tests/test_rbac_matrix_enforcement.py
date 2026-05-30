@@ -198,9 +198,10 @@ def test_require_service_identity_rejects_unknown_name() -> None:
 @pytest.mark.parametrize(
     ("role", "type_", "expected_status"),
     [
-        ("trader", "broker", 403),
-        ("trader", "customer", 201),
+        ("trader", "broker", 403),  # trader has no hedge write access
+        ("trader", "customer", 403),  # trader-only refused before type check
         ("risk_manager", "broker", 201),
+        ("risk_manager", "customer", 422),  # customer/supplier belong in /commercial-partners
     ],
 )
 def test_counterparty_post_type_gate(
@@ -220,11 +221,11 @@ def test_counterparty_patch_trader_404s_broker(client, auth_as, session) -> None
     assert response.status_code == 404
 
 
-def test_counterparty_patch_trader_accepts_customer(client, auth_as, session) -> None:
-    customer = _insert_counterparty(session, CounterpartyType.customer, "customer patch")
+def test_counterparty_patch_trader_404s_any_hedge_row(client, auth_as, session) -> None:
+    broker = _insert_counterparty(session, CounterpartyType.broker, "broker patch")
     auth_as("trader")
-    response = client.patch(f"/counterparties/{customer.id}", json={"city": "Rio"})
-    assert response.status_code == 200
+    response = client.patch(f"/counterparties/{broker.id}", json={"city": "Rio"})
+    assert response.status_code == 404
 
 
 def test_counterparty_delete_trader_404s_broker(client, auth_as, session) -> None:
@@ -234,18 +235,21 @@ def test_counterparty_delete_trader_404s_broker(client, auth_as, session) -> Non
     assert response.status_code == 404
 
 
-def test_counterparty_get_list_trader_filters_broker_bank(client, auth_as, session) -> None:
-    _insert_counterparty(session, CounterpartyType.customer, "customer list")
-    _insert_counterparty(session, CounterpartyType.supplier, "supplier list")
+def test_counterparty_get_list_trader_sees_empty(client, auth_as, session) -> None:
     _insert_counterparty(session, CounterpartyType.broker, "broker list")
     _insert_counterparty(session, CounterpartyType.bank_br, "bank list")
     auth_as("trader")
 
-    response = client.get("/counterparties")
-
-    assert response.status_code == 200
-    types = {item["type"] for item in response.json()["items"]}
-    assert types == {"customer", "supplier"}
+    # No filter, and an explicit (now hedge-only-impossible) type filter both
+    # return empty — trader has no hedge-counterparty access, period.
+    for url in (
+        "/counterparties",
+        "/counterparties?type=customer",
+        "/counterparties?type=broker",
+    ):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.json()["items"] == []
 
 
 def test_counterparty_get_by_id_trader_404s_broker(client, auth_as, session) -> None:
@@ -666,3 +670,125 @@ def test_westmetall_scheduler_attributes_service_actor(monkeypatch, session) -> 
         row.payload.get("metadata", {}).get("actor_sub") == "service:westmetall_ingest"
         for row in rows
     )
+
+
+# ---------------------------------------------------------------------------
+# Commercial Partners RBAC matrix (W1)
+# ---------------------------------------------------------------------------
+
+
+def _commercial_payload(kind: str, name: str | None = None) -> dict:
+    return {
+        "kind": kind,
+        "name": name or f"{kind} CP",
+        "country": "BRA",
+        "tax_id": f"{kind}-{uuid.uuid4()}",
+        "whatsapp_phone": "+5511999990000",
+    }
+
+
+def test_commercial_partner_trader_can_crud_identity(client, auth_as):
+    auth_as("trader")
+    created = client.post("/commercial-partners", json=_commercial_payload("customer"))
+    assert created.status_code == 201, created.text
+    cp_id = created.json()["id"]
+    assert client.get(f"/commercial-partners/{cp_id}").status_code == 200
+    patched = client.patch(f"/commercial-partners/{cp_id}", json={"city": "Rio"})
+    assert patched.status_code == 200
+    assert client.delete(f"/commercial-partners/{cp_id}").status_code == 200
+
+
+def test_commercial_partner_trader_cannot_set_kyc_status(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("trader")
+    resp = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "trader attempt"},
+    )
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_trader_cannot_approve_credit(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("trader")
+    resp = client.patch(f"/commercial-partners/{cp_id}/credit", json={"credit_limit": "100.00"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_generic_patch_rejects_kyc_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    # even risk_manager cannot mutate kyc_status via generic PATCH
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"kyc_status": "approved"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_generic_patch_rejects_credit_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"credit_limit": "5.00"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_generic_patch_rejects_risk_rating_for_all(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"risk_rating": "low"})
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_risk_manager_kyc_requires_sanctions_clear(client, auth_as, session):
+    from app.models.commercial_partner import CommercialPartner
+    from app.models.counterparty import SanctionsStatus
+
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    # unscreened → approve denied (422)
+    denied = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "premature approve"},
+    )
+    assert denied.status_code == 422
+    # flip to clear, then approve succeeds
+    cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+    cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
+    ok = client.post(
+        f"/commercial-partners/{cp_id}/kyc-status",
+        json={"new_status": "approved", "reason": "screening cleared"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["kyc_status"] == "approved"
+
+
+def test_commercial_partner_auditor_read_only(client, auth_as):
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("supplier")).json()["id"]
+    auth_as("auditor")
+    assert client.get(f"/commercial-partners/{cp_id}").status_code == 200
+    assert client.get("/commercial-partners").status_code == 200
+    # auditor cannot write
+    assert (
+        client.post("/commercial-partners", json=_commercial_payload("customer")).status_code == 403
+    )
+    assert client.patch(f"/commercial-partners/{cp_id}", json={"city": "X"}).status_code == 403
+
+
+def test_commercial_partner_identity_edit_resets_compliance(client, auth_as, session):
+    from app.models.commercial_partner import CommercialPartner
+    from app.models.counterparty import KycStatus, SanctionsStatus
+
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    cp = session.get(CommercialPartner, uuid.UUID(cp_id))
+    cp.sanctions_status = SanctionsStatus.clear
+    cp.kyc_status = KycStatus.approved
+    session.commit()
+
+    auth_as("trader")
+    resp = client.patch(f"/commercial-partners/{cp_id}", json={"name": "Renamed Co"})
+    assert resp.status_code == 200
+    assert resp.json()["sanctions_status"] == "unscreened"
+    assert resp.json()["kyc_status"] == "pending"

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import get_current_user
 from app.main import app
 from app.models.audit import AuditEvent
-from app.models.counterparty import Counterparty, KycStatus
+from app.models.counterparty import Counterparty, KycStatus, SanctionsStatus
 from app.models.quotes import RFQQuote
 from app.schemas.rfq import RFQQuoteCreate
 from app.services.audit_trail_service import _reset_signing_key_cache
@@ -56,6 +56,9 @@ def test_risk_manager_can_transition_pending_to_approved(
     cp = _create_counterparty(client, "Cpty RM Approved")
     cp_id = cp["id"]
     assert cp["kyc_status"] == "pending"
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
 
     # 2. Mock risk_manager role explicitly
     app.dependency_overrides[get_current_user] = lambda: {
@@ -88,6 +91,41 @@ def test_risk_manager_can_transition_pending_to_approved(
         assert audit_event.payload["metadata"]["new_status"] == "approved"
         assert audit_event.payload["metadata"]["actor_sub"] == "rm-user"
         assert audit_event.payload["metadata"]["reason"] == "KYC cleared via external provider"
+
+
+def test_risk_manager_can_approve_hedge_counterparty_without_sanctions_screening(
+    client: TestClient, session: Session
+) -> None:
+    # Hedge kyc_status is decoupled from sanctions_status in W1. The
+    # sanctions-clear precondition is COMMERCIAL-only (governance.md:529/542);
+    # hedge kyc_status is vestigial (governance.md:538-540) and the universal
+    # sanctions gate lands in W2 (screening) + W3 (RFQ gate re-target). So a
+    # risk_manager may approve a hedge counterparty's kyc in W1 regardless of
+    # sanctions_status — the W1 RFQ gate (assert_kyc_approved) must remain
+    # satisfiable without the W2 screening machinery.
+    cp = _create_counterparty(client, "Cpty Unscreened")
+    cp_id = cp["id"]
+    assert cp["sanctions_status"] == "unscreened"
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "sub": "rm-user",
+        "roles": ["risk_manager"],
+    }
+    try:
+        r = client.post(
+            f"/counterparties/{cp_id}/kyc-status",
+            json={"new_status": "approved", "reason": "KYC cleared via external provider"},
+        )
+        assert r.status_code == 200
+        assert r.json()["kyc_status"] == "approved"
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+    session.expire_all()
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    assert db_cp.kyc_status == KycStatus.approved
+    # sanctions_status is untouched by the kyc transition (W2/W3 own it).
+    assert db_cp.sanctions_status == SanctionsStatus.unscreened
 
 
 def test_trader_cannot_transition_kyc_status(client: TestClient) -> None:
@@ -134,6 +172,9 @@ def test_kyc_transition_rolls_back_when_audit_signing_fails(
 ) -> None:
     cp = _create_counterparty(client, "Audit Failure Rollback")
     cp_id = cp["id"]
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
 
     app.dependency_overrides[get_current_user] = lambda: {
         "sub": "rm-user",
@@ -159,6 +200,9 @@ def test_submit_quote_attribution(client: TestClient, session: Session) -> None:
     # 1. Create and approve counterparty
     cp = _create_counterparty(client, "Attribution Corp")
     cp_id = cp["id"]
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
     r_kyc = client.post(
         f"/counterparties/{cp_id}/kyc-status",
         json={"new_status": "approved", "reason": "Test transition reason"},
@@ -242,6 +286,10 @@ def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> Non
 
     from app.services.counterparty_service import CounterpartyService
 
+    db_cp = session.get(Counterparty, UUID(cp_id))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    session.commit()
+
     # Call set_kyc_status directly which uses with_for_update() locking internally
     db_cp, _ = CounterpartyService.set_kyc_status(
         session=session,
@@ -250,3 +298,42 @@ def test_set_kyc_status_concurrency(client: TestClient, session: Session) -> Non
     )
     session.commit()
     assert db_cp.kyc_status == KycStatus.approved
+
+
+def test_service_identity_edit_resets_compliance_fail_closed(
+    client: TestClient, session: Session
+) -> None:
+    # Mirror of CommercialPartnerService identity-edit reset: a generic PATCH to a
+    # screening-relevant identity field (name/country/tax_id) must invalidate stale
+    # screening evidence so the RFQ gate (assert_kyc_approved reads kyc_status) cannot
+    # admit a counterparty under an identity that was never screened.
+    from app.services.counterparty_service import CounterpartyService
+
+    cp = _create_counterparty(client, "Identity Edit Corp")
+    db_cp = session.get(Counterparty, UUID(cp["id"]))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    db_cp.kyc_status = KycStatus.approved
+    session.commit()
+
+    CounterpartyService.update(session, db_cp, {"name": "Identity Edit Corp Renamed"})
+
+    assert db_cp.sanctions_status is SanctionsStatus.unscreened
+    assert db_cp.kyc_status is KycStatus.pending
+
+
+def test_service_non_identity_edit_preserves_compliance(
+    client: TestClient, session: Session
+) -> None:
+    # A non-identity PATCH (e.g. contact/city) leaves screening evidence intact.
+    from app.services.counterparty_service import CounterpartyService
+
+    cp = _create_counterparty(client, "Contact Edit Corp")
+    db_cp = session.get(Counterparty, UUID(cp["id"]))
+    db_cp.sanctions_status = SanctionsStatus.clear
+    db_cp.kyc_status = KycStatus.approved
+    session.commit()
+
+    CounterpartyService.update(session, db_cp, {"city": "São Paulo"})
+
+    assert db_cp.sanctions_status is SanctionsStatus.clear
+    assert db_cp.kyc_status is KycStatus.approved

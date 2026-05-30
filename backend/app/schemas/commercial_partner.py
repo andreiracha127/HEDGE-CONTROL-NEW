@@ -1,39 +1,32 @@
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.counterparty import KycStatus, RiskRating, SanctionsStatus
 
-class CounterpartyType(str, Enum):
-    broker = "broker"
-    bank_br = "bank_br"
+
+class CommercialPartnerKind(str, Enum):
     customer = "customer"
     supplier = "supplier"
 
 
-class KycStatus(str, Enum):
-    pending = "pending"
-    approved = "approved"
-    expired = "expired"
-    rejected = "rejected"
+class LeiStatus(str, Enum):
+    not_provided = "not_provided"
+    valid = "valid"
+    invalid = "invalid"
+    lapsed = "lapsed"
+    issued = "issued"
+    error = "error"
 
 
-class SanctionsStatus(str, Enum):
-    unscreened = "unscreened"
-    clear = "clear"
-    flagged = "flagged"
-    blocked = "blocked"
-
-
-class RiskRating(str, Enum):
-    low = "low"
-    medium = "medium"
-    high = "high"
-
-
-class CounterpartyCreate(BaseModel):
-    type: CounterpartyType
+class CommercialPartnerCreate(BaseModel):
+    # NOTE: deliberately omits kyc_status, sanctions_status, and all credit/terms
+    # fields -- server forces kyc_status=pending, sanctions_status=unscreened, and
+    # credit/terms are set only via the dedicated risk_manager flow.
+    kind: CommercialPartnerKind
     name: str = Field(..., max_length=200)
     short_name: str | None = Field(None, max_length=50)
     tax_id: str | None = Field(None, max_length=50)
@@ -44,18 +37,17 @@ class CounterpartyCreate(BaseModel):
     contact_email: str | None = Field(None, max_length=200)
     contact_phone: str | None = Field(None, max_length=50)
     whatsapp_phone: str | None = Field(
-        None,
-        max_length=50,
-        description="WhatsApp number in E.164 format, e.g. +5511999999999",
+        None, max_length=50, description="WhatsApp number in E.164 format"
     )
-    payment_terms_days: int = 30
-    credit_limit_usd: float | None = None
+    lei: str | None = Field(None, max_length=20)
     risk_rating: RiskRating = RiskRating.medium
     is_active: bool = True
     notes: str | None = None
 
 
-class CounterpartyUpdate(BaseModel):
+class CommercialPartnerUpdate(BaseModel):
+    # Identity/contact/LEI-input fields ONLY. kyc_status + credit/terms are NOT here;
+    # the route additionally rejects any attempt to send them (defense in depth).
     name: str | None = Field(None, max_length=200)
     short_name: str | None = Field(None, max_length=50)
     tax_id: str | None = Field(None, max_length=50)
@@ -66,23 +58,28 @@ class CounterpartyUpdate(BaseModel):
     contact_email: str | None = Field(None, max_length=200)
     contact_phone: str | None = Field(None, max_length=50)
     whatsapp_phone: str | None = Field(None, max_length=50)
-    credit_limit_usd: float | None = None
-    sanctions_status: SanctionsStatus | None = None
-    risk_rating: RiskRating | None = None
+    lei: str | None = Field(None, max_length=20)
     is_active: bool | None = None
     notes: str | None = None
 
 
-class KycStatusTransitionRequest(BaseModel):
-    new_status: KycStatus
-    reason: str = Field(min_length=8, max_length=512)
+class CreditApprovalRequest(BaseModel):
+    reason: str = Field(min_length=8, max_length=1000)
+    # customer fields
+    credit_limit: Decimal | None = None
+    credit_currency: str | None = Field(None, min_length=3, max_length=3)
+    payment_conditions: dict | None = None
+    # supplier fields
+    approved_value: Decimal | None = None
+    approved_currency: str | None = Field(None, min_length=3, max_length=3)
+    approved_terms: dict | None = None
 
 
-class CounterpartyRead(BaseModel):
+class CommercialPartnerRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
-    type: CounterpartyType
+    kind: CommercialPartnerKind
     name: str
     short_name: str | None = None
     tax_id: str | None = None
@@ -93,11 +90,19 @@ class CounterpartyRead(BaseModel):
     contact_email: str | None = None
     contact_phone: str | None = None
     whatsapp_phone: str | None = None
-    payment_terms_days: int | None = None
-    credit_limit_usd: float | None = None
+    lei: str | None = None
+    lei_status: LeiStatus
+    lei_legal_name: str | None = None
+    lei_checked_at: datetime | None = None
     kyc_status: KycStatus
     sanctions_status: SanctionsStatus
     risk_rating: RiskRating
+    credit_limit: Decimal | None = None
+    credit_currency: str | None = None
+    payment_conditions: dict | None = None
+    approved_value: Decimal | None = None
+    approved_currency: str | None = None
+    approved_terms: dict | None = None
     is_active: bool
     notes: str | None = None
     created_at: datetime
@@ -106,6 +111,6 @@ class CounterpartyRead(BaseModel):
     deleted_at: datetime | None = None
 
 
-class CounterpartyListResponse(BaseModel):
-    items: list[CounterpartyRead]
+class CommercialPartnerListResponse(BaseModel):
+    items: list[CommercialPartnerRead]
     next_cursor: str | None = Field(None, max_length=256)

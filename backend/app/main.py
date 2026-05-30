@@ -1,4 +1,3 @@
-import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -16,6 +15,7 @@ from app.api.routes import (
     auth,
     cashflow,
     cashflow_ledger,
+    commercial_partners,
     contracts,
     counterparties,
     csp_report,
@@ -221,8 +221,11 @@ def readiness() -> dict[str, str]:
 
 
 app.include_router(
-    counterparties.router, prefix="/counterparties", tags=["Counterparties"]
+    commercial_partners.router,
+    prefix="/commercial-partners",
+    tags=["Commercial Partners"],
 )
+app.include_router(counterparties.router, prefix="/counterparties", tags=["Counterparties"])
 app.include_router(orders.router, prefix="/orders", tags=["Orders"])
 app.include_router(exposures.router, prefix="/exposures", tags=["Exposures"])
 app.include_router(deals.router, prefix="/deals", tags=["Deals"])
@@ -239,16 +242,12 @@ app.include_router(cashflow_ledger.router, prefix="/cashflow", tags=["CashFlowLe
 app.include_router(pl.router, prefix="/pl", tags=["P&L"])
 app.include_router(scenario.router, prefix="/scenario", tags=["Scenario"])
 app.include_router(audit.router, prefix="/audit", tags=["Audit"])
-app.include_router(
-    westmetall.router, prefix="/market-data/westmetall", tags=["MarketData"]
-)
+app.include_router(westmetall.router, prefix="/market-data/westmetall", tags=["MarketData"])
 app.include_router(mtm.router, prefix="/mtm", tags=["MTM"])
 app.include_router(webhooks.router, prefix="/webhooks", tags=["Webhooks"])
 app.include_router(csp_report.router, prefix="/csp", tags=["CSP"])
 app.include_router(auth.router)
-app.include_router(
-    finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"]
-)
+app.include_router(finance_pipeline.router, prefix="/finance/pipeline", tags=["FinancePipeline"])
 
 if _cfg.app_env.strip().lower() == "test":
     from app.api.routes.internal_test import router as internal_test_router

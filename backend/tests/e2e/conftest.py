@@ -38,5 +38,7 @@ def awarded_rfq(
     e2e_trace_id: str,
     seeded_counterparties: dict[str, str],
 ) -> dict[str, Any]:
-    rfq = step_create_rfq(e2e_trace_id, [seeded_counterparties["supplier"]])
-    return step_award_quote(rfq["id"], seeded_counterparties["supplier"])
+    # RFQs are a hedge-domain operation — invitations/quotes reference hedge
+    # counterparties (broker/bank), not commercial partners.
+    rfq = step_create_rfq(e2e_trace_id, [seeded_counterparties["broker"]])
+    return step_award_quote(rfq["id"], seeded_counterparties["broker"])

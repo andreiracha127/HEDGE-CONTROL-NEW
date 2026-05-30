@@ -28,6 +28,7 @@ class KycStatus(enum.Enum):
 
 
 class SanctionsStatus(enum.Enum):
+    unscreened = "unscreened"
     clear = "clear"
     flagged = "flagged"
     blocked = "blocked"
@@ -72,7 +73,7 @@ class Counterparty(Base):
     sanctions_status: Mapped[SanctionsStatus] = mapped_column(
         Enum(SanctionsStatus, name="sanctions_status"),
         nullable=False,
-        default=SanctionsStatus.clear,
+        default=SanctionsStatus.unscreened,
     )
     risk_rating: Mapped[RiskRating] = mapped_column(
         Enum(RiskRating, name="risk_rating"),

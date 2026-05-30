@@ -10,6 +10,8 @@ import pytest
 from fastapi import status
 from sqlalchemy.orm import Session
 
+from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind
+from app.models.counterparty import KycStatus, SanctionsStatus
 from app.models.orders import Order, OrderType, PriceType, SoPoLink
 from app.schemas.orders import (
     PurchaseOrderCreate,
@@ -22,14 +24,37 @@ from app.services.order_service import OrderService
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _so_payload(**kw) -> SalesOrderCreate:
-    defaults = {"commodity": "ALUMINUM", "price_type": "fixed", "quantity_mt": 100.0}
+def _approved_partner_id(session: Session, kind: CommercialPartnerKind) -> uuid.UUID:
+    cp = CommercialPartner(
+        kind=kind,
+        name=f"Test {kind.value}",
+        country="BRA",
+        kyc_status=KycStatus.approved,
+        sanctions_status=SanctionsStatus.clear,
+    )
+    session.add(cp)
+    session.flush()
+    return cp.id
+
+
+def _so_payload(session: Session, **kw) -> SalesOrderCreate:
+    defaults = {
+        "commodity": "ALUMINUM",
+        "price_type": "fixed",
+        "quantity_mt": 100.0,
+        "counterparty_id": _approved_partner_id(session, CommercialPartnerKind.customer),
+    }
     defaults.update(kw)
     return SalesOrderCreate(**defaults)
 
 
-def _po_payload(**kw) -> PurchaseOrderCreate:
-    defaults = {"commodity": "ALUMINUM", "price_type": "fixed", "quantity_mt": 50.0}
+def _po_payload(session: Session, **kw) -> PurchaseOrderCreate:
+    defaults = {
+        "commodity": "ALUMINUM",
+        "price_type": "fixed",
+        "quantity_mt": 50.0,
+        "counterparty_id": _approved_partner_id(session, CommercialPartnerKind.supplier),
+    }
     defaults.update(kw)
     return PurchaseOrderCreate(**defaults)
 
@@ -38,7 +63,7 @@ def _po_payload(**kw) -> PurchaseOrderCreate:
 
 
 def test_create_sales_order_fixed(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     assert order.order_type == OrderType.sales
     assert order.price_type == PriceType.fixed
     assert order.quantity_mt == 100.0
@@ -47,14 +72,16 @@ def test_create_sales_order_fixed(session: Session) -> None:
 
 def test_create_sales_order_persists_external_reference(session: Session) -> None:
     order = OrderService.create_sales_order(
-        session, _so_payload(external_reference="SO-2026-0943")
+        session, _so_payload(session, external_reference="SO-2026-0943")
     )
 
     assert order.external_reference == "SO-2026-0943"
 
 
 def test_create_sales_order_variable_no_convention(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload(price_type="variable"))
+    order = OrderService.create_sales_order(
+        session, _so_payload(session, price_type="variable")
+    )
     assert order.order_type == OrderType.sales
     assert order.pricing_convention is None
     assert order.avg_entry_price is None
@@ -64,6 +91,7 @@ def test_create_sales_order_variable_with_convention(session: Session) -> None:
     order = OrderService.create_sales_order(
         session,
         _so_payload(
+            session,
             price_type="variable",
             pricing_convention="AVG",
             avg_entry_price=2350.0,
@@ -78,7 +106,7 @@ def test_create_sales_order_variable_convention_without_price_ok(
 ) -> None:
     """Variable order with convention but no price is valid — price determined later by market."""
     order = OrderService.create_sales_order(
-        session, _so_payload(price_type="variable", pricing_convention="AVG")
+        session, _so_payload(session, price_type="variable", pricing_convention="AVG")
     )
     assert order.pricing_convention is not None
     assert order.avg_entry_price is None
@@ -87,7 +115,7 @@ def test_create_sales_order_variable_convention_without_price_ok(
 def test_create_sales_order_variable_mismatched_avg_fails(session: Session) -> None:
     with pytest.raises(Exception) as exc_info:
         OrderService.create_sales_order(
-            session, _so_payload(price_type="variable", avg_entry_price=2350.0)
+            session, _so_payload(session, price_type="variable", avg_entry_price=2350.0)
         )
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
 
@@ -96,7 +124,7 @@ def test_create_sales_order_variable_mismatched_avg_fails(session: Session) -> N
 
 
 def test_create_purchase_order_fixed(session: Session) -> None:
-    order = OrderService.create_purchase_order(session, _po_payload())
+    order = OrderService.create_purchase_order(session, _po_payload(session))
     assert order.order_type == OrderType.purchase
     assert order.price_type == PriceType.fixed
     assert order.quantity_mt == 50.0
@@ -106,6 +134,7 @@ def test_create_purchase_order_variable_with_convention(session: Session) -> Non
     order = OrderService.create_purchase_order(
         session,
         _po_payload(
+            session,
             price_type="variable",
             pricing_convention="C2R",
             avg_entry_price=2400.0,
@@ -119,12 +148,12 @@ def test_create_purchase_order_variable_with_convention(session: Session) -> Non
 
 
 def test_order_defaults_currency_usd(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     assert order.currency == "USD"
 
 
 def test_order_custom_currency(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload(currency="EUR"))
+    order = OrderService.create_sales_order(session, _so_payload(session, currency="EUR"))
     assert order.currency == "EUR"
 
 
@@ -132,6 +161,7 @@ def test_order_optional_fields(session: Session) -> None:
     order = OrderService.create_sales_order(
         session,
         _so_payload(
+            session,
             delivery_terms="CIF Rotterdam",
             payment_terms_days=60,
             notes="test note",
@@ -146,37 +176,37 @@ def test_order_optional_fields(session: Session) -> None:
 
 
 def test_list_returns_created(session: Session) -> None:
-    OrderService.create_sales_order(session, _so_payload())
-    OrderService.create_purchase_order(session, _po_payload())
+    OrderService.create_sales_order(session, _so_payload(session))
+    OrderService.create_purchase_order(session, _po_payload(session))
     result = OrderService.list_orders(session)
     assert len(result.items) == 2
 
 
 def test_list_filter_by_order_type(session: Session) -> None:
-    OrderService.create_sales_order(session, _so_payload())
-    OrderService.create_purchase_order(session, _po_payload())
+    OrderService.create_sales_order(session, _so_payload(session))
+    OrderService.create_purchase_order(session, _po_payload(session))
     result = OrderService.list_orders(session, order_type="SO")
     assert len(result.items) == 1
     assert all(o.order_type == "SO" for o in result.items)
 
 
 def test_list_filter_by_price_type(session: Session) -> None:
-    OrderService.create_sales_order(session, _so_payload(price_type="variable"))
-    OrderService.create_purchase_order(session, _po_payload(price_type="fixed"))
+    OrderService.create_sales_order(session, _so_payload(session, price_type="variable"))
+    OrderService.create_purchase_order(session, _po_payload(session, price_type="fixed"))
     result = OrderService.list_orders(session, price_type="fixed")
     assert len(result.items) == 1
     assert result.items[0].price_type == "fixed"
 
 
 def test_list_excludes_deleted_by_default(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     OrderService.archive(session, order.id)
     result = OrderService.list_orders(session)
     assert len(result.items) == 0
 
 
 def test_list_includes_deleted_when_requested(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     OrderService.archive(session, order.id)
     result = OrderService.list_orders(session, include_deleted=True)
     assert len(result.items) == 1
@@ -184,7 +214,7 @@ def test_list_includes_deleted_when_requested(session: Session) -> None:
 
 def test_list_respects_limit(session: Session) -> None:
     for _ in range(5):
-        OrderService.create_sales_order(session, _so_payload())
+        OrderService.create_sales_order(session, _so_payload(session))
     result = OrderService.list_orders(session, limit=2)
     assert len(result.items) == 2
 
@@ -193,7 +223,7 @@ def test_list_respects_limit(session: Session) -> None:
 
 
 def test_get_by_id_returns_order(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     fetched = OrderService.get_by_id(session, order.id)
     assert fetched.id == order.id
 
@@ -208,13 +238,13 @@ def test_get_by_id_raises_404(session: Session) -> None:
 
 
 def test_archive_sets_deleted_at(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     archived = OrderService.archive(session, order.id)
     assert archived.deleted_at is not None
 
 
 def test_archive_already_archived_raises_409(session: Session) -> None:
-    order = OrderService.create_sales_order(session, _so_payload())
+    order = OrderService.create_sales_order(session, _so_payload(session))
     OrderService.archive(session, order.id)
     with pytest.raises(Exception) as exc_info:
         OrderService.archive(session, order.id)
@@ -231,8 +261,8 @@ def test_archive_nonexistent_raises_404(session: Session) -> None:
 
 
 def _make_so_po(session: Session):
-    so = OrderService.create_sales_order(session, _so_payload())
-    po = OrderService.create_purchase_order(session, _po_payload())
+    so = OrderService.create_sales_order(session, _so_payload(session))
+    po = OrderService.create_purchase_order(session, _po_payload(session))
     return so, po
 
 
@@ -252,8 +282,8 @@ def test_create_sopo_link(session: Session) -> None:
 
 
 def test_sopo_link_validates_so_type(session: Session) -> None:
-    po1 = OrderService.create_purchase_order(session, _po_payload())
-    po2 = OrderService.create_purchase_order(session, _po_payload())
+    po1 = OrderService.create_purchase_order(session, _po_payload(session))
+    po2 = OrderService.create_purchase_order(session, _po_payload(session))
     with pytest.raises(Exception) as exc_info:
         OrderService.create_sopo_link(
             session,
@@ -267,8 +297,8 @@ def test_sopo_link_validates_so_type(session: Session) -> None:
 
 
 def test_sopo_link_validates_po_type(session: Session) -> None:
-    so1 = OrderService.create_sales_order(session, _so_payload())
-    so2 = OrderService.create_sales_order(session, _so_payload())
+    so1 = OrderService.create_sales_order(session, _so_payload(session))
+    so2 = OrderService.create_sales_order(session, _so_payload(session))
     with pytest.raises(Exception) as exc_info:
         OrderService.create_sopo_link(
             session,
@@ -295,7 +325,7 @@ def test_sopo_link_duplicate_raises_409(session: Session) -> None:
 
 
 def test_sopo_link_nonexistent_so_raises_400(session: Session) -> None:
-    po = OrderService.create_purchase_order(session, _po_payload())
+    po = OrderService.create_purchase_order(session, _po_payload(session))
     with pytest.raises(Exception) as exc_info:
         OrderService.create_sopo_link(
             session,

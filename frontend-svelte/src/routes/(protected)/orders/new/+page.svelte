@@ -30,6 +30,18 @@
 	let notes = $state('');
 
 	const isPO = $derived(orderType === 'PO');
+	// A PO (compra) sources from a supplier; an SO (venda) from a customer. Filter the
+	// selectable partners by order kind so a wrong-domain entity can't be picked
+	// (orders FK -> commercial_partners, gated by kind on the backend).
+	const eligibleCounterparties = $derived(
+		counterparties.filter((c) => c.kind === (isPO ? 'supplier' : 'customer')),
+	);
+	// Clear a selection that is no longer valid after switching order kind.
+	$effect(() => {
+		if (cp && !eligibleCounterparties.some((c) => c.id === cp)) {
+			cp = '';
+		}
+	});
 	const qtyNum = $derived(Number(qty) || 0);
 	const priceNum = $derived(Number(price) || 0);
 	const notional = $derived(qtyNum * priceNum);
@@ -162,7 +174,7 @@
 						<label class="field-label" for="order-counterparty">Contraparte <span class="req">*</span></label>
 						<select id="order-counterparty" class="select" bind:value={cp}>
 							<option value="">— Selecione —</option>
-							{#each counterparties as c (c.id)}
+							{#each eligibleCounterparties as c (c.id)}
 								<option value={c.id}>{c.name} ({c.short})</option>
 							{/each}
 						</select>
