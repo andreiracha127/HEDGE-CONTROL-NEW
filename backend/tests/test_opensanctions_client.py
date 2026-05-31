@@ -2,9 +2,9 @@ from decimal import Decimal
 
 import httpx
 import pytest
-from app.services.opensanctions_client import MatchResult, ScreeningProviderError, screen_entity
 
 from app.services import opensanctions_client as oc
+from app.services.opensanctions_client import MatchResult, ScreeningProviderError, screen_entity
 
 
 def _patch_post(monkeypatch, *, json_body=None, status_code=200, raise_exc=None):
@@ -65,3 +65,22 @@ def test_empty_key_raises(monkeypatch):
     monkeypatch.setattr(oc, "_api_key", lambda: "")
     with pytest.raises(ScreeningProviderError):
         screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
+def test_malformed_envelope_missing_responses_raises(monkeypatch):
+    _patch_post(monkeypatch, json_body={"status": "ok"})  # no "responses" key
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
+def test_non_numeric_score_raises(monkeypatch):
+    _patch_post(monkeypatch, json_body={"responses": {"q1": {"results": [{"score": "high"}]}}})
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
+def test_dataset_version_parsed(monkeypatch):
+    body = {"responses": {"q1": {"results": [{"score": 0.10}], "dataset_version": "20260101"}}}
+    _patch_post(monkeypatch, json_body=body)
+    res = screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+    assert res.dataset_version == "20260101"

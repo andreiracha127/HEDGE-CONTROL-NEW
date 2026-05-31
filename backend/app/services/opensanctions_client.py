@@ -10,7 +10,7 @@ service can record fail-closed error evidence.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 import httpx
 
@@ -78,8 +78,12 @@ def screen_entity(
     except (KeyError, TypeError) as exc:
         raise ScreeningProviderError(f"OpenSanctions response missing results: {exc}") from exc
 
-    scores = [Decimal(str(r["score"])) for r in results if "score" in r]
-    top_score = max(scores) if scores else Decimal("0")
+    try:
+        scores = [Decimal(str(r["score"])) for r in results if "score" in r]
+        top_score = max(scores) if scores else Decimal("0")
+    except InvalidOperation as exc:
+        raise ScreeningProviderError(f"OpenSanctions score is not a valid decimal: {exc}") from exc
+
     dataset_version = data.get("responses", {}).get(_QUERY_ID, {}).get("dataset_version")
     return MatchResult(
         top_score=top_score,
