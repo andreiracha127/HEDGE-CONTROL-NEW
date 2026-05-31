@@ -78,3 +78,22 @@ def test_default_thresholds():
     s = Settings(database_url="sqlite+pysqlite:///:memory:")
     assert s.sanctions_review_threshold == Decimal("0.70")
     assert s.sanctions_hard_threshold == Decimal("0.90")
+
+
+def test_misordered_thresholds_refuse_boot():
+    # review must be strictly below hard, both within [0,1]
+    with pytest.raises(ValueError, match="THRESHOLD"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            sanctions_review_threshold="0.90",
+            sanctions_hard_threshold="0.70",
+        )
+
+
+def test_out_of_range_thresholds_refuse_boot():
+    with pytest.raises(ValueError, match="THRESHOLD"):
+        Settings(
+            database_url="sqlite+pysqlite:///:memory:",
+            sanctions_review_threshold="1.10",
+            sanctions_hard_threshold="1.20",
+        )

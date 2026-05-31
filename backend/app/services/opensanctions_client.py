@@ -102,8 +102,14 @@ def screen_entity(
             f"got {type(results).__name__})"
         )
 
+    # A returned match MUST carry a score. A non-empty result set whose objects omit
+    # `score` would otherwise filter to an empty `scores` list -> top_score=0 -> a
+    # false `clear` while match_count > 0. Treat a scoreless match as a parse error.
+    if any("score" not in r for r in results):
+        raise ScreeningProviderError("OpenSanctions match result is missing a 'score'")
+
     try:
-        scores = [Decimal(str(r["score"])) for r in results if "score" in r]
+        scores = [Decimal(str(r["score"])) for r in results]
         top_score = max(scores) if scores else Decimal("0")
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ScreeningProviderError(

@@ -17,7 +17,7 @@ W2 is the **writer** of sanctions evidence and `sanctions_status`. It implements
 - **No gate logic changes.** The RFQ admission gate still reads hedge `kyc_status` (`assert_kyc_approved`); its re-target to `assert_sanctions_clear` at the six `rfq_service.py` call sites is **W3**. The commercial order gate already reads stored `sanctions_status` (`!= blocked`) and is unchanged.
 - **No LEI/GLEIF work** (W4). **No frontend** (W5; the order-form repoint already landed in W1). **No credit-utilization gate** (W6+).
 - **No migration** — `sanctions_screenings` / `sanctions_adjudications` tables and enums already exist from migration `049` (created W1, written here).
-- **No on-create auto-screening.** Create stays `unscreened` (W1 behavior); screening is triggered explicitly via `POST /{id}/screen` and the scheduled re-screen. Create never depends on OpenSanctions uptime.
+- **No on-create auto-screening.** Create stays `unscreened` (W1 behavior); screening is triggered explicitly via `POST /{id}/screen` and the scheduled re-screen. Create never depends on OpenSanctions uptime. Per governance.md "Sanctions screening governance → Decoupling", the on-create trigger is OPTIONAL and DEFERRED — the fail-closed gates already deny `unscreened` entities until a recorded screening lands, so W2 ships only the manual + scheduled triggers.
 
 ## 2. Components
 

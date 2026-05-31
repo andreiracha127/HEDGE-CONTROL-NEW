@@ -106,6 +106,17 @@ def test_per_query_status_200_is_accepted(monkeypatch):
     assert res.match_count == 1
 
 
+def test_non_empty_results_missing_score_raises(monkeypatch):
+    # a non-empty match set whose objects omit `score` must fail closed, NOT map
+    # to top_score=0 -> clear while match_count > 0.
+    _patch_post(
+        monkeypatch,
+        json_body={"responses": {"q1": {"results": [{"id": "ofac-1"}, {"score": 0.8}]}}},
+    )
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
 @pytest.mark.parametrize(
     "results",
     [None, {"score": 0.9}, [{"score": 0.9}, "not-an-object"], [123]],
