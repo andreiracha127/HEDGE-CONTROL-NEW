@@ -97,6 +97,14 @@ class Settings(BaseSettings):
                 "AUDIT_SIGNING_KEY must be set to a non-empty value. "
                 "Audit emission is fail-closed; refusing to boot without a key."
             )
+        if self.sanctions_screening_enabled and (
+            not self.opensanctions_api_key or not self.opensanctions_api_key.strip()
+        ):
+            raise ValueError(
+                "OPENSANCTIONS_API_KEY must be set to a non-empty value when "
+                "SANCTIONS_SCREENING_ENABLED is true. Sanctions screening is "
+                "fail-closed; refusing to boot without a provider key."
+            )
 
     # ── Scheduler ─────────────────────────────────────────────────
     scheduler_disabled: str = Field("")
@@ -135,6 +143,16 @@ class Settings(BaseSettings):
     twilio_auth_token: str = Field("")
     twilio_whatsapp_from: str = Field("")
     twilio_webhook_url: str = Field("")
+
+    # ── Sanctions screening (OpenSanctions) ──────────────────────
+    opensanctions_api_key: str = Field("")
+    sanctions_screening_enabled: bool = Field(True)
+    sanctions_review_threshold: Decimal = Field(
+        Decimal("0.70"), description="top_score >= this -> flagged (below -> clear)"
+    )
+    sanctions_hard_threshold: Decimal = Field(
+        Decimal("0.90"), description="top_score >= this -> blocked"
+    )
 
     # ── Helpers ───────────────────────────────────────────────────
 
