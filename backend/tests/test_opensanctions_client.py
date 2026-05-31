@@ -106,6 +106,15 @@ def test_per_query_status_200_is_accepted(monkeypatch):
     assert res.match_count == 1
 
 
+@pytest.mark.parametrize("bad_score", ["NaN", "Infinity", "-0.1", "1.5"])
+def test_non_finite_or_out_of_range_score_raises(monkeypatch, bad_score):
+    # Decimal(str(...)) accepts NaN/Infinity/negative/>1; these must fail closed,
+    # not silently map to clear (NaN) or accept an invalid range.
+    _patch_post(monkeypatch, json_body={"responses": {"q1": {"results": [{"score": bad_score}]}}})
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
 def test_non_empty_results_missing_score_raises(monkeypatch):
     # a non-empty match set whose objects omit `score` must fail closed, NOT map
     # to top_score=0 -> clear while match_count > 0.

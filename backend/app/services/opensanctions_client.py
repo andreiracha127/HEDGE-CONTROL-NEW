@@ -110,11 +110,20 @@ def screen_entity(
 
     try:
         scores = [Decimal(str(r["score"])) for r in results]
-        top_score = max(scores) if scores else Decimal("0")
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise ScreeningProviderError(
             f"OpenSanctions returned malformed match results: {exc}"
         ) from exc
+
+    # Decimal(str(...)) accepts "NaN"/"Infinity"/"-0.1" without raising; a NaN would
+    # make every threshold comparison False (silently mapping to clear) and an
+    # out-of-range value is meaningless. Require each score finite and within 0..1.
+    for s in scores:
+        if not s.is_finite() or s < Decimal("0") or s > Decimal("1"):
+            raise ScreeningProviderError(
+                f"OpenSanctions returned a non-finite or out-of-range score: {s}"
+            )
+    top_score = max(scores) if scores else Decimal("0")
 
     dataset_version = data.get("responses", {}).get(_QUERY_ID, {}).get("dataset_version")
     return MatchResult(

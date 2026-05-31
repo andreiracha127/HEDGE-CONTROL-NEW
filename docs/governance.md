@@ -760,9 +760,14 @@ the last recorded status. Screening triggers: (a) a manual re-screen
 endpoint, and (b) a scheduled daily re-screen running in the existing
 `scheduler` service (`SCHEDULER_DISABLED=false`), never in web workers,
 attributed to the `service:sanctions_screening` identity. An entity is
-created `unscreened` and is denied by the fail-closed gates (RFQ admission
-and the commercial order gate both reject `unscreened`) until a recorded
-screening lands, so a partner is never admitted before it is screened.
+created `unscreened`. The commercial order gate denies an `unscreened`
+commercial partner (it requires `kyc_status = approved`, which in turn
+requires an effective `clear`). On the hedge domain, the sanctions gate
+that denies an `unscreened` counterparty is the kyc→sanctions RFQ
+re-target scheduled for W3; until W3 lands, hedge RFQ admission reads
+`kyc_status` (per the W1 decoupling), so an approved-but-`unscreened`
+hedge counterparty is NOT yet rejected by RFQ admission on sanctions
+grounds. Screening is performed via the manual + scheduled triggers.
 An automatic **on-create** screening trigger is OPTIONAL and DEFERRED: it
 MUST NOT couple entity creation to provider availability (creation must
 never fail because the OpenSanctions API is unreachable). Where a wave
