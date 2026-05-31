@@ -659,6 +659,13 @@ class TestRouteCoverageStatic:
             "POST",
             "/counterparties/{counterparty_id}/adjudicate-sanctions",
         ): "service-layer audited sanctions mutation",
+        # W4: LEI validation. Audit is emitted in lei_validation_service — same
+        # rationale as sanctions (service-layer so the same path works for
+        # non-request contexts). Verified by test_lei_route_emits_via_service.
+        (
+            "POST",
+            "/commercial-partners/{commercial_partner_id}/validate-lei",
+        ): "service-layer audited lei mutation",
         ("POST", "/orders/sales"): "covered institutional mutation",
         ("POST", "/orders/purchase"): "covered institutional mutation",
         ("POST", "/orders/links"): "covered institutional mutation",
@@ -813,6 +820,20 @@ class TestRouteCoverageStatic:
         assert "AuditTrailService.record" in service_source, (
             "sanctions_screening_service must emit HMAC audit events via "
             "AuditTrailService.record for service-layer audited sanctions routes"
+        )
+
+    def test_lei_route_emits_via_service(self) -> None:
+        import inspect
+
+        from app.services import lei_validation_service
+
+        service_source = inspect.getsource(lei_validation_service)
+        lei_routes = [
+            mp for mp, c in self.CLASSIFICATION.items() if c == "service-layer audited lei mutation"
+        ]
+        assert len(lei_routes) == 1, "expected the validate-lei route"
+        assert "AuditTrailService.record" in service_source, (
+            "lei_validation_service must emit an HMAC audit event via AuditTrailService.record"
         )
 
 
