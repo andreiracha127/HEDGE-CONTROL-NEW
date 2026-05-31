@@ -183,6 +183,22 @@ def test_service_identity_edit_resets_compliance_fail_closed():
         assert cp.kyc_status is KycStatus.pending
 
 
+def test_service_identity_edit_revokes_kyc_even_if_already_unscreened():
+    # Defense-in-depth: the kyc revocation on identity change is UNCONDITIONAL, not
+    # gated on the prior sanctions state. Even the (normally unreachable) approved +
+    # unscreened combo must drop kyc to pending so the order gate keeps denying it.
+    from app.services.commercial_partner_service import CommercialPartnerService
+
+    with SessionLocal() as session:
+        cp = _new_partner(session)
+        cp.sanctions_status = SanctionsStatus.unscreened
+        cp.kyc_status = KycStatus.approved
+        session.commit()
+        CommercialPartnerService.update(session, cp, {"name": "Acme Renamed"})
+        assert cp.sanctions_status is SanctionsStatus.unscreened
+        assert cp.kyc_status is KycStatus.pending
+
+
 def test_service_identity_clear_applies_explicit_null_and_resets_compliance():
     from app.services.commercial_partner_service import CommercialPartnerService
 

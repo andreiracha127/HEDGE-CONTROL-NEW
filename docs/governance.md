@@ -761,8 +761,11 @@ endpoint, and (b) a scheduled daily re-screen running in the existing
 `scheduler` service (`SCHEDULER_DISABLED=false`), never in web workers,
 attributed to the `service:sanctions_screening` identity. An entity is
 created `unscreened`. The commercial order gate denies an `unscreened`
-commercial partner (it requires `kyc_status = approved`, which in turn
-requires an effective `clear`). On the hedge domain, the sanctions gate
+commercial partner via its `kyc` leg, not a direct sanctions check: the
+gate requires `kyc_status = approved`, an `unscreened` partner cannot hold
+`approved` (approval requires an effective `clear`, and the identity-edit
+reset revokes `kyc_status` to `pending` whenever it touches identity), so
+an `unscreened` commercial partner is never `approved` and is refused. On the hedge domain, the sanctions gate
 that denies an `unscreened` counterparty is the kyc→sanctions RFQ
 re-target scheduled for W3; until W3 lands, hedge RFQ admission reads
 `kyc_status` (per the W1 decoupling), so an approved-but-`unscreened`
