@@ -317,6 +317,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/commercial-partners/{commercial_partner_id}/validate-lei": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate Commercial Partner Lei */
+        post: operations["validate_commercial_partner_lei_commercial_partners__commercial_partner_id__validate_lei_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/contracts/hedge": {
         parameters: {
             query?: never;
@@ -3166,6 +3183,19 @@ export interface components {
          * @enum {string}
          */
         LeiStatus: "not_provided" | "valid" | "invalid" | "lapsed" | "issued" | "error";
+        /** LeiValidationRead */
+        LeiValidationRead: {
+            /** Lei */
+            lei: string | null;
+            /** Lei Checked At */
+            lei_checked_at: string | null;
+            /** Lei Legal Name */
+            lei_legal_name: string | null;
+            /** Lei Status */
+            lei_status: string;
+            /** Warnings */
+            warnings: string[];
+        };
         /** LinkedDealSummary */
         LinkedDealSummary: {
             /** Hedge Ratio */
@@ -5492,6 +5522,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SanctionsScreeningRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_commercial_partner_lei_commercial_partners__commercial_partner_id__validate_lei_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeiValidationRead"];
                 };
             };
             /** @description Validation Error */
