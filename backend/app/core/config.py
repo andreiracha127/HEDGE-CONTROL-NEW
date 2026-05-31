@@ -171,6 +171,9 @@ class Settings(BaseSettings):
         Decimal("0.90"), description="top_score >= this -> blocked"
     )
 
+    # ── LEI validation (GLEIF) ────────────────────────────────────
+    gleif_api_base_url: str = Field("https://api.gleif.org/api/v1")
+
     # ── Helpers ───────────────────────────────────────────────────
 
     @property
