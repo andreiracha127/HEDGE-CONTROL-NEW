@@ -13,7 +13,6 @@ from jose import JWTError, jwt
 
 from app.core.config import get_settings
 
-
 JWKS_CACHE_TTL_SECONDS = 300
 SESSION_COOKIE_NAME = "__Session"
 CSRF_COOKIE_NAME = "csrf_token"
@@ -108,8 +107,7 @@ def validate_auth_config() -> None:
     if cluster3_missing:
         raise RuntimeError(
             f"Missing required auth configuration in fail-closed environment "
-            f"(APP_ENV={env!r}): "
-            + ", ".join(sorted(cluster3_missing))
+            f"(APP_ENV={env!r}): " + ", ".join(sorted(cluster3_missing))
         )
 
     if clerk_host:
@@ -227,9 +225,7 @@ def _select_jwk(jwks: dict[str, Any], kid: str | None) -> dict[str, Any]:
     for key in keys:
         if kid is None or key.get("kid") == kid:
             return key
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token key"
-    )
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token key")
 
 
 # Anonymous fallback identity. Used ONLY when auth is disabled in a
@@ -294,6 +290,7 @@ def _is_auth_disabled_fallback_user(
         and sorted(user.get("roles") or []) == ["auditor", "risk_manager", "trader"]
     )
 
+
 _VALID_HUMAN_ROLES = frozenset({"trader", "risk_manager", "auditor"})
 # Exhaustive set of operational internal-service JWT identities.
 # ``service:webhook_inbound`` is intentionally excluded: webhook ingress uses
@@ -303,6 +300,7 @@ _INTERNAL_SERVICE_IDENTITIES = frozenset(
         "service:westmetall_ingest",
         "service:rfq_outbound",
         "service:cashflow_pipeline",
+        "service:sanctions_screening",
     }
 )
 _TEST_SERVICE_IDENTITIES = frozenset({"service:e2e_cleanup"})
@@ -538,9 +536,7 @@ def require_any_role(*roles: str):
             )
         actor_roles = get_current_actor_roles(user)
         if not set(actor_roles).intersection(set(roles)):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
     return _dependency
 
