@@ -140,8 +140,12 @@ class CommercialPartnerService:
             cp.lei_checked_at = None
 
         # Identity-edit fail-closed reset (governance Authorization invariants):
-        # stale compliance evidence must not survive an identity change.
-        if identity_changed and cp.sanctions_status is not SanctionsStatus.unscreened:
+        # stale compliance evidence must not survive an identity change. The kyc
+        # revocation is UNCONDITIONAL on an identity change (not gated on the prior
+        # sanctions state): the order gate admits on kyc=approved, so an approved
+        # partner whose identity changed must drop to pending regardless — never rely
+        # on the (currently unreachable) approved+unscreened combo staying unreachable.
+        if identity_changed:
             cp.sanctions_status = SanctionsStatus.unscreened
             if cp.kyc_status is KycStatus.approved:
                 cp.kyc_status = KycStatus.pending

@@ -103,7 +103,9 @@ class CounterpartyService:
         # Identity-edit fail-closed reset (governance Authorization invariants):
         # stale screening evidence must not survive an identity change, otherwise
         # the RFQ gate would admit a broker/bank under a never-screened identity.
-        if identity_changed and cp.sanctions_status is not SanctionsStatus.unscreened:
+        # kyc revocation is UNCONDITIONAL on identity change (not gated on prior
+        # sanctions state) so the invariant never relies on a reachability argument.
+        if identity_changed:
             cp.sanctions_status = SanctionsStatus.unscreened
             if cp.kyc_status is KycStatus.approved:
                 cp.kyc_status = KycStatus.pending

@@ -792,3 +792,82 @@ def test_commercial_partner_identity_edit_resets_compliance(client, auth_as, ses
     assert resp.status_code == 200
     assert resp.json()["sanctions_status"] == "unscreened"
     assert resp.json()["kyc_status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# W2 sanctions screen / adjudicate RBAC matrix
+# ---------------------------------------------------------------------------
+
+
+def test_commercial_partner_screen_auditor_403(client, auth_as):
+    """auditor is read-only; POST /screen is a write — must be denied."""
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("auditor")
+    resp = client.post(f"/commercial-partners/{cp_id}/screen")
+    assert resp.status_code == 403
+
+
+def test_hedge_counterparty_screen_auditor_403(client, auth_as, session):
+    """auditor is read-only; POST /screen on a hedge counterparty must be denied."""
+    broker = _insert_counterparty(session, CounterpartyType.broker, "screen-broker-auditor")
+    auth_as("auditor")
+    resp = client.post(f"/counterparties/{broker.id}/screen")
+    assert resp.status_code == 403
+
+
+def test_hedge_counterparty_screen_trader_404(client, auth_as, session):
+    """trader is admitted by require_any_role but then turned away via _is_trader_only → 404
+    (existence hiding: hedge rows must be invisible to trader-only actors)."""
+    broker = _insert_counterparty(session, CounterpartyType.broker, "screen-broker-trader")
+    auth_as("trader")
+    resp = client.post(f"/counterparties/{broker.id}/screen")
+    assert resp.status_code == 404
+
+
+def test_hedge_counterparty_adjudicate_trader_403(client, auth_as, session):
+    """trader on hedge /adjudicate-sanctions: require_role('risk_manager') dependency fires
+    BEFORE the function body's _is_trader_only check, so the real response is 403, not 404.
+    This test asserts actual behaviour (403) — the plan table's 404 is incorrect."""
+    broker = _insert_counterparty(session, CounterpartyType.broker, "adjudicate-broker-trader")
+    auth_as("trader")
+    resp = client.post(
+        f"/counterparties/{broker.id}/adjudicate-sanctions",
+        json={"decision": "clear", "reason": "rbac test case"},
+    )
+    assert resp.status_code == 403
+
+
+def test_hedge_counterparty_adjudicate_auditor_403(client, auth_as, session):
+    """auditor cannot adjudicate sanctions on hedge counterparty."""
+    broker = _insert_counterparty(session, CounterpartyType.broker, "adjudicate-broker-auditor")
+    auth_as("auditor")
+    resp = client.post(
+        f"/counterparties/{broker.id}/adjudicate-sanctions",
+        json={"decision": "clear", "reason": "rbac test case"},
+    )
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_adjudicate_trader_403(client, auth_as):
+    """trader cannot adjudicate sanctions on commercial partner (risk_manager-only)."""
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("customer")).json()["id"]
+    auth_as("trader")
+    resp = client.post(
+        f"/commercial-partners/{cp_id}/adjudicate-sanctions",
+        json={"decision": "clear", "reason": "rbac test case"},
+    )
+    assert resp.status_code == 403
+
+
+def test_commercial_partner_adjudicate_auditor_403(client, auth_as):
+    """auditor cannot adjudicate sanctions on commercial partner."""
+    auth_as("risk_manager")
+    cp_id = client.post("/commercial-partners", json=_commercial_payload("supplier")).json()["id"]
+    auth_as("auditor")
+    resp = client.post(
+        f"/commercial-partners/{cp_id}/adjudicate-sanctions",
+        json={"decision": "clear", "reason": "rbac test case"},
+    )
+    assert resp.status_code == 403

@@ -756,10 +756,28 @@ inline dependency of a gate. Screening writes a `sanctions_status` onto
 the entity; the RFQ admission gate and the commercial order gate READ the
 stored `sanctions_status`. This means the external API being unreachable
 can NEVER take down order creation or RFQ admission — those paths read
-the last recorded status. Screening triggers: (a) on entity create, (b) a
-manual re-screen endpoint, (c) a scheduled daily re-screen running in the
-existing `scheduler` service (`SCHEDULER_DISABLED=false`), never in web
-workers, and attributed to the `service:sanctions_screening` identity.
+the last recorded status. Screening triggers: (a) a manual re-screen
+endpoint, and (b) a scheduled daily re-screen running in the existing
+`scheduler` service (`SCHEDULER_DISABLED=false`), never in web workers,
+attributed to the `service:sanctions_screening` identity. An entity is
+created `unscreened`. The commercial order gate denies an `unscreened`
+commercial partner via its `kyc` leg, not a direct sanctions check: the
+gate requires `kyc_status = approved`, an `unscreened` partner cannot hold
+`approved` (approval requires an effective `clear`, and the identity-edit
+reset revokes `kyc_status` to `pending` whenever it touches identity), so
+an `unscreened` commercial partner is never `approved` and is refused. On the hedge domain, the sanctions gate
+that denies an `unscreened` counterparty is the kyc→sanctions RFQ
+re-target scheduled for W3; until W3 lands, hedge RFQ admission reads
+`kyc_status` (per the W1 decoupling), so an approved-but-`unscreened`
+hedge counterparty is NOT yet rejected by RFQ admission on sanctions
+grounds. Screening is performed via the manual + scheduled triggers.
+An automatic **on-create** screening trigger is OPTIONAL and DEFERRED: it
+MUST NOT couple entity creation to provider availability (creation must
+never fail because the OpenSanctions API is unreachable). Where a wave
+adds it, it MUST run after the entity is committed and degrade to leaving
+the entity `unscreened` (recording a `status=error` screening row) on
+provider failure, rather than blocking creation. W2 ships triggers (a) and
+(b); on-create is not implemented in W2.
 
 No silent fallback (binding): a screening invocation that errors
 (network/HTTP/parse failure) MUST record a screening record with

@@ -13,6 +13,7 @@ from app.core.auth import (
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.models.commercial_partner import CommercialPartner
+from app.models.sanctions import AdjudicationDecision, SanctionsPartnerType
 from app.schemas.commercial_partner import (
     CommercialPartnerCreate,
     CommercialPartnerKind,
@@ -22,7 +23,14 @@ from app.schemas.commercial_partner import (
     CreditApprovalRequest,
 )
 from app.schemas.counterparty import KycStatus, KycStatusTransitionRequest
+from app.schemas.sanctions import (
+    SanctionsAdjudicationRead,
+    SanctionsAdjudicationRequest,
+    SanctionsScreeningRead,
+)
 from app.services.commercial_partner_service import CommercialPartnerService
+from app.services.sanctions_screening_service import adjudicate as adjudicate_sanctions
+from app.services.sanctions_screening_service import screen as screen_partner
 
 router = APIRouter()
 
@@ -242,3 +250,52 @@ def approve_credit(
             },
         )
     return CommercialPartnerRead.model_validate(cp)
+
+
+@router.post(
+    "/{commercial_partner_id}/screen",
+    response_model=SanctionsScreeningRead,
+    status_code=status.HTTP_200_OK,
+)
+def screen_commercial_partner(
+    commercial_partner_id: UUID,
+    request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(require_any_role("trader", "risk_manager")),
+    session: Session = Depends(get_session),
+) -> SanctionsScreeningRead:
+    with unit_of_work(session, request=request):
+        screening = screen_partner(
+            session,
+            SanctionsPartnerType.commercial,
+            commercial_partner_id,
+            actor_sub=actor_sub,
+            commit=False,
+        )
+    return SanctionsScreeningRead.model_validate(screening)
+
+
+@router.post(
+    "/{commercial_partner_id}/adjudicate-sanctions",
+    response_model=SanctionsAdjudicationRead,
+    status_code=status.HTTP_200_OK,
+)
+def adjudicate_commercial_partner(
+    commercial_partner_id: UUID,
+    payload: SanctionsAdjudicationRequest,
+    request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(require_role("risk_manager")),
+    session: Session = Depends(get_session),
+) -> SanctionsAdjudicationRead:
+    with unit_of_work(session, request=request):
+        row = adjudicate_sanctions(
+            session,
+            SanctionsPartnerType.commercial,
+            commercial_partner_id,
+            decision=AdjudicationDecision(payload.decision.value),
+            reason=payload.reason,
+            actor_sub=actor_sub,
+            commit=False,
+        )
+    return SanctionsAdjudicationRead.model_validate(row)

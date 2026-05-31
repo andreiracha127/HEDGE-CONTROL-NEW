@@ -11,6 +11,7 @@ from app.core.logging import get_logger
 from app.tasks.finance_pipeline_task import run_finance_pipeline_daily
 from app.tasks.market_data_staleness_task import run_market_data_staleness_check
 from app.tasks.rfq_timeout_task import run_rfq_timeout_check
+from app.tasks.sanctions_rescreen_task import run_sanctions_rescreen_daily
 from app.tasks.westmetall_task import run_westmetall_ingestion
 from app.tasks.workflow_approval_sweeper import workflow_approval_sweeper
 
@@ -84,6 +85,16 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
+    if get_settings().sanctions_screening_enabled:
+        _scheduler.add_job(
+            run_sanctions_rescreen_daily,
+            trigger="cron",
+            hour=int(os.getenv("SANCTIONS_RESCREEN_CRON_HOUR", "2")),
+            minute=int(os.getenv("SANCTIONS_RESCREEN_CRON_MINUTE", "0")),
+            id="sanctions_rescreen_daily",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     _scheduler.start()
     logger.info(
         "scheduler_started",

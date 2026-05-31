@@ -249,6 +249,23 @@ export interface paths {
         patch: operations["update_commercial_partner_commercial_partners__commercial_partner_id__patch"];
         trace?: never;
     };
+    "/commercial-partners/{commercial_partner_id}/adjudicate-sanctions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjudicate Commercial Partner */
+        post: operations["adjudicate_commercial_partner_commercial_partners__commercial_partner_id__adjudicate_sanctions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/commercial-partners/{commercial_partner_id}/credit": {
         parameters: {
             query?: never;
@@ -277,6 +294,23 @@ export interface paths {
         put?: never;
         /** Transition Kyc Status */
         post: operations["transition_kyc_status_commercial_partners__commercial_partner_id__kyc_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Screen Commercial Partner */
+        post: operations["screen_commercial_partner_commercial_partners__commercial_partner_id__screen_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -411,6 +445,23 @@ export interface paths {
         patch: operations["update_counterparty_counterparties__counterparty_id__patch"];
         trace?: never;
     };
+    "/counterparties/{counterparty_id}/adjudicate-sanctions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjudicate Counterparty */
+        post: operations["adjudicate_counterparty_counterparties__counterparty_id__adjudicate_sanctions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/counterparties/{counterparty_id}/kyc-status": {
         parameters: {
             query?: never;
@@ -422,6 +473,23 @@ export interface paths {
         put?: never;
         /** Transition Kyc Status */
         post: operations["transition_kyc_status_counterparties__counterparty_id__kyc_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/counterparties/{counterparty_id}/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Screen Counterparty */
+        post: operations["screen_counterparty_counterparties__counterparty_id__screen_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1615,6 +1683,11 @@ export interface components {
              */
             variable_leg_side: "buy" | "sell";
         };
+        /**
+         * AdjudicationDecisionIn
+         * @enum {string}
+         */
+        AdjudicationDecisionIn: "clear" | "blocked";
         /** AdjustOrderQuantityDelta */
         AdjustOrderQuantityDelta: {
             /**
@@ -4368,6 +4441,69 @@ export interface components {
              */
             reference_month?: string | null;
         };
+        /** SanctionsAdjudicationRead */
+        SanctionsAdjudicationRead: {
+            /**
+             * Adjudicated At
+             * Format: date-time
+             */
+            adjudicated_at: string;
+            /** Decision */
+            decision: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Partner Id
+             * Format: uuid
+             */
+            partner_id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Superseded Screening Id
+             * Format: uuid
+             */
+            superseded_screening_id: string;
+        };
+        /** SanctionsAdjudicationRequest */
+        SanctionsAdjudicationRequest: {
+            decision: components["schemas"]["AdjudicationDecisionIn"];
+            /** Reason */
+            reason: string;
+        };
+        /** SanctionsScreeningRead */
+        SanctionsScreeningRead: {
+            /** Algorithm */
+            algorithm: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Match Count */
+            match_count: number;
+            /**
+             * Partner Id
+             * Format: uuid
+             */
+            partner_id: string;
+            /** Provider */
+            provider: string;
+            /** Result */
+            result: string | null;
+            /**
+             * Screened At
+             * Format: date-time
+             */
+            screened_at: string;
+            /** Status */
+            status: string;
+            /** Top Score */
+            top_score: string | null;
+        };
         /**
          * SanctionsStatus
          * @enum {string}
@@ -5233,6 +5369,41 @@ export interface operations {
             };
         };
     };
+    adjudicate_commercial_partner_commercial_partners__commercial_partner_id__adjudicate_sanctions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SanctionsAdjudicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsAdjudicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_credit_commercial_partners__commercial_partner_id__credit_patch: {
         parameters: {
             query?: never;
@@ -5290,6 +5461,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    screen_commercial_partner_commercial_partners__commercial_partner_id__screen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsScreeningRead"];
                 };
             };
             /** @description Validation Error */
@@ -5738,6 +5940,41 @@ export interface operations {
             };
         };
     };
+    adjudicate_counterparty_counterparties__counterparty_id__adjudicate_sanctions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SanctionsAdjudicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsAdjudicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     transition_kyc_status_counterparties__counterparty_id__kyc_status_post: {
         parameters: {
             query?: never;
@@ -5760,6 +5997,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    screen_counterparty_counterparties__counterparty_id__screen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsScreeningRead"];
                 };
             };
             /** @description Validation Error */

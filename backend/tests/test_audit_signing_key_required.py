@@ -6,8 +6,6 @@ is missing in non-test environments (PR-7 / J-A1-02 §3.4).
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 
@@ -55,6 +53,9 @@ def test_settings_accepts_present_key_in_postgres_environment(monkeypatch) -> No
     )
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv("AUDIT_SIGNING_KEY", "production-grade-secret")
+    # A production boot is also fail-closed on the sanctions provider key when
+    # screening is enabled (W2); supply it so this test isolates the audit-key path.
+    monkeypatch.setenv("OPENSANCTIONS_API_KEY", "production-sanctions-key")
 
     from app.core.config import Settings
 
@@ -121,14 +122,9 @@ def test_migration_028_imports_postgresql_uuid_explicitly() -> None:
     from pathlib import Path
 
     migration_path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic"
-        / "versions"
-        / "028_reconciliation_run.py"
+        Path(__file__).resolve().parents[1] / "alembic" / "versions" / "028_reconciliation_run.py"
     )
-    spec = importlib.util.spec_from_file_location(
-        "reconciliation_run_migration", migration_path
-    )
+    spec = importlib.util.spec_from_file_location("reconciliation_run_migration", migration_path)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
