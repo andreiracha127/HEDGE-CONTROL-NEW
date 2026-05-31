@@ -42,10 +42,34 @@ def test_dev_missing_key_boots():
     s = Settings(
         database_url=PG,
         app_env="development",
+        audit_signing_key="x" * 16,
         sanctions_screening_enabled=True,
         opensanctions_api_key="",
     )
     assert s.app_env == "development"
+    assert s.opensanctions_api_key == ""
+
+
+def test_staging_enabled_missing_key_refuses_boot():
+    with pytest.raises(ValueError, match="OPENSANCTIONS_API_KEY"):
+        Settings(
+            database_url=PG,
+            app_env="staging",
+            audit_signing_key="x" * 16,
+            sanctions_screening_enabled=True,
+            opensanctions_api_key="",
+        )
+
+
+def test_whitespace_only_key_refuses_boot():
+    with pytest.raises(ValueError, match="OPENSANCTIONS_API_KEY"):
+        Settings(
+            database_url=PG,
+            app_env="production",
+            audit_signing_key="x" * 16,
+            sanctions_screening_enabled=True,
+            opensanctions_api_key="   ",
+        )
 
 
 def test_default_thresholds():
