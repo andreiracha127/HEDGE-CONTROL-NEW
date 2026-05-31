@@ -14,6 +14,7 @@ from app.core.auth import (
 from app.core.database import get_session
 from app.core.pagination import paginate
 from app.models.counterparty import Counterparty, CounterpartyType
+from app.models.sanctions import AdjudicationDecision, SanctionsPartnerType
 from app.schemas.counterparty import (
     CounterpartyCreate,
     CounterpartyListResponse,
@@ -21,7 +22,14 @@ from app.schemas.counterparty import (
     CounterpartyUpdate,
     KycStatusTransitionRequest,
 )
+from app.schemas.sanctions import (
+    SanctionsAdjudicationRead,
+    SanctionsAdjudicationRequest,
+    SanctionsScreeningRead,
+)
 from app.services.counterparty_service import CounterpartyService
+from app.services.sanctions_screening_service import adjudicate as adjudicate_sanctions
+from app.services.sanctions_screening_service import screen as screen_partner
 
 router = APIRouter()
 
@@ -202,3 +210,58 @@ def transition_kyc_status(
             },
         )
     return CounterpartyRead.model_validate(cp)
+
+
+@router.post(
+    "/{counterparty_id}/screen",
+    response_model=SanctionsScreeningRead,
+    status_code=status.HTTP_200_OK,
+)
+def screen_counterparty(
+    counterparty_id: UUID,
+    request: Request,
+    actor_roles: list[str] = Depends(get_current_actor_roles),
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    session: Session = Depends(get_session),
+) -> SanctionsScreeningRead:
+    if _is_trader_only(actor_roles):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
+    with unit_of_work(session, request=request):
+        screening = screen_partner(
+            session,
+            SanctionsPartnerType.hedge,
+            counterparty_id,
+            actor_sub=actor_sub,
+            commit=False,
+        )
+    return SanctionsScreeningRead.model_validate(screening)
+
+
+@router.post(
+    "/{counterparty_id}/adjudicate-sanctions",
+    response_model=SanctionsAdjudicationRead,
+    status_code=status.HTTP_200_OK,
+)
+def adjudicate_counterparty(
+    counterparty_id: UUID,
+    payload: SanctionsAdjudicationRequest,
+    request: Request,
+    actor_roles: list[str] = Depends(get_current_actor_roles),
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(require_role("risk_manager")),
+    session: Session = Depends(get_session),
+) -> SanctionsAdjudicationRead:
+    if _is_trader_only(actor_roles):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Counterparty not found")
+    with unit_of_work(session, request=request):
+        row = adjudicate_sanctions(
+            session,
+            SanctionsPartnerType.hedge,
+            counterparty_id,
+            decision=AdjudicationDecision(payload.decision.value),
+            reason=payload.reason,
+            actor_sub=actor_sub,
+            commit=False,
+        )
+    return SanctionsAdjudicationRead.model_validate(row)
