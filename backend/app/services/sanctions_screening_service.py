@@ -47,10 +47,12 @@ def map_score_to_result(
 
 
 def _load_entity(session: Session, partner_type: SanctionsPartnerType, partner_id: uuid.UUID):
-    if partner_type is SanctionsPartnerType.commercial:
-        entity = session.get(CommercialPartner, partner_id)
-    else:
-        entity = session.get(Counterparty, partner_id)
+    # Row-lock the entity for the duration of the transaction: screen()/adjudicate()
+    # both mutate sanctions_status, and concurrent calls would otherwise clobber each
+    # other (mirrors set_kyc_status with_for_update in counterparty_service.py). On
+    # SQLite with_for_update is a no-op; on Postgres it serializes the mutation.
+    model = CommercialPartner if partner_type is SanctionsPartnerType.commercial else Counterparty
+    entity = session.get(model, partner_id, with_for_update=True)
     if entity is None or entity.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Partner not found")
     return entity
@@ -197,6 +199,11 @@ def _latest_adjudication(
 
 
 def effective_sanctions_status(session: Session, partner_type, partner_id) -> str | None:
+    # Supersession is determined by timestamp comparison (screened_at vs adjudicated_at).
+    # Both timestamps are set via datetime.now(UTC) in this service, so they are
+    # internally consistent and trusted. The superseded_screening_id FK on
+    # SanctionsAdjudication provides forensic linkage for audit purposes; a
+    # FK-based supersession read is possible but deferred to a future wave (out of W2 scope).
     screening = _latest_screening(session, partner_type, partner_id)
     adjudication = _latest_adjudication(session, partner_type, partner_id)
     if screening is None and adjudication is None:
@@ -205,6 +212,8 @@ def effective_sanctions_status(session: Session, partner_type, partner_id) -> st
         return screening.result.value if screening.result else None
     if screening is None:
         return adjudication.decision.value
+    # tie-break: an adjudication responds to a screening, so on equal timestamps
+    # the adjudication is the later event (adjudication wins).
     if adjudication.adjudicated_at >= screening.screened_at:
         return adjudication.decision.value
     return screening.result.value if screening.result else None
@@ -226,6 +235,8 @@ def adjudicate(
     latest_is_flagged_screening = (
         screening is not None
         and screening.result is ScreeningResult.flagged
+        # tie-break: an adjudication responds to a screening, so on equal timestamps
+        # the adjudication is the later event (not adjudicable).
         and (adjudication is None or screening.screened_at > adjudication.adjudicated_at)
     )
     if not latest_is_flagged_screening:
