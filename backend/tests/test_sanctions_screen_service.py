@@ -94,6 +94,16 @@ def test_provider_error_records_error_row_and_raises_without_status_change(monke
         assert rows[0].result is None
         # error evidence carries the query_hash so it ties to the screened identity
         assert rows[0].query_hash and len(rows[0].query_hash) == 64
+        # and is anchored by an HMAC-signed provider-error audit event
+        err_events = (
+            check.query(AuditEvent)
+            .filter(AuditEvent.event_type == "sanctions_screening_error")
+            .filter(AuditEvent.entity_id == cp.id)
+            .all()
+        )
+        assert len(err_events) == 1
+        assert err_events[0].payload["query_hash"] == rows[0].query_hash
+        assert err_events[0].signature
 
 
 def test_missing_entity_404(monkeypatch):

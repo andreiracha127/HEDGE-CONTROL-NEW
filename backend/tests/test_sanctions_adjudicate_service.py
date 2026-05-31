@@ -191,7 +191,11 @@ def test_readjudicate_after_fresh_flagged_screening():
         )
         # New screening is strictly in the future (+1 h) relative to any possible
         # adjudicated_at timestamp, so screened_at > adjudicated_at is guaranteed.
+        # A real screen() that returns flagged also sets the stored status to flagged;
+        # the _screening helper only inserts the row, so set the status explicitly.
         _screening(session, cp.id, ScreeningResult.flagged, when=base + timedelta(hours=1))
+        cp.sanctions_status = SanctionsStatus.flagged
+        session.commit()
         adj2 = svc.adjudicate(
             session,
             SanctionsPartnerType.commercial,
@@ -250,3 +254,24 @@ def test_adjudicate_hedge_counterparty():
         assert adj.decision is AdjudicationDecision.clear
         session.refresh(cp)
         assert cp.sanctions_status is SanctionsStatus.clear
+
+
+def test_reject_adjudication_after_identity_reset():
+    # An identity edit resets sanctions_status -> unscreened while the old flagged
+    # screening row remains; adjudicating that stale hit must be refused (422) so a
+    # never-screened new identity cannot be cleared/blocked without re-screening.
+    with SessionLocal() as session:
+        cp = _partner(session)
+        _screening(session, cp.id, ScreeningResult.flagged, when=datetime.now(UTC))
+        cp.sanctions_status = SanctionsStatus.unscreened  # simulate identity-reset
+        session.commit()
+        with pytest.raises(Exception) as exc:
+            svc.adjudicate(
+                session,
+                SanctionsPartnerType.commercial,
+                cp.id,
+                decision=AdjudicationDecision.clear,
+                reason="stale flagged after identity reset",
+                actor_sub="rm",
+            )
+        assert getattr(exc.value, "status_code", None) == 422

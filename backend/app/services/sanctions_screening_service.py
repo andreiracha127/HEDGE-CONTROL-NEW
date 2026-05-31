@@ -81,9 +81,10 @@ def _record_error_screening(
 ) -> None:
     error_session = SessionLocal()
     try:
+        screening_id = uuid.uuid4()
         error_session.add(
             SanctionsScreening(
-                id=uuid.uuid4(),
+                id=screening_id,
                 partner_type=partner_type,
                 partner_id=partner_id,
                 screened_at=datetime.now(UTC),
@@ -99,6 +100,27 @@ def _record_error_screening(
                 status=ScreeningStatus.error,
                 error_detail=detail[:2000],
             )
+        )
+        error_session.flush()
+        # Anchor the error evidence with an HMAC-signed audit event (symmetric with
+        # the success/adjudication status-change events) so a provider outage cannot
+        # leave an unsigned, tamper-able screening record. Not a status change.
+        AuditTrailService.record(
+            error_session,
+            event_id=uuid.uuid4(),
+            entity_type=_entity_audit_type(partner_type),
+            entity_id=partner_id,
+            event_type="sanctions_screening_error",
+            payload_raw="",
+            payload_obj={
+                "partner_type": partner_type.value,
+                "partner_id": str(partner_id),
+                "screening_id": str(screening_id),
+                "query_hash": query_hash,
+                "error_detail": detail[:2000],
+                "actor_sub": actor_sub,
+            },
+            commit=False,
         )
         error_session.commit()
     finally:
@@ -258,13 +280,21 @@ def adjudicate(
         # the adjudication is the later event (not adjudicable).
         and (adjudication is None or screening.screened_at > adjudication.adjudicated_at)
     )
-    if not latest_is_flagged_screening:
+    # The stored status must STILL be flagged. An identity edit resets it to
+    # ``unscreened`` (counterparty_service / commercial_partner_service identity-reset)
+    # while leaving the old flagged screening row in place; without this guard a
+    # risk_manager could adjudicate that stale hit and clear/block a never-screened
+    # new identity. Requiring the current status to be flagged closes that loophole.
+    if not latest_is_flagged_screening or entity.sanctions_status is not SanctionsStatus.flagged:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
                 "code": "sanctions_adjudication_invalid_target",
                 "partner_id": str(partner_id),
-                "reason": "adjudication is valid only against the latest screening while flagged",
+                "reason": (
+                    "adjudication is valid only when the current status is flagged from "
+                    "the latest screening (an identity edit resets it to unscreened)"
+                ),
             },
         )
     previous_status = entity.sanctions_status
