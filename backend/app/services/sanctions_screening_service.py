@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException, status
-from sqlalchemy import select  # noqa: F401
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -23,8 +23,8 @@ from app.core.database import SessionLocal
 from app.models.commercial_partner import CommercialPartner
 from app.models.counterparty import Counterparty, SanctionsStatus
 from app.models.sanctions import (
-    AdjudicationDecision,  # noqa: F401
-    SanctionsAdjudication,  # noqa: F401
+    AdjudicationDecision,
+    SanctionsAdjudication,
     SanctionsPartnerType,
     SanctionsScreening,
     ScreeningResult,
@@ -167,3 +167,109 @@ def screen(
         session.commit()
         session.refresh(screening)
     return screening
+
+
+def _latest_screening(session: Session, partner_type, partner_id) -> SanctionsScreening | None:
+    stmt = (
+        select(SanctionsScreening)
+        .where(
+            SanctionsScreening.partner_type == partner_type,
+            SanctionsScreening.partner_id == partner_id,
+            SanctionsScreening.status == ScreeningStatus.success,
+        )
+        .order_by(SanctionsScreening.screened_at.desc())
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _latest_adjudication(
+    session: Session, partner_type, partner_id
+) -> SanctionsAdjudication | None:
+    stmt = (
+        select(SanctionsAdjudication)
+        .where(
+            SanctionsAdjudication.partner_type == partner_type,
+            SanctionsAdjudication.partner_id == partner_id,
+        )
+        .order_by(SanctionsAdjudication.adjudicated_at.desc())
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def effective_sanctions_status(session: Session, partner_type, partner_id) -> str | None:
+    screening = _latest_screening(session, partner_type, partner_id)
+    adjudication = _latest_adjudication(session, partner_type, partner_id)
+    if screening is None and adjudication is None:
+        return None
+    if adjudication is None:
+        return screening.result.value if screening.result else None
+    if screening is None:
+        return adjudication.decision.value
+    if adjudication.adjudicated_at >= screening.screened_at:
+        return adjudication.decision.value
+    return screening.result.value if screening.result else None
+
+
+def adjudicate(
+    session: Session,
+    partner_type: SanctionsPartnerType,
+    partner_id: uuid.UUID,
+    *,
+    decision: AdjudicationDecision,
+    reason: str,
+    actor_sub: str,
+    commit: bool = True,
+) -> SanctionsAdjudication:
+    entity = _load_entity(session, partner_type, partner_id)
+    screening = _latest_screening(session, partner_type, partner_id)
+    adjudication = _latest_adjudication(session, partner_type, partner_id)
+    latest_is_flagged_screening = (
+        screening is not None
+        and screening.result is ScreeningResult.flagged
+        and (adjudication is None or screening.screened_at > adjudication.adjudicated_at)
+    )
+    if not latest_is_flagged_screening:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "sanctions_adjudication_invalid_target",
+                "partner_id": str(partner_id),
+                "reason": "adjudication is valid only against the latest screening while flagged",
+            },
+        )
+    previous_status = entity.sanctions_status
+    row = SanctionsAdjudication(
+        id=uuid.uuid4(),
+        partner_type=partner_type,
+        partner_id=partner_id,
+        superseded_screening_id=screening.id,
+        decision=decision,
+        reason=reason,
+        adjudicating_actor_sub=actor_sub,
+        adjudicated_at=datetime.now(UTC),
+    )
+    session.add(row)
+    entity.sanctions_status = SanctionsStatus(decision.value)
+    session.flush()
+    AuditTrailService.record(
+        session,
+        event_id=uuid.uuid4(),
+        entity_type=_entity_audit_type(partner_type),
+        entity_id=partner_id,
+        event_type="sanctions_status_adjudicated",
+        payload_raw="",
+        payload_obj={
+            "partner_type": partner_type.value,
+            "partner_id": str(partner_id),
+            "previous_status": previous_status.value,
+            "new_status": decision.value,
+            "superseded_screening_id": str(screening.id),
+            "reason": reason,
+            "actor_sub": actor_sub,
+        },
+        commit=False,
+    )
+    if commit:
+        session.commit()
+        session.refresh(row)
+    return row
