@@ -37,3 +37,12 @@ def test_trader_screen_hedge_is_404(client):
     r = client.post(f"/counterparties/{cid}/screen")
     assert r.status_code == 404
     app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_auditor_cannot_screen_hedge(client):
+    # auditor is read-only; screening is a write and must be denied at the gate.
+    cid = _make_broker(client)
+    _as("auditor")
+    r = client.post(f"/counterparties/{cid}/screen")
+    assert r.status_code == 403
+    app.dependency_overrides.pop(get_current_user, None)

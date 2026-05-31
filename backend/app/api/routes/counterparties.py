@@ -222,7 +222,9 @@ def screen_counterparty(
     request: Request,
     actor_roles: list[str] = Depends(get_current_actor_roles),
     actor_sub: str = Depends(get_current_actor_sub),
-    _: None = Depends(require_any_role("trader", "risk_manager", "auditor")),
+    # auditor is read-only and MUST NOT trigger a screening (a write); trader is
+    # admitted to the gate only to receive the existence-hiding 404 below.
+    _: None = Depends(require_any_role("trader", "risk_manager")),
     session: Session = Depends(get_session),
 ) -> SanctionsScreeningRead:
     if _is_trader_only(actor_roles):
