@@ -23,12 +23,14 @@ from app.schemas.commercial_partner import (
     CreditApprovalRequest,
 )
 from app.schemas.counterparty import KycStatus, KycStatusTransitionRequest
+from app.schemas.lei import LeiValidationRead
 from app.schemas.sanctions import (
     SanctionsAdjudicationRead,
     SanctionsAdjudicationRequest,
     SanctionsScreeningRead,
 )
 from app.services.commercial_partner_service import CommercialPartnerService
+from app.services.lei_validation_service import validate_lei
 from app.services.sanctions_screening_service import adjudicate as adjudicate_sanctions
 from app.services.sanctions_screening_service import screen as screen_partner
 
@@ -299,3 +301,28 @@ def adjudicate_commercial_partner(
             commit=False,
         )
     return SanctionsAdjudicationRead.model_validate(row)
+
+
+@router.post(
+    "/{commercial_partner_id}/validate-lei",
+    response_model=LeiValidationRead,
+    status_code=status.HTTP_200_OK,
+)
+def validate_commercial_partner_lei(
+    commercial_partner_id: UUID,
+    request: Request,
+    actor_sub: str = Depends(get_current_actor_sub),
+    _: None = Depends(require_any_role("trader", "risk_manager")),
+    session: Session = Depends(get_session),
+) -> LeiValidationRead:
+    with unit_of_work(session, request=request):
+        cp, warnings = validate_lei(
+            session, commercial_partner_id, actor_sub=actor_sub, commit=False
+        )
+    return LeiValidationRead(
+        lei=cp.lei,
+        lei_status=cp.lei_status.value,
+        lei_legal_name=cp.lei_legal_name,
+        lei_checked_at=cp.lei_checked_at,
+        warnings=warnings,
+    )
