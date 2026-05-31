@@ -104,3 +104,15 @@ def test_per_query_status_200_is_accepted(monkeypatch):
     )
     res = screen_entity(name="X", country="BRA", tax_id=None, lei=None)
     assert res.match_count == 1
+
+
+@pytest.mark.parametrize(
+    "results",
+    [None, {"score": 0.9}, [{"score": 0.9}, "not-an-object"], [123]],
+)
+def test_malformed_results_payload_raises(monkeypatch, results):
+    # results: null, a dict instead of a list, or a non-object item must fail closed
+    # (ScreeningProviderError), never slip through to a default top_score=0 clear.
+    _patch_post(monkeypatch, json_body={"responses": {"q1": {"results": results}}})
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)

@@ -92,6 +92,8 @@ def test_provider_error_records_error_row_and_raises_without_status_change(monke
         )
         assert len(rows) == 1
         assert rows[0].result is None
+        # error evidence carries the query_hash so it ties to the screened identity
+        assert rows[0].query_hash and len(rows[0].query_hash) == 64
 
 
 def test_missing_entity_404(monkeypatch):

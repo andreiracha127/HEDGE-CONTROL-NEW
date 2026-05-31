@@ -32,6 +32,13 @@ def test_decision_must_be_clear_or_blocked():
         SanctionsAdjudicationRequest(decision="flagged", reason="valid reason text")
 
 
+def test_whitespace_only_reason_rejected():
+    # eight spaces passes min_length=8 but is not meaningful rationale for an
+    # immutable risk_manager sanctions override.
+    with pytest.raises(ValidationError):
+        SanctionsAdjudicationRequest(decision="clear", reason="        ")
+
+
 def _make_screening() -> SanctionsScreening:
     obj = SanctionsScreening()
     obj.id = uuid.uuid4()

@@ -93,11 +93,22 @@ def screen_entity(
     except (KeyError, TypeError) as exc:
         raise ScreeningProviderError(f"OpenSanctions response missing results: {exc}") from exc
 
+    # Fail closed on a malformed payload (results: null, a dict instead of a list,
+    # or a non-object item): these must NOT slip through to a default top_score=0
+    # 'clear' — they are provider parse failures.
+    if not isinstance(results, list) or not all(isinstance(r, dict) for r in results):
+        raise ScreeningProviderError(
+            f"OpenSanctions 'results' is malformed (expected a list of objects, "
+            f"got {type(results).__name__})"
+        )
+
     try:
         scores = [Decimal(str(r["score"])) for r in results if "score" in r]
         top_score = max(scores) if scores else Decimal("0")
-    except InvalidOperation as exc:
-        raise ScreeningProviderError(f"OpenSanctions score is not a valid decimal: {exc}") from exc
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ScreeningProviderError(
+            f"OpenSanctions returned malformed match results: {exc}"
+        ) from exc
 
     dataset_version = data.get("responses", {}).get(_QUERY_ID, {}).get("dataset_version")
     return MatchResult(

@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class AdjudicationDecisionIn(str, enum.Enum):
@@ -30,6 +30,16 @@ class SanctionsScreeningRead(BaseModel):
 class SanctionsAdjudicationRequest(BaseModel):
     decision: AdjudicationDecisionIn
     reason: str = Field(min_length=8)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_must_be_meaningful(cls, v: str) -> str:
+        # This reason is the immutable audit evidence for a risk_manager override
+        # of a flagged sanctions hit; an all-whitespace value (which slips past
+        # min_length) is not acceptable rationale.
+        if len(v.strip()) < 8:
+            raise ValueError("reason must contain at least 8 non-whitespace characters")
+        return v
 
 
 class SanctionsAdjudicationRead(BaseModel):

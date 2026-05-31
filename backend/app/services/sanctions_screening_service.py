@@ -72,7 +72,12 @@ def _query_hash(name, country, tax_id, lei) -> str:
 
 
 def _record_error_screening(
-    partner_type: SanctionsPartnerType, partner_id: uuid.UUID, *, actor_sub: str, detail: str
+    partner_type: SanctionsPartnerType,
+    partner_id: uuid.UUID,
+    *,
+    actor_sub: str,
+    detail: str,
+    query_hash: str,
 ) -> None:
     error_session = SessionLocal()
     try:
@@ -85,7 +90,7 @@ def _record_error_screening(
                 provider=_PROVIDER,
                 algorithm="logic-v2",
                 dataset_version=None,
-                query_hash="",
+                query_hash=query_hash,
                 top_score=None,
                 match_count=0,
                 matches_json=None,
@@ -119,12 +124,18 @@ def screen(
         )
     entity = _load_entity(session, partner_type, partner_id)
     lei = getattr(entity, "lei", None)
+    # Computed up front so the error-evidence row carries the same query_hash as a
+    # success row would — the audit history can then tie a failure to the exact
+    # name/country/tax_id/lei input that was screened.
+    query_hash = _query_hash(entity.name, entity.country, entity.tax_id, lei)
     try:
         match = screen_entity(
             name=entity.name, country=entity.country, tax_id=entity.tax_id, lei=lei
         )
     except ScreeningProviderError as exc:
-        _record_error_screening(partner_type, partner_id, actor_sub=actor_sub, detail=str(exc))
+        _record_error_screening(
+            partner_type, partner_id, actor_sub=actor_sub, detail=str(exc), query_hash=query_hash
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail={"code": "sanctions_screening_provider_error", "partner_id": str(partner_id)},
@@ -142,7 +153,7 @@ def screen(
         provider=_PROVIDER,
         algorithm=match.algorithm,
         dataset_version=match.dataset_version,
-        query_hash=_query_hash(entity.name, entity.country, entity.tax_id, lei),
+        query_hash=query_hash,
         top_score=match.top_score,
         match_count=match.match_count,
         matches_json=match.matches,
