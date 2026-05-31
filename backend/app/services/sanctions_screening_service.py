@@ -108,6 +108,15 @@ def screen(
     actor_sub: str,
     commit: bool = True,
 ) -> SanctionsScreening:
+    settings = get_settings()
+    # Honor the feature flag: when screening is disabled the deployment may run
+    # without OPENSANCTIONS_API_KEY (the boot validator allows it), so invoking the
+    # provider would only manufacture 502s / error rows. Refuse cleanly instead.
+    if not settings.sanctions_screening_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "sanctions_screening_disabled", "partner_id": str(partner_id)},
+        )
     entity = _load_entity(session, partner_type, partner_id)
     lei = getattr(entity, "lei", None)
     try:
@@ -121,7 +130,6 @@ def screen(
             detail={"code": "sanctions_screening_provider_error", "partner_id": str(partner_id)},
         ) from exc
 
-    settings = get_settings()
     result = map_score_to_result(
         match.top_score, settings.sanctions_review_threshold, settings.sanctions_hard_threshold
     )

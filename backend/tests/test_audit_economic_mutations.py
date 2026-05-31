@@ -639,6 +639,26 @@ class TestRouteCoverageStatic:
             "PATCH",
             "/commercial-partners/{commercial_partner_id}/credit",
         ): "covered institutional mutation",
+        # W2: sanctions screening + adjudication. Audit is emitted in the SERVICE
+        # (sanctions_screening_service) — not via the route audit_event dependency —
+        # because the same screen() path is also driven by the scheduled re-screen
+        # task (no request context). Verified by test_sanctions_routes_emit_via_service.
+        (
+            "POST",
+            "/commercial-partners/{commercial_partner_id}/screen",
+        ): "service-layer audited sanctions mutation",
+        (
+            "POST",
+            "/commercial-partners/{commercial_partner_id}/adjudicate-sanctions",
+        ): "service-layer audited sanctions mutation",
+        (
+            "POST",
+            "/counterparties/{counterparty_id}/screen",
+        ): "service-layer audited sanctions mutation",
+        (
+            "POST",
+            "/counterparties/{counterparty_id}/adjudicate-sanctions",
+        ): "service-layer audited sanctions mutation",
         ("POST", "/orders/sales"): "covered institutional mutation",
         ("POST", "/orders/purchase"): "covered institutional mutation",
         ("POST", "/orders/links"): "covered institutional mutation",
@@ -773,6 +793,26 @@ class TestRouteCoverageStatic:
         assert "_emit_audit_event" in service_source, (
             "workflow_approval_service must emit audit events via "
             "_emit_audit_event for service-layer audited lifecycle routes"
+        )
+
+    def test_sanctions_routes_emit_via_service(self) -> None:
+        # The four W2 sanctions POST routes are classified as service-layer audited:
+        # audit emission lives in sanctions_screening_service (so both the route and
+        # the scheduled re-screen task emit uniformly), NOT in a route audit_event dep.
+        import inspect
+
+        from app.services import sanctions_screening_service
+
+        service_source = inspect.getsource(sanctions_screening_service)
+        sanctions_routes = [
+            mp
+            for mp, c in self.CLASSIFICATION.items()
+            if c == "service-layer audited sanctions mutation"
+        ]
+        assert len(sanctions_routes) == 4, "expected 4 sanctions screen/adjudicate routes"
+        assert "AuditTrailService.record" in service_source, (
+            "sanctions_screening_service must emit HMAC audit events via "
+            "AuditTrailService.record for service-layer audited sanctions routes"
         )
 
 

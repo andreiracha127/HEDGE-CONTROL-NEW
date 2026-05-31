@@ -85,15 +85,16 @@ def start_scheduler() -> None:
         replace_existing=True,
         misfire_grace_time=3600,
     )
-    _scheduler.add_job(
-        run_sanctions_rescreen_daily,
-        trigger="cron",
-        hour=int(os.getenv("SANCTIONS_RESCREEN_CRON_HOUR", "2")),
-        minute=int(os.getenv("SANCTIONS_RESCREEN_CRON_MINUTE", "0")),
-        id="sanctions_rescreen_daily",
-        replace_existing=True,
-        misfire_grace_time=3600,
-    )
+    if get_settings().sanctions_screening_enabled:
+        _scheduler.add_job(
+            run_sanctions_rescreen_daily,
+            trigger="cron",
+            hour=int(os.getenv("SANCTIONS_RESCREEN_CRON_HOUR", "2")),
+            minute=int(os.getenv("SANCTIONS_RESCREEN_CRON_MINUTE", "0")),
+            id="sanctions_rescreen_daily",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
     _scheduler.start()
     logger.info(
         "scheduler_started",

@@ -84,3 +84,23 @@ def test_dataset_version_parsed(monkeypatch):
     _patch_post(monkeypatch, json_body=body)
     res = screen_entity(name="X", country="BRA", tax_id=None, lei=None)
     assert res.dataset_version == "20260101"
+
+
+def test_per_query_error_status_raises(monkeypatch):
+    # HTTP 200 batch but the per-query status indicates a failure with no results;
+    # must fail closed (ScreeningProviderError), NOT map empty results -> clear.
+    _patch_post(
+        monkeypatch,
+        json_body={"responses": {"q1": {"status": 500, "error": "upstream", "results": []}}},
+    )
+    with pytest.raises(ScreeningProviderError):
+        screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+
+
+def test_per_query_status_200_is_accepted(monkeypatch):
+    _patch_post(
+        monkeypatch,
+        json_body={"responses": {"q1": {"status": 200, "results": [{"score": 0.10}]}}},
+    )
+    res = screen_entity(name="X", country="BRA", tax_id=None, lei=None)
+    assert res.match_count == 1

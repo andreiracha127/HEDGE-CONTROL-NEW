@@ -102,3 +102,19 @@ def test_missing_entity_404(monkeypatch):
         with pytest.raises(Exception) as exc:
             svc.screen(session, SanctionsPartnerType.commercial, uuid.uuid4(), actor_sub="rm")
         assert getattr(exc.value, "status_code", None) == 404
+
+
+def test_disabled_flag_refuses_503_without_calling_provider(monkeypatch):
+    # When SANCTIONS_SCREENING_ENABLED is false the provider must NOT be called
+    # (the deployment may legitimately run without a key); refuse cleanly with 503.
+    monkeypatch.setattr(svc.get_settings(), "sanctions_screening_enabled", False)
+
+    def must_not_call(**kw):
+        raise AssertionError("provider must not be invoked when screening is disabled")
+
+    monkeypatch.setattr(svc, "screen_entity", must_not_call)
+    with SessionLocal() as session:
+        cp = _commercial(session)
+        with pytest.raises(Exception) as exc:
+            svc.screen(session, SanctionsPartnerType.commercial, cp.id, actor_sub="rm")
+        assert getattr(exc.value, "status_code", None) == 503

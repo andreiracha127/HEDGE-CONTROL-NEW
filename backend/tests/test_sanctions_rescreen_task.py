@@ -1,7 +1,5 @@
 from decimal import Decimal
 
-from app.tasks.sanctions_rescreen_task import run_sanctions_rescreen_daily
-
 from app.core.database import SessionLocal
 from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind
 from app.models.counterparty import (
@@ -14,6 +12,7 @@ from app.models.counterparty import (
 from app.models.sanctions import SanctionsScreening, ScreeningStatus
 from app.services import sanctions_screening_service as svc
 from app.services.opensanctions_client import MatchResult, ScreeningProviderError
+from app.tasks.sanctions_rescreen_task import run_sanctions_rescreen_daily
 
 
 def _seed():
@@ -74,3 +73,17 @@ def test_continues_on_per_entity_error(monkeypatch):
     summary = run_sanctions_rescreen_daily()
     assert summary["screened"] == 1
     assert summary["errors"] == 1
+
+
+def test_skips_entirely_when_screening_disabled(monkeypatch):
+    monkeypatch.setattr(svc.get_settings(), "sanctions_screening_enabled", False)
+
+    def must_not_call(**kw):
+        raise AssertionError("provider must not be invoked when screening is disabled")
+
+    monkeypatch.setattr(svc, "screen_entity", must_not_call)
+    _seed()
+    summary = run_sanctions_rescreen_daily()
+    assert summary.get("skipped") is True
+    assert summary["screened"] == 0
+    assert summary["errors"] == 0

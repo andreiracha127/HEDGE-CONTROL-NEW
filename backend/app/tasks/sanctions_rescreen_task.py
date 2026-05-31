@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.logging import get_logger
 from app.models.commercial_partner import CommercialPartner
@@ -21,6 +22,9 @@ def run_sanctions_rescreen_daily() -> dict:
     status=error evidence on its own session and raises; this loop logs and
     continues so one provider hiccup never aborts the whole run.
     """
+    if not get_settings().sanctions_screening_enabled:
+        logger.info("sanctions_rescreen_skipped_disabled")
+        return {"screened": 0, "errors": 0, "skipped": True}
     screened = 0
     errors = 0
     with SessionLocal() as session:

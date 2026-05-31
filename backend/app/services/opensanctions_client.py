@@ -74,7 +74,22 @@ def screen_entity(
         raise ScreeningProviderError(f"OpenSanctions returned unparseable body: {exc}") from exc
 
     try:
-        results = data["responses"][_QUERY_ID]["results"]
+        query_response = data["responses"][_QUERY_ID]
+    except (KeyError, TypeError) as exc:
+        raise ScreeningProviderError(f"OpenSanctions response missing query: {exc}") from exc
+
+    # The batch /match envelope carries a per-query HTTP-like ``status``. A query
+    # that errored (status != 200) can return an HTTP-200 batch with no results;
+    # mapping that empty set to top_score=0 -> clear would be a silent fallback.
+    # Fail closed: reject any non-200 query status before reading results.
+    query_status = query_response.get("status") if isinstance(query_response, dict) else None
+    if query_status is not None and query_status != 200:
+        raise ScreeningProviderError(
+            f"OpenSanctions query status {query_status}: {query_response.get('error')}"
+        )
+
+    try:
+        results = query_response["results"]
     except (KeyError, TypeError) as exc:
         raise ScreeningProviderError(f"OpenSanctions response missing results: {exc}") from exc
 
