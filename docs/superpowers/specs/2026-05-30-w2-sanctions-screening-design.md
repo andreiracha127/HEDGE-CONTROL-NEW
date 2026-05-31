@@ -82,9 +82,10 @@ Returns the result/decision of the latest event among {`status=success` screenin
 | `POST /commercial-partners/{id}/screen` | ✅ trigger | ✅ | ✗ |
 | `POST /commercial-partners/{id}/adjudicate-sanctions` | ✗ 403 | ✅ | ✗ |
 | `POST /counterparties/{id}/screen` | ✗ 404 (hedge invisible to trader) | ✅ | ✗ |
-| `POST /counterparties/{id}/adjudicate-sanctions` | ✗ 404 | ✅ | ✗ |
+| `POST /counterparties/{id}/adjudicate-sanctions` | ✗ 403¹ | ✅ | ✗ |
 
-- Trader may trigger screening on a **commercial** partner (design spec §6: "trigger sanctions screening"); trader cannot adjudicate (risk_manager-only) and has no hedge access (hedge endpoints 404 for trader, per the existing trader-invisible invariant).
+- Trader may trigger screening on a **commercial** partner (design spec §6: "trigger sanctions screening"); trader cannot adjudicate (risk_manager-only) and has no hedge access (hedge endpoints hide existence from trader).
+- ¹ As built, hedge `/adjudicate-sanctions` returns **403** (not 404) for a trader: the `require_role("risk_manager")` dependency fires before the body's `_is_trader_only` 404 guard. This leaks no existence (the 403 is returned before any DB read, identical for existent/non-existent ids) and matches the existing risk_manager-only hedge mutation routes (e.g. kyc-status). Hedge `/screen` keeps the trader→404 existence-hiding because its gate admits trader (`require_any_role("trader","risk_manager")`) and the body guard converts to 404.
 - `service:sanctions_screening` — used by the scheduled re-screen task only; authorized to write screenings + the derived `sanctions_status` (no order / RFQ / deal / credit / `kyc_status` mutation). Added to `_INTERNAL_SERVICE_IDENTITIES`.
 - `/screen` returns `200` with the `SanctionsScreeningRead` (incl. the new `sanctions_status`); provider failure → `502`. `/adjudicate-sanctions` returns `200` with `SanctionsAdjudicationRead`; invalid target → `422`.
 
