@@ -50,7 +50,7 @@ def run_migrations_online() -> None:
         # Codex adversarial review 2026-05-22 [high] — without (2), partially migrated
         # environments still fail when Alembic tries to stamp a long revision id.
         if connection.dialect.name == "postgresql":
-            existing_len = connection.execute(
+            version_column = connection.execute(
                 text(
                     "SELECT character_maximum_length "
                     "FROM information_schema.columns "
@@ -58,9 +58,9 @@ def run_migrations_online() -> None:
                     "  AND column_name = 'version_num' "
                     "  AND table_schema = current_schema()"
                 )
-            ).scalar()
+            ).mappings().first()
 
-            if existing_len is None:
+            if version_column is None:
                 # Case 1: fresh DB. Use IF NOT EXISTS to survive the race window
                 # between the information_schema probe above and this CREATE — two
                 # Alembic processes initialising the same empty schema in parallel
@@ -73,12 +73,16 @@ def run_migrations_online() -> None:
                         ")"
                     )
                 )
-            elif existing_len < 128:
-                # Case 2: pre-existing narrow column. Widen in place.
-                connection.execute(
-                    text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)")
-                )
-            # else: column already wide enough — no-op.
+            else:
+                existing_len = version_column["character_maximum_length"]
+                if existing_len is not None and existing_len < 128:
+                    # Case 2: pre-existing narrow column. Widen in place.
+                    connection.execute(
+                        text(
+                            "ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128)"
+                        )
+                    )
+                # else: column already wide enough, or unbounded TEXT/VARCHAR — no-op.
             connection.commit()
 
         context.configure(connection=connection, target_metadata=target_metadata)
