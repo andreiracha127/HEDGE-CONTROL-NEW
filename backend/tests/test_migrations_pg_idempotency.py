@@ -15,12 +15,14 @@ import uuid
 
 import pytest
 import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from sqlalchemy.dialects import postgresql
 
 
 PG_URL = os.getenv("TEST_PG_URL")
 
-pytestmark = pytest.mark.skipif(
+requires_pg = pytest.mark.skipif(
     not PG_URL,
     reason="TEST_PG_URL not set; this regression requires a real PostgreSQL instance.",
 )
@@ -30,8 +32,13 @@ def _make_engine() -> sa.Engine:
     return sa.create_engine(PG_URL, future=True)
 
 
+def _make_operations(conn: sa.Connection) -> Operations:
+    return Operations(MigrationContext.configure(conn))
+
+
+@requires_pg
 def test_hedge_contract_status_enum_idempotent_on_add_column() -> None:
-    """Simulate the 010 upgrade against a DB that already has the enum + table."""
+    """Simulate the 010 upgrade's Alembic add_column path with a pre-existing enum."""
     engine = _make_engine()
     schema = f"codex_010_{uuid.uuid4().hex[:8]}"
     with engine.begin() as conn:
@@ -52,20 +59,27 @@ def test_hedge_contract_status_enum_idempotent_on_add_column() -> None:
             "  END IF; "
             "END $$;"
         ))
+        operations = _make_operations(conn)
 
         column_type = postgresql.ENUM(
             "active", "cancelled", "settled",
             name="hedge_contract_status", create_type=False,
         )
-        conn.execute(sa.text(
-            'ALTER TABLE hedge_contracts ADD COLUMN status '
-            f'{column_type.compile(dialect=conn.dialect)} NOT NULL DEFAULT \'active\''
-        ))
+        operations.add_column(
+            "hedge_contracts",
+            sa.Column(
+                "status",
+                column_type,
+                nullable=False,
+                server_default="active",
+            ),
+        )
         conn.execute(sa.text(f'DROP SCHEMA "{schema}" CASCADE'))
 
 
+@requires_pg
 def test_order_pricing_convention_enum_idempotent_on_add_column() -> None:
-    """Same regression for migration 011 (orders.pricing_convention)."""
+    """Same Alembic add_column regression for migration 011."""
     engine = _make_engine()
     schema = f"codex_011_{uuid.uuid4().hex[:8]}"
     with engine.begin() as conn:
@@ -79,13 +93,14 @@ def test_order_pricing_convention_enum_idempotent_on_add_column() -> None:
             "END $$;"
         ))
         conn.execute(sa.text('CREATE TABLE orders (id UUID PRIMARY KEY)'))
+        operations = _make_operations(conn)
 
         column_type = postgresql.ENUM(
             "AVG", "AVGInter", "C2R",
             name="order_pricing_convention", create_type=False,
         )
-        conn.execute(sa.text(
-            'ALTER TABLE orders ADD COLUMN pricing_convention '
-            f'{column_type.compile(dialect=conn.dialect)}'
-        ))
+        operations.add_column(
+            "orders",
+            sa.Column("pricing_convention", column_type, nullable=True),
+        )
         conn.execute(sa.text(f'DROP SCHEMA "{schema}" CASCADE'))
