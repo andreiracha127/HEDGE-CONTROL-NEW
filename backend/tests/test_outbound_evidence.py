@@ -33,6 +33,7 @@ from app.models.rfqs import (
     RFQState,
     RFQStateEvent,
 )
+from conftest import mark_counterparty_sanctions_clear
 from app.schemas.rfq import RFQRead
 from app.schemas.whatsapp import WhatsAppSendResult
 from app.services.rfq_orchestrator import RFQOrchestrator
@@ -59,6 +60,7 @@ def _create_counterparty(
     # Test fixture: directly approve via service to set up the test scenario.
     # Production code path (POST /counterparties/{id}/kyc-status) is covered
     # by tests/test_counterparty_kyc_transition.py.
+    mark_counterparty_sanctions_clear(cp_id)
     client.post(f"/counterparties/{cp_id}/kyc-status", json={"new_status": "approved", "reason": "Test approval"})
     return cp_id
 

@@ -1,90 +1,116 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { goto } from '$app/navigation';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { apiFetch } from '$lib/api/fetch';
-	import type { Counterparty } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { ratingLabel } from '$lib/alcast/presentation';
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		href?: string;
+	};
 
-	let counterparties = $state<Counterparty[]>([]);
-	let isLoading = $state(true);
-	let search = $state('');
-	let abortController: AbortController;
-
-	async function loadCounterparties(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const res = await apiFetch('/counterparties?limit=200', { signal });
-			if (res.ok) {
-				const data = await res.json();
-				counterparties = data.items ?? data;
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar contrapartes');
-		} finally {
-			isLoading = false;
+	let { data } = $props();
+	const counterparties = $derived(data.counterparties);
+	const canCreateCounterparties = $derived(authStore.hasAnyRole('trader', 'risk_manager'));
+	const headerActions = $derived.by((): HeaderAction[] => {
+		const actions: HeaderAction[] = [{ label: 'Exportar', icon: 'download', variant: 'secondary' }];
+		if (canCreateCounterparties) {
+			actions.push({ label: 'Nova contraparte', icon: 'plus', variant: 'primary', href: '/counterparties/new' });
 		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadCounterparties(abortController.signal);
+		return actions;
 	});
+	const activeCount = $derived(counterparties.filter((cp) => cp.status === 'active').length);
+	const reviewCount = $derived(counterparties.filter((cp) => cp.status === 'review').length);
+	const totalLimit = $derived(counterparties.reduce((sum, cp) => sum + cp.limit, 0));
+	const totalUsed = $derived(counterparties.reduce((sum, cp) => sum + cp.used, 0));
+	const usagePct = $derived(totalLimit > 0 ? (totalUsed / totalLimit) * 100 : 0);
+	const topConcentration = $derived(totalLimit > 0 ? (Math.max(0, ...counterparties.map((cp) => cp.used)) / totalLimit) * 100 : 0);
 
-	onDestroy(() => { abortController?.abort(); });
-
-	let filtered = $derived(
-		counterparties.filter((cp) => {
-			if (!search) return true;
-			const q = search.toLowerCase();
-			return cp.name?.toLowerCase().includes(q) || cp.short_name?.toLowerCase().includes(q);
-		})
-	);
 </script>
 
-<div class="p-6">
-	<h1 class="text-lg font-semibold text-surface-200">Contrapartes</h1>
-
-	<input
-		type="text"
-		bind:value={search}
-		placeholder="Buscar..."
-		class="mt-4 w-64 rounded border border-surface-700 bg-surface-800 px-3 py-1.5 text-sm text-surface-200 placeholder-surface-600"
+<div class="page">
+	<PageHeader
+		eyebrow="Gestão de relacionamento"
+		title="Contrapartes"
+		subtitle="Limites de crédito, rating, exposição corrente e elegibilidade operacional."
+		meta={[`${counterparties.length} contraparte(s)`, `${activeCount} ativas`, `Utilização ${usagePct.toFixed(1)}%`]}
+		actions={headerActions}
 	/>
 
-	<div class="mt-4 overflow-x-auto rounded border border-surface-800">
-		<table class="w-full text-sm">
-			<thead>
-				<tr class="border-b border-surface-800 bg-surface-900 text-left text-xs text-surface-500">
-					<th class="px-3 py-2">Nome</th>
-					<th class="px-3 py-2">Abreviação</th>
-					<th class="px-3 py-2">Tipo</th>
-					<th class="px-3 py-2">Telefone</th>
-					<th class="px-3 py-2">KYC</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each filtered as cp (cp.id)}
-					<tr
-						onclick={() => goto(`/counterparties/${cp.id}`)}
-						class="border-b border-surface-800/50 cursor-pointer hover:bg-surface-800/30"
-					>
-						<td class="px-3 py-2 text-surface-200">{cp.name}</td>
-						<td class="px-3 py-2 text-surface-400">{cp.short_name ?? '—'}</td>
-						<td class="px-3 py-2 text-xs text-surface-400">{cp.type ?? '—'}</td>
-						<td class="px-3 py-2 font-mono text-xs text-surface-400">{cp.whatsapp_phone ?? cp.phone ?? '—'}</td>
-						<td class="px-3 py-2">
-							<span class="rounded px-1.5 py-0.5 text-xs {cp.kyc_status === 'approved' ? 'bg-success/20 text-success' : cp.kyc_status === 'pending' ? 'bg-warning/20 text-warning' : 'bg-surface-700 text-surface-400'}">
-								{cp.kyc_status ?? '—'}
-							</span>
-						</td>
+	<div class="institutional-counterparty">
+		<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+			<Kpi label="Contrapartes ativas"     value={String(activeCount)} delta={`${reviewCount} em análise`} deltaKind="flat"/>
+			<Kpi label="Limite agregado"         value={`US$ ${(totalLimit / 1_000_000).toFixed(1)} M`} delta={`utilizado ${usagePct.toFixed(0)} %`} deltaKind="flat"/>
+			<Kpi label="Concentração top-1"      value={topConcentration.toFixed(1)} unit="%" delta="maior utilização / limite agregado" deltaKind={topConcentration <= 30 ? 'pos' : 'flat'}/>
+			<Kpi label="Utilização média"        value={usagePct.toFixed(1)} unit="%" delta="uso sobre limite"/>
+		</div>
+
+		<Card noPad>
+			<table class="tbl">
+				<thead>
+					<tr>
+						<th>Contraparte</th>
+						<th>Rating</th>
+						<th class="num">Limite</th>
+						<th class="num">Utilizado</th>
+						<th style="width: 200px;">Utilização</th>
+						<th>Status</th>
+						<th></th>
 					</tr>
-				{:else}
-					{#if !isLoading}
-						<tr><td colspan="5" class="px-3 py-8 text-center text-surface-500">Nenhuma contraparte encontrada</td></tr>
+				</thead>
+				<tbody>
+					{#each counterparties as cp (cp.id)}
+						{@const pct = cp.limit > 0 ? (cp.used / cp.limit) * 100 : 0}
+						<tr>
+							<td class="strong">
+								<a href={`/counterparties/${cp.id}`}>
+									<div>{cp.name}</div>
+									<div style="font-size: 11px; color: var(--muted); font-weight: 400;">{cp.short}</div>
+								</a>
+							</td>
+							<td><Badge kind={cp.rating.startsWith('AA') ? 'pos' : 'neutral'}>{ratingLabel(cp.rating)}</Badge></td>
+							<td class="num">US$ {(cp.limit / 1_000_000).toFixed(1)} M</td>
+							<td class="num strong">US$ {(cp.used / 1_000_000).toFixed(1)} M</td>
+							<td>
+								<div class="row gap-3">
+									<Bar pct={pct} kind={pct > 80 ? 'neg' : pct > 60 ? 'warn' : 'pos'}/>
+									<span class="tabular" style="width: 42px; text-align: right;">{pct.toFixed(0)}%</span>
+								</div>
+							</td>
+							<td><StatePill state={cp.status}/></td>
+							<td><button type="button" class="btn btn-ghost btn-sm"><Icon name="chevronRight"/></button></td>
+						</tr>
+					{/each}
+					{#if counterparties.length === 0}
+						<tr>
+							<td colspan="7">
+								{#if canCreateCounterparties}
+									<EmptyState
+										icon="users"
+										title="Nenhuma contraparte carregada"
+										message="Cadastre uma contraparte elegível para RFQs, limites e trilha KYC."
+										actionLabel="Nova contraparte"
+										actionHref="/counterparties/new"
+									/>
+								{:else}
+							<EmptyState
+										icon="users"
+										title="Nenhuma contraparte carregada"
+										message="Nenhuma contraparte está disponível para consulta no momento."
+									/>
+								{/if}
+							</td>
+						</tr>
 					{/if}
-				{/each}
-			</tbody>
-		</table>
+				</tbody>
+			</table>
+		</Card>
 	</div>
 </div>

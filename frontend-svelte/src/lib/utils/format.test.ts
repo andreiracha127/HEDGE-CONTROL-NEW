@@ -4,6 +4,11 @@ import {
 	formatNumber,
 	formatQuantityMT,
 	formatPrice,
+	formatInteger,
+	formatDecimal,
+	formatSignedInteger,
+	formatUSD,
+	formatPercent,
 	stateLabel,
 	stateColor,
 	intentLabel,
@@ -120,6 +125,84 @@ describe('formatPrice', () => {
 	});
 });
 
+describe('formatInteger', () => {
+	it('groups thousands with pt-BR separator and no decimals', () => {
+		expect(formatInteger(1500)).toBe('1.500');
+		expect(formatInteger(1234567)).toBe('1.234.567');
+	});
+
+	it('rounds to whole numbers', () => {
+		expect(formatInteger(1499.6)).toBe('1.500');
+	});
+
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatInteger(null)).toBe('—');
+		expect(formatInteger(undefined)).toBe('—');
+		expect(formatInteger('not-a-number')).toBe('—');
+	});
+});
+
+describe('formatDecimal', () => {
+	it('formats with the caller-supplied digit count in pt-BR', () => {
+		expect(formatDecimal(2631, 2)).toBe('2.631,00');
+		expect(formatDecimal(5.4321, 4)).toBe('5,4321');
+	});
+
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatDecimal(null, 2)).toBe('—');
+		expect(formatDecimal('not-a-number', 2)).toBe('—');
+	});
+});
+
+describe('formatSignedInteger', () => {
+	it('prefixes positive values with + and negatives with -', () => {
+		expect(formatSignedInteger(1234)).toBe('+1.234');
+		expect(formatSignedInteger(-1234)).toBe('-1.234');
+		expect(formatSignedInteger(0)).toBe('+0');
+	});
+
+	it('returns dash for null/undefined', () => {
+		expect(formatSignedInteger(null)).toBe('—');
+	});
+});
+
+describe('formatUSD', () => {
+	it('renders unsigned USD with pt-BR grouping', () => {
+		expect(formatUSD(1234567)).toBe('US$ 1.234.567');
+	});
+
+	it('renders signed USD with explicit +/- on the absolute value', () => {
+		expect(formatUSD(1234, { signed: true })).toBe('+US$ 1.234');
+		expect(formatUSD(-1234, { signed: true })).toBe('-US$ 1.234');
+	});
+
+	it('honours the digits option', () => {
+		expect(formatUSD(1234.5, { digits: 2 })).toBe('US$ 1.234,50');
+	});
+
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatUSD(null)).toBe('—');
+		expect(formatUSD('not-a-number')).toBe('—');
+	});
+});
+
+describe('formatPercent', () => {
+	it('renders pt-BR percentage with comma decimal', () => {
+		expect(formatPercent(73.5, 1)).toBe('73,5%');
+		expect(formatPercent(2.5)).toBe('2,50%');
+	});
+
+	it('supports signed mode for deltas', () => {
+		expect(formatPercent(2.5, 2, { signed: true })).toBe('+2,50%');
+		expect(formatPercent(-2.5, 2, { signed: true })).toBe('-2,50%');
+	});
+
+	it('returns dash for null/undefined and non-finite input', () => {
+		expect(formatPercent(null)).toBe('—');
+		expect(formatPercent('not-a-number')).toBe('—');
+	});
+});
+
 describe('stateLabel', () => {
 	it('maps known states to PT-BR', () => {
 		expect(stateLabel('CREATED')).toBe('Criado');
@@ -136,11 +219,11 @@ describe('stateLabel', () => {
 
 describe('stateColor', () => {
 	it('returns color class for known states', () => {
-		expect(stateColor('AWARDED')).toContain('success');
+		expect(stateColor('AWARDED')).toBe('badge pos');
 	});
 
 	it('returns fallback for unknown state', () => {
-		expect(stateColor('UNKNOWN')).toContain('surface');
+		expect(stateColor('UNKNOWN')).toBe('badge neutral');
 	});
 });
 
@@ -165,7 +248,7 @@ describe('directionLabel', () => {
 
 describe('directionColor', () => {
 	it('returns correct color classes', () => {
-		expect(directionColor('BUY')).toBe('text-success');
-		expect(directionColor('SELL')).toBe('text-danger');
+		expect(directionColor('BUY')).toBe('badge pos');
+		expect(directionColor('SELL')).toBe('badge neg');
 	});
 });

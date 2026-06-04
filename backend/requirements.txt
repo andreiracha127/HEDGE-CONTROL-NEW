@@ -3,6 +3,7 @@ pydantic==2.12.5
 pydantic-settings==2.13.1
 uvicorn==0.41.0
 gunicorn==23.0.0
+websockets==15.0.1
 SQLAlchemy==2.0.47
 alembic==1.18.4
 psycopg==3.3.3
@@ -16,3 +17,4 @@ slowapi==0.1.9
 tenacity==9.1.4
 apscheduler==3.11.2
 anthropic==0.100.0
+pytest-json-report==1.5.0

@@ -1,11 +1,12 @@
 import createClient from 'openapi-fetch';
 import type { paths } from './schema';
 import { authStore } from '$lib/stores/auth.svelte';
+import { API_BASE } from './base';
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export const client = createClient<paths>({
-	baseUrl: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000',
+	baseUrl: API_BASE,
 	fetch: (request: Request) => fetch(request, { credentials: 'include' }),
 });
 

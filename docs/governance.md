@@ -196,17 +196,26 @@ deviation requires constitutional amendment, not silent override.
 Human roles (3, no admin/viewer):
 
 - `trader` (commercial team)
-  - Counterparty full access (read + CRUD) limited to type ∈ {customer, supplier},
-    EXCEPT mutations to `kyc_status` — see "Counterparty KYC gate" below.
-    `kyc_status` is risk_manager-only across all counterparty types.
+  - Commercial partner full access (read + CRUD) on `commercial_partners`
+    (kind ∈ {customer, supplier}), EXCEPT `kyc_status` and the credit/terms
+    fields — see "Commercial partner KYC + order gate" and "Credit and terms
+    governance" below. `kyc_status` transitions and credit/terms approval are
+    risk_manager-only.
+  - May TRIGGER sanctions screening and LEI validation on a
+    `commercial_partner` (the result-recording op is not a privileged write of
+    the gated fields; it writes a screening/validation record and the derived
+    `sanctions_status`/`lei_status`).
   - Order CRUD (Sales Orders + Purchase Orders)
-  - Read of operational primitives (orders, customer/supplier counterparties)
+  - Read of operational primitives (orders, commercial_partners)
   - Cannot: HedgeContracts, RFQs, Deals, Links, Scenario, MTM/P&L writes,
-    Counterparty {broker, bank_br} read or write, `kyc_status` mutations
-    on any counterparty type, audit log
+    hedge `counterparties` ({broker, bank_br}) read or write, `kyc_status` or
+    credit/terms mutations on `commercial_partners`, audit log
 
 - `risk_manager` (system owner)
-  - Counterparty CRUD all 4 types
+  - Hedge counterparty (`counterparties`, type ∈ {broker, bank_br}) CRUD
+  - Commercial partner (`commercial_partners`) full access, including the
+    `kyc_status` transitions and credit/terms approval that trader cannot
+    perform
   - HedgeContract full lifecycle
   - RFQ all operations
   - Deal lifecycle (create, links, snapshots)
@@ -240,14 +249,27 @@ Role combinability (binding):
   is therefore equivalent to "is trader-only", which is the intended
   scope of trader-restriction rules.
 
-Service identities (4) — split by authentication source:
+Service identities (5 operational + 1 test-only) — split by authentication source:
 
-Internal-issued (3, JWT signed by backend, short-lived TTL ~5min, same
+Internal-issued (4, JWT signed by backend, short-lived TTL ~5min, same
 actor_sub pattern as human authentication):
 
 - `service:westmetall_ingest` — cron-driven market-data ingest
 - `service:rfq_outbound` — outbound RFQ delivery worker
 - `service:cashflow_pipeline` — cashflow_ledger + finance_pipeline writes
+- `service:sanctions_screening` — scheduled sanctions re-screen worker;
+  writes `sanctions_screenings` rows and the derived `sanctions_status` on
+  both hedge `counterparties` and `commercial_partners`. Confined to
+  screening writes (no order / RFQ / deal / credit / `kyc_status` mutation)
+
+Test-only internal-issued (1, JWT signed by backend, valid only when
+`APP_ENV=test`; MUST be rejected in staging/production and any other
+non-test environment):
+
+- `service:e2e_cleanup` — E2E suite cleanup actor for
+  `POST /internal/test/cleanup`; this identity exists solely to let
+  full-stack E2E runs exercise the real bearer service-token path
+  without adding a parallel "magic token" authentication mechanism.
 
 External-ingress (1, request authenticated by external provider; the
 service identity is the INTERNAL processing context for audit-trail
@@ -289,57 +311,69 @@ direct Order/RFQ writes from the webhook entrypoint), etc.
 
 Authorization invariants:
 
-- Counterparty mutations by `trader` require server-side authorization
-  per HTTP method (route gate `require_any_role(trader, risk_manager)`
-  is the first layer in all three; the second layer differs by method
-  because PATCH and DELETE cannot rely on a payload type field):
-  - POST: payload gate — assert `payload.type ∈ {customer, supplier}`
-    when actor lacks risk_manager. Source of authorization is the
-    incoming type.
-  - PATCH: stored-record gate — load the existing counterparty, assert
-    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager,
-    AND reject any payload field that would mutate `type` (current
-    `CounterpartyUpdate` schema does not expose `type`, but the
-    rejection guards future schema evolution). Source of authorization
-    is the stored type, not the payload (the payload has no type field).
-  - DELETE: stored-record gate — load the existing counterparty, assert
-    `existing.type ∈ {customer, supplier}` when actor lacks risk_manager.
-    DELETE has no request body; the stored-type check is the only
-    authorization layer beyond the route gate.
-- Counterparty reads by `trader` are also type-restricted (the prohibition
-  is read-and-write, not write-only — broker/bank rows must be invisible
-  to commercial actors). The condition is **trader-specific** (NOT
-  "lacks risk_manager") because the GET route gate is
-  `require_any_role(trader, risk_manager, auditor)` — auditor enters the
-  handler and is read-only on every endpoint by matrix definition,
-  including broker/bank rows for oversight purposes:
-  - GET /counterparties (list): when the actor's effective role set is
-    `{trader}` only (no risk_manager, no auditor), the list query MUST
-    filter `type IN (customer, supplier)` server-side. The response
-    never contains broker/bank rows, never even leaks counts. Auditors
-    and risk_managers receive the unfiltered list.
-  - GET /counterparties/{id}: when the actor's effective role set is
-    `{trader}` only, load the existing counterparty + assert
-    `existing.type ∈ {customer, supplier}`; raise HTTP 404 (NOT 403)
-    if the stored type is broker/bank, to avoid leaking existence of
-    the row. Auditors and risk_managers receive the row regardless of
-    type.
-
-  Note on the symmetric mutation invariants above (POST/PATCH/DELETE):
-  the "when actor lacks risk_manager" condition there is correct because
-  those route gates are `require_any_role(trader, risk_manager)` —
-  auditor is rejected at the route gate before the handler runs, so
-  "lacks risk_manager" is equivalent to "is trader" inside the handler.
-  The GET route gate includes auditor, which is why the GET invariants
-  must use the explicit trader-only condition instead.
+- Hedge `counterparties` ({broker, bank_br}) are invisible to trader-only
+  actors on every method. The route gates are `require_any_role(trader,
+  risk_manager)` for writes and `require_any_role(trader, risk_manager,
+  auditor)` for reads; the second layer denies trader-only access:
+  - GET (list + by-id): a `{trader}`-only actor receives an empty list
+    and a 404 by-id (NOT 403 — existence must not leak). risk_manager and
+    auditor receive all rows.
+  - POST / PATCH / DELETE: a `{trader}`-only actor is refused. For by-id
+    methods the stored row is loaded and a 404 returned when the actor is
+    trader-only (existence non-leak). The `counterparties` table holds
+    ONLY hedge types after the W1 migration, so there is no per-type branch
+    left on this table — trader simply has no hedge-counterparty access.
+- Commercial partner mutations by `trader` (on `commercial_partners`) are
+  authorized by the table itself, not by a per-row type branch (every row
+  is commercial). The route gate `require_any_role(trader, risk_manager)`
+  is the first layer; the second layer protects the risk_manager-only
+  fields:
+  - POST: trader MAY create a `commercial_partner` (kind ∈ {customer,
+    supplier}); the create payload MUST NOT set `kyc_status` (server
+    forces default `pending`) nor any credit/terms field (those require a
+    separate risk_manager approval op).
+  - PATCH: the generic PATCH route mutates identity/contact/LEI-input
+    fields ONLY. `kyc_status` and credit/terms are NOT mutable via generic
+    PATCH by ANY actor (including risk_manager) — a payload targeting them
+    is refused with HTTP 403. Those fields change only via the dedicated
+    audited flows (`POST {id}/kyc-status`, `PATCH {id}/credit`), which
+    enforce the recorded-clear-screening check, the mandatory reason, and
+    the `commercial_partner_kyc_status_changed` /
+    `commercial_partner_credit_approved` HMAC-signed audit events.
+  - DELETE (soft): trader MAY soft-delete a `commercial_partner`.
+  - Screening-relevant identity fields (`name`, `country`, `tax_id`, `lei`)
+    are the inputs to sanctions screening / KYC. If any of them is PATCHed
+    on a partner that carries ANY prior screening evidence — i.e.
+    `sanctions_status` is not `unscreened` (`clear`, `flagged`, or
+    `blocked`), regardless of `kyc_status` — that evidence was computed from
+    the OLD identity and is invalidated: the partner is RESET fail-closed
+    (`sanctions_status` → `unscreened`, and `kyc_status` → `pending` if it
+    was `approved`) and must be re-screened (and re-approved) before order
+    creation or RFQ admission resumes. This also closes the loophole where a
+    `pending`+`flagged` partner is given a new identity and then adjudicated
+    to `clear` without ever screening the new identity. Stale compliance
+    evidence MUST NOT survive an identity change.
+- The hedge-counterparty read invisibility for trader is specified in the
+  bullet above (empty list / 404 by-id for `{trader}`-only actors). The
+  condition is **trader-specific** (NOT "lacks risk_manager") because the
+  GET route gate is `require_any_role(trader, risk_manager, auditor)` —
+  auditor enters the handler and is read-only on every endpoint by matrix
+  definition, including hedge rows for oversight purposes.
+- `commercial_partners` reads are permitted to all three human roles
+  (trader, risk_manager, auditor); there is no per-row type restriction
+  because every row is commercial. The risk_manager-only protection is on
+  the WRITE side (kyc_status + credit/terms), not the read side — trader
+  reads the full commercial partner record including its current
+  `kyc_status`, `sanctions_status`, `lei_status`, and approved credit/terms
+  so the order-entry UI can show compliance state.
 - Audit log routes are auditor-only dedicated reads. No operational role
   (`trader` or `risk_manager`) can read audit events, and no role —
   including auditor or risk_manager — can delete audit events. The auditor
   role is the read-only oversight layer.
 - Internal-issued service identities (`service:westmetall_ingest`,
-  `service:rfq_outbound`, `service:cashflow_pipeline`) follow the same
-  `actor_sub` JWT pattern as human auth (uniformity established by
-  Cluster 2 backend hardening). `service:webhook_inbound` is explicitly
+  `service:rfq_outbound`, `service:cashflow_pipeline`,
+  `service:sanctions_screening`) follow the same `actor_sub` JWT pattern as
+  human auth (uniformity established by Cluster 2 backend hardening). `service:webhook_inbound` is explicitly
   exempt from this JWT invariant: `/webhooks/whatsapp` preserves the
   provider-authentication protocol at ingress, and
   `service:webhook_inbound` is only the downstream internal audit
@@ -347,23 +381,31 @@ Authorization invariants:
 - The RBAC matrix is canonical. A per-route deviation is a constitutional
   amendment requiring this section's update, not a silent override in code.
 
-Counterparty KYC gate (binding, Pilot Hard Blocker 1):
+Hedge counterparty sanctions gate (binding):
 
-The counterparty `kyc_status` field is the constitutional gate for any
-RFQ-lifecycle participation. The field already exists in the data
-layer: the `KycStatus` enum is defined at
-`backend/app/models/counterparty.py:23-27` (members {pending, approved,
-expired, rejected}), and the mapped column on `Counterparty` is at
-`backend/app/models/counterparty.py:67-71` (`nullable=False`,
-`default=KycStatus.pending`). The field is exposed on the Counterparty
-schema/route — what is missing is the gate that enforces its meaning.
-This subsection binds that meaning constitutionally.
+SUPERSESSION NOTICE: This subsection re-targets the former "Counterparty
+KYC gate (binding, Pilot Hard Blocker 1)". The constitutional KYC hard
+block has MOVED to the commercial domain — see "Commercial partner KYC +
+order gate (binding, Pilot Hard Blocker 1)" below. On the HEDGE domain
+(`counterparties`, type ∈ {broker, bank_br}), RFQ-lifecycle admission is
+now gated by the universal sanctions control, NOT by `kyc_status`. Hedge
+counterparties are regulated brokers/banks; the full commercial KYC
+dossier (LEI, credit) does not apply to them, but sanctions screening
+applies to EVERY entity the platform transacts with.
 
-The gate admits ONLY `approved`. The other three members — `pending`,
-`expired`, `rejected` — all deny with the same refusal semantics
-described below; the difference between them is procedural (how the
-counterparty arrived at that status and what the path forward is),
-not gate behavior.
+The gate field on the hedge domain is `sanctions_status`
+(`SanctionsStatus` enum, members {unscreened, clear, flagged, blocked};
+`unscreened` is the default initial state, written by NO screening). The
+gate ADMITS only an effective `clear` — a `clear` set by an actual
+successful screening OR by a risk_manager adjudication of a `flagged`
+result. `blocked` denies; `flagged` denies pending risk_manager
+adjudication to `clear` (a sub-threshold potential match is not admissible
+until cleared); and `unscreened` denies. The W1 model adds the
+`unscreened` member as the column default (NOT `clear`), so a
+never-screened counterparty is never silently admitted; screening writes
+only `clear`/`flagged`/`blocked` (never `unscreened`). A hedge
+counterparty's `sanctions_status` is set by the sanctions-screening
+lifecycle (see "Sanctions screening governance" below).
 
 Gate scope (binding):
 
@@ -378,17 +420,18 @@ Gate scope (binding):
     `refresh` is a re-invite. Representative code paths today:
     `rfq_service.py:640` (rfq_invite), `rfq_service.py:1057` and
     `:1342` (refresh).
-  - **Outbox/notification purposes** (EXEMPT from the KYC gate):
+  - **Outbox/notification purposes** (EXEMPT from the sanctions gate):
     `reject_quote`, `award_notify`, `reject_notify`. These rows are
     durable outbound communication evidence — they record that the
     platform informed a counterparty of a negative or terminal
     outcome (quote rejection, award notification to non-winning
     counterparties, etc.) — and MUST persist regardless of the
-    counterparty's `kyc_status`. Gating these would prevent the
+    counterparty's `sanctions_status`. Gating these would prevent the
     platform from recording mandatory revocation/award/rejection
     communications exactly when they are most operationally
-    important (e.g. notifying a counterparty whose KYC was revoked
-    that their pending quote is now rejected). Representative code
+    important (e.g. notifying a counterparty whose sanctions status
+    flipped to `blocked` that their pending quote is now rejected).
+    Representative code
     paths today: `rfq_service.py:1188` (reject_quote),
     `rfq_orchestrator.py:1826` (award_notify),
     `rfq_orchestrator.py:1901` (reject_notify).
@@ -396,19 +439,24 @@ Gate scope (binding):
   Gate rule: any service-layer code path that creates an
   `RFQInvitation` row with `purpose ∈ {rfq_invite, refresh}` — whether
   reached through a human-issued route or invoked by the
-  `service:rfq_outbound` outbound worker — MUST refuse if the target
-  counterparty's `kyc_status != approved`. The HB-1 implementation
-  dispatch is responsible for sweeping every admission-purpose
-  invocation site and wiring the guard there. Refusal is HTTP 422
-  for human-issued requests (or the equivalent application-layer
-  rejection for service-driven paths). An audit event of type
-  `rfq_invitation_rejected_kyc_not_approved` MUST be recorded BEFORE
+  `service:rfq_outbound` outbound worker — MUST refuse unless the target
+  hedge counterparty's effective `sanctions_status` is `clear` — set by a
+  recorded `clear` screening OR a risk_manager adjudication of a `flagged`
+  result to `clear` (this denies `blocked`, unadjudicated `flagged`, AND an
+  unscreened row that carries only a non-recorded default). The W3 dispatch is
+  responsible for sweeping every admission-purpose invocation site
+  (the six `assert_kyc_approved` call sites in `rfq_service.py` at
+  ~580, 853, 1029, 1297, 1469, 1583) and replacing the guard with the
+  sanctions check (`assert_sanctions_clear`). Refusal is HTTP 422 for
+  human-issued requests (or the equivalent application-layer rejection
+  for service-driven paths). An audit event of type
+  `rfq_invitation_rejected_sanctions_not_cleared` MUST be recorded BEFORE
   the rejection response is returned. Audit payload MUST include:
-  `counterparty_id`, `kyc_status_observed`, `requesting_actor_sub`,
+  `counterparty_id`, `sanctions_status_observed`, `requesting_actor_sub`,
   `attempted_purpose` (one of `{rfq_invite, refresh}`), and `rfq_id`
   if the parent RFQ already exists. HMAC signature mandatory per
   `audit_trail_service` invariant. Outbox-purpose writes proceed
-  normally with their existing audit trail; the KYC gate MUST NOT
+  normally with their existing audit trail; the sanctions gate MUST NOT
   intercept them.
 
   If a future `RFQInvitationPurpose` enum member is introduced, the
@@ -419,84 +467,116 @@ Gate scope (binding):
   silence is an institutional anti-pattern — every member must be
   explicitly partitioned.
 
-- RFQ quote ingestion: inbound quotes from a counterparty whose
-  `kyc_status` has dropped from `approved` since the invitation was
+- RFQ quote ingestion: inbound quotes from a hedge counterparty whose
+  effective `sanctions_status` is no longer `clear` (re-screened to
+  `blocked`/`flagged`, or otherwise not effectively cleared) since the invitation was
   issued MUST be rejected at the internal-processing boundary (after
   provider authentication succeeds at the webhook ingress; see
   Service identities above). The gate applies equally to the
   human-issued quote-submission route (`POST
   /rfqs/{rfq_id}/quotes`) and to the LLM-parsed inbound path
   downstream of `webhook_processor`. Audit event
-  `rfq_quote_rejected_kyc_not_approved` with payload shape
-  `{counterparty_id, kyc_status_observed, rfq_id, inbound_message_id
+  `rfq_quote_rejected_sanctions_not_cleared` with payload shape
+  `{counterparty_id, sanctions_status_observed, rfq_id, inbound_message_id
   (nullable for human-issued path), rejection_path,
-  requesting_actor_sub (nullable for inbound/LLM path)}`. Sibling
-  parity with `rfq_invitation_rejected_kyc_not_approved` and
-  `rfq_award_rejected_kyc_not_approved`: the human-issued
+  requesting_actor_sub (= `service:webhook_inbound` on the inbound/LLM
+  path)}`. Sibling
+  parity with `rfq_invitation_rejected_sanctions_not_cleared` and
+  `rfq_award_rejected_sanctions_not_cleared`: the human-issued
   quote-submission path runs under a `risk_manager` JWT context so
   the actor sub is available exactly as it is on the award path and
   MUST be captured for audit attribution; the inbound/LLM path has
-  no human actor, so the field is nullable. The webhook protocol
+  no human actor, so the field records the `service:webhook_inbound`
+  identity (the stable downstream audit attribution after provider auth
+  succeeds; see Service identities above), NOT null. The webhook protocol
   itself is unchanged — the gate is the processing layer that
   decides whether the parsed quote persists into `RFQQuote`.
 
 - RFQ award: the award path (`POST /rfqs/{rfq_id}/actions/award`,
   defined at `backend/app/api/routes/rfqs.py:474`) MUST refuse if the
-  awarded quote's counterparty `kyc_status != approved` at the moment
-  of award, even if the original invitation was created when the
-  counterparty was approved. Audit event
-  `rfq_award_rejected_kyc_not_approved` with payload
-  `{counterparty_id, kyc_status_observed, rfq_id, quote_id,
+  awarded quote's hedge counterparty's effective `sanctions_status` is not
+  `clear` at the moment of award (an adjudicated-`clear` counterparty passes
+  — the adjudication is the evidence; see "Adjudication"), even if the
+  original invitation was created when the counterparty was clear. Audit
+  event `rfq_award_rejected_sanctions_not_cleared` with payload
+  `{counterparty_id, sanctions_status_observed, rfq_id, quote_id,
   requesting_actor_sub}`.
 
-The gate is fail-closed: the default `KycStatus.pending` denies, an
-explicitly `expired` status denies, an explicitly `rejected` status
-denies, and absence of the field (impossible per schema NOT NULL)
-also denies. The only admit-path is `approved`. There is NO bypass
-flag and NO config override. Operators wanting an exception MUST
-first transition the counterparty's `kyc_status` to `approved` via
-the status-transition path below; the gate then admits naturally.
+The hedge sanctions gate is fail-closed: it admits ONLY an effective
+`clear` (a recorded `clear` screening OR a risk_manager adjudication of a
+`flagged`); `blocked`, unadjudicated `flagged`, and unscreened all deny,
+with no bypass flag and no config override.
+A hedge counterparty with no recorded screening MUST NOT be admitted on
+a defaulted `clear`; the W2 dispatch (screening) sets `sanctions_status` only from a
+recorded screening result (see "Sanctions screening governance"), and
+RFQ admission for an unscreened hedge counterparty is treated as denied
+until a `clear` screening exists. Operators wanting to admit a `blocked`
+counterparty MUST first remediate and re-screen (or risk_manager must
+adjudicate a `flagged` result) so the recorded status becomes `clear`;
+the gate then admits naturally.
+
+Identity-edit reset (hedge, binding): editing a screening-relevant identity
+field (`name`, `country`, `tax_id`, `lei`) on a hedge `counterparty` whose
+`sanctions_status` is not `unscreened` invalidates the prior screening
+evidence (it was computed from the old identity) — the counterparty is
+RESET to `unscreened` and MUST be re-screened before RFQ admission resumes.
+This mirrors the commercial-partner identity-reset rule in the
+AUTHORIZATION MATRIX; stale `clear` (or adjudication) evidence MUST NOT
+admit a changed identity into the RFQ lifecycle.
 
 Status transitions (binding):
 
-- `kyc_status` mutations on ANY counterparty type (transitions
-  between any of the four members {pending, approved, expired,
-  rejected}) are authorized only to `risk_manager`. This explicitly
-  OVERRIDES the trader per-type CRUD admission for this single field
-  (see trader role bullet above): trader CAN update customer/supplier
-  counterparties' non-KYC fields (e.g. contact info, address) but
-  CANNOT mutate `kyc_status` on any counterparty type. Auditor cannot
-  mutate per matrix (read-only). Service identities
-  (`service:westmetall_ingest`, `service:rfq_outbound`,
-  `service:cashflow_pipeline`, `service:webhook_inbound`) have no
-  Counterparty-mutation scope and therefore no `kyc_status` mutation
-  scope either.
+- `kyc_status` mutations apply to `commercial_partners` ONLY (the
+  commercial KYC domain). Transitions between any of the four members
+  {pending, approved, expired, rejected} are authorized only to
+  `risk_manager`. This explicitly OVERRIDES trader CRUD on
+  `commercial_partners` for this single field (see trader role bullet
+  above): trader CAN update a commercial partner's non-KYC,
+  non-credit fields (e.g. contact info, address, LEI input) but CANNOT
+  mutate `kyc_status`. Auditor cannot mutate per matrix (read-only).
+  Service identities have no `commercial_partners`-mutation scope and
+  therefore no `kyc_status` mutation scope. (Hedge `counterparties`
+  retain a vestigial `kyc_status` column post-W1 but no gate reads it;
+  it is scheduled for removal in a later migration.)
+
+- A `commercial_partners` transition to `approved` is BLOCKED unless the
+  partner's effective `sanctions_status` is `clear` — established EITHER by
+  a successful `clear` screening OR by a risk_manager adjudication of a
+  `flagged` result to `clear` (see "Sanctions screening governance" →
+  "Adjudication"). risk_manager cannot approve a partner whose effective
+  `sanctions_status` is `unscreened`, `flagged`, or `blocked`; a `flagged`
+  case must be adjudicated to `clear` first, and a `blocked` case must be
+  remediated and re-screened to `clear` (it cannot be adjudicated away).
 
 - Every transition MUST emit an audit event of type
-  `counterparty_kyc_status_changed` with payload
-  `{counterparty_id, previous_status, new_status,
+  `commercial_partner_kyc_status_changed` with payload
+  `{commercial_partner_id, previous_status, new_status,
   transition_actor_sub, reason}` where `reason` is mandatory free
   text (minimum 8 characters; enforced at the schema/service layer
   before persistence). HMAC-signed per audit-trail invariant.
 
-- Member semantics (binding, applies to all transitions to/from each
-  state):
-  - `pending` — counterparty exists in the platform but has not yet
-    been KYC-approved. Default state on creation. Gate denies.
+- Member semantics (binding, applies to all `commercial_partner`
+  `kyc_status` transitions; "the gate" here is the commercial order
+  gate below):
+  - `pending` — the commercial partner exists in the platform but has
+    not yet been KYC-approved. Default state on creation. Order gate
+    denies.
   - `approved` — KYC verification complete; risk_manager has signed
-    off. Only admit-state for the gate.
-  - `expired` — previously approved counterparty whose KYC has
-    lapsed (e.g. annual renewal cycle missed). Gate denies. Path
+    off (requires effective `sanctions_status` = `clear`, by a `clear`
+    screening or a risk_manager adjudication of a `flagged` result). Only
+    admit-state for the order gate's kyc leg.
+  - `expired` — previously approved commercial partner whose KYC has
+    lapsed (e.g. annual renewal cycle missed). Order gate denies. Path
     forward: risk_manager-initiated `expired → approved` transition
     with reason.
   - `rejected` — explicit administrative hold (e.g. compliance
-    failure, sanctions hit, or risk-rating downgrade). Gate denies
-    with the same semantics as `pending`/`expired`. Path forward
-    requires explicit risk_manager-initiated `rejected → approved`
-    transition with reason citing the remediation. The `rejected`
-    state is institutionally distinct from `expired` (rejected =
-    "we said no", expired = "approval lapsed in time"); both deny
-    identically at the gate.
+    failure, sanctions hit, or risk-rating downgrade). Order gate
+    denies with the same semantics as `pending`/`expired`. Path
+    forward requires explicit risk_manager-initiated `rejected →
+    approved` transition with reason citing the remediation. The
+    `rejected` state is institutionally distinct from `expired`
+    (rejected = "we said no", expired = "approval lapsed in time");
+    both deny identically at the gate.
 
 - No auto-promotion: `pending → approved`, `expired → approved`, and
   `rejected → approved` transitions are NEVER performed by background
@@ -506,37 +586,136 @@ Status transitions (binding):
 
 - Revocation paths (`approved → pending`, `approved → expired`,
   `approved → rejected`) are valid and follow the same audit-event
-  contract. Once revoked, the gate rules above apply immediately —
-  in-flight RFQ invitations to that counterparty become unawardable
-  (the award path re-checks `kyc_status` at award moment per the gate
-  scope rules) and in-flight quotes from that counterparty become
-  unpersistable (the quote-ingestion path re-checks at the
-  internal-processing boundary).
+  contract. Once a commercial partner's `kyc_status` is revoked, the
+  commercial order gate applies immediately — any new Purchase/Sales
+  Order referencing that partner is refused at creation (the order
+  gate re-checks `kyc_status` at creation moment per the gate scope
+  rules). Orders already created before the revocation are not
+  retroactively invalidated by this gate; remediation of an existing
+  exposure is a separate operational concern. (Hedge sanctions
+  revocation is governed separately above: a re-screen to `blocked`
+  makes in-flight RFQ invitations unawardable and inbound quotes
+  unpersistable per the hedge sanctions gate.)
+
+Commercial partner KYC + order gate (binding, Pilot Hard Blocker 1):
+
+This is the re-targeted home of the constitutional KYC hard block. A
+`commercial_partner` (kind ∈ {customer, supplier}) is the source of all
+commercial exposure (orders). Order creation is fail-closed against the
+partner's compliance state.
+
+Gate scope (binding): the order-creation paths — Purchase Order create
+(`POST /orders/purchase`) and Sales Order create (`POST /orders/sales`)
+— MUST refuse unless the referenced `commercial_partner` satisfies ALL of:
+
+  - **Kind coherence**: a Purchase Order MUST reference a partner with
+    `kind == supplier`; a Sales Order MUST reference a partner with
+    `kind == customer`. A mismatch is refused (the order is buying from a
+    supplier / selling to a customer; the inverse is a category error).
+  - **KYC admission**: `kyc_status == approved`. The other three members
+    (`pending`, `expired`, `rejected`) all deny; the default on creation
+    is `pending`, so a never-approved partner is gated out.
+  - **Sanctions admission**: `sanctions_status != blocked` (a `clear` or
+    `flagged` partner passes the sanctions leg; `blocked` denies). Note
+    that `kyc_status == approved` already implies an effective `clear`
+    (a clear screening OR a risk_manager adjudication) per the transition
+    invariant above, so the two legs are
+    consistent and the `!= blocked` leg additionally catches a partner
+    that WAS approved but has since been re-screened to `blocked`.
+
+Refusal is HTTP 422. An audit event MUST be recorded BEFORE the rejection
+response is returned, HMAC-signed per `audit_trail_service`:
+
+  - `order_rejected_kyc_not_approved` when the kyc leg fails, payload
+    `{commercial_partner_id, kind, order_type (PO|SO), kyc_status_observed,
+    requesting_actor_sub}`.
+  - `order_rejected_sanctions_blocked` when the sanctions leg fails,
+    payload `{commercial_partner_id, kind, order_type, sanctions_status_observed,
+    requesting_actor_sub}`.
+  - `order_rejected_kind_mismatch` when kind coherence fails, payload
+    `{commercial_partner_id, kind, order_type, requesting_actor_sub}`.
+
+The audit row MUST survive the request rollback: the implementation uses
+the dual-session pattern already established in
+`backend/app/services/kyc_gate.py` (write the rejection audit on a
+separate committed `SessionLocal`, then raise HTTPException so the outer
+`unit_of_work` rolls back the failed mutation while the audit row
+persists). The partner MUST be loaded via the service getter (not raw
+`db.get`) so a soft-deleted partner fails closed with 404.
+
+LEI is advisory at this gate: an invalid checksum, a lapsed GLEIF
+registration, or a legal-name mismatch produces a warning surfaced to the
+caller but does NOT block order creation (see "LEI validation
+governance"). LEI is warn-not-block by constitutional decision.
+
+The gate is fail-closed and has NO bypass flag and NO config override.
+There is no credit-utilization leg at this gate in the current scope:
+approved credit limits / approved supplier values are RECORDED and
+audited (see "Credit and terms governance") but do not block order
+creation by utilization; a cumulative-exposure credit gate is a separate
+future amendment.
 
 Pilot scope binding (operational pre-condition for Pilot Hard
 Blocker 1 closure):
 
-The 8 counterparties enumerated in
-`docs/2026-05-tech-lead-executive-analysis.md` §4 — Stonex Financial,
-Marex, Banco BS2, Itaú, Alecar, Rusal, Casa do Alumínio, Aluminios
-del Mexico — MUST be persisted with `kyc_status = approved` BEFORE
-pilot launch. This persistence is an operational pre-condition
-recorded in §7 of the pilot brief as part of the risk_manager
-sign-off. Any counterparty present in the platform but NOT in this
-list remains at default `kyc_status = pending` and is therefore
-gated out of every RFQ lifecycle event by the rules above. Adding a
-9th pilot counterparty is governed by §4 of the pilot brief (requires
-re-signature) AND by an explicit `kyc_status = approved` persistence
-event with audit trail.
+The 8 pilot entities enumerated in
+`docs/2026-05-tech-lead-executive-analysis.md` §4 split across the two
+domains by their economic role. The W1 migration places each entity in
+the correct table; the risk_manager sign-off (§7 of the pilot brief)
+records the per-domain pre-condition below.
+
+  - HEDGE counterparties (`counterparties`, broker/bank — RFQ recipients):
+    Stonex Financial, Marex, Banco BS2, Itaú. Each MUST have a recorded
+    sanctions screening with result `clear` BEFORE pilot launch. An
+    unscreened or `blocked` hedge counterparty is gated out of every RFQ
+    lifecycle event by the hedge sanctions gate.
+  - COMMERCIAL partners (`commercial_partners`, customer/supplier — order
+    sources): Alecar, Rusal, Casa do Alumínio, Aluminios del Mexico. Each
+    MUST be persisted with `kyc_status = approved` AND a recorded
+    sanctions screening with result `clear` BEFORE pilot launch. A partner
+    not meeting both is gated out of order creation by the commercial KYC
+    + order gate.
+
+(The exact hedge-vs-commercial partition of each named entity is fixed in
+the W1 migration dispatch against the source list; the four/four split
+above is the governing intent.) Any entity present in the platform but NOT
+in this list remains at its fail-closed default (hedge: unscreened →
+denied; commercial: `kyc_status = pending` → denied). Adding a 9th pilot
+entity is governed by §4 of the pilot brief (requires re-signature) AND by
+the explicit per-domain approval/screening persistence events with audit
+trail.
 
 Schema (binding):
 
-- NO alembic migration is required for the gate itself. The
-  `Counterparty.kyc_status` column and `KycStatus` enum already exist
-  (introduced in the Phase A1 Counterparty model creation). The
-  HB-1 implementation dispatch therefore prescribes service-layer
-  guards + audit-event wiring + tests; it does NOT prescribe a model
-  or migration change for the gate.
+- A migration IS required for the re-targeted model (this supersedes the
+  original HB-1 "no migration" note). The W1 dispatch creates the
+  `commercial_partners`, `sanctions_screenings`, and `sanctions_adjudications`
+  tables (+ enums), and
+  migrates the existing customer/supplier rows out of `counterparties`
+  into `commercial_partners` reusing the same UUID (so `orders.counterparty_id`
+  stays valid). Before the FK repoint, a pre-migration validation
+  enumerates `orders` whose `counterparty_id` references a broker/bank
+  `counterparties` row (a pre-fix data artifact of the order form that
+  listed hedge counterparties); if any exist the migration HALTS with a
+  remediation report rather than orphaning or guessing — each affected
+  order is manually re-pointed to the correct `commercial_partner` (or
+  voided) first. Symmetrically, before any customer/supplier row is removed
+  or restricted, hedge-domain references to it (`RFQInvitation`, `RFQQuote`,
+  `HedgeContract`, and `llm_decision_artifact` `.counterparty_id`) are
+  enumerated; if any exist the migration HALTS with a remediation report and
+  those rows are NOT removed until the references are corrected (no silent FK
+  breakage of the existing `counterparties.id` foreign keys). It then
+  repoints the `orders` FK to `commercial_partners`
+  and restricts `counterparties` to {broker, bank_br}. Migrated rows are reset
+  FAIL-CLOSED — commercial `kyc_status` → `pending`, and `sanctions_status`
+  → an unscreened state on BOTH domains — rather than carrying a legacy
+  `approved` / default-`clear` without `sanctions_screenings` evidence, so
+  the "approval requires a recorded clear screening" invariant holds; the
+  pilot pre-condition then re-establishes `approved` + `clear` for the
+  named pilots via real screening + risk_manager sign-off. The vestigial
+  `counterparties.kyc_status` column is kept by W1 and dropped in a later
+  migration. ENUM lifecycle for fresh Postgres follows the CLAUDE.md rules
+  (explicit `.create()` before `ALTER TABLE`, explicit `CAST(... AS <enum>)`).
 
 - The full KYC documentary suite (`KycDocument`, `CreditCheck`,
   `KycCheck` models with linked attestation documents) is P1
@@ -550,6 +729,176 @@ The current absence of the gate in code is a known constitutional
 violation that the HB-1 implementation PR closes; once that PR is
 merged, removal or weakening of any of the rules above requires a
 new amendment to this section, not a code change.
+
+Sanctions screening governance (binding):
+
+Sanctions screening is the UNIVERSAL compliance control — it applies to
+every entity the platform transacts with: both hedge `counterparties`
+({broker, bank_br}) and `commercial_partners` ({customer, supplier}).
+
+Provider (binding): the hosted OpenSanctions match API
+(`POST https://api.opensanctions.org/match/sanctions?algorithm=logic-v2`,
+header `Authorization: ApiKey <OPENSANCTIONS_API_KEY>`). The request body
+is the OpenSanctions `EntityMatchQuery` envelope — a top-level `queries`
+map keyed by a caller-chosen id, each value `{schema: "Company",
+properties: {...}}` with ARRAY-valued properties, e.g.
+`{"queries": {"q1": {"schema": "Company", "properties": {"name":
+["<name>"], "jurisdiction": ["<country>"], "registrationNumber":
+["<tax_id>"], "leiCode": ["<lei>"]}}}}`. A bare entity body (no `queries`
+map, or scalar property values) is rejected by the API.
+`OPENSANCTIONS_API_KEY`
+is REQUIRED (non-empty) in production/staging; an APP_ENV-gated boot
+validator MUST refuse to start when the feature is enabled and the key is
+absent, in the same shape as the `AUDIT_SIGNING_KEY` validator.
+
+Decoupling (binding): screening is a SEPARATE audited operation, never an
+inline dependency of a gate. Screening writes a `sanctions_status` onto
+the entity; the RFQ admission gate and the commercial order gate READ the
+stored `sanctions_status`. This means the external API being unreachable
+can NEVER take down order creation or RFQ admission — those paths read
+the last recorded status. Screening triggers: (a) a manual re-screen
+endpoint, and (b) a scheduled daily re-screen running in the existing
+`scheduler` service (`SCHEDULER_DISABLED=false`), never in web workers,
+attributed to the `service:sanctions_screening` identity. An entity is
+created `unscreened`. The commercial order gate denies an `unscreened`
+commercial partner via its `kyc` leg, not a direct sanctions check: the
+gate requires `kyc_status = approved`, an `unscreened` partner cannot hold
+`approved` (approval requires an effective `clear`, and the identity-edit
+reset revokes `kyc_status` to `pending` whenever it touches identity), so
+an `unscreened` commercial partner is never `approved` and is refused. On the hedge domain, the sanctions gate
+that denies an `unscreened` counterparty is the kyc→sanctions RFQ
+re-target scheduled for W3; until W3 lands, hedge RFQ admission reads
+`kyc_status` (per the W1 decoupling), so an approved-but-`unscreened`
+hedge counterparty is NOT yet rejected by RFQ admission on sanctions
+grounds. Screening is performed via the manual + scheduled triggers.
+An automatic **on-create** screening trigger is OPTIONAL and DEFERRED: it
+MUST NOT couple entity creation to provider availability (creation must
+never fail because the OpenSanctions API is unreachable). Where a wave
+adds it, it MUST run after the entity is committed and degrade to leaving
+the entity `unscreened` (recording a `status=error` screening row) on
+provider failure, rather than blocking creation. W2 ships triggers (a) and
+(b); on-create is not implemented in W2.
+
+No silent fallback (binding): a screening invocation that errors
+(network/HTTP/parse failure) MUST record a screening record with
+`status = error` and `error_detail` ON A SEPARATE, COMMITTED SESSION
+(commit-before-raise — the same dual-session pattern as
+`backend/app/services/kyc_gate.py` and the commercial order gate, because
+service/route paths run inside `unit_of_work`, which rolls back the
+request session on ANY exception; without the separate session the error
+evidence would be rolled back exactly on the failures it must record),
+and MUST raise — it MUST NOT set `sanctions_status = clear` by default. A `clear` status is only ever
+written from a successful screening that returned no above-threshold
+match.
+
+Result mapping (binding ranges; exact thresholds fixed in the W2
+dispatch): no match, OR a match below the REVIEW threshold → `clear`
+(low-confidence noise is NOT flagged); a match at or above the REVIEW
+threshold but below the HARD threshold → `flagged` (requires risk_manager
+adjudication to `clear` or `blocked`); a match at or above the HARD
+threshold → `blocked`. The threshold values are an implementation
+parameter recorded in the W2 dispatch, not silently chosen in code.
+
+Evidence (binding): every screening invocation persists an append-only,
+immutable `sanctions_screenings` record: `{partner_type
+(commercial|hedge), partner_id, screened_at, provider, algorithm,
+dataset_version, query_hash, top_score, match_count, matches_json, result
+(clear|flagged|blocked, NULL when status=error), actor_sub, status
+(success|error), error_detail}`. The entity's `sanctions_status` is
+derived from the latest SUCCESSFUL (status=success) screening's `result`,
+UNLESS a later risk_manager adjudication supersedes it (see "Adjudication"
+below); rows with status=error are recorded for audit (with `result=NULL`)
+and never overwrite `sanctions_status`. Screening records
+are never updated or deleted —
+reconstructability requires the full screening history. No PII beyond what
+is necessary for the match query leaves the platform; the design accepts
+that the hosted API receives the partner name/jurisdiction/identifiers for
+the match (a consequence of the hosted-provider decision).
+
+Adjudication (binding): a `flagged` result — a sub-threshold potential
+match, NOT a `blocked` hard hit — is not permanently terminal.
+risk_manager MAY adjudicate ONLY a `flagged` result (to `clear` if a false
+positive, or to `blocked` if confirmed) via a dedicated
+endpoint (`POST {id}/adjudicate-sanctions` on the relevant router) that
+records an APPEND-ONLY, immutable `sanctions_adjudications` artifact
+`{partner_type, partner_id, superseded_screening_id, decision
+(clear|blocked), reason (mandatory, min 8 chars), adjudicating_actor_sub,
+adjudicated_at}` and sets the entity `sanctions_status` to the decision.
+The adjudication NEVER mutates the immutable `sanctions_screenings` row —
+it supersedes it as the source of the current `sanctions_status`.
+Adjudication is VALID ONLY against the LATEST screening, and ONLY when that
+latest screening is `flagged` — a `flagged` already superseded by a newer
+`blocked` or `clear` screening CANNOT be adjudicated (this closes the
+loophole where a stale `flagged` is adjudicated to `clear` to override a
+newer `blocked` hard hit). A later successful screening supersedes a prior
+adjudication in turn (latest event wins — screening or adjudication — by
+timestamp). Adjudication is
+risk_manager-only and HMAC-signed (event `sanctions_status_adjudicated`),
+preventing a false-positive `flagged` from permanently blocking RFQ
+admission / commercial KYC approval until the provider itself returns
+`clear`.
+
+LEI validation governance (binding):
+
+LEI (Legal Entity Identifier, ISO 17442) validation applies to
+`commercial_partners` only (international-trade safety for customers and
+suppliers). LEI is OPTIONAL per partner (not every domestic entity holds
+one) and is WARN-NOT-BLOCK: an absent, invalid, lapsed, or name-mismatched
+LEI never blocks registration or order creation.
+
+Two-stage validation (binding):
+
+  - Offline checksum: the LEI MUST pass the ISO 17442 / ISO 7064
+    MOD 97-10 checksum (20 alphanumeric characters, last two are the
+    check digits). A failed checksum sets `lei_status = invalid`.
+  - Online lookup: `GET https://api.gleif.org/api/v1/lei-records/{lei}`
+    (the public GLEIF API, no API key). The response yields the
+    registration status (e.g. ISSUED / LAPSED) and the registered legal
+    name. Map registration ISSUED → `lei_status = issued` (treated as
+    valid); LAPSED → `lei_status = lapsed`. Persist the returned legal
+    name in `lei_legal_name` and the check timestamp in `lei_checked_at`.
+
+Name cross-check (advisory): if `lei_legal_name` diverges materially from
+the partner `name`, surface a warning to the caller; do NOT block. The
+divergence is informational for the risk_manager.
+
+The GLEIF lookup is decoupled from any gate (like screening): it writes
+`lei_status`/`lei_legal_name`/`lei_checked_at` onto the partner; no gate
+hard-blocks on LEI. A GLEIF lookup error sets `lei_status = error` and
+surfaces a warning — it does not fabricate a valid status.
+
+Credit and terms governance (binding):
+
+Credit/terms are commercial-domain attributes on `commercial_partners`,
+asymmetric by kind:
+
+  - customer: an approved financial credit limit (`credit_limit`,
+    `credit_currency`) and approved payment conditions
+    (`payment_conditions`). Semantics: the maximum receivable exposure
+    Alcast extends to the customer, plus the approved payment terms.
+  - supplier: an approved value (`approved_value`, `approved_currency`)
+    and approved terms (`approved_terms`). Semantics: the value/terms
+    Alcast is authorized to commit to this supplier.
+
+Precision (binding): all monetary credit/value fields are `Decimal`
+end-to-end (Numeric columns), never `float`. This corrects the legacy
+`credit_limit_usd: float` violation and conforms to the platform precision
+contract.
+
+Authorization (binding): setting or changing any credit/terms field is
+risk_manager-only (trader is refused with HTTP 403, per the AUTHORIZATION
+MATRIX commercial-partner invariants). Every credit/terms mutation emits
+an audit event `commercial_partner_credit_approved` with payload
+`{commercial_partner_id, kind, fields_changed, previous_values,
+new_values, approving_actor_sub}`, HMAC-signed.
+
+Scope boundary (binding): in the current scope credit/terms are RECORDED
+and audited but do NOT gate order creation by utilization — the commercial
+order gate is kyc + sanctions + kind only (see "Commercial partner KYC +
+order gate"). A cumulative-exposure credit-utilization gate (refusing an
+order that would push aggregate open receivable/payable beyond the
+approved limit) is a SEPARATE future amendment; until it lands, no code
+path may silently enforce a utilization block.
 
 Workflow Approval gate (binding, Pilot Hard Blocker 2):
 
@@ -1218,9 +1567,16 @@ constitutional enumeration). The steps are:
 5. `risk_flags` — surfaces institutional risk anomalies for the
    day: contracts missing the day's MTM price (per the
    PriceQuote provenance binding in MARKET-DATA GOVERNANCE),
-   unhedged exposures above the operational guardrail, KYC
-   regressions on counterparties with active deals (per the HB-1
-   KYC gate amendment above), and workflow approvals still
+   unhedged exposures above the operational guardrail, compliance
+   regressions on entities with active positions (sanctions to any
+   non-`clear` state — `blocked`, `flagged`, or `unscreened` — on hedge
+   counterparties with active deals, per the re-targeted hedge sanctions
+   gate above; KYC or sanctions
+   regressions on commercial partners with active orders, per the
+   commercial partner KYC + order gate above — NOTE: the deployed
+   HB-3 risk_flags step currently inspects `kyc_status` on hedge
+   counterparties and MUST be re-aligned to this two-domain model in
+   the W3 wave), and workflow approvals still
    `pending` or `approved` past their `expires_at` (per the HB-2
    Workflow Approval gate amendment above). The step writes a
    `FinancePipelineRiskFlag` row per surfaced anomaly (table

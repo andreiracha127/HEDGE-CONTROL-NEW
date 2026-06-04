@@ -1,6 +1,7 @@
 import { expect, type Page } from '@playwright/test';
 
 const API_BASE = process.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+export const DASHBOARD_HEADING = 'Centro de comando de risco';
 
 function fakeJwt(payload: Record<string, unknown>): string {
 	const header = btoa(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
@@ -52,11 +53,17 @@ async function seedCookieSession(page: Page, roles: string[]): Promise<void> {
 export async function loginAsTrader(page: Page): Promise<void> {
 	await seedCookieSession(page, ['trader']);
 	await page.goto('/');
-	await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
+}
+
+export async function loginAsRiskManager(page: Page): Promise<void> {
+	await seedCookieSession(page, ['risk_manager']);
+	await page.goto('/');
+	await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 }
 
 export async function loginAsAdmin(page: Page): Promise<void> {
 	await seedCookieSession(page, ['trader', 'risk_manager']);
 	await page.goto('/');
-	await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10_000 });
+	await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 }

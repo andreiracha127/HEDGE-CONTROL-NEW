@@ -30,13 +30,18 @@ services:
       SCHEDULER_DISABLED: "true"
       # APP_ENV=development exempts the audit-signing-key boot validator
       # (defense-in-depth Layer 2) for local docker-compose convenience.
+      # CI E2E sets APP_ENV=test so the test-only cleanup router is exposed
+      # and the live OpenAPI contract matches generated frontend types.
       # Production/staging deployments MUST override APP_ENV to "production"
       # or "staging" AND supply a real AUDIT_SIGNING_KEY via secret store.
-      APP_ENV: "development"
+      APP_ENV: ${APP_ENV:-development}
       # Dev-only signing key — clearly non-production. The runtime guard
       # inside AuditTrailService.record (Layer 1) still fails-closed if a
       # production deployment forgets to override this.
       AUDIT_SIGNING_KEY: "dev-only-do-not-use-in-prod-replace-me"
+      # Local/CI docker-compose is an isolated test stack; outbound WhatsApp
+      # must not require production credentials to create RFQs.
+      WHATSAPP_PROVIDER: "fake"
     ports:
       - "8000:8000"
 

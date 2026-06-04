@@ -1,126 +1,308 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { apiFetch } from '$lib/api/fetch';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import type { Counterparty } from '$lib/api/types/entities';
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import Bar from '$lib/components/alcast/Bar.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import DecisionDossier from '$lib/components/alcast/DecisionDossier.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import { ratingLabel, stateBadge } from '$lib/alcast/presentation';
+	type Contract = Record<string, any>;
+	let { data } = $props();
+	const counterparties = $derived(data.counterparties);
+	const contracts = $derived((data.contracts ?? []) as Contract[]);
 
-	const cpId = $derived(page.params.id ?? '');
-	let cp = $state<Counterparty | null>(null);
-	let isLoading = $state(true);
-	let isSubmitting = $state(false);
-	let abortController: AbortController;
+	const id = $derived(page.params.id ?? '');
+	const cp = $derived(counterparties.find((c) => c.id === id || c.short === id) ?? counterparties[0]);
+	let tab = $state<'resumo' | 'contratos' | 'limites' | 'atividade'>('resumo');
 
-	async function loadCounterparty(signal?: AbortSignal) {
-		isLoading = true;
-		try {
-			const res = await apiFetch(`/counterparties/${cpId}`, { signal });
-			if (res.ok) cp = await res.json();
-			else if (res.status === 404) goto('/counterparties');
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			notifications.error('Erro ao carregar contraparte');
-		} finally {
-			isLoading = false;
+	const usePct = $derived(cp.limit > 0 ? (cp.used / cp.limit) * 100 : 0);
+	const cpContracts = $derived<Contract[]>(contracts.filter((c) => c.counterparty_id === cp.id || c.cp_id === cp.id || c.cp === cp.short));
+	const mtm = $derived(cpContracts.reduce((s, c) => s + (Number(c.mtm) || 0), 0));
+	const latestContractDate = $derived(
+		cpContracts
+			.map((contract) => contract.created_at ?? contract.traded ?? contract.settle)
+			.filter(Boolean)
+			.sort()
+			.at(-1) ?? null,
+	);
+	const concentrationRows = $derived.by(() => {
+		const byCommodity = new Map<string, number>();
+		for (const contract of cpContracts) {
+			const qty = Number(contract.qty);
+			const price = Number(contract.price);
+			const notional = Number.isFinite(qty) && Number.isFinite(price) ? Math.abs(qty * price) : 0;
+			if (notional === 0) continue;
+			byCommodity.set(contract.commodity ?? '—', (byCommodity.get(contract.commodity ?? '—') ?? 0) + notional);
 		}
-	}
-
-	async function updateKycStatus(newStatus: string, selectEl: HTMLSelectElement) {
-		const previousStatus = cp?.kyc_status ?? '';
-		const reason = window.prompt(
-			`Justificativa para alterar status KYC para "${newStatus}" (mínimo 8 caracteres, obrigatório para auditoria):`
-		);
-		if (reason === null) {
-			selectEl.value = previousStatus;
-			return;
-		}
-		const trimmed = reason.trim();
-		if (trimmed.length < 8) {
-			notifications.error('Justificativa deve ter no mínimo 8 caracteres');
-			selectEl.value = previousStatus;
-			return;
-		}
-		isSubmitting = true;
-		try {
-			const res = await apiFetch(`/counterparties/${cpId}/kyc-status`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ new_status: newStatus, reason: trimmed })
-			});
-			if (res.ok) {
-				cp = await res.json();
-				notifications.success('Status KYC atualizado com sucesso');
-			} else {
-				const err = await res.json();
-				notifications.error(err.detail || 'Erro ao atualizar status KYC');
-				selectEl.value = previousStatus;
-			}
-		} catch (e) {
-			notifications.error('Erro de conexão ao atualizar status KYC');
-			selectEl.value = previousStatus;
-		} finally {
-			isSubmitting = false;
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadCounterparty(abortController.signal);
+		const total = Array.from(byCommodity.values()).reduce((sum, value) => sum + value, 0);
+		return Array.from(byCommodity.entries()).map(([commodity, notional]) => ({
+			commodity,
+			pct: total > 0 ? (notional / total) * 100 : 0,
+		}));
 	});
 
-	onDestroy(() => { abortController?.abort(); });
+	function fmtQty(c: Contract): string {
+		if (c.qty == null) return '—';
+		if (c.commodity === 'USDBRL') return 'US$ ' + (c.qty / 1_000_000).toFixed(1) + ' M';
+		return c.qty.toLocaleString('pt-BR') + ' t';
+	}
+
+	function fmtPrice(c: Contract): string {
+		if (c.price == null) return '—';
+		const digits = c.commodity === 'USDBRL' ? 4 : 2;
+		return c.price.toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+	}
+
+	function fmtDate(value: string | null | undefined): string {
+		return value ? value.split('-').reverse().join('/') : '—';
+	}
+
+	function fmtText(value: unknown): string {
+		return typeof value === 'string' && value.trim() ? value : '—';
+	}
+
+	function fmtMtm(value: number | null | undefined): string {
+		if (value == null) return '—';
+		return `${value >= 0 ? '+' : ''}${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
+	}
+
+	function fmtUsdMillions(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `US$ ${(value / 1_000_000).toLocaleString('pt-BR', { maximumFractionDigits: 1 })} M`;
+	}
 </script>
 
-<div class="p-6">
-	<a href="/counterparties" class="text-sm text-surface-500 hover:text-surface-300">← Contrapartes</a>
+<div class="page">
+	<PageHeader
+		eyebrow="Diligência de relacionamento"
+		title={cp.name}
+		subtitle={`${cp.short} · ${fmtText(cp.type)} · ${fmtText(cp.city)} · ${fmtText(cp.country)}`}
+		meta={[`Rating ${ratingLabel(cp.rating)}`, stateBadge(cp.status).label, `${usePct.toFixed(0)}% limite utilizado`]}
+		actions={[
+			{ label: 'Editar', variant: 'secondary' },
+			{ label: 'Histórico KYC', variant: 'secondary' },
+			{ label: 'Nova RFQ', icon: 'plus', variant: 'primary', href: '/rfq/new' },
+		]}
+	/>
 
-	{#if isLoading}
-		<div class="mt-4 text-surface-500">Carregando...</div>
-	{:else if cp}
-		<h1 class="mt-4 text-lg font-semibold text-surface-200">{cp.name}</h1>
+	<div class="institutional-counterparty-detail">
+		<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+			<Kpi label="Limite de crédito" value={fmtUsdMillions(cp.limit)} delta="limite aprovado"/>
+			<Kpi
+				label="Utilização"
+				value={`${usePct.toFixed(0)}`}
+				unit="%"
+				delta={`${fmtUsdMillions(cp.used)} em uso`}
+				deltaKind={usePct > 80 ? 'neg' : usePct > 60 ? 'flat' : 'pos'}
+			/>
+			<Kpi label="Contratos carregados" value={String(cpContracts.length)} delta="relacionamento ativo"/>
+			<Kpi
+				label="MTM (USD)"
+				value={(mtm >= 0 ? '+' : '') + mtm.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+				delta="marcação consolidada"
+				deltaKind={mtm >= 0 ? 'pos' : 'neg'}
+			/>
+		</div>
 
-		<div class="mt-4 grid grid-cols-2 gap-4">
-			<div class="rounded border border-surface-800 bg-surface-900 p-4 space-y-2">
-				<h2 class="text-xs font-semibold uppercase text-surface-500">Informações</h2>
-				<div class="text-sm"><span class="text-surface-500">Nome:</span> <span class="text-surface-200">{cp.name}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Abreviação:</span> <span class="text-surface-200">{cp.short_name ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Tipo:</span> <span class="text-surface-200">{cp.type ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">WhatsApp:</span> <span class="text-surface-200 font-mono">{cp.whatsapp_phone ?? '—'}</span></div>
+		<div class="tabs">
+			<button type="button" class="tab" class:active={tab === 'resumo'} onclick={() => (tab = 'resumo')}>Resumo</button>
+			<button type="button" class="tab" class:active={tab === 'contratos'} onclick={() => (tab = 'contratos')}>Contratos ({cpContracts.length})</button>
+			<button type="button" class="tab" class:active={tab === 'limites'} onclick={() => (tab = 'limites')}>Limites &amp; KYC</button>
+			<button type="button" class="tab" class:active={tab === 'atividade'} onclick={() => (tab = 'atividade')}>Atividade</button>
+		</div>
+
+		{#if tab === 'resumo'}
+		<div class="detail-grid">
+			<div class="stack gap-4">
+				<Card title="Identificação">
+					<dl class="kv" style="grid-template-columns: 160px 1fr 160px 1fr;">
+						<dt>Razão social</dt><dd>{fmtText(cp.legal_name ?? cp.name)}</dd>
+						<dt>Tax ID (CNPJ)</dt><dd class="mono">{fmtText(cp.tax_id)}</dd>
+						<dt>Tipo</dt><dd>{fmtText(cp.type)}</dd>
+						<dt>País</dt><dd>{fmtText(cp.country)}</dd>
+						<dt>Cidade</dt><dd>{fmtText(cp.city)}</dd>
+						<dt>Endereço</dt><dd>{fmtText(cp.address)}</dd>
+						<dt>Cadastro</dt><dd>{fmtDate(cp.created_at ?? cp.created)}</dd>
+						<dt>Última operação</dt><dd>{fmtDate(latestContractDate)}</dd>
+					</dl>
+				</Card>
+
+				<Card title="Contato">
+					<dl class="kv">
+						<dt>Contato principal</dt><dd>{fmtText(cp.contact_name)}</dd>
+						<dt>Email</dt><dd>{fmtText(cp.contact_email)}</dd>
+						<dt>Telefone</dt><dd>{fmtText(cp.contact_phone)}</dd>
+						<dt>WhatsApp</dt><dd>{fmtText(cp.whatsapp_phone)}</dd>
+					</dl>
+				</Card>
+
+				<Card title="Operações recentes" noPad>
+					<table class="tbl tbl-tight">
+						<thead>
+							<tr><th>Quando</th><th>Tipo</th><th>Entidade</th><th class="num">Volume</th><th>Status</th></tr>
+						</thead>
+						<tbody>
+							{#each cpContracts as contract (contract.id)}
+								<tr>
+									<td>{fmtDate(contract.created_at ?? contract.traded)}</td>
+									<td>Contrato</td>
+									<td>{contract.contract_number ?? contract.reference ?? 'Contrato sem número'}</td>
+									<td class="num">{fmtQty(contract)}</td>
+									<td><StatePill state={contract.status}/></td>
+								</tr>
+							{/each}
+							{#if cpContracts.length === 0}
+								<tr>
+									<td colspan="5">
+										<EmptyState
+											icon="rfq"
+											title="Nenhuma operação carregada"
+											message="Contratos, RFQs e eventos operacionais desta contraparte aparecerão aqui."
+										/>
+									</td>
+								</tr>
+							{/if}
+						</tbody>
+					</table>
+				</Card>
 			</div>
-			<div class="rounded border border-surface-800 bg-surface-900 p-4 space-y-2">
-				<h2 class="text-xs font-semibold uppercase text-surface-500">Compliance</h2>
-				<div class="text-sm"><span class="text-surface-500">KYC:</span>
-					<span class="rounded px-1.5 py-0.5 text-xs {cp.kyc_status === 'approved' ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}">
-						{cp.kyc_status ?? '—'}
-					</span>
-				</div>
-				<div class="text-sm"><span class="text-surface-500">Sanções:</span>
-					<span class="text-surface-200">{cp.sanctions_status ?? '—'}</span>
-				</div>
 
-				{#if authStore.hasRole('risk_manager')}
-					<div class="mt-4 pt-4 border-t border-surface-800 space-y-2">
-						<label for="kyc-status-select" class="block text-xs font-semibold uppercase text-surface-500">Alterar Status KYC</label>
-						<select
-							id="kyc-status-select"
-							value={cp.kyc_status}
-							disabled={isSubmitting}
-							onchange={(e) => {
-								const target = e.target as HTMLSelectElement;
-								updateKycStatus(target.value, target);
-							}}
-							class="rounded border border-surface-700 bg-surface-800 px-2 py-1 text-sm text-surface-300 w-full max-w-[200px]"
-						>
-							<option value="pending">pending</option>
-							<option value="approved">approved</option>
-							<option value="expired">expired</option>
-							<option value="rejected">rejected</option>
-						</select>
+			<div class="stack gap-4">
+				<Card title="Utilização do limite">
+					<div class="row gap-3" style="align-items: center; margin-bottom: 14px;">
+						<div class="donut" style="background: conic-gradient(var(--navy) 0% {usePct}%, var(--surface-sunk) {usePct}% 100%);">
+							<div class="donut-label">
+								<div>
+									<div class="v">{usePct.toFixed(0)}%</div>
+									<div class="l">utilizado</div>
+								</div>
+							</div>
+						</div>
+						<div style="flex: 1;">
+							<dl class="kv">
+								<dt>Limite</dt><dd class="tabular">{fmtUsdMillions(cp.limit)}</dd>
+								<dt>Em uso</dt><dd class="tabular strong">{fmtUsdMillions(cp.used)}</dd>
+								<dt>Disponível</dt><dd class="tabular" style="color: var(--pos);">{fmtUsdMillions(cp.limit - cp.used)}</dd>
+							</dl>
+						</div>
 					</div>
-				{/if}
+					<div class="divider" style="margin: 6px 0 12px;"></div>
+					<div class="section-title" style="margin-bottom: 8px;">Concentração por commodity</div>
+					<div class="stack gap-2">
+						{#each concentrationRows as row (row.commodity)}
+							<div class="row gap-3">
+								<span style="width: 80px; font-size: 12px;">{row.commodity}</span>
+								<Bar pct={row.pct} kind={row.pct > 80 ? 'neg' : row.pct > 60 ? 'warn' : 'pos'}/>
+								<span class="tabular" style="width: 40px; text-align: right; font-size: 11px;">{row.pct.toFixed(0)}%</span>
+							</div>
+						{/each}
+						{#if concentrationRows.length === 0}
+							<EmptyState
+								icon="chart"
+								title="Nenhuma concentração carregada"
+								message="A concentração por commodity será exibida quando houver contratos associados."
+							/>
+						{/if}
+					</div>
+				</Card>
+
+				<Card noPad>
+					<DecisionDossier
+						title="Dossiê de compliance"
+						verdict={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'Bloqueada' : cp.kyc_status === 'approved' ? 'Elegível' : 'Revisão necessária'}
+						verdictKind={cp.is_active === false || cp.sanctions_status === 'blocked' ? 'neg' : cp.kyc_status === 'approved' ? 'pos' : 'warn'}
+						items={[
+							{ label: 'KYC', value: fmtText(cp.kyc_status) },
+							{ label: 'Sanções', value: fmtText(cp.sanctions_status) },
+							{ label: 'Rating', value: ratingLabel(cp.rating) },
+							{ label: 'Ativa', value: cp.is_active === true ? 'Sim' : cp.is_active === false ? 'Não' : '—' },
+						]}
+					/>
+				</Card>
 			</div>
 		</div>
+	{:else if tab === 'contratos'}
+		<Card title="Contratos ativos" sub={`${cpContracts.length} contratos carregados`} noPad>
+			<table class="tbl">
+				<thead>
+					<tr>
+						<th>Contrato</th><th>Commodity</th><th>Tipo</th><th class="num">Qtd</th>
+						<th class="num">Preço</th><th>Vencimento</th><th class="num">MTM (USD)</th><th>Status</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#if cpContracts.length}
+						{#each cpContracts as c (c.id)}
+							<tr>
+								<td class="strong"><a href={`/contracts/${c.id}`}>{c.contract_number ?? c.reference ?? 'Contrato sem número'}</a></td>
+								<td><CommodityChip code={c.commodity}/></td>
+								<td>{c.type}</td>
+								<td class="num">{fmtQty(c)}</td>
+								<td class="num">{fmtPrice(c)}</td>
+								<td>{fmtDate(c.settle)}</td>
+								<td class="num strong" style="color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+									{fmtMtm(c.mtm)}
+								</td>
+								<td><StatePill state={c.status}/></td>
+							</tr>
+						{/each}
+					{:else}
+						<tr>
+							<td colspan="8">
+								<EmptyState
+									icon="fileSign"
+									title="Nenhum contrato ativo"
+									message="Contratos vinculados a esta contraparte serão listados neste blotter."
+								/>
+							</td>
+						</tr>
+					{/if}
+				</tbody>
+			</table>
+		</Card>
+	{:else if tab === 'limites'}
+		<div class="grid-2">
+			<Card title="Histórico de limites" noPad>
+				<table class="tbl tbl-tight">
+					<thead><tr><th>Data</th><th class="num">Limite</th><th class="num">Δ</th><th>Aprovador</th></tr></thead>
+					<tbody>
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="scale"
+									title="Nenhum histórico de limite carregado"
+									message="A trilha de aprovações e revisões de limite aparecerá aqui."
+								/>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+			</Card>
+
+			<Card title="Trilha KYC">
+				<div class="feed">
+					<EmptyState
+						icon="shieldCheck"
+						title="Nenhuma trilha KYC carregada"
+						message="Checks de KYC, sanctions e revisões periódicas serão exibidos nesta linha do tempo."
+					/>
+				</div>
+			</Card>
+		</div>
+	{:else if tab === 'atividade'}
+		<Card title="Linha do tempo">
+			<div class="feed">
+				<EmptyState
+					icon="bell"
+					title="Nenhuma atividade carregada"
+					message="Atualizações operacionais, aprovações e eventos de relacionamento serão exibidos aqui."
+				/>
+			</div>
+		</Card>
 	{/if}
+	</div>
 </div>

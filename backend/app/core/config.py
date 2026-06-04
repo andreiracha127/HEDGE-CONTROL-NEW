@@ -8,6 +8,7 @@ runtime surprise.
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -81,6 +82,23 @@ class Settings(BaseSettings):
         * **test (sqlite ``:memory:``)** — pytest fixtures set the key
           dynamically per-test; allow boot without it.
         """
+        # Sanctions thresholds must be a bounded, ordered pair in every environment
+        # (a misordered/out-of-range pair would silently mis-map provider scores —
+        # e.g. review 1.10/hard 1.20 maps a top_score of 1.0 to 'clear'). Validated
+        # unconditionally; the defaults (0.70 < 0.90) satisfy it.
+        if not (
+            Decimal("0")
+            <= self.sanctions_review_threshold
+            < self.sanctions_hard_threshold
+            <= Decimal("1")
+        ):
+            raise ValueError(
+                "SANCTIONS_REVIEW_THRESHOLD/SANCTIONS_HARD_THRESHOLD must satisfy "
+                "0 <= review < hard <= 1 "
+                f"(got review={self.sanctions_review_threshold}, "
+                f"hard={self.sanctions_hard_threshold})"
+            )
+
         # Test path: sqlite in-memory always exempt (legacy contract).
         is_test_db = "sqlite" in self.database_url and ":memory:" in self.database_url
         if is_test_db:
@@ -95,6 +113,14 @@ class Settings(BaseSettings):
             raise ValueError(
                 "AUDIT_SIGNING_KEY must be set to a non-empty value. "
                 "Audit emission is fail-closed; refusing to boot without a key."
+            )
+        if self.sanctions_screening_enabled and (
+            not self.opensanctions_api_key or not self.opensanctions_api_key.strip()
+        ):
+            raise ValueError(
+                "OPENSANCTIONS_API_KEY must be set to a non-empty value when "
+                "SANCTIONS_SCREENING_ENABLED is true. Sanctions screening is "
+                "fail-closed; refusing to boot without a provider key."
             )
 
     # ── Scheduler ─────────────────────────────────────────────────
@@ -135,6 +161,19 @@ class Settings(BaseSettings):
     twilio_whatsapp_from: str = Field("")
     twilio_webhook_url: str = Field("")
 
+    # ── Sanctions screening (OpenSanctions) ──────────────────────
+    opensanctions_api_key: str = Field("")
+    sanctions_screening_enabled: bool = Field(True)
+    sanctions_review_threshold: Decimal = Field(
+        Decimal("0.70"), description="top_score >= this -> flagged (below -> clear)"
+    )
+    sanctions_hard_threshold: Decimal = Field(
+        Decimal("0.90"), description="top_score >= this -> blocked"
+    )
+
+    # ── LEI validation (GLEIF) ────────────────────────────────────
+    gleif_api_base_url: str = Field("https://api.gleif.org/api/v1")
+
     # ── Helpers ───────────────────────────────────────────────────
 
     @property
@@ -146,7 +185,24 @@ class Settings(BaseSettings):
         raw = self.cors_allow_origins.strip()
         if not raw:
             return []
-        return [o.strip() for o in raw.split(",") if o.strip()]
+        origins: list[str] = []
+        for origin in [o.strip() for o in raw.split(",") if o.strip()]:
+            for candidate in (origin, self._loopback_origin_variant(origin)):
+                if candidate and candidate not in origins:
+                    origins.append(candidate)
+        return origins
+
+    @staticmethod
+    def _loopback_origin_variant(origin: str) -> str | None:
+        parsed = urlsplit(origin)
+        if parsed.hostname == "localhost":
+            host = "127.0.0.1"
+        elif parsed.hostname == "127.0.0.1":
+            host = "localhost"
+        else:
+            return None
+        netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, netloc, "", "", ""))
 
 
 def get_settings() -> Settings:

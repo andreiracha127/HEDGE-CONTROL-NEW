@@ -127,11 +127,12 @@ def test_csrf_middleware_healthz_exempt() -> None:
     assert response.status_code == 200
 
 
-def test_cors_allows_credentials_and_csrf_header() -> None:
+@pytest.mark.parametrize("origin", ["http://localhost:5173", "http://127.0.0.1:5173"])
+def test_cors_allows_credentials_and_csrf_header(origin: str) -> None:
     response = TestClient(main_app).options(
         "/auth/session",
         headers={
-            "Origin": "http://localhost:5173",
+            "Origin": origin,
             "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "X-CSRF-Token",
         },

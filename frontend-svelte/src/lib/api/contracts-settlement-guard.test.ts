@@ -27,7 +27,9 @@ import { resolve } from 'node:path';
 
 const ROUTES = resolve(process.cwd(), 'src', 'routes');
 const PAGE_DETAIL = resolve(ROUTES, '(protected)', 'contracts', '[id]', '+page.svelte');
+const PAGE_DETAIL_LOAD = resolve(ROUTES, '(protected)', 'contracts', '[id]', '+page.ts');
 const PAGE_LIST = resolve(ROUTES, '(protected)', 'contracts', '+page.svelte');
+const PAGE_LIST_LOAD = resolve(ROUTES, '(protected)', 'contracts', '+page.ts');
 
 function read(path: string): string {
 	return readFileSync(path, 'utf8');
@@ -35,49 +37,28 @@ function read(path: string): string {
 
 describe('contract detail page — settlement guard (J-A6-02 slice)', () => {
 	const source = read(PAGE_DETAIL);
+	const loadSource = read(PAGE_DETAIL_LOAD);
 
-	it('does not enumerate settled or partially_settled as transition targets in VALID_TRANSITIONS', () => {
-		// Capture the VALID_TRANSITIONS block (between `VALID_TRANSITIONS: ...` and `};`).
-		const blockMatch = source.match(/VALID_TRANSITIONS[\s\S]*?\{([\s\S]*?)\n\t\};/);
-		expect(blockMatch, 'VALID_TRANSITIONS block must be present').toBeTruthy();
-		const block = blockMatch![1];
-		expect(block).toMatch(/'cancelled'/);
-		expect(block).not.toMatch(/'settled'/);
-		expect(block).not.toMatch(/'partially_settled'/);
-	});
-
-	it('does not expose Liquidar / Liquidar Parcial transition buttons in TRANSITION_CONFIG', () => {
-		const blockMatch = source.match(/TRANSITION_CONFIG[\s\S]*?\{([\s\S]*?)\n\t\};/);
-		expect(blockMatch, 'TRANSITION_CONFIG block must be present').toBeTruthy();
-		const block = blockMatch![1];
-		expect(block).not.toContain('Liquidar');
-		expect(block).not.toContain('Liquidar Parcial');
-		expect(block).not.toMatch(/^\s*settled\s*:/m);
-		expect(block).not.toMatch(/^\s*partially_settled\s*:/m);
-		expect(block).toMatch(/cancelled\s*:/);
-	});
-
-	it('has a defence-in-depth check rejecting settled / partially_settled in transitionStatus', () => {
-		// transitionStatus must refuse to dispatch these targets even if a
-		// caller (test, stale UI, console) somehow tries.
-		expect(source).toMatch(/targetStatus === 'settled'/);
-		expect(source).toMatch(/targetStatus === 'partially_settled'/);
+	it('does not wire generic contract status mutations from the promoted design page', () => {
+		expect(source).not.toMatch(/client\.(POST|PUT|PATCH|DELETE)\(/);
+		expect(source).not.toMatch(/contractsHedgeStatusPath|\/contracts\/hedge\/\{contract_id\}\/status/);
+		expect(source).not.toContain('Liquidar Parcial');
 	});
 
 	it('uses canonical /contracts/hedge/{id} and /status paths', () => {
-		expect(source).toContain('contractsHedgeDetailPath');
-		expect(source).toContain('contractsHedgeStatusPath');
+		expect(loadSource).toContain("client.GET('/contracts/hedge/{contract_id}'");
 		// No stale literal templates left over.
-		expect(source).not.toContain('`/contracts/${contractId}`');
-		expect(source).not.toContain('`/contracts/${contractId}/status`');
+		expect(loadSource).not.toContain('`/contracts/${contractId}`');
+		expect(loadSource).not.toContain('`/contracts/${contractId}/status`');
 	});
 });
 
 describe('contracts list page — canonical /contracts/hedge path', () => {
 	const source = read(PAGE_LIST);
+	const loadSource = read(PAGE_LIST_LOAD);
 
 	it('routes the list query through contractsHedgeListPath, not /contracts?', () => {
-		expect(source).toContain('contractsHedgeListPath');
-		expect(source).not.toMatch(/apiFetch\(\s*`\/contracts\?/);
+		expect(loadSource).toContain("client.GET('/contracts/hedge'");
+		expect(source + loadSource).not.toMatch(/apiFetch\(\s*`\/contracts\?/);
 	});
 });

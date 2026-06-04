@@ -48,9 +48,11 @@ def _json_type() -> sa.types.TypeEngine:
 
 def upgrade() -> None:
     bind = op.get_bind()
+    # trigger_source_enum is needed for the ALTER TABLE ADD COLUMN below
+    # (auto-create only fires on CREATE TABLE). The other two enums are only
+    # referenced in create_table("finance_pipeline_risk_flags") and would
+    # double-create here without checkfirst.
     trigger_source_enum.create(bind, checkfirst=True)
-    risk_flag_type_enum.create(bind, checkfirst=True)
-    risk_flag_severity_enum.create(bind, checkfirst=True)
 
     with op.batch_alter_table("finance_pipeline_runs") as batch_op:
         batch_op.add_column(

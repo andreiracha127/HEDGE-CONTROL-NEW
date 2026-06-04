@@ -1,235 +1,580 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
-	import { authStore } from '$lib/stores/auth.svelte';
-	import { notifications } from '$lib/stores/notifications.svelte';
-	import { formatDate, formatPrice, formatQuantityMT } from '$lib/utils/format';
-	import { apiFetch } from '$lib/api/fetch';
-	import { contractsHedgeDetailPath, contractsHedgeStatusPath } from '$lib/api/paths';
-	import { describeApiError } from '$lib/api/errors';
-	import type { Contract } from '$lib/api/types/entities';
-	const contractId = $derived(page.params.id ?? '');
-	let contract = $state<Contract | null>(null);
-	let isLoading = $state(true);
-	let loadError = $state<string>('');
-	let isTransitioning = $state(false);
-	let confirmAction = $state<string | null>(null);
-	let abortController: AbortController;
-
-	// J-A6-02 guard slice: settled / partially_settled are NOT exposed through
-	// the generic `/contracts/hedge/{id}/status` PATCH. Settlement must go
-	// through `/cashflow/contracts/{contract_id}/settle` (HedgeContractSettlementCreate
-	// with source_event_id + cashflow_date + legs) and is out of scope for
-	// PR-A6-1. Only `cancelled` remains here.
-	const VALID_TRANSITIONS: Record<string, string[]> = {
-		active: ['cancelled'],
-		partially_settled: ['cancelled'],
+	import Kpi from '$lib/components/alcast/Kpi.svelte';
+	import Card from '$lib/components/alcast/Card.svelte';
+	import Badge from '$lib/components/alcast/Badge.svelte';
+	import CommodityChip from '$lib/components/alcast/CommodityChip.svelte';
+	import DirectionBadge from '$lib/components/alcast/DirectionBadge.svelte';
+	import EmptyState from '$lib/components/alcast/EmptyState.svelte';
+	import StatePill from '$lib/components/alcast/StatePill.svelte';
+	import Icon, { type IconName } from '$lib/components/alcast/Icon.svelte';
+	import MtmSparkline from '$lib/components/alcast/MtmSparkline.svelte';
+	import DecisionDossier, { type DossierKind } from '$lib/components/alcast/DecisionDossier.svelte';
+	import ExecutionTimeline, { type TimelineEvent } from '$lib/components/alcast/ExecutionTimeline.svelte';
+	import PageHeader from '$lib/components/alcast/PageHeader.svelte';
+	import { safeBusinessText, stateBadge } from '$lib/alcast/presentation';
+	type Contract = Record<string, any>;
+	type HeaderAction = {
+		label: string;
+		icon?: IconName;
+		variant?: 'primary' | 'secondary' | 'accent' | 'danger' | 'ghost';
+		href?: string;
+		disabled?: boolean;
+		onclick?: () => void | Promise<void>;
 	};
+	let { data } = $props();
+	const contracts = $derived(data.contracts);
+	const counterparties = $derived(data.counterparties);
+	const cashflows = $derived(data.cashflow ?? []);
+	const optionalData = $derived(data as Record<string, any>);
+	const approval = $derived((optionalData.approval ?? null) as Record<string, any> | null);
+	const documents = $derived((optionalData.documents ?? []) as Record<string, any>[]);
+	const documentEvents = $derived((optionalData.documentEvents ?? optionalData.document_history ?? []) as Record<string, any>[]);
+	const mtmHistory = $derived((optionalData.mtmHistory ?? optionalData.mtm_history ?? []) as Record<string, any>[]);
 
-	const STATUS_LABELS: Record<string, string> = {
-		active: 'Ativo',
-		partially_settled: 'Parc. Liquidado',
-		settled: 'Liquidado',
-		cancelled: 'Cancelado',
-	};
+	const id = $derived(page.params.id ?? '');
+	const c = $derived(contracts.find((x) => x.id === id) ?? contracts[0]);
+	let tab = $state<'resumo' | 'legs' | 'cashflow' | 'mtm' | 'docs'>('resumo');
 
-	// TRANSITION_CONFIG must not contain `settled` or `partially_settled`. The
-	// generic status endpoint must not be a settlement surface; settlement is
-	// a ledger-evidence operation that requires its own dedicated form.
-	const TRANSITION_CONFIG: Record<string, { label: string; style: string; confirm: string }> = {
-		cancelled: {
-			label: 'Cancelar',
-			style: 'bg-danger/20 text-danger hover:bg-danger/30',
-			confirm: 'Confirma cancelamento deste contrato? Esta ação não pode ser revertida.',
-		},
-	};
+	const mid = $derived(asNumber(c.market_mid ?? c.mid_price ?? c.price_quote?.value ?? optionalData.mtm?.price_quote?.value ?? optionalData.mtm?.price_value));
 
-	const allowedTransitions = $derived<string[]>(
-		contract?.status ? VALID_TRANSITIONS[contract.status] ?? [] : [],
-	);
-	const isTrader = $derived(authStore.hasRole('trader'));
-	const settlementOutOfScope = $derived(
-		contract?.status === 'active' || contract?.status === 'partially_settled',
-	);
-
-	async function loadContract(signal?: AbortSignal) {
-		isLoading = true;
-		loadError = '';
-		try {
-			const res = await apiFetch(contractsHedgeDetailPath(contractId), { signal });
-			if (res.ok) {
-				try {
-					contract = await res.json();
-				} catch {
-					contract = null;
-					loadError = 'Resposta do servidor não pôde ser interpretada';
-					notifications.error('Contrato: resposta malformada');
-				}
-			} else if (res.status === 404) {
-				goto('/contracts');
-			} else {
-				contract = null;
-				loadError = await describeApiError(res);
-				notifications.error(`Erro ao carregar contrato: ${loadError}`);
-			}
-		} catch (e) {
-			if (e instanceof DOMException && e.name === 'AbortError') return;
-			contract = null;
-			loadError = e instanceof Error ? e.message : 'Erro de conexão';
-			notifications.error('Erro ao carregar contrato');
-		} finally {
-			isLoading = false;
-		}
-	}
-
-	async function transitionStatus(targetStatus: string) {
-		// Defence-in-depth: even if a stale button somehow reaches this
-		// handler, settlement transitions must never traverse the generic
-		// status endpoint.
-		if (targetStatus === 'settled' || targetStatus === 'partially_settled') {
-			notifications.error('Liquidação exige formulário dedicado de ledger (out of scope)');
-			confirmAction = null;
-			return;
-		}
-		confirmAction = null;
-		isTransitioning = true;
-		try {
-			const res = await apiFetch(contractsHedgeStatusPath(contractId), {
-				method: 'PATCH',
-				body: JSON.stringify({ status: targetStatus }),
-			});
-			if (res.ok) {
-				try {
-					contract = await res.json();
-				} catch {
-					notifications.error('Status alterado mas resposta malformada — recarregando');
-					await loadContract();
-					return;
-				}
-				notifications.success(`Status alterado para ${STATUS_LABELS[targetStatus] ?? targetStatus}`);
-			} else if (res.status === 409) {
-				const message = await describeApiError(res);
-				notifications.error(`Transição não permitida: ${message}`);
-				await loadContract();
-			} else {
-				const message = await describeApiError(res);
-				notifications.error(`Erro ao alterar status: ${message}`);
-			}
-		} catch {
-			notifications.error('Erro de conexão ao alterar status');
-		} finally {
-			isTransitioning = false;
-		}
-	}
-
-	function statusBadgeClass(status: string): string {
-		switch (status) {
-			case 'active':
-				return 'bg-success/20 text-success';
-			case 'partially_settled':
-				return 'bg-warning/20 text-warning';
-			case 'settled':
-				return 'bg-surface-700 text-surface-400';
-			case 'cancelled':
-				return 'bg-danger/20 text-danger';
-			default:
-				return 'bg-surface-700 text-surface-400';
-		}
-	}
-
-	onMount(() => {
-		abortController = new AbortController();
-		loadContract(abortController.signal);
+	let now = $state(Date.now());
+	$effect(() => {
+		const interval = window.setInterval(() => {
+			now = Date.now();
+		}, 60_000);
+		return () => window.clearInterval(interval);
 	});
+	const settleDate = $derived(c?.settle ?? null);
+	const daysToSettle = $derived.by(() => {
+		if (!settleDate) return null;
+		const timestamp = new Date(settleDate).getTime();
+		return Number.isFinite(timestamp) ? Math.round((timestamp - now) / 86_400_000) : null;
+	});
+	const notional = $derived(c.qty == null || c.price == null ? null : c.qty * c.price);
+	const initialMarginRate = $derived(normalizeRate(c.initial_margin_pct ?? c.margin_rate ?? c.initial_margin_rate));
+	const initialMargin = $derived(
+		asNumber(c.initial_margin_usd ?? c.initial_margin_value) ??
+			(notional != null && initialMarginRate != null ? notional * initialMarginRate : null),
+	);
+	const counterparty = $derived(
+		counterparties.find(
+			(x) => x.id === c.counterparty_id || x.id === c.cp || x.short === c.cp || x.name === c.cp,
+		) ?? null,
+	);
+	const cpId = $derived(counterparty?.id ?? c.counterparty_id ?? c.cp_id ?? c.cp);
+	const cpName = $derived(counterparty?.name ?? c.counterparty_name ?? c.cp);
 
-	onDestroy(() => { abortController?.abort(); });
+	const TABS: [typeof tab, string][] = [
+		['resumo',   'Resumo'],
+		['legs',     'Pernas'],
+		['cashflow', 'Fluxos de caixa'],
+		['mtm',      'Histórico MTM'],
+		['docs',     'Documentos'],
+	];
+
+	function fmtQty(contract: Contract): string {
+		if (contract.qty == null) return '—';
+		if (contract.commodity === 'USDBRL') return contract.qty.toLocaleString('pt-BR') + ' USD';
+		return contract.qty.toLocaleString('pt-BR') + ' MT';
+	}
+
+	function fmtPrice(contract: Contract): string {
+		if (contract.price == null) return '—';
+		return contract.price.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(contract) });
+	}
+
+	function fmtNumber(value: number | null | undefined, digits = 0): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return value.toLocaleString('pt-BR', { maximumFractionDigits: digits, minimumFractionDigits: digits });
+	}
+
+	function fmtUsd(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `${value >= 0 ? '+' : ''}US$ ${Math.abs(value).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
+	}
+
+	function fmtUnsignedUsd(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '—';
+		return `US$ ${value.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`;
+	}
+
+	function fmtRate(value: number | null | undefined): string {
+		if (value == null || !Number.isFinite(value)) return '';
+		return ` (${(value * 100).toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%)`;
+	}
+
+	function asNumber(value: unknown): number | null {
+		const n = Number(value);
+		return Number.isFinite(n) ? n : null;
+	}
+
+	function normalizeRate(value: unknown): number | null {
+		const n = asNumber(value);
+		if (n == null) return null;
+		return n > 1 ? n / 100 : n;
+	}
+
+	function mtmValue(row: Record<string, any>): number | null {
+		return asNumber(row.mtm ?? row.mtm_value ?? row.value_usd);
+	}
+
+	function contractLabel(contract: Contract): string {
+		return safeBusinessText(contract.contract_number ?? contract.reference, 'Contrato sem número');
+	}
+
+	function midValue(row: Record<string, any>): number | null {
+		return asNumber(row.mid ?? row.mid_price ?? row.price_mid ?? row.price);
+	}
+
+	function mtmDelta(row: Record<string, any>, index: number): number | null {
+		const explicit = asNumber(row.day_delta ?? row.delta_day ?? row.delta);
+		if (explicit != null) return explicit;
+		const current = mtmValue(row);
+		const previous = mtmHistory[index + 1] ? mtmValue(mtmHistory[index + 1]) : null;
+		return current != null && previous != null ? current - previous : null;
+	}
+
+	const latestMtmDelta = $derived(mtmHistory.length ? mtmDelta(mtmHistory[0], 0) : null);
+
+	function priceDelta(): number | null {
+		if (mid == null || c.price == null) return null;
+		return mid - c.price;
+	}
+
+	function fmtPriceUnit(contract: Contract): string {
+		return contract.commodity === 'USDBRL' ? 'USD/BRL' : 'USD/MT';
+	}
+
+	function priceDigits(contract: Contract): number {
+		return contract.commodity === 'USDBRL' ? 4 : 2;
+	}
+
+	function legLabel(side: unknown): string {
+		if (side === 'buy') return 'Compra';
+		if (side === 'sell') return 'Venda';
+		return '—';
+	}
+
+	function legLabelUpper(side: unknown): string {
+		if (side === 'buy') return 'COMPRA';
+		if (side === 'sell') return 'VENDA';
+		return '—';
+	}
+
+	function legKind(side: unknown): 'pos' | 'neg' | 'neutral' {
+		if (side === 'buy') return 'pos';
+		if (side === 'sell') return 'neg';
+		return 'neutral';
+	}
+
+	function fmtDate(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		const parts = date.split('-');
+		if (parts.length !== 3) return value;
+		return `${parts[2]}/${parts[1]}/${parts[0]}`;
+	}
+
+	function fmtSettleWithDays(): string {
+		const date = fmtDate(settleDate);
+		return daysToSettle == null ? date : `${date} (${daysToSettle}d)`;
+	}
+
+	function settleMonth(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		return date.length >= 7 ? `${date.slice(5, 7)}/${date.slice(2, 4)}` : '—';
+	}
+
+	function settleYearMonth(value: string | null | undefined): string {
+		if (!value) return '—';
+		const date = value.slice(0, 10);
+		return date.length >= 7 ? date.slice(0, 7) : '—';
+	}
+
+	const settlementVerdict = $derived.by(() => {
+		if (daysToSettle == null) return 'Liquidação não informada';
+		if (daysToSettle <= 7 && daysToSettle >= 0) return 'Liquidação em atenção';
+		return c.status === 'active' ? 'Contrato ativo' : stateBadge(c.status).label;
+	});
+	const settlementVerdictKind = $derived.by((): DossierKind => {
+		if (daysToSettle == null) return 'warn';
+		if (daysToSettle <= 7 && daysToSettle >= 0) return 'warn';
+		return c.status === 'active' ? 'pos' : 'neutral';
+	});
+	const contractTimelineEvents = $derived.by((): TimelineEvent[] => [
+		{
+			label: `Contrato carregado · ${contractLabel(c)}`,
+			time: fmtDate(c.created_at ?? c.traded),
+			actor: c.cp,
+			kind: 'pos',
+		},
+		{
+			label: `MTM atual · ${fmtUsd(c.mtm)}`,
+			time: latestMtmDelta == null ? 'última marcação carregada' : `${fmtUsd(latestMtmDelta)} 1d`,
+			actor: 'Sistema',
+			kind: c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg',
+		},
+		{
+			label: `Liquidação financeira · ${c.cp}`,
+			time: fmtDate(settleDate),
+			actor: 'Agendado',
+			kind: daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0 ? 'warn' : 'info',
+		},
+	]);
+	const contractHeaderActions = $derived.by((): HeaderAction[] => {
+		const actions: HeaderAction[] = [
+			{ label: 'Voltar', icon: 'arrowLeft', variant: 'secondary', href: '/contracts' },
+			{ label: 'Confirmação', icon: 'download', variant: 'secondary' },
+			{
+				label: 'Histórico MTM',
+				variant: 'secondary',
+				onclick: () => {
+					tab = 'mtm';
+				},
+			},
+		];
+		if (c.status === 'active') {
+			actions.push({ label: 'Unwinding', variant: 'danger' });
+		} else if (c.status === 'partially_settled') {
+			actions.push({ label: 'Iniciar liquidação', variant: 'accent' });
+		}
+		return actions;
+	});
 </script>
 
-<div class="p-6">
-	<a href="/contracts" class="text-sm text-surface-500 hover:text-surface-300">← Contratos</a>
+{#snippet documentList()}
+	{#if documents.length}
+		{#each documents as d, i (d.id ?? d.name ?? i)}
+			<button type="button" class="row gap-2" style="width: 100%; padding: 6px 0; border: 0; background: transparent; text-align: left; font-size: 12.5px; color: var(--ink-2); cursor: pointer;">
+				<Icon name="doc"/>
+				<span style="flex: 1;">{d.name ?? d.title ?? 'Documento'}</span>
+				<span style="color: var(--muted); font-size: 11px;">{d.size ?? d.file_size ?? '—'}</span>
+				<Icon name="download"/>
+			</button>
+		{/each}
+	{:else}
+		<EmptyState
+			icon="doc"
+			title="Nenhum documento carregado"
+			message="Confirmações, anexos e evidências documentais deste contrato aparecerão aqui."
+		/>
+	{/if}
+{/snippet}
 
-	{#if isLoading}
-		<div class="mt-4 text-surface-500">Carregando...</div>
-	{:else if loadError}
-		<div class="mt-4 rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">
-			{loadError}
-		</div>
-	{:else if contract}
-		<div class="mt-4 flex items-center gap-3">
-			<h1 class="text-lg font-semibold text-surface-200">{contract.reference}</h1>
-			<span class="rounded px-1.5 py-0.5 text-xs {statusBadgeClass(contract.status ?? '')}">
-				{STATUS_LABELS[contract.status ?? ''] ?? contract.status}
-			</span>
-		</div>
+<div class="page">
+	<PageHeader
+		eyebrow="Contrato financeiro"
+		title={contractLabel(c)}
+		subtitle={`${legLabel(c.fixed_leg)} fixa × ${legLabel(c.var_leg)} variável · ${fmtQty(c)} · ${c.cp} · liquidação ${fmtDate(settleDate)}`}
+		meta={[c.type, c.commodity, `Status ${stateBadge(c.status).label}`]}
+		actions={contractHeaderActions}
+	/>
 
-		{#if isTrader && allowedTransitions.length > 0}
-			<div class="mt-3 flex gap-2">
-				{#each allowedTransitions as target}
-					{@const config = TRANSITION_CONFIG[target]}
-					{#if config}
-						<button
-							onclick={() => (confirmAction = target)}
-							disabled={isTransitioning}
-							class="rounded px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 {config.style}"
-						>
-							{config.label}
-						</button>
+	<div class="rfq-command-strip settlement-readiness">
+		<Badge kind="neutral">{c.type}</Badge>
+		<CommodityChip code={c.commodity}/>
+		<StatePill state={c.status}/>
+		{#if daysToSettle != null && daysToSettle <= 7 && daysToSettle >= 0}
+			<Badge kind="warn" dot>Vence em {daysToSettle}d</Badge>
+		{/if}
+	</div>
+
+	<div class="kpi-row cols-4" style="margin-bottom: 16px;">
+		<Kpi
+			label="Notional"
+			value={notional == null ? '—' : `US$ ${(notional / 1_000_000).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+			unit="M"
+			delta={`${fmtQty(c)} @ ${fmtPrice(c)}`}
+		/>
+		<Kpi
+			label="MTM atual"
+			value={fmtUsd(c.mtm)}
+			delta={latestMtmDelta == null ? 'sem histórico carregado' : `${fmtUsd(latestMtmDelta)} 1d`}
+			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
+		/>
+		<Kpi
+			label="P&L desde a contratação"
+			value={notional == null || c.mtm == null ? '—' : (c.mtm >= 0 ? '+' : '') + ((c.mtm / notional) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' %'}
+			delta={'preço mid ' + fmtNumber(mid, priceDigits(c))}
+			deltaKind={c.mtm == null || c.mtm >= 0 ? 'pos' : 'neg'}
+		/>
+		<Kpi
+			label="Dias até liquidação"
+			value={daysToSettle == null ? '—' : String(daysToSettle)}
+			unit={daysToSettle == null ? '' : 'd'}
+			delta={fmtDate(settleDate)}
+			deltaKind={daysToSettle != null && daysToSettle <= 7 ? 'neg' : 'flat'}
+		/>
+	</div>
+
+	<div class="tabs">
+		{#each TABS as [k, l] (k)}
+			<button type="button" class="tab" class:active={tab === k} onclick={() => (tab = k)}>{l}</button>
+		{/each}
+	</div>
+
+	{#if tab === 'resumo'}
+		<div class="detail-grid">
+			<div class="stack gap-4">
+				<Card title="Termos do contrato">
+					<dl class="kv" style="grid-template-columns: 180px 1fr 180px 1fr;">
+						<dt>Tipo</dt><dd>{c.type}</dd>
+						<dt>Commodity</dt><dd>{c.commodity}</dd>
+						<dt>Quantidade</dt><dd class="tabular">{fmtQty(c)}</dd>
+						<dt>Notional</dt><dd class="tabular">{notional == null ? '—' : `US$ ${notional.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}</dd>
+						<dt>Preço fixo</dt>
+						<dd class="tabular strong">
+							{fmtPrice(c)} {c.price == null ? '' : fmtPriceUnit(c)}
+						</dd>
+						<dt>Preço variável</dt><dd>LME Average · mês de liquidação</dd>
+						<dt>Contratação</dt><dd>{fmtDate(c.created_at ?? c.traded)}</dd>
+						<dt>Liquidação</dt><dd>{fmtSettleWithDays()}</dd>
+						<dt>Contraparte</dt><dd><a href={`/counterparties/${cpId}`}>{cpName}</a></dd>
+						<dt>RFQ origem</dt>
+						<dd class="mono">
+							{#if c.rfq_id}
+								<a href={`/rfq/${c.rfq_id}`}>{c.rfq_number ?? c.rfq_id}</a>
+							{:else}
+								—
+							{/if}
+						</dd>
+						<dt>Política contábil</dt><dd>Hedge accounting (IFRS 9)</dd>
+						<dt>Margem inicial</dt>
+						<dd class="tabular">{initialMargin == null ? '—' : `${fmtUnsignedUsd(initialMargin)}${fmtRate(initialMarginRate)}`}</dd>
+					</dl>
+				</Card>
+
+				<Card title="Pernas do swap" sub="Visualização do payoff">
+					<div class="grid-2">
+						<div class="card" style="padding: 16px; background: {c.fixed_leg === 'buy' ? 'var(--pos-soft)' : c.fixed_leg === 'sell' ? 'var(--neg-soft)' : 'var(--surface-sunk)'};">
+							<div class="row gap-2" style="margin-bottom: 10px;">
+								<Badge kind={legKind(c.fixed_leg)}>
+									{legLabelUpper(c.fixed_leg)} FIXA
+								</Badge>
+								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Perna 1</span>
+							</div>
+							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço fixo</div>
+							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
+								{fmtPrice(c)}
+							</div>
+							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · contratual</div>
+						</div>
+						<div class="card" style="padding: 16px; background: {c.var_leg === 'buy' ? 'var(--pos-soft)' : c.var_leg === 'sell' ? 'var(--neg-soft)' : 'var(--surface-sunk)'};">
+							<div class="row gap-2" style="margin-bottom: 10px;">
+								<Badge kind={legKind(c.var_leg)}>
+									{legLabelUpper(c.var_leg)} VARIÁVEL
+								</Badge>
+								<span style="margin-left: auto; font-size: 11px; color: var(--muted);">Perna 2</span>
+							</div>
+							<div style="font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Preço mid de mercado</div>
+							<div style="font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums;">
+								{fmtNumber(mid, priceDigits(c))}
+							</div>
+							<div style="font-size: 11.5px; color: var(--muted); margin-top: 6px;">{fmtPriceUnit(c)} · preço carregado</div>
+						</div>
+					</div>
+					<div class="divider"></div>
+					<div class="row gap-3" style="align-items: baseline;">
+						<span style="font-size: 12px; color: var(--muted);">Δ Preço:</span>
+						<span class="tabular" style="font-size: 14px; font-weight: 500; color: {priceDelta() == null ? 'var(--muted)' : priceDelta()! >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{priceDelta() == null ? '—' : `${priceDelta()! >= 0 ? '+' : ''}${priceDelta()!.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}`}
+						</span>
+						<span style="font-size: 12px; color: var(--muted);">·</span>
+						<span style="font-size: 12px; color: var(--muted);">MTM:</span>
+						<span class="tabular strong" style="font-size: 14px; color: {c.mtm == null ? 'var(--muted)' : c.mtm >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+							{fmtUsd(c.mtm)}
+						</span>
+					</div>
+				</Card>
+			</div>
+
+			<div class="stack gap-4">
+				<Card noPad>
+					<DecisionDossier
+						title="Prontidão para liquidação"
+						verdict={settlementVerdict}
+						verdictKind={settlementVerdictKind}
+						items={[
+							{ label: 'Contraparte', value: cpName },
+							{ label: 'Liquidação', value: fmtSettleWithDays(), kind: settlementVerdictKind },
+							{ label: 'Aprovação', value: approval ? stateBadge(approval.status ?? approval.state).label : 'Não carregada', kind: approval ? 'pos' : 'neutral' },
+							{ label: 'Margem inicial', value: initialMargin == null ? '—' : `${fmtUnsignedUsd(initialMargin)}${fmtRate(initialMarginRate)}` },
+						]}
+					/>
+				</Card>
+
+				<Card title="Cronograma">
+					<ExecutionTimeline events={contractTimelineEvents}/>
+				</Card>
+
+				<Card title="Documentação">
+					<div class="stack gap-2">
+						{@render documentList()}
+					</div>
+				</Card>
+
+				<Card title="Aprovação">
+					<dl class="kv">
+						<dt>Status</dt><dd><Badge kind={approval ? 'pos' : 'neutral'} dot>{approval?.status ?? approval?.state ?? 'Não carregada'}</Badge></dd>
+						<dt>ID</dt><dd class="mono">{approval?.id ?? approval?.approval_id ?? '—'}</dd>
+						<dt>Aprovador</dt><dd>{approval?.approver_name ?? approval?.approver ?? approval?.approver_role ?? '—'}</dd>
+						<dt>Em</dt><dd>{fmtDate(approval?.approved_at ?? approval?.updated_at ?? approval?.created_at)}</dd>
+						<dt>Política</dt><dd>{approval?.policy ?? approval?.policy_name ?? '—'}</dd>
+					</dl>
+				</Card>
+			</div>
+		</div>
+	{:else if tab === 'legs'}
+		<Card title="Detalhes das pernas">
+			<table class="tbl">
+				<thead>
+					<tr>
+						<th>Perna</th>
+						<th>Lado</th>
+						<th>Tipo de preço</th>
+						<th class="num">Quantidade</th>
+						<th class="num">Preço</th>
+						<th>Janela / Fixing</th>
+						<th>Convenção</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td class="strong">Perna 1</td>
+						<td><DirectionBadge dir={c.fixed_leg ?? '—'}/></td>
+						<td><Badge kind="info">Fix</Badge></td>
+						<td class="num">{fmtQty(c)}</td>
+						<td class="num strong">{fmtPrice(c)}</td>
+						<td>{fmtDate(settleDate)} · fixing</td>
+						<td>LME Official Settlement</td>
+					</tr>
+					<tr>
+						<td class="strong">Perna 2</td>
+						<td><DirectionBadge dir={c.var_leg ?? '—'}/></td>
+						<td><Badge kind="neutral">AVG</Badge></td>
+						<td class="num">{fmtQty(c)}</td>
+						<td class="num">média {settleMonth(settleDate)}</td>
+						<td>{settleYearMonth(settleDate)} · mês completo</td>
+						<td>LME Average Month</td>
+					</tr>
+				</tbody>
+			</table>
+		</Card>
+	{:else if tab === 'cashflow'}
+		<Card title="Fluxos de caixa projetados" noPad>
+			<table class="tbl">
+				<thead>
+					<tr>
+						<th>Data</th>
+						<th>Descrição</th>
+						<th class="num">Valor (USD)</th>
+						<th>Direção</th>
+						<th>Status</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#if cashflows.length}
+						{#each cashflows as flow, i (flow.id ?? i)}
+							{@const amount = Number(flow.amount_usd ?? 0)}
+							<tr>
+								<td>{fmtDate(flow.date)}</td>
+								<td>{flow.desc ?? flow.description ?? 'Liquidação projetada'}</td>
+								<td class="num strong" style="color: {amount >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+									{amount >= 0 ? '+' : ''}{amount.toLocaleString('pt-BR', { maximumFractionDigits: 0 })}
+								</td>
+								<td>
+									{#if flow.direction === 'in'}
+										<Badge kind="pos" dot>Entrada</Badge>
+									{:else if flow.direction === 'out'}
+										<Badge kind="neg" dot>Saída</Badge>
+									{:else}
+										<span style="color: var(--muted);">—</span>
+									{/if}
+								</td>
+								<td><StatePill state={flow.status ?? '—'}/></td>
+							</tr>
+						{/each}
+					{:else}
+						<tr>
+							<td colspan="5">
+								<EmptyState
+									icon="coins"
+									title="Nenhum fluxo de caixa carregado"
+									message="As pernas financeiras e liquidações futuras serão exibidas assim que houver eventos projetados."
+								/>
+							</td>
+						</tr>
 					{/if}
-				{/each}
-			</div>
-		{/if}
-
-		{#if isTrader && settlementOutOfScope}
-			<div
-				class="mt-3 rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
-				data-testid="settlement-out-of-scope"
-			>
-				Liquidação total ou parcial exige formulário dedicado de ledger
-				(source_event_id, cashflow_date, legs). Indisponível neste wave.
-			</div>
-		{/if}
-
-		{#if confirmAction}
-			{@const config = TRANSITION_CONFIG[confirmAction]}
-			<div class="mt-3 rounded border border-surface-700 bg-surface-800 p-3">
-				<p class="text-sm text-surface-300">{config?.confirm}</p>
-				<div class="mt-2 flex gap-2">
-					<button
-						onclick={() => transitionStatus(confirmAction!)}
-						disabled={isTransitioning}
-						class="rounded px-3 py-1 text-xs font-medium bg-surface-600 text-surface-200 hover:bg-surface-500 disabled:opacity-50"
-					>
-						{isTransitioning ? 'Processando...' : 'Confirmar'}
-					</button>
-					<button
-						onclick={() => (confirmAction = null)}
-						disabled={isTransitioning}
-						class="rounded px-3 py-1 text-xs text-surface-400 hover:text-surface-300"
-					>
-						Cancelar
-					</button>
+				</tbody>
+			</table>
+		</Card>
+	{:else if tab === 'mtm'}
+		<Card title="Histórico de marcação" sub="Últimos 30 dias">
+			<MtmSparkline history={mtmHistory}/>
+			<table class="tbl tbl-tight" style="margin-top: 16px;">
+				<thead>
+					<tr>
+						<th>Data</th>
+						<th class="num">Preço mid</th>
+						<th class="num">MTM (USD)</th>
+						<th class="num">Δ Dia</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#if mtmHistory.length}
+					{#each mtmHistory as row, i (row.id ?? row.date ?? row.as_of_date ?? i)}
+						{@const p = midValue(row)}
+						{@const m = mtmValue(row)}
+						{@const dDay = mtmDelta(row, i)}
+						<tr>
+							<td>{fmtDate(row.date ?? row.as_of_date ?? row.created_at)}</td>
+							<td class="num tabular">{p == null ? '—' : p.toLocaleString('pt-BR', { minimumFractionDigits: priceDigits(c), maximumFractionDigits: priceDigits(c) })}</td>
+							<td class="num tabular strong" style="color: {m == null || m >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{fmtUsd(m)}
+							</td>
+							<td class="num tabular" style="color: {dDay == null || dDay >= 0 ? 'var(--pos)' : 'var(--neg)'};">
+								{fmtUsd(dDay)}
+							</td>
+						</tr>
+					{/each}
+					{:else}
+						<tr>
+							<td colspan="4">
+								<EmptyState
+									icon="chart"
+									title="Nenhum histórico de MTM carregado"
+									message="A série de marcação diária aparecerá aqui quando houver observações de mercado para o contrato."
+								/>
+							</td>
+						</tr>
+					{/if}
+				</tbody>
+			</table>
+		</Card>
+	{:else if tab === 'docs'}
+		<div class="grid-2">
+			<Card title="Documentos do contrato">
+				<div class="stack gap-2">
+					{@render documentList()}
 				</div>
-			</div>
-		{/if}
-
-		<div class="mt-4 grid grid-cols-2 gap-4">
-			<div class="rounded border border-surface-800 bg-surface-900 p-4 space-y-2">
-				<h2 class="text-xs font-semibold uppercase text-surface-500">Detalhes</h2>
-				<div class="text-sm"><span class="text-surface-500">Commodity:</span> <span class="text-surface-200">{contract.commodity}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Quantidade:</span> <span class="text-surface-200 tabular-nums">{formatQuantityMT(contract.quantity_mt)} MT</span></div>
-				<div class="text-sm"><span class="text-surface-500">Preço Fixo:</span> <span class="text-surface-200 tabular-nums">{formatPrice(contract.fixed_price_value, contract.fixed_price_unit ?? undefined)}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Classificação:</span> <span class="text-surface-200">{contract.classification ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Trade Date:</span> <span class="text-surface-200">{formatDate(contract.trade_date)}</span></div>
-			</div>
-
-			<div class="rounded border border-surface-800 bg-surface-900 p-4 space-y-2">
-				<h2 class="text-xs font-semibold uppercase text-surface-500">Legs</h2>
-				<div class="text-sm"><span class="text-surface-500">Fixed Leg:</span> <span class="text-surface-200">{contract.fixed_leg_side ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Variable Leg:</span> <span class="text-surface-200">{contract.variable_leg_side ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Float Convention:</span> <span class="text-surface-200">{contract.float_pricing_convention ?? '—'}</span></div>
-				<div class="text-sm"><span class="text-surface-500">Source:</span> <span class="text-surface-200">{contract.source_type ?? '—'}</span></div>
-			</div>
+			</Card>
+			<Card title="Histórico de versões">
+				<div class="feed">
+					{#if documentEvents.length}
+					{#each documentEvents as event, i (event.id ?? event.version ?? i)}
+						<div class="feed-item info"><div class="icon"></div><div><div class="what">{event.description ?? event.title ?? 'Evento documental'}{event.version ? ` · ${event.version}` : ''}</div><div class="row gap-2"><span class="when">{fmtDate(event.created_at ?? event.date)}</span><span class="who">· {event.actor ?? event.user ?? 'Sistema'}</span></div></div></div>
+					{/each}
+					{:else}
+						<EmptyState
+							icon="doc"
+							title="Nenhum histórico documental carregado"
+							message="Versões, anexos e aprovações documentais ainda não foram carregados para este contrato."
+						/>
+					{/if}
+				</div>
+			</Card>
 		</div>
 	{/if}
 </div>

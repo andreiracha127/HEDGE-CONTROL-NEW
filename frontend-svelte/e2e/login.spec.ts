@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './helpers';
+import { DASHBOARD_HEADING, loginAsAdmin } from './helpers';
 
-test.describe('Login -> Dashboard flow', () => {
+test.describe('Login -> overview flow', () => {
 	test('redirects unauthenticated users to /login', async ({ page }) => {
 		await page.goto('/');
 		await expect(page).toHaveURL(/\/login/);
@@ -22,9 +22,9 @@ test.describe('Login -> Dashboard flow', () => {
 
 	test('hydrates a valid backend cookie session before protected routing', async ({ page }) => {
 		await loginAsAdmin(page);
-		await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 		await page.reload();
-		await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByRole('heading', { name: DASHBOARD_HEADING })).toBeVisible({ timeout: 10_000 });
 	});
 
 	test('navigates between sections after cookie-session hydration', async ({ page }) => {

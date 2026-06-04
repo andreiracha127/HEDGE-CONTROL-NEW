@@ -3,7 +3,11 @@
   "description": "Hedge Control Platform — monorepo root",
   "scripts": {
     "backend:dev": "cd backend && uvicorn app.main:app --reload --port 8000",
-    "backend:test": "cd backend && python -m pytest -x -q"
+    "backend:test": "cd backend && python -m pytest -x -q",
+    "test:e2e:smoke": "cd backend && python -m pytest tests/e2e/test_journey_full.py tests/e2e/test_rbac_matrix.py -v",
+    "test:e2e:backend": "cd backend && python -m pytest tests/e2e/ -v --json-report --json-report-file=tests/e2e/report.json",
+    "test:e2e:frontend": "cd frontend-svelte && npx playwright test e2e/journey-trader.spec.ts e2e/journey-risk-manager.spec.ts e2e/journey-auditor.spec.ts --reporter=json",
+    "test:go-no-go": "node scripts/run_go_no_go.js"
   },
   "engines": {
     "node": ">=18"

@@ -1,12 +1,22 @@
 import os
 import sys
+from collections.abc import Mapping
+from uuid import UUID
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("DATABASE_URL", "sqlite+pysqlite:///:memory:")
+
+def _database_url_for_tests(env: Mapping[str, str]) -> str:
+    default_url = "sqlite+pysqlite:///:memory:"
+    if env.get("E2E_FULL_STACK") == "1":
+        return env.get("DATABASE_URL") or default_url
+    return default_url
+
+
+os.environ["DATABASE_URL"] = _database_url_for_tests(os.environ)
 os.environ.setdefault("SCHEDULER_DISABLED", "1")
 os.environ.setdefault("APP_ENV", "test")
 # Default audit signing key for tests — fail-closed audit emission requires
@@ -35,6 +45,8 @@ from app.core.auth import (
 from app.core.database import engine, SessionLocal
 from app.core.rate_limit import limiter
 from app.main import app
+from app.models.commercial_partner import CommercialPartner, CommercialPartnerKind
+from app.models.counterparty import Counterparty, KycStatus, SanctionsStatus
 from app.models.base import Base
 from app import models as _models
 
@@ -48,6 +60,9 @@ def reset_rate_limiter() -> None:
 
 @pytest.fixture(autouse=True)
 def reset_database() -> None:
+    if os.environ.get("E2E_FULL_STACK") == "1":
+        yield
+        return
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
     yield
@@ -82,13 +97,26 @@ class _DefaultCommodityTestClient(TestClient):
         if (
             url in {"/orders/sales", "/orders/purchase"}
             and isinstance(json_payload, dict)
-            and "commodity" not in json_payload
         ):
             json_payload = dict(json_payload)
-            if json_payload.pop("__skip_default_commodity", False):
-                kwargs["json"] = json_payload
-            else:
-                json_payload["commodity"] = "ALUMINUM"
+            if "commodity" not in json_payload:
+                if json_payload.pop("__skip_default_commodity", False):
+                    kwargs["json"] = json_payload
+                else:
+                    json_payload["commodity"] = "ALUMINUM"
+                    kwargs["json"] = json_payload
+            if "counterparty_id" not in json_payload:
+                if json_payload.pop("__skip_default_counterparty", False):
+                    kwargs["json"] = json_payload
+                else:
+                    kind = (
+                        CommercialPartnerKind.customer
+                        if url == "/orders/sales"
+                        else CommercialPartnerKind.supplier
+                    )
+                    json_payload["counterparty_id"] = str(
+                        _create_approved_commercial_partner(kind)
+                    )
                 kwargs["json"] = json_payload
         return super().post(url, *args, **kwargs)
 
@@ -100,6 +128,32 @@ def session():
         yield session
     finally:
         session.close()
+
+
+def mark_counterparty_sanctions_clear(counterparty_id) -> None:
+    """Test setup helper for fixtures that need an already-screened hedge counterparty."""
+    if isinstance(counterparty_id, str):
+        counterparty_id = UUID(counterparty_id)
+    with SessionLocal() as db:
+        counterparty = db.get(Counterparty, counterparty_id)
+        assert counterparty is not None
+        counterparty.sanctions_status = SanctionsStatus.clear
+        db.commit()
+
+
+def _create_approved_commercial_partner(kind: CommercialPartnerKind) -> UUID:
+    with SessionLocal() as db:
+        cp = CommercialPartner(
+            kind=kind,
+            name=f"Test {kind.value.title()}",
+            country="BRA",
+            kyc_status=KycStatus.approved,
+            sanctions_status=SanctionsStatus.clear,
+        )
+        db.add(cp)
+        db.commit()
+        db.refresh(cp)
+        return cp.id
 
 
 @pytest.fixture(autouse=True)

@@ -212,6 +212,128 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/commercial-partners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Commercial Partners */
+        get: operations["list_commercial_partners_commercial_partners_get"];
+        put?: never;
+        /** Create Commercial Partner */
+        post: operations["create_commercial_partner_commercial_partners_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Commercial Partner */
+        get: operations["get_commercial_partner_commercial_partners__commercial_partner_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Commercial Partner */
+        delete: operations["delete_commercial_partner_commercial_partners__commercial_partner_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Commercial Partner */
+        patch: operations["update_commercial_partner_commercial_partners__commercial_partner_id__patch"];
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/adjudicate-sanctions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjudicate Commercial Partner */
+        post: operations["adjudicate_commercial_partner_commercial_partners__commercial_partner_id__adjudicate_sanctions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/credit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Approve Credit */
+        patch: operations["approve_credit_commercial_partners__commercial_partner_id__credit_patch"];
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/kyc-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transition Kyc Status */
+        post: operations["transition_kyc_status_commercial_partners__commercial_partner_id__kyc_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Screen Commercial Partner */
+        post: operations["screen_commercial_partner_commercial_partners__commercial_partner_id__screen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/commercial-partners/{commercial_partner_id}/validate-lei": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate Commercial Partner Lei */
+        post: operations["validate_commercial_partner_lei_commercial_partners__commercial_partner_id__validate_lei_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/contracts/hedge": {
         parameters: {
             query?: never;
@@ -340,6 +462,23 @@ export interface paths {
         patch: operations["update_counterparty_counterparties__counterparty_id__patch"];
         trace?: never;
     };
+    "/counterparties/{counterparty_id}/adjudicate-sanctions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjudicate Counterparty */
+        post: operations["adjudicate_counterparty_counterparties__counterparty_id__adjudicate_sanctions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/counterparties/{counterparty_id}/kyc-status": {
         parameters: {
             query?: never;
@@ -351,6 +490,23 @@ export interface paths {
         put?: never;
         /** Transition Kyc Status */
         post: operations["transition_kyc_status_counterparties__counterparty_id__kyc_status_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/counterparties/{counterparty_id}/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Screen Counterparty */
+        post: operations["screen_counterparty_counterparties__counterparty_id__screen_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -735,6 +891,23 @@ export interface paths {
         get: operations["healthz_healthz_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/test/cleanup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cleanup By Trace Id */
+        post: operations["cleanup_by_trace_id_internal_test_cleanup_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1527,6 +1700,11 @@ export interface components {
              */
             variable_leg_side: "buy" | "sell";
         };
+        /**
+         * AdjudicationDecisionIn
+         * @enum {string}
+         */
+        AdjudicationDecisionIn: "clear" | "blocked";
         /** AdjustOrderQuantityDelta */
         AdjustOrderQuantityDelta: {
             /**
@@ -1888,6 +2066,11 @@ export interface components {
             /** Symbol */
             symbol: string;
         };
+        /** CleanupRequest */
+        CleanupRequest: {
+            /** Trace Id */
+            trace_id: string;
+        };
         /** CommercialExposureRead */
         CommercialExposureRead: {
             /**
@@ -1942,6 +2125,155 @@ export interface components {
              */
             reduction_applied_passive_mt: string;
         };
+        /** CommercialPartnerCreate */
+        CommercialPartnerCreate: {
+            /** Address */
+            address?: string | null;
+            /** City */
+            city?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Country */
+            country: string;
+            /**
+             * Is Active
+             * @default true
+             */
+            is_active: boolean;
+            kind: components["schemas"]["CommercialPartnerKind"];
+            /** Lei */
+            lei?: string | null;
+            /** Name */
+            name: string;
+            /** Notes */
+            notes?: string | null;
+            /** @default medium */
+            risk_rating: components["schemas"]["RiskRating"];
+            /** Short Name */
+            short_name?: string | null;
+            /** Tax Id */
+            tax_id?: string | null;
+            /**
+             * Whatsapp Phone
+             * @description WhatsApp number in E.164 format
+             */
+            whatsapp_phone?: string | null;
+        };
+        /**
+         * CommercialPartnerKind
+         * @enum {string}
+         */
+        CommercialPartnerKind: "customer" | "supplier";
+        /** CommercialPartnerListResponse */
+        CommercialPartnerListResponse: {
+            /** Items */
+            items: components["schemas"]["CommercialPartnerRead"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** CommercialPartnerRead */
+        CommercialPartnerRead: {
+            /** Address */
+            address?: string | null;
+            /** Approved Currency */
+            approved_currency?: string | null;
+            /** Approved Terms */
+            approved_terms?: {
+                [key: string]: unknown;
+            } | null;
+            /** Approved Value */
+            approved_value?: string | null;
+            /** City */
+            city?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Country */
+            country: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Credit Currency */
+            credit_currency?: string | null;
+            /** Credit Limit */
+            credit_limit?: string | null;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Is Active */
+            is_active: boolean;
+            /** Is Deleted */
+            is_deleted: boolean;
+            kind: components["schemas"]["CommercialPartnerKind"];
+            kyc_status: components["schemas"]["KycStatus"];
+            /** Lei */
+            lei?: string | null;
+            /** Lei Checked At */
+            lei_checked_at?: string | null;
+            /** Lei Legal Name */
+            lei_legal_name?: string | null;
+            lei_status: components["schemas"]["LeiStatus"];
+            /** Name */
+            name: string;
+            /** Notes */
+            notes?: string | null;
+            /** Payment Conditions */
+            payment_conditions?: {
+                [key: string]: unknown;
+            } | null;
+            risk_rating: components["schemas"]["RiskRating"];
+            sanctions_status: components["schemas"]["SanctionsStatus"];
+            /** Short Name */
+            short_name?: string | null;
+            /** Tax Id */
+            tax_id?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+            /** Whatsapp Phone */
+            whatsapp_phone?: string | null;
+        };
+        /** CommercialPartnerUpdate */
+        CommercialPartnerUpdate: {
+            /** Address */
+            address?: string | null;
+            /** City */
+            city?: string | null;
+            /** Contact Email */
+            contact_email?: string | null;
+            /** Contact Name */
+            contact_name?: string | null;
+            /** Contact Phone */
+            contact_phone?: string | null;
+            /** Country */
+            country?: string | null;
+            /** Is Active */
+            is_active?: boolean | null;
+            /** Lei */
+            lei?: string | null;
+            /** Name */
+            name?: string | null;
+            /** Notes */
+            notes?: string | null;
+            /** Short Name */
+            short_name?: string | null;
+            /** Tax Id */
+            tax_id?: string | null;
+            /** Whatsapp Phone */
+            whatsapp_phone?: string | null;
+        };
         /** ContractLinkagesResponse */
         ContractLinkagesResponse: {
             /**
@@ -1987,8 +2319,6 @@ export interface components {
             payment_terms_days: number;
             /** @default medium */
             risk_rating: components["schemas"]["RiskRating"];
-            /** @default clear */
-            sanctions_status: components["schemas"]["SanctionsStatus"];
             /** Short Name */
             short_name?: string | null;
             /** Tax Id */
@@ -2093,6 +2423,27 @@ export interface components {
             tax_id?: string | null;
             /** Whatsapp Phone */
             whatsapp_phone?: string | null;
+        };
+        /** CreditApprovalRequest */
+        CreditApprovalRequest: {
+            /** Approved Currency */
+            approved_currency?: string | null;
+            /** Approved Terms */
+            approved_terms?: {
+                [key: string]: unknown;
+            } | null;
+            /** Approved Value */
+            approved_value?: number | string | null;
+            /** Credit Currency */
+            credit_currency?: string | null;
+            /** Credit Limit */
+            credit_limit?: number | string | null;
+            /** Payment Conditions */
+            payment_conditions?: {
+                [key: string]: unknown;
+            } | null;
+            /** Reason */
+            reason: string;
         };
         /** DealCreate */
         DealCreate: {
@@ -2827,6 +3178,24 @@ export interface components {
          * @enum {string}
          */
         LedgerLegId: "FIXED" | "FLOAT";
+        /**
+         * LeiStatus
+         * @enum {string}
+         */
+        LeiStatus: "not_provided" | "valid" | "invalid" | "lapsed" | "issued" | "error";
+        /** LeiValidationRead */
+        LeiValidationRead: {
+            /** Lei */
+            lei: string | null;
+            /** Lei Checked At */
+            lei_checked_at: string | null;
+            /** Lei Legal Name */
+            lei_legal_name: string | null;
+            /** Lei Status */
+            lei_status: string;
+            /** Warnings */
+            warnings: string[];
+        };
         /** LinkedDealSummary */
         LinkedDealSummary: {
             /** Hedge Ratio */
@@ -3052,6 +3421,11 @@ export interface components {
              * @description e.g. CIF Rotterdam
              */
             delivery_terms?: string | null;
+            /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
             /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
@@ -3498,6 +3872,11 @@ export interface components {
              * @description e.g. CIF Rotterdam
              */
             delivery_terms?: string | null;
+            /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
             /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
@@ -4046,6 +4425,11 @@ export interface components {
              */
             delivery_terms?: string | null;
             /**
+             * External Reference
+             * @description External ERP/SAP PO or SO reference submitted by the user
+             */
+            external_reference?: string | null;
+            /**
              * Fixing Date
              * @description Fixing date — required for C2R convention
              */
@@ -4087,11 +4471,74 @@ export interface components {
              */
             reference_month?: string | null;
         };
+        /** SanctionsAdjudicationRead */
+        SanctionsAdjudicationRead: {
+            /**
+             * Adjudicated At
+             * Format: date-time
+             */
+            adjudicated_at: string;
+            /** Decision */
+            decision: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Partner Id
+             * Format: uuid
+             */
+            partner_id: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Superseded Screening Id
+             * Format: uuid
+             */
+            superseded_screening_id: string;
+        };
+        /** SanctionsAdjudicationRequest */
+        SanctionsAdjudicationRequest: {
+            decision: components["schemas"]["AdjudicationDecisionIn"];
+            /** Reason */
+            reason: string;
+        };
+        /** SanctionsScreeningRead */
+        SanctionsScreeningRead: {
+            /** Algorithm */
+            algorithm: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Match Count */
+            match_count: number;
+            /**
+             * Partner Id
+             * Format: uuid
+             */
+            partner_id: string;
+            /** Provider */
+            provider: string;
+            /** Result */
+            result: string | null;
+            /**
+             * Screened At
+             * Format: date-time
+             */
+            screened_at: string;
+            /** Status */
+            status: string;
+            /** Top Score */
+            top_score: string | null;
+        };
         /**
          * SanctionsStatus
          * @enum {string}
          */
-        SanctionsStatus: "clear" | "flagged" | "blocked";
+        SanctionsStatus: "unscreened" | "clear" | "flagged" | "blocked";
         /** ScenarioCashflowSnapshot */
         ScenarioCashflowSnapshot: {
             analytic: components["schemas"]["CashFlowAnalyticResponse"];
@@ -4784,6 +5231,341 @@ export interface operations {
             };
         };
     };
+    list_commercial_partners_commercial_partners_get: {
+        parameters: {
+            query?: {
+                /** @description Filter by kind */
+                kind?: components["schemas"]["CommercialPartnerKind"] | null;
+                /** @description Filter by KYC status */
+                kyc_status?: components["schemas"]["KycStatus"] | null;
+                /** @description Filter by active status */
+                is_active?: boolean | null;
+                cursor?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_commercial_partner_commercial_partners_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommercialPartnerCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_commercial_partner_commercial_partners__commercial_partner_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_commercial_partner_commercial_partners__commercial_partner_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_commercial_partner_commercial_partners__commercial_partner_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommercialPartnerUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    adjudicate_commercial_partner_commercial_partners__commercial_partner_id__adjudicate_sanctions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SanctionsAdjudicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsAdjudicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_credit_commercial_partners__commercial_partner_id__credit_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreditApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    transition_kyc_status_commercial_partners__commercial_partner_id__kyc_status_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KycStatusTransitionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommercialPartnerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    screen_commercial_partner_commercial_partners__commercial_partner_id__screen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsScreeningRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_commercial_partner_lei_commercial_partners__commercial_partner_id__validate_lei_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                commercial_partner_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeiValidationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_hedge_contracts_contracts_hedge_get: {
         parameters: {
             query?: {
@@ -5219,6 +6001,41 @@ export interface operations {
             };
         };
     };
+    adjudicate_counterparty_counterparties__counterparty_id__adjudicate_sanctions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SanctionsAdjudicationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsAdjudicationRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     transition_kyc_status_counterparties__counterparty_id__kyc_status_post: {
         parameters: {
             query?: never;
@@ -5241,6 +6058,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CounterpartyRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    screen_counterparty_counterparties__counterparty_id__screen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                counterparty_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SanctionsScreeningRead"];
                 };
             };
             /** @description Validation Error */
@@ -5939,6 +6787,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    cleanup_by_trace_id_internal_test_cleanup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CleanupRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

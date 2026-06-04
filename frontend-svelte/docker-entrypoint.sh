@@ -8,6 +8,7 @@ case "$PORT" in
     exit 1
     ;;
 esac
+export PORT
 
 # Export safe defaults for all CSP template vars before envsubst / derivation
 # (prevents set -u abort and empty connect-src / Report-To when container started
